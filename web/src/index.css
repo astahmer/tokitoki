@@ -1,22 +1,44 @@
+/*
+ * Kumo + Tailwind v4 setup (order matters — see @cloudflare/kumo README):
+ * 1. @source: Tailwind v4 does not scan node_modules by default; without this
+ *    every Kumo component renders unstyled.
+ * 2. Kumo styles register its @theme tokens before Tailwind's import.
+ */
+@source "../../node_modules/@cloudflare/kumo/dist/**/*.{js,jsx,ts,tsx}";
+@import "@cloudflare/kumo/styles";
 @import "tailwindcss";
 
-@theme {
-  --color-bg: #0b0e14;
-  --color-panel: #12161f;
-  --color-panel2: #171c27;
-  --color-edge: #232a38;
-  --color-ink: #dbe2ef;
-  --color-muted: #7d8aa0;
-  --color-accent: #7aa2f7;
-  --color-good: #9ece6a;
-  --color-bad: #f7768e;
-  --color-warn: #e0af68;
+/*
+ * Legacy app palette mapped onto Kumo semantic tokens. `@theme inline` keeps
+ * the var() references live in the generated utilities, so text-muted /
+ * bg-panel / bg-accent / ... flip automatically with <html data-mode>.
+ */
+@theme inline {
   --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+
+  --color-bg: var(--color-kumo-base);
+  --color-panel: var(--color-kumo-elevated);
+  --color-panel2: var(--color-kumo-recessed);
+  --color-edge: var(--color-kumo-line);
+  --color-ink: var(--text-color-kumo-default);
+  --color-muted: var(--text-color-kumo-subtle);
+  --color-accent: var(--color-kumo-info);
+  --color-good: var(--color-kumo-success);
+  --color-bad: var(--color-kumo-danger);
+  --color-warn: var(--color-kumo-warning);
 }
 
 html,
 body {
-  background: var(--color-bg);
-  color: var(--color-ink);
+  background: var(--color-kumo-base);
+  color: var(--text-color-kumo-default);
   font-family: var(--font-mono);
+}
+
+/* Smooth mode switch without flashing chart colors */
+html {
+  color-scheme: light;
+}
+html[data-mode="dark"] {
+  color-scheme: dark;
 }

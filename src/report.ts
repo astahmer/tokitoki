@@ -281,6 +281,8 @@ export interface TableContext {
   emailFor?: Map<string, string>;
   /** TTY colorizer for delta strings; receives ("▲12%", "up"|"down"). */
   colorizeDelta?: (text: string, kind: "up" | "down") => string;
+  /** When set, append an AVG/day row (totals divided by this many days). */
+  avgDays?: number;
 }
 
 function deltaCell(costCell: string, cost: number, prev: number | undefined, ctx: TableContext): string {
@@ -343,6 +345,22 @@ export function renderTable(rows: AggRow[], ctx: TableContext = {}): string {
   for (const cells of body) out.push(line(cells));
   out.push(widths.map((w) => "-".repeat(w ?? 0)).join("  "));
   out.push(line(totalCells));
+  if (ctx.avgDays !== undefined && ctx.avgDays > 0) {
+    const avg: AggRow = {
+      bucket: "AVG/day",
+      requests: Math.round(totals.requests / ctx.avgDays),
+      sessions: Math.round(totals.sessions / ctx.avgDays),
+      inputTokens: totals.inputTokens / ctx.avgDays,
+      outputTokens: totals.outputTokens / ctx.avgDays,
+      cacheReadTokens: totals.cacheReadTokens / ctx.avgDays,
+      cacheWriteTokens: totals.cacheWriteTokens / ctx.avgDays,
+      costUsd: totals.costUsd / ctx.avgDays,
+    };
+    const avgCells = cellsFor(avg);
+    avgCells[0] = "AVG/day";
+    avgCells[9] = formatCost(avg.costUsd); // no delta on the average row
+    out.push(line(avgCells));
+  }
   return out.join("\n");
 }
 

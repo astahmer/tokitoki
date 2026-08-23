@@ -6,7 +6,8 @@ import { formatCost, humanCount } from "../lib/fmt";
 export type GridMetric = "tokens" | "cost" | "requests";
 
 const LEVEL_BG = ["bg-panel2", "bg-accent/20", "bg-accent/45", "bg-accent/70", "bg-accent"];
-const DAY_LABELS = ["M", "", "W", "", "F", "", "S"];
+const DAY_LABELS = ["Mon", "", "Wed", "", "Fri", "", "Sun"];
+const CELL = 13; // px pitch: 12px square + 1px gap
 
 function metricValue(c: GridCell, metric: GridMetric): number {
   switch (metric) {
@@ -19,7 +20,23 @@ function metricValue(c: GridCell, metric: GridMetric): number {
   }
 }
 
-/** GitHub-style contribution grid (weeks = columns, Mon–Sun = rows). */
+function localIso(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+interface BuiltCell {
+  iso: string;
+  level: number;
+  title: string;
+}
+
+/**
+ * GitHub-style contribution grid: weeks as COLUMNS left→right, weekdays
+ * Mon..Sun as fixed ROWS top→bottom, month labels along the top.
+ */
 export function CalendarGrid({ cells, metric }: { cells: GridCell[]; metric: GridMetric }) {
   const grid = useMemo(() => {
     const byDay = new Map(cells.map((c) => [c.day, c]));
@@ -32,12 +49,13 @@ export function CalendarGrid({ cells, metric }: { cells: GridCell[]; metric: Gri
     const first = new Date(start);
     first.setDate(first.getDate() - ((first.getDay() + 6) % 7));
 
-    const weeks: Array<Array<{ iso: string; level: number; title: string } | null>> = [];
+    // weeks[column][row]
+    const weeks: Array<Array<BuiltCell | null>> = [];
     const labels: Array<{ col: number; label: string }> = [];
     let lastMonth = -1;
     const cursor = new Date(first);
     while (cursor <= today) {
-      const week: Array<{ iso: string; level: number; title: string } | null> = [];
+      const week: Array<BuiltCell | null> = [];
       for (let row = 0; row < 7; row++) {
         const probe = new Date(cursor);
         probe.setDate(cursor.getDate() + row);
@@ -57,53 +75,62 @@ export function CalendarGrid({ cells, metric }: { cells: GridCell[]; metric: Gri
           }`,
         });
       }
-      if (cursor.getDate() <= 7) {
-        const label = cursor.toLocaleString("en-US", { month: "short" });
-        if (label !== undefined && lastMonth !== cursor.getMonth()) {
-          lastMonth = cursor.getMonth();
-          labels.push({ col: weeks.length, label });
+      // Label a month when its first observable day appears in this column.
+      const firstDay = week.find((c) => c !== null);
+      if (firstDay !== undefined) {
+        const month = Number(firstDay.iso.slice(5, 7));
+        if (month !== lastMonth) {
+          lastMonth = month;
+          labels.push({
+            col: weeks.length,
+            label: new Date(firstDay.iso + "T00:00:00").toLocaleString("en-US", { month: "short" }),
+          });
         }
       }
       weeks.push(week);
       cursor.setDate(cursor.getDate() + 7);
     }
-    void lastMonth;
     return { weeks, labels };
   }, [cells, metric]);
+
+  // Transposed render: one flex ROW per weekday, cells across all weeks.
+  const rows = [0, 1, 2, 3, 4, 5, 6].map((row) =>
+    grid.weeks.map((week) => week[row] ?? null),
+  );
 
   return (
     <div className="overflow-x-auto">
       <div className="inline-block">
-        <div className="relative ml-8 h-4">
+        <div className="relative ml-10 h-4">
           {grid.labels.map(({ col, label }) => (
             <span
               key={`${col}-${label}`}
               className="absolute text-[10px] text-muted"
-              style={{ left: col * 15 }}
+              style={{ left: col * CELL }}
             >
               {label}
             </span>
           ))}
         </div>
-        {grid.weeks.map((week, i) => (
+        {rows.map((weekRow, i) => (
           <div key={i} className="flex items-center">
-            <span className="w-8 text-[10px] leading-[13px] text-muted">
-              {DAY_LABELS[i % 7]}
+            <span className="w-10 shrink-0 text-[10px] leading-[13px] text-muted">
+              {DAY_LABELS[i]}
             </span>
-            {week.map((cell, j) =>
+            {weekRow.map((cell, j) =>
               cell === null ? (
-                <span key={j} className="size-[13px] rounded-[2px]" />
+                <span key={j} className="size-[12px] rounded-[2px]" />
               ) : (
                 <span
                   key={j}
                   title={cell.title}
-                  className={`size-[13px] rounded-[2px] ${LEVEL_BG[cell.level]}`}
+                  className={`mr-px size-[12px] rounded-[2px] ${LEVEL_BG[cell.level]}`}
                 />
               ),
             )}
           </div>
         ))}
-        <div className="ml-8 mt-1 flex items-center gap-1 text-[10px] text-muted">
+        <div className="ml-10 mt-1 flex items-center gap-1 text-[10px] text-muted">
           less
           {LEVEL_BG.map((c) => (
             <span key={c} className={`size-[11px] rounded-[2px] ${c}`} />
@@ -113,11 +140,4 @@ export function CalendarGrid({ cells, metric }: { cells: GridCell[]; metric: Gri
       </div>
     </div>
   );
-}
-
-function localIso(d: Date): string {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
 }

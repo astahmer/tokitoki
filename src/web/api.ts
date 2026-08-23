@@ -202,7 +202,9 @@ export function apiTable(
       }
     }
 
-    if (showEmail && by === "account") {
+    // Emails key off accounts and always ride the account tabs, regardless
+    // of which dimension the table is grouped by.
+    if (showEmail) {
       const providersByKey = new Map<string, Set<string>>();
       for (const [key, provider] of cache.accountProviders(since)) {
         let set = providersByKey.get(key);

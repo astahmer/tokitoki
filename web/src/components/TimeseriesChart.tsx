@@ -8,7 +8,8 @@ import { useMemo } from "react";
 
 import type { TimeseriesPayload } from "../lib/api";
 
-const COLORS = ["#7aa2f7", "#9ece6a", "#e0af68", "#f7768e", "#7dcfff"];
+// Palette readable on both light and dark backgrounds.
+const COLORS = ["#3b82f6", "#10b981", "#f59e0b", "#f43f5e", "#06b6d4", "#8b5cf6", "#84cc16"];
 
 function buildDefinition(
   payload: TimeseriesPayload,

@@ -18,7 +18,9 @@
     "web:dev": "cd web && vite"
   },
   "dependencies": {
-    "@iarna/toml": "2.2.5"
+    "@cloudflare/kumo": "2.12.0",
+    "@iarna/toml": "2.2.5",
+    "@phosphor-icons/react": "2.1.10"
   },
   "devDependencies": {
     "@base-ui-components/react": "1.0.0-rc.0",

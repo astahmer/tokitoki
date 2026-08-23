@@ -1,3 +1,5 @@
+import { Badge, Surface } from "@cloudflare/kumo";
+
 import { formatCost, humanCount } from "../lib/fmt";
 import type { SummaryPayload } from "../lib/api";
 
@@ -6,9 +8,9 @@ export function SummaryCards({ summary }: { summary: SummaryPayload }) {
     <div className="mb-4 grid grid-cols-2 gap-3 md:grid-cols-4 lg:grid-cols-7">
       <Card label="week cost" value={formatCost(summary.cost)}>
         {summary.prevWeekCost !== null && (
-          <span className={summary.cost >= summary.prevWeekCost ? "text-bad" : "text-good"}>
+          <Badge variant={summary.cost >= summary.prevWeekCost ? "error" : "success"}>
             prev {formatCost(summary.prevWeekCost)}
-          </span>
+          </Badge>
         )}
       </Card>
       <Card label="requests" value={summary.requests.toLocaleString("en-US")} />
@@ -31,10 +33,10 @@ function Card({
   children?: React.ReactNode;
 }) {
   return (
-    <div className="rounded-xl border border-edge bg-panel px-4 py-3">
-      <div className="text-[10px] tracking-wider text-muted uppercase">{label}</div>
+    <Surface as="div" className="px-4 py-3">
+      <div className="text-[10px] tracking-wider text-kumo-subtle uppercase">{label}</div>
       <div className="mt-1 text-xl font-semibold whitespace-nowrap">{value}</div>
-      {children !== undefined && <div className="mt-0.5 text-[10px] whitespace-nowrap">{children}</div>}
-    </div>
+      {children !== undefined && <div className="mt-0.5 whitespace-nowrap">{children}</div>}
+    </Surface>
   );
 }

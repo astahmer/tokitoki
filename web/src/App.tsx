@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 
+import { Button } from "@cloudflare/kumo";
+
 import {
   fetchGrid,
   fetchSummary,
@@ -16,6 +18,7 @@ import { TimeseriesChart } from "./components/TimeseriesChart";
 import { DonutShare } from "./components/DonutShare";
 import { CalendarGrid, type GridMetric } from "./components/CalendarGrid";
 import { Panel, Pill, Toggle } from "./ui";
+import { applyMode, persistMode, resolveInitialMode, type ThemeMode } from "./theme";
 
 const DIMENSIONS = ["model", "provider", "account", "machine", "project", "repo"] as const;
 const PERIODS = ["day", "week", "month"] as const;
@@ -50,6 +53,12 @@ export function App() {
   const [showEmail, setShowEmail] = useState(
     () => localStorage.getItem("tokitoki.showEmail") === "1",
   );
+  const [mode, setMode] = useState<ThemeMode>(() => resolveInitialMode());
+
+  useEffect(() => {
+    applyMode(mode);
+    persistMode(mode);
+  }, [mode]);
 
   useEffect(() => {
     localStorage.setItem("tokitoki.showEmail", showEmail ? "1" : "0");
@@ -79,8 +88,22 @@ export function App() {
 
   return (
     <main className="min-h-screen p-6 text-sm">
-      <h1 className="mb-0.5 text-lg tracking-widest">⏱ tokitoki</h1>
-      <p className="mb-5 text-xs text-muted">unified coding-agent usage analytics · local only</p>
+      <header className="flex items-start justify-between">
+        <div>
+          <h1 className="mb-0.5 text-lg tracking-widest">⏱ tokitoki</h1>
+          <p className="mb-5 text-xs text-muted">unified coding-agent usage analytics · local only</p>
+        </div>
+        <Button
+          variant="ghost"
+          size="sm"
+          shape="square"
+          aria-label={`switch to ${mode === "dark" ? "light" : "dark"} mode`}
+          title={`switch to ${mode === "dark" ? "light" : "dark"} mode`}
+          onClick={() => setMode(mode === "dark" ? "light" : "dark")}
+        >
+          {mode === "dark" ? "☀" : "☾"}
+        </Button>
+      </header>
 
       {summary.state === "ok" ? (
         <SummaryCards summary={summary.data} />

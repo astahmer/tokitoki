@@ -6,7 +6,8 @@ import { Chart } from "@tanstack/charts/react";
 import { formatCost, humanCount } from "../lib/fmt";
 import type { Row } from "../lib/api";
 
-const COLORS = ["#7aa2f7", "#9ece6a", "#e0af68", "#f7768e", "#7dcfff", "#bb9af7", "#73daca"];
+// Palette readable on both light and dark backgrounds.
+const COLORS = ["#3b82f6", "#10b981", "#f59e0b", "#f43f5e", "#06b6d4", "#8b5cf6", "#84cc16"];
 
 /** Donut share of total tokens per bucket (TanStack polar pie). */
 export function DonutShare({ rows }: { rows: Row[] }) {

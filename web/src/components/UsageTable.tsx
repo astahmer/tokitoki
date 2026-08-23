@@ -1,5 +1,7 @@
 import { useMemo, useState } from "react";
 
+import { Badge, Table } from "@cloudflare/kumo";
+
 import { formatCost, humanCount, cachePct, totalTokens } from "../lib/fmt";
 import type { Row, TablePayload } from "../lib/api";
 import { DeltaBadge, Gauge } from "../ui";
@@ -109,7 +111,7 @@ export function UsageTable({
     const g = data.gauges[r.bucket];
     if (g !== undefined) return <Gauge frac={g.frac} label={g.label} />;
     return (
-      <span className="inline-flex items-baseline">
+      <span className="inline-flex items-baseline gap-1.5">
         {formatCost(r.costUsd)}
         <DeltaBadge current={r.costUsd} previous={data.prevCostById?.[r.bucket]} />
       </span>
@@ -117,58 +119,68 @@ export function UsageTable({
   };
 
   return (
-    <table className="w-full border-collapse text-xs">
-      <thead>
-        <tr>
-          {COLUMNS.map((c) => (
-            <th
-              key={c.key}
-              onClick={() => clickColumn(c.key)}
-              className={`cursor-pointer border-b border-edge px-2 py-1.5 text-[10px] tracking-wider whitespace-nowrap text-muted uppercase select-none hover:text-ink ${
-                c.numeric ? "text-right" : "text-left"
-              }`}
-            >
-              {c.label}
-              {sortKey === c.key ? (asc ? " ↑" : " ↓") : ""}
-            </th>
-          ))}
-        </tr>
-      </thead>
-      <tbody>
-        {rows.map((r) => (
-          <tr key={r.bucket} className="border-b border-edge/60 hover:bg-panel2">
-            <td className="px-2 py-1.5 text-left whitespace-nowrap">{renderName(r)}</td>
-            <td className="px-2 py-1.5 text-right">{cellFor(r, "requests")}</td>
-            <td className="px-2 py-1.5 text-right">{cellFor(r, "sessions")}</td>
-            <td className="px-2 py-1.5 text-right">{cellFor(r, "avg")}</td>
-            <td className="px-2 py-1.5 text-right">{cellFor(r, "inputTokens")}</td>
-            <td className="px-2 py-1.5 text-right">{cellFor(r, "outputTokens")}</td>
-            <td className="px-2 py-1.5 text-right">{cellFor(r, "cacheReadTokens")}</td>
-            <td className="px-2 py-1.5 text-right">{cellFor(r, "cachePct")}</td>
-            <td className="px-2 py-1.5 text-right">{cellFor(r, "sharePct")}</td>
-            <td className="px-2 py-1.5 text-right whitespace-nowrap">{gaugeCell(r)}</td>
-          </tr>
+    <Table className="w-full text-xs">
+      <Table.Head>
+        {COLUMNS.map((c) => (
+          <Table.Header
+            key={c.key}
+            onClick={() => clickColumn(c.key)}
+            className={`cursor-pointer text-[10px] tracking-wider whitespace-nowrap uppercase select-none hover:text-kumo-default ${
+              c.numeric ? "text-right" : "text-left"
+            }`}
+            aria-sort={sortKey === c.key ? (asc ? "ascending" : "descending") : "none"}
+          >
+            {c.label}
+            {sortKey === c.key ? (asc ? " ↑" : " ↓") : ""}
+          </Table.Header>
         ))}
-        <tr className="font-semibold text-accent">
-          <td className="px-2 py-1.5 text-left">TOTAL</td>
-          <td className="px-2 py-1.5 text-right">{data.total.requests.toLocaleString("en-US")}</td>
-          <td className="px-2 py-1.5 text-right">{data.total.sessions.toLocaleString("en-US")}</td>
-          <td className="px-2 py-1.5 text-right">
+      </Table.Head>
+      <Table.Body>
+        {rows.map((r) => (
+          <Table.Row key={r.bucket}>
+            <Table.Cell className="whitespace-nowrap">{renderName(r)}</Table.Cell>
+            <Table.Cell className="text-right">{cellFor(r, "requests")}</Table.Cell>
+            <Table.Cell className="text-right">{cellFor(r, "sessions")}</Table.Cell>
+            <Table.Cell className="text-right">{cellFor(r, "avg")}</Table.Cell>
+            <Table.Cell className="text-right">{cellFor(r, "inputTokens")}</Table.Cell>
+            <Table.Cell className="text-right">{cellFor(r, "outputTokens")}</Table.Cell>
+            <Table.Cell className="text-right">{cellFor(r, "cacheReadTokens")}</Table.Cell>
+            <Table.Cell className="text-right">{cellFor(r, "cachePct")}%</Table.Cell>
+            <Table.Cell className="text-right">{r.sharePct}%</Table.Cell>
+            <Table.Cell className="whitespace-nowrap text-right">{gaugeCell(r)}</Table.Cell>
+          </Table.Row>
+        ))}
+        <Table.Row className="font-semibold">
+          <Table.Cell>TOTAL</Table.Cell>
+          <Table.Cell className="text-right">
+            {data.total.requests.toLocaleString("en-US")}
+          </Table.Cell>
+          <Table.Cell className="text-right">
+            {data.total.sessions.toLocaleString("en-US")}
+          </Table.Cell>
+          <Table.Cell className="text-right">
             {humanCount(data.total.requests > 0 ? totalTokens(data.total) / data.total.requests : 0)}
-          </td>
-          <td className="px-2 py-1.5 text-right">{humanCount(data.total.inputTokens)}</td>
-          <td className="px-2 py-1.5 text-right">{humanCount(data.total.outputTokens)}</td>
-          <td className="px-2 py-1.5 text-right">{humanCount(data.total.cacheReadTokens)}</td>
-          <td className="px-2 py-1.5 text-right">{cachePct(data.total.inputTokens, data.total.cacheReadTokens)}%</td>
-          <td className="px-2 py-1.5 text-right">100%</td>
-          <td className="px-2 py-1.5 text-right">
-            <span className="inline-flex items-baseline">
+          </Table.Cell>
+          <Table.Cell className="text-right">{humanCount(data.total.inputTokens)}</Table.Cell>
+          <Table.Cell className="text-right">{humanCount(data.total.outputTokens)}</Table.Cell>
+          <Table.Cell className="text-right">
+            {humanCount(data.total.cacheReadTokens)}
+          </Table.Cell>
+          <Table.Cell className="text-right">
+            {cachePct(data.total.inputTokens, data.total.cacheReadTokens)}%
+          </Table.Cell>
+          <Table.Cell className="text-right">100%</Table.Cell>
+          <Table.Cell className="whitespace-nowrap text-right">
+            <span className="inline-flex items-baseline gap-1.5">
               {formatCost(data.total.costUsd)}
+              <Badge variant="primary" className="ml-0.5">
+                Σ
+              </Badge>
               <DeltaBadge current={data.total.costUsd} previous={data.totalPrevCost} />
             </span>
-          </td>
-        </tr>
-      </tbody>
-    </table>
+          </Table.Cell>
+        </Table.Row>
+      </Table.Body>
+    </Table>
   );
 }

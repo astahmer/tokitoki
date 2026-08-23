@@ -3,6 +3,7 @@ import fs from "node:fs";
 import type { TokitokiConfig } from "../config.ts";
 import { EventCache } from "../cache.ts";
 import { localMachineId } from "../machine.ts";
+import { UserError } from "../cli.ts";
 import { dataDir, ensureDataDir, eventsFile } from "../store.ts";
 import { lineToEvent, type SyncAdapter, type SyncConfig } from "./types.ts";
 import { DirAdapter } from "./dir.ts";
@@ -15,22 +16,32 @@ export function getSyncBackend(cfg: SyncConfig, machineId = localMachineId()): S
   switch (cfg.backend) {
     case "dir":
       if (cfg.path === undefined || cfg.path.length === 0) {
-        throw new Error("sync backend 'dir' requires [sync].path in config");
+        throw new UserError(
+        "sync backend 'dir' requires a local folder",
+        "add to config.toml:  [sync]\n  backend = \"dir\"\n  path = \"/sync/folder\"",
+      )
       }
       return new DirAdapter(machineId, cfg.path);
     case "git":
       if (cfg.url === undefined || cfg.url.length === 0) {
-        throw new Error("sync backend 'git' requires [sync].url in config");
+        throw new UserError(
+        "sync backend 'git' requires a remote url",
+        "add to config.toml:  [sync]\n  backend = \"git\"\n  url = \"git@github.com:you/tokitoki-events.git\"",
+      )
       }
       return new GitAdapter(machineId, cfg.url, cfg.branch ?? "main");
     case "atproto":
       if (cfg.handle === undefined || cfg.handle.length === 0) {
-        throw new Error("sync backend 'atproto' requires [sync].handle in config");
+        throw new UserError(
+        "sync backend 'atproto' requires your handle",
+        "add to config.toml:  [sync]\n  backend = \"atproto\"\n  handle = \"you.bsky.social\"",
+      )
       }
       return new AtprotoAdapter({ ...cfg, handle: cfg.handle });
     default:
-      throw new Error(
-        `unknown or unconfigured sync backend: ${String(cfg.backend)} — set [sync] in config`,
+      throw new UserError(
+        `no sync backend configured${cfg.backend === undefined ? "" : `: ${String(cfg.backend)}`}`,
+        "add a [sync] section to config.toml (see README → sync), e.g. tokitoki sync --backend git",
       );
   }
 }

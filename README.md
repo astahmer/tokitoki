@@ -240,6 +240,27 @@ src/web/api.ts ◀── same aggregation as the CLI (EventCache) ── /api/* 
 - `report` rebuilds the sqlite cache lazily when log/event counts diverge;
   very large logs may want a faster merge strategy later
 
+## Roadmap (competitive scan 2026-08)
+
+What ccusage / CodexBar / openusage.ai have that we don't yet, cheapest-first:
+
+- **5-hour billing blocks** (ccusage `blocks`) — Claude-specific session-window
+  monitoring with active-block tracking; needs per-request timestamps we
+  already store, just a different bucketing
+- **Provider limit polling with reset countdowns** (CodexBar/openusage core) —
+  OAuth/cookie sessions per provider to read plan quotas + reset times; big
+  but the single biggest feature gap vs the menu-bar apps
+- **Statusline integration** (ccusage `statusline`) — compact one-liner for
+  Claude Code status bar hooks; trivial once a `tokitoki statusline` command
+  emits the right shape
+- **Compact table mode** for narrow terminals/screenshots (ccusage `--compact`)
+- **Timezone option** for day bucketing (ccusage `--timezone UTC`)
+- **Offline pricing mode + user pricing overrides** via config file
+- **More harness sources** — ccusage already parses Amp, Droid, Goose, Kimi,
+  Qwen, Copilot CLI, Gemini CLI, Grok... our provider interface makes each a
+  small adapter
+- **Config file** for defaults (ccusage.json-style) instead of env/flags only
+
 ## Prior art
 
 - <https://github.com/ccusage/ccusage>

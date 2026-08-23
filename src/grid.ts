@@ -1,15 +1,17 @@
 import type { DailyTotal } from "./cache.ts";
 
 /**
- * GitHub-style contribution grid: one column per week, one row per weekday
- * (Mon–Sun), cell intensity by a chosen metric relative to the window max.
+ * GitHub-style contribution grid: weeks as COLUMNS left→right, weekdays as
+ * ROWS Mon..Sun, month labels along the top. Cell intensity by a chosen
+ * metric relative to the window max.
  */
 
 export type GridMetric = "tokens" | "cost" | "requests";
 
 // ANSI background greens (GitHub-ish ramp); index = intensity level.
 const BG = ["48;5;235", "48;5;22", "48;5;28", "48;5;34", "48;5;40"];
-const RAMP = ["·", "▪", "▫", "▓", "■"];
+// Non-TTY ramp: uniform-width pairs so the grid keeps its shape in plain text.
+const RAMP = ["··", "░░", "▒▒", "▓▓", "██"];
 const DAY_ROWS = ["Mon", "", "Wed", "", "Fri", "", "Sun"];
 
 export interface GridCell {
@@ -72,8 +74,11 @@ export function buildGrid(
         week.push(null);
         continue;
       }
-      const value = metricValue(byDay.get(localIso(probe)) ?? { day: "", tokens: 0, costUsd: 0, requests: 0 }, metric);
-      week.push({ iso: localIso(probe), value, level: levelFor(value, max) });
+      const iso = localIso(probe);
+      const day = byDay.get(iso);
+      const value =
+        day === undefined ? 0 : metricValue(day, metric);
+      week.push({ iso, value, level: levelFor(value, max) });
     }
     weeks.push(week);
     cursor.setDate(cursor.getDate() + 7);
@@ -81,7 +86,10 @@ export function buildGrid(
   return { weeks, max };
 }
 
-/** Month labels positioned over the column containing each month's 1st. */
+/**
+ * Month labels positioned over the column containing each month's first
+ * observable day (first day of a NEW month seen while scanning weeks).
+ */
 export function monthLabels(grid: Grid): Array<{ col: number; label: string }> {
   const out: Array<{ col: number; label: string }> = [];
   let lastMonth = -1;
@@ -89,16 +97,14 @@ export function monthLabels(grid: Grid): Array<{ col: number; label: string }> {
     for (const cell of week) {
       if (cell === null) continue;
       const month = Number(cell.iso.slice(5, 7));
-      if (month !== lastMonth && cell.iso.endsWith("-01")) {
+      if (month !== lastMonth) {
         lastMonth = month;
         out.push({
           col,
           label: new Date(cell.iso + "T00:00:00").toLocaleString("en-US", { month: "short" }),
         });
-      } else if (month !== lastMonth) {
-        lastMonth = month;
       }
-      break; // only inspect the first real day of each week
+      break; // only the first real day of each week matters for columns
     }
   });
   return out;
@@ -113,24 +119,25 @@ export function renderGrid(days: DailyTotal[], startDate: Date, options: { metri
     return RAMP[level]!;
   };
 
-  // Column layout: TTY cells are 2-wide with no gap; plain cells 1 char + gap.
-  const cellWidth = tty ? 2 : 1;
-  const gap = tty ? "" : " ";
-
-  const labels = monthLabels(grid);
-  let labelLine = "";
-  for (const { col, label } of labels) {
-    const target = col * (cellWidth + gap.length);
-    if (target >= labelLine.length) labelLine += " ".repeat(target - labelLine.length) + label;
-  }
+  // Every cell occupies exactly 2 columns, no separators — labels align at
+  // col * 2 + the 4-char weekday gutter.
+  const GUTTER = 4;
+  const CELL = 2;
 
   const lines: string[] = [];
+  const labelLine = monthLabels(grid)
+    .map(({ col, label }) => ({ pos: GUTTER + col * CELL, label }))
+    .reduce<string>((acc, { pos, label }) => {
+      if (pos < acc.length) return acc; // overlapping labels: keep the earlier
+      return acc + " ".repeat(pos - acc.length) + label;
+    }, "");
   if (labelLine.trim().length > 0) lines.push(labelLine);
+
   for (let row = 0; row < 7; row++) {
-    const prefix = DAY_ROWS[row] === "" ? "   " : `${DAY_ROWS[row]} `;
-    lines.push(prefix + grid.weeks.map((week) => cellText(week[row]?.level ?? 0)).join(gap));
+    const prefix = DAY_ROWS[row] === "" ? " ".repeat(GUTTER) : DAY_ROWS[row]!.padEnd(GUTTER);
+    lines.push(prefix + grid.weeks.map((week) => cellText(week[row]?.level ?? 0)).join(""));
   }
-  lines.push(`less ${[0, 1, 2, 3, 4].map(cellText).join("")} more`);
+  lines.push("less".padEnd(GUTTER) + [0, 1, 2, 3, 4].map(cellText).join("") + " more");
   return lines.join("\n");
 }
 
