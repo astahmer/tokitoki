@@ -1,6 +1,6 @@
 {
   "name": "tokitoki",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Unified coding-agent usage & session analytics across machines, harnesses, and accounts",
   "type": "module",
   "engines": {
@@ -15,7 +15,8 @@
     "tokitoki": "bun src/cli.ts",
     "compile": "bun build --compile src/cli.ts --outfile dist/tokitoki",
     "web:build": "cd web && vite build",
-    "web:dev": "cd web && vite"
+    "web:dev": "cd web && vite",
+    "menubar:e2e": "bun menubar/e2e.mjs"
   },
   "dependencies": {
     "@cloudflare/kumo": "2.12.0",

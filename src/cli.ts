@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
-import { parseArgs, type ParsedInvocation } from "./args.ts";
+import { parseArgs, type FlagValue, type ParsedInvocation } from "./args.ts";
 import fs from "node:fs";
+import path from "node:path";
 import { localMachineId } from "./machine.ts";
 import { appendEvents } from "./store.ts";
 import { PROVIDERS, getProvider } from "./providers/index.ts";
@@ -10,11 +11,21 @@ import { renderTable, renderMiniProjects, renderMarkdownTable, resolveExtraFiles
 import { accountEmailMap } from "./accounts.ts";
 import { renderGrid } from "./grid.ts";
 import { detectAnomalies, ANOMALY_METRICS, anomalyFooter } from "./anomalies.ts";
-import { processBudgetAlerts } from "./budgets.ts";
+import { processBudgetAlerts, seedBudgetsConfig } from "./budgets.ts";
+import { collectMachines } from "./presence.ts";
+import { computeBudgetStatus, gaugesForMenubar } from "./budget-status.ts";
 import { importCsv, IMPORT_SOURCES } from "./import.ts";
 import { repoEfficiency } from "./report.ts";
 import { bar, formatCost, humanCount, sparkline, formatInt, cachePct } from "./format.ts";
 import { loadConfig } from "./config.ts";
+import {
+  buildSharePayload,
+  describePayload,
+  publishShare,
+  readShareState,
+  writeShareState,
+  type ShareScope,
+} from "./share.ts";
 import { getSyncBackend, runSync } from "./sync/index.ts";
 import type { SyncConfig } from "./sync/types.ts";
 import { startWebServer } from "./web/server.ts";
@@ -30,24 +41,40 @@ import {
   type TimeWindow,
 } from "./period.ts";
 import { collectSources, renderSources } from "./sources.ts";
+import { rebuildSessionIndex, searchSessions, updateSessionIndex } from "./sessionIndex.ts";
 
 export { UserError } from "./errors.ts";
 
-const pkg = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8")) as {
-  version: string;
-};
-const VERSION = pkg.version;
-const CHART_DIMENSIONS = ["provider", "model"] as const;
+/**
+ * Version lookup must not throw at module load: in `bun --compile` binaries
+ * import.meta.url lives in the virtual $bunfs, which has no package.json.
+ * Fall back to the repo layout (dist/..), then to a literal.
+ */
+function readVersion(): string {
+  try {
+    const pkg = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version?: string };
+    if (typeof pkg.version === "string") return pkg.version;
+  } catch { /* compiled binary: not in $bunfs */ }
+  try {
+    const besideBinary = path.join(path.dirname(process.execPath), "..", "package.json");
+    const pkg = JSON.parse(fs.readFileSync(besideBinary, "utf8")) as { version?: string };
+    if (typeof pkg.version === "string") return pkg.version;
+  } catch { /* standalone deployment without repo layout */ }
+  return "dev";
+}
 
-const DIMENSION_LIST = "model|provider|account|machine|project|repo";
+const VERSION = readVersion();
+const CHART_DIMENSIONS = ["provider", "model", "tool"] as const;
 
-interface CommandHelp {
+const DIMENSION_LIST = "model|provider|account|machine|project|repo|tool";
+
+export interface CommandHelp {
   usage: string;
   flags: string;
   example?: string;
 }
 
-const COMMAND_HELP: Record<string, CommandHelp> = {
+export const COMMAND_HELP: Record<string, CommandHelp> = {
   scan: {
     usage: "tokitoki scan [--provider <id>]",
     flags: "  --provider <id>   only scan this harness (repeatable not allowed here)",
@@ -121,6 +148,29 @@ A day is flagged when its metric exceeds 3× the trailing 14-day average
 (2× when that stretch was mostly idle). Today is never flagged.`,
     example: "tokitoki anomalies --last quarter",
   },
+  tools: {
+    usage: "tokitoki tools [--last day|week|month|<duration>] [--top N] [--provider <id>] [--json]",
+    flags: `  top tools by spend — which tool/command put the tokens in context.
+  Names are provider-qualified; MCP servers roll up to mcp:<server>;
+  shell commands collapse to their first word (shell:rg). Turns without a
+  tool call land under '(unattributed)'.
+  --top N                   show only the first N rows (default: all)
+  --json                    machine-readable output (menubar/web contract)`,
+    example: "tokitoki tools --last day --top 5",
+  },
+  budgets: {
+    usage: "tokitoki budgets [--json] | tokitoki budgets init [--force]",
+    flags: `  gauge state for the [budgets] caps in your config
+  (~/.config/tokitoki/config.json), scoped to calendar day/week/month.
+  init                      seed per-account caps from detected accounts
+                            (codex/claude-code ≈ $200/mo, else $50/mo)
+  --force                   with init: replace existing account entries
+  --json                    machine-readable output (menubar/web contract)
+
+Rows always show every configured scope×pattern; state is ok | warn (≥80%)
+| exceeded. No config → empty output.`,
+    example: 'tokitoki budgets --json · tokitoki budgets init',
+  },
   repos: {
     usage: "tokitoki repos [--last day|week|month|<duration>] [--worst N] [--provider <id>]",
     flags: `  efficiency ranking per repo. Score = avg cost/request ×
@@ -136,19 +186,46 @@ A day is flagged when its metric exceeds 3× the trailing 14-day average
     example: "tokitoki import ~/Downloads/anthropic-usage.csv",
   },
   sessions: {
-    usage: "tokitoki sessions [--last day|week|month|<duration>] [--top N] [--by provider|repo]",
-    flags: `  --last day|week|month     rolling window (default: week); durations ok
+    usage: "tokitoki sessions [--search \"query\"] [--last day|week|month|<duration>] [--top N] [--by provider|repo]",
+    flags: `  --search "query"          full-text search across ALL conversation content
+                            (terms AND together; results ranked by relevance)
+  --page N                  result page for --search (default 1, 50 per page)
+  --last day|week|month     rolling window (default: week); durations ok
   --top N                   leaderboard size (default: 10)
   --by provider|repo        group the leaderboard under section headers
   --session <id>            drill into one session: request timeline + running total
   --provider <id>           filter (repeatable)
   --json                    machine-readable output`,
-    example: "tokitoki sessions --last week --top 5",
+    example: "tokitoki sessions --search \"kumo treemap\" --last month",
+  },
+  reindex: {
+    usage: "tokitoki reindex",
+    flags: `  force-rebuilds the full-text session index from every provider's raw
+  stores. Incremental updates happen automatically on search; only needed
+  after upgrading tokitoki or if results look stale.`,
+    example: "tokitoki reindex",
   },
   sync: {
     usage: "tokitoki sync [--backend dir|git|atproto] [--push|--pull|--both]",
     flags: "  backend + remote come from the [sync] section of config.toml;\n  --backend overrides it for this run. Default mode: both.",
     example: "tokitoki sync --backend git --push",
+  },
+  share: {
+    usage:
+      "tokitoki share [--enable|--disable|--status] [--publish] [--scope week|month] [--include-repos]",
+    flags:
+      "  --status            current state + last published CID (default)\n" +
+      "  --enable            allow public sharing\n" +
+      "  --disable           stop sharing\n" +
+      "  --publish           publish a sanitized aggregate record to your PDS now\n" +
+      "  --scope week|month  window to publish (default week)\n" +
+      "  --include-repos     add hashed repo names (raw names never leave)",
+    example: "tokitoki share --publish --scope month",
+  },
+  "menubar-payload": {
+    usage: "tokitoki menubar-payload --json",
+    flags: "  internal: combined json snapshot consumed by the menu-bar app",
+    example: "tokitoki menubar-payload --json",
   },
   web: {
     usage: "tokitoki web [--port <n>]",
@@ -157,13 +234,13 @@ A day is flagged when its metric exceeds 3× the trailing 14-day average
   },
 };
 
-function commandHelpText(id: string): string {
+export function commandHelpText(id: string): string {
   const h = COMMAND_HELP[id];
   if (h === undefined) return `unknown command: ${id}`;
   return `${h.usage}\n\nFlags:\n${h.flags}${h.example !== undefined ? `\n\nExample:\n  ${h.example}` : ""}`;
 }
 
-function printHelp(topic?: string): void {
+export function printHelp(topic?: string): void {
   if (topic === undefined) {
     console.log(GLOBAL_HELP);
     return;
@@ -180,7 +257,7 @@ function printHelp(topic?: string): void {
   process.exitCode = 1;
 }
 
-const GLOBAL_HELP = `tokitoki — unified coding-agent usage analytics
+export const GLOBAL_HELP = `tokitoki — unified coding-agent usage analytics
 
 Usage: tokitoki <command> [options]
 
@@ -196,8 +273,14 @@ Commands:
   grid       GitHub-style calendar heatmap (horizontal, weeks = columns)
   sessions   costliest/most token-heavy sessions (+ per-request drill-down)
   anomalies  unusual-activity days vs trailing baseline
+  tools      spend attributed to the tool that caused each request
   repos      repo efficiency ranking (expensive AND cache-hostile)
+  budgets    spending caps per account/scope (+ init to seed from detected accounts)
+  share      opt-in sanitized public stats via atproto (--enable|--disable|--status)
+  export     dump any report as json/csv/markdown
+  menubar-payload  combined json snapshot for the menu-bar app (internal)
   import     backfill usage CSVs from provider consoles
+  reindex    force-rebuild the session search index (full-text)
   sync       push/pull events across machines (dir | git | atproto backends)
   web        local dashboard (default :7788)
 
@@ -209,7 +292,7 @@ like 24h/2days/150m/1w work too; --from/--to pin absolute ranges.
 Version: tokitoki v${VERSION} (-v/--version)
 `;
 
-function main(argv: string[]): void {
+export async function main(argv: string[]): Promise<void> {
   // -h/--help wins over everything, including per-command validation.
   if (argv.includes("-h") || argv.includes("--help")) {
     const cmd = argv.find((a) => !a.startsWith("-") && a !== "help");
@@ -238,10 +321,16 @@ function main(argv: string[]): void {
       case "pie": runPie(parsed); break;
       case "grid": runGrid(parsed); break;
       case "sessions": runSessions(parsed); break;
+      case "reindex": runReindex(parsed); break;
       case "anomalies": runAnomalies(parsed); break;
+    case "budgets": runBudgets(parsed); break;
+    case "menubar-payload": runMenubarPayload(parsed); break;
+    case "presence": runPresence(parsed); break;
+    case "tools": runTools(parsed); break;
       case "repos": runRepos(parsed); break;
       case "import": runImport(parsed); break;
       case "sync": runSyncCommand(parsed); break;
+      case "share": await runShare(parsed); break;
       case "web": runWeb(parsed); break;
       default: {
         const close = closestMatch(parsed.command, Object.keys(COMMAND_HELP));
@@ -260,6 +349,7 @@ function main(argv: string[]): void {
 
 /** Flags each command accepts — anything else is a typo we can suggest around. */
 const KNOWN_FLAGS: Record<string, string[]> = {
+  "menubar-payload": ["json"],
   scan: ["provider"],
   sources: [],
   report: ["last", "by", "json", "sort", "asc", "provider", "delta", "no-delta", "show-email", "show-emails", "since", "until", "from", "to"],
@@ -269,11 +359,14 @@ const KNOWN_FLAGS: Record<string, string[]> = {
   chart: ["last", "by", "spark", "provider", "from", "to"],
   pie: ["last", "by", "provider", "from", "to"],
   grid: ["last", "metric", "since", "until", "from", "to"],
-  sessions: ["last", "by", "top", "session", "json", "provider", "since", "until", "account", "from", "to"],
+  sessions: ["last", "by", "top", "session", "json", "provider", "since", "until", "account", "from", "to", "search", "page"],
   anomalies: ["last", "metric", "json", "since", "until", "from", "to"],
+  budgets: ["json"],
+  tools: ["last", "from", "to", "since", "until", "top", "provider", "json"],
   repos: ["last", "worst", "provider", "from", "to"],
   import: ["source", "dry-run"],
   sync: ["backend", "push", "pull", "both", "sync-atproto"],
+  share: ["enable", "disable", "status", "publish", "scope", "include-repos"],
   export: ["last", "by", "format", "out", "sort", "asc", "provider", "since", "until", "show-email", "show-emails"],
   web: ["port"],
   help: [],
@@ -749,9 +842,9 @@ function runPie(parsed: ParsedInvocation): void {
   try {
     const w = resolveTimeWindow({ last: flagString(parsed, "last"), from: flagString(parsed, "from"), to: flagString(parsed, "to"), fallbackPeriod: "week" });
     const groupBy = (flagString(parsed, "by") ?? "provider") as Dimension;
-    if (groupBy !== "provider" && groupBy !== "model") {
+    if (groupBy !== "provider" && groupBy !== "model" && groupBy !== "tool") {
       throw new UserError(
-        `invalid --by for pie: ${groupBy} (valid: provider, model)`,
+        `invalid --by for pie: ${groupBy} (valid: provider, model, tool)`,
         "tokitoki pie --last week",
       );
     }
@@ -828,7 +921,8 @@ const SESSION_DIMENSIONS = ["provider", "repo"] as const;
 function runSessions(parsed: ParsedInvocation): void {
   try {
     const drillId = flagString(parsed, "session");
-    const topN = Math.max(1, Math.min(Number(flagString(parsed, "top") ?? "10") || 10, 100));
+    const searchQuery = flagString(parsed, "search");
+    const topN = Math.max(1, Math.min(Number(flagString(parsed, "top") ?? (searchQuery !== undefined ? "50" : "10")) || 10, 100));
     const by = flagString(parsed, "by");
     if (by !== undefined && !(SESSION_DIMENSIONS as readonly string[]).includes(by)) {
       throw new UserError(
@@ -847,6 +941,45 @@ function runSessions(parsed: ParsedInvocation): void {
 
       if (drillId !== undefined) {
         return renderSessionDrill(cache, drillId, json);
+      }
+
+      if (searchQuery !== undefined && searchQuery.trim().length > 0) {
+        const page = Math.max(1, Number(flagString(parsed, "page") ?? "1") || 1);
+        const stats = updateSessionIndex(cache.database);
+        const res = searchSessions(cache.database, {
+          query: searchQuery,
+          providers: providers.length > 0 ? providers : undefined,
+          sinceIso,
+          untilIso: w.untilIso,
+          limit: topN,
+          offset: (page - 1) * topN,
+        });
+        const header = `${windowLine(w)} · indexed ${stats.filesIndexed} changed file(s) in ${stats.durationMs}ms · search ${res.searchMs}ms`;
+        if (json) {
+          return JSON.stringify(
+            { window: { since: w.sinceIso, until: w.untilIso ?? null, label: w.label }, query: searchQuery, page, hasMore: res.hasMore, rows: res.rows },
+            null,
+            2,
+          );
+        }
+        if (res.rows.length === 0) {
+          return `${header}\nno sessions match '${searchQuery}' — check the spelling or widen the window\ntry: tokitoki sessions --search "${searchQuery}" --last month`;
+        }
+        const lines = [
+          header,
+          `matches for '${searchQuery}'${res.hasMore ? ` · showing ${topN}, more pages exist (--page ${page + 1})` : ""}`,
+        ];
+        for (const r of res.rows) {
+          lines.push(
+            ``,
+            `${r.startedAt.slice(0, 16).replace("T", " ")}  ${r.provider}  ${r.accountKey}  ${r.repos[0] ?? "(no repo)"}`,
+            `  ${r.title.length > 0 ? r.title : "(no title)"}`,
+            `  req ${formatInt(r.requests)} · tok ${humanCount(r.totalTokens)} · cache ${r.cachePct}% · cost ${formatCost(r.costUsd)}`,
+            `  ${r.sessionId}`,
+            `  ${r.snippet.replaceAll("[[", "\x1b[33m").replaceAll("]]", "\x1b[0m")}`,
+          );
+        }
+        return lines.join("\n");
       }
 
       const rows = cache.topSessions({ ...filter, limit: topN });
@@ -1033,6 +1166,167 @@ function runAnomalies(parsed: ParsedInvocation): void {
   }
 }
 
+// ---------------------------------------------------------------- budgets
+
+function runBudgets(parsed: ParsedInvocation): void {
+  try {
+    if (parsed.rest[0] === "init") {
+      runBudgetsInit(parsed);
+      return;
+    }
+    const json = flagBool(parsed, "json");
+    const out = withCache((cache) => {
+      cache.sync(resolveExtraFiles(loadConfig()));
+      const payload = computeBudgetStatus(cache, loadConfig().budgets);
+      if (json) return JSON.stringify(gaugesForMenubar(payload), null, 2);
+      if (!payload.configured) {
+        return [
+          "budgets · no [budgets] caps configured",
+          "",
+          "try adding to ~/.config/tokitoki/config.json:",
+          '  "budgets": { "daily": 10, "weekly": 50, "monthly": 200 }',
+        ].join("\n");
+      }
+      if (payload.rows.length === 0) return "budgets · configured, but nothing in window yet";
+      const header = ["scope", "label", "used", "cap", "%used", "state", "left"];
+      const rows = gaugesForMenubar(payload).map((g) => [
+        g.scope,
+        g.label,
+        formatCost(g.used),
+        formatCost(g.cap),
+        `${Math.round(g.ratio * 100)}%`,
+        g.state,
+        `${g.daysLeft}d`,
+      ]) as string[][];
+      const widths = header.map((_, i) => Math.max(header[i]!.length, ...rows.map((r) => r[i]!.length)));
+      const lines = [
+        `budgets · calendar day/week/month caps`,
+        widths.map((w, i) => (i <= 1 ? header[i]!.padEnd(w) : header[i]!.padStart(w))).join("  "),
+        widths.map((w) => "-".repeat(w)).join("  "),
+        ...rows.map((r) => r.map((c, i) => (i <= 1 ? c.padEnd(widths[i]!) : c.padStart(widths[i]!))).join("  ")),
+      ];
+      const firing = payload.alerts.filter((a) => a.level === 100 || a.pct >= 0.8);
+      if (firing.length > 0) lines.push(`\x1b[33m⚠ ${firing.length} budget(s) at or past a threshold — see rows above\x1b[0m`);
+      return lines.join("\n");
+    });
+    console.log(out);
+  } catch (err) {
+    handleError(err);
+  }
+}
+
+/** Seed [budgets] from accounts actually present in the local cache. */
+function runBudgetsInit(parsed: ParsedInvocation): void {
+  try {
+    const force = flagBool(parsed, "force");
+    const cache = new EventCache();
+    try {
+      const detected = cache.detectedAccounts();
+      if (detected.length === 0) {
+        console.log("no accounts detected yet — run `tokitoki scan` first");
+        return;
+      }
+      const result = seedBudgetsConfig(detected, { force });
+      console.log(`config: ${result.configPathUsed}`);
+      for (const a of result.added) console.log(`  + ${a.pattern}  monthly $${a.cap}`);
+      for (const s of result.skipped) console.log(`  = ${s}  (already configured — use --force to replace)`);
+      console.log("try: tokitoki budgets");
+    } finally {
+      cache.close();
+    }
+  } catch (err) {
+    handleError(err);
+  }
+}
+
+// -------------------------------------------------------------- presence
+
+function runPresence(parsed: ParsedInvocation): void {
+  try {
+    const json = flagBool(parsed, "json");
+    const machines = collectMachines(loadConfig());
+    if (json) {
+      console.log(JSON.stringify(machines, null, 2));
+      return;
+    }
+    if (machines.length === 0) {
+      console.log("no machines seen — heartbeats appear after `tokitoki sync --push` with a [sync] backend configured");
+      return;
+    }
+    const lines = ["machine            host        state    last seen"];
+    for (const m of machines) {
+      const age = Math.round((Date.now() - m.ts) / 60_000);
+      const ago = age < 60 ? `${age}m ago` : `${Math.round(age / 60)}h ago`;
+      lines.push(
+        m.machineId.padEnd(18) + m.host.slice(0, 11).padEnd(12) + m.state.padEnd(9) + ago,
+      );
+    }
+    console.log(lines.join("\n"));
+  } catch (err) {
+    handleError(err);
+  }
+}
+
+// ------------------------------------------------------------------ tools
+
+function runTools(parsed: ParsedInvocation): void {
+  try {
+    const w = resolveTimeWindow({
+      last: flagString(parsed, "last"),
+      from: flagString(parsed, "from") ?? flagString(parsed, "since"),
+      to: flagString(parsed, "to") ?? flagString(parsed, "until"),
+      fallbackPeriod: "day",
+    });
+    const json = flagBool(parsed, "json");
+    const topRaw = flagString(parsed, "top");
+    const providers = flagStrings(parsed, "provider");
+    const out = withCache((cache) => {
+      cache.sync(resolveExtraFiles(loadConfig()));
+      const rows = cache.aggregate(w.sinceIso, "tool", providers, w.untilIso);
+      rows.sort((a, b) => b.costUsd - a.costUsd || b.requests - a.requests || b.inputTokens - a.inputTokens);
+      const limited = topRaw !== undefined ? rows.slice(0, Math.max(1, Number.parseInt(topRaw, 10) || 5)) : rows;
+      const totalTokensOf = (r: AggRow) => r.inputTokens + r.outputTokens + r.cacheReadTokens + r.cacheWriteTokens;
+      if (json) {
+        return JSON.stringify(
+          {
+            period: { since: w.sinceIso, until: w.untilIso ?? new Date().toISOString() },
+            tools: limited.map((r) => ({
+              tool: r.bucket,
+              requests: r.requests,
+              tokens: totalTokensOf(r),
+              costUsd: Math.round(r.costUsd * 1e4) / 1e4,
+            })),
+          },
+          null,
+          2,
+        );
+      }
+      const header = ["tool", "req", "tokens", "%cache", "cost"];
+      const body = limited.map((r) => [
+        r.bucket,
+        formatInt(r.requests),
+        humanCount(totalTokensOf(r)),
+        `${cachePct(r.inputTokens, r.cacheReadTokens)}%`,
+        formatCost(r.costUsd),
+      ]);
+      if (body.length === 0) {
+        return `${windowLine(w)}\nno tool-attributed usage in this window — try a wider one:\n  tokitoki tools --last week`;
+      }
+      const widths = header.map((_, i) => Math.max(header[i]!.length, ...body.map((r) => r[i]!.length)));
+      const lines = [
+        windowLine(w),
+        widths.map((wdt, i) => (i === 0 ? header[i]!.padEnd(wdt) : header[i]!.padStart(wdt))).join("  "),
+        widths.map((wdt) => "-".repeat(wdt)).join("  "),
+        ...body.map((r) => r.map((c, i) => (i === 0 ? c.padEnd(widths[i]!) : c.padStart(widths[i]!))).join("  ")),
+      ];
+      return lines.join("\n");
+    });
+    console.log(out);
+  } catch (err) {
+    handleError(err);
+  }
+}
+
 // ---------------------------------------------------------------- repos
 
 function runRepos(parsed: ParsedInvocation): void {
@@ -1085,6 +1379,24 @@ function runRepos(parsed: ParsedInvocation): void {
 
 // ---------------------------------------------------------------- import
 
+// ---------------------------------------------------------------- reindex
+
+function runReindex(_parsed: ParsedInvocation): void {
+  try {
+    const out = withCache((cache) => {
+      cache.sync(resolveExtraFiles(loadConfig()));
+      const stats = rebuildSessionIndex(cache.database);
+      return [
+        `reindexed ${stats.docsIndexed} session(s) from ${stats.filesIndexed} file(s) in ${stats.durationMs}ms`,
+        `try: tokitoki sessions --search "deploy" --last month`,
+      ].join("\n");
+    });
+    console.log(out);
+  } catch (err) {
+    handleError(err);
+  }
+}
+
 function runImport(parsed: ParsedInvocation): void {
   try {
     const file = parsed.rest[0];
@@ -1121,6 +1433,65 @@ function runImport(parsed: ParsedInvocation): void {
   } catch (err) {
     handleError(err);
   }
+}
+
+function runShare(parsed: ParsedInvocation): Promise<void> {
+  const scope = (flagString(parsed, "scope") ?? "week") as ShareScope;
+  if (scope !== "week" && scope !== "month") {
+    throw new UserError(
+      `invalid --scope: ${scope} (valid: week, month)`,
+      "tokitoki share --publish --scope month",
+    );
+  }
+  if (flagBool(parsed, "enable")) {
+    const state = readShareState();
+    state.enabled = true;
+    writeShareState(state);
+    console.log("public sharing enabled — nothing published yet");
+    console.log('publish now with: tokitoki share --publish --scope week');
+    return Promise.resolve();
+  }
+  if (flagBool(parsed, "disable")) {
+    const state = readShareState();
+    state.enabled = false;
+    writeShareState(state);
+    console.log("public sharing disabled");
+    return Promise.resolve();
+  }
+  if (!flagBool(parsed, "publish")) {
+    runShareStatus();
+    return Promise.resolve();
+  }
+  if (!readShareState().enabled) {
+    throw new UserError(
+      "public sharing is disabled",
+      "tokitoki share --enable && tokitoki share --publish",
+    );
+  }
+  const includeRepos = flagBool(parsed, "include-repos");
+  const payload = buildSharePayload(scope, { includeRepos });
+  for (const line of describePayload(payload, includeRepos)) console.log(`  ${line}`);
+  return publishShare(scope, { includeRepos })
+    .then((result) => {
+      console.log(`published dev.tokitoki.share/${result.rkey} (cid ${result.cid})`);
+    })
+    .catch((err: unknown) => {
+      throw err instanceof UserError
+        ? err
+        : new UserError(err instanceof Error ? err.message : String(err), "tokitoki share --status");
+    });
+}
+
+function runShareStatus(): void {
+  const state = readShareState();
+  console.log(`public sharing: ${state.enabled ? "enabled" : "disabled"}`);
+  if (state.lastPublished !== undefined) {
+    const lp = state.lastPublished;
+    console.log(`last publish: dev.tokitoki.share/${lp.rkey} at ${lp.at} (cid ${lp.cid})`);
+  } else {
+    console.log("nothing published yet");
+  }
+  console.log('enable/disable: tokitoki share --enable | --disable');
 }
 
 function runSyncCommand(parsed: ParsedInvocation): void {
@@ -1268,4 +1639,45 @@ function handleError(err: unknown): void {
   throw err; // unexpected bug: keep the stack
 }
 
-main(process.argv.slice(2));
+function captureStdoutJson(fn: () => void): unknown {
+  const orig = console.log;
+  const chunks: string[] = [];
+  console.log = (...a: unknown[]) => { chunks.push(a.join(" ")); };
+  try {
+    fn();
+  } finally {
+    console.log = orig;
+  }
+  return JSON.parse(chunks.join("\n"));
+}
+
+function inv(command: string, flags: Record<string, FlagValue | string[]> = {}): ParsedInvocation {
+  return { command, flags, rest: [] };
+}
+
+function runMenubarPayload(parsed: ParsedInvocation): void {
+  // Sequential single-process composition: the menu bar previously spawned
+  // 7 CLIs at once (~1GB RSS each) and thrashed memory.
+  const parts: Record<string, unknown> = {};
+  const capture = (key: string, fn: () => void): void => {
+    const orig = console.log;
+    console.log = (...a: unknown[]) => { parts[key] = JSON.parse(a.map(String).join(" ")); };
+    try {
+      fn();
+    } finally {
+      console.log = orig;
+    }
+  };
+  capture("today", () => runReport(inv("report", { last: "day", by: "provider", json: true })));
+  capture("week", () => runReport(inv("report", { last: "week", by: "provider", json: true })));
+  capture("reposMonth", () => runReport(inv("report", { last: "month", by: "repo", json: true })));
+  capture("budgets", () => runBudgets(inv("budgets", { json: true })));
+  capture("anomalies", () => runAnomalies(inv("anomalies", { json: true })));
+  capture("topTools", () => runTools(inv("tools", { last: "day", top: "3", json: true })));
+  capture("presence", () => runPresence(inv("presence", { json: true })));
+  console.log(JSON.stringify(parts));
+}
+
+// Only auto-run when executed directly — importing must stay side-effect
+// free so tests can inspect the registry.
+if (import.meta.main) void main(process.argv.slice(2));

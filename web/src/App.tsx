@@ -25,6 +25,7 @@ import { SessionsView } from "./components/SessionsView";
 import { SourcesView } from "./components/SourcesView";
 import { AnomaliesView } from "./components/AnomaliesView";
 import { BudgetsView } from "./components/BudgetsView";
+import { ShareButton } from "./components/ShareButton";
 import { EmptyState, Panel, Pill, SkeletonBlock, SummaryCardsSkeleton, TableSkeleton, Toggle } from "./ui";
 import { applyMode, persistMode, resolveInitialMode, type ThemeMode } from "./theme";
 
@@ -125,16 +126,19 @@ export function App() {
           <h1 className="mb-0.5 text-lg tracking-widest">⏱ tokitoki</h1>
           <p className="text-xs text-muted">unified coding-agent usage analytics · local only</p>
         </div>
-        <Button
-          variant="ghost"
-          size="sm"
-          shape="square"
-          aria-label={`switch to ${mode === "dark" ? "light" : "dark"} mode`}
-          title={`switch to ${mode === "dark" ? "light" : "dark"} mode`}
-          onClick={() => setMode(mode === "dark" ? "light" : "dark")}
-        >
-          {mode === "dark" ? "☀" : "☾"}
-        </Button>
+        <div className="flex items-center gap-1">
+          <ShareButton />
+          <Button
+            variant="ghost"
+            size="sm"
+            shape="square"
+            aria-label={`switch to ${mode === "dark" ? "light" : "dark"} mode`}
+            title={`switch to ${mode === "dark" ? "light" : "dark"} mode`}
+            onClick={() => setMode(mode === "dark" ? "light" : "dark")}
+          >
+            {mode === "dark" ? "☀" : "☾"}
+          </Button>
+        </div>
       </header>
 
       <Tabs

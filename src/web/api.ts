@@ -1,6 +1,12 @@
 import { EventCache, type AggRow } from "../cache.ts";
 import { loadConfig, type TokitokiConfig } from "../config.ts";
 import { accountEmailMap } from "../accounts.ts";
+import type { BudgetsConfig } from "../budgets.ts";
+import {
+  computeBudgetStatus,
+  matchesBudgetPattern,
+  type BudgetStatusPayload,
+} from "../budget-status.ts";
 import { cachePct } from "../format.ts";
 import {
   burnProjection,
@@ -21,6 +27,8 @@ import {
   type TimeWindow,
 } from "../period.ts";
 import { collectSources } from "../sources.ts";
+import { collectMachines } from "../presence.ts";
+import { searchSessions, updateSessionIndex } from "../sessionIndex.ts";
 import { detectAnomalies, type AnomalyMetric } from "../anomalies.ts";
 
 /** JSON responses reuse the exact CLI aggregation — no duplicated SQL. */
@@ -132,12 +140,16 @@ export function apiTimeseries(by: string, wp: WindowParams & { days?: number } =
   });
 }
 
-const TABLE_DIMS = ["provider", "model", "account", "machine", "project", "repo"] as const;
+const TABLE_DIMS = ["provider", "model", "account", "machine", "project", "repo", "tool"] as const;
 const PERIODS = ["day", "week", "month"] as const;
 
 export interface GaugeInfo {
   frac: number;
   label: string;
+  /** Exact usage vs cap backing the gauge (tooltip data). */
+  used: number;
+  cap: number;
+  unit: "requests" | "usd";
 }
 
 export interface TablePayload {
@@ -229,14 +241,24 @@ export function apiTable(
         const plan = cfg.plans![key]!;
         const usage = mtdByAccount.get(r.bucket);
         if (plan.monthlyRequestCap !== undefined && plan.monthlyRequestCap > 0) {
+          const cap = plan.monthlyRequestCap;
+          const used = usage === undefined ? 0 : usage.requests;
           payload.gauges[r.bucket] = {
-            frac: usage === undefined ? 0 : usage.requests / plan.monthlyRequestCap,
-            label: `of ${plan.monthlyRequestCap.toLocaleString()} req cap`,
+            frac: used / cap,
+            label: `of ${cap.toLocaleString()} req cap`,
+            used,
+            cap,
+            unit: "requests",
           };
         } else if (plan.monthlyCostCap !== undefined && plan.monthlyCostCap > 0) {
+          const cap = plan.monthlyCostCap;
+            const used = usage === undefined ? 0 : usage.costUsd;
           payload.gauges[r.bucket] = {
-            frac: usage === undefined ? 0 : usage.costUsd / plan.monthlyCostCap,
-            label: `of $${plan.monthlyCostCap} cap`,
+            frac: used / cap,
+            label: `of $${cap} cap`,
+            used,
+            cap,
+            unit: "usd",
           };
         }
       }
@@ -376,6 +398,62 @@ export function apiSessionDetail(provider: string, sessionId: string): SessionDe
   });
 }
 
+// ---------------------------------------------------------------- sessions search
+
+export interface SessionSearchPayload {
+  window: ReturnType<typeof toApiWindow>;
+  query: string;
+  page: number;
+  hasMore: boolean;
+  searchMs: number;
+  indexedFiles: number;
+  indexMs: number;
+  rows: Array<{
+    provider: string;
+    sessionId: string;
+    accountKey: string;
+    startedAt: string;
+    title: string;
+    snippet: string;
+    requests: number;
+    totalTokens: number;
+    cachePct: number;
+    costUsd: number;
+    repos: string[];
+  }>;
+}
+
+/** Full-text session search; incrementally refreshes the index first. */
+export function apiSessionSearch(
+  wp: WindowParams,
+  query: string,
+  providers: string[],
+  page: number,
+): SessionSearchPayload {
+  const w = resolveTimeWindow({ ...wp, fallbackPeriod: "month" as Period });
+  return withCache((cache) => {
+    const stats = updateSessionIndex(cache.database);
+    const res = searchSessions(cache.database, {
+      query,
+      providers: providers.length > 0 ? providers : undefined,
+      sinceIso: w.sinceIso,
+      untilIso: w.untilIso,
+      limit: 50,
+      offset: Math.max(0, (page - 1) * 50),
+    });
+    return {
+      window: toApiWindow(w),
+      query,
+      page,
+      hasMore: res.hasMore,
+      searchMs: res.searchMs,
+      indexedFiles: stats.filesIndexed,
+      indexMs: stats.durationMs,
+      rows: res.rows,
+    };
+  });
+}
+
 function sortRowsByCost(rows: AggRow[]): AggRow[] {
   return [...rows].sort(
     (a, b) => b.costUsd - a.costUsd || b.requests - a.requests || a.bucket.localeCompare(b.bucket),
@@ -386,7 +464,25 @@ function round2(n: number): number {
   return Math.round(n * 100) / 100;
 }
 
+// ---------------------------------------------------------------- budgets
+
+/** Web payload = shared budget status (same impl as `tokitoki budgets`). */
+export type BudgetsPayload = BudgetStatusPayload;
+export type { BudgetStatusRow } from "../budget-status.ts";
+
+/** Budget gauges + currently-firing alerts (no notification side effects). */
+export function apiBudgets(): BudgetsPayload {
+  return withCache((cache) => computeBudgetStatus(cache, loadConfig().budgets));
+}
+
 // ---------------------------------------------------------------- sources
+
+export interface MachinePresenceDto {
+  machineId: string;
+  host: string;
+  ts: number;
+  state: "active" | "recent" | "stale";
+}
 
 export interface SourcesPayload {
   providers: Array<{
@@ -401,11 +497,15 @@ export interface SourcesPayload {
     accounts: Array<{ key: string; email: string | null }>;
     models: string[];
   }>;
+  machines: MachinePresenceDto[];
 }
 
 /** Provenance per provider — backs the future Sources tab. */
 export function apiSources(): SourcesPayload {
-  return withCache((cache) => ({ providers: collectSources(cache) }));
+  return withCache((cache) => ({
+    providers: collectSources(cache),
+    machines: collectMachines(loadConfig()),
+  }));
 }
 
 // ---------------------------------------------------------------- export

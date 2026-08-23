@@ -2,3 +2,12 @@ node_modules/
 dist/
 .build/
 *.pcm
+
+# emitted JS from stray tsc runs — .ts is the source of truth
+/src/**/*.js
+/test/**/*.js
+# vitest/sqlite fixture scratch dirs
+/test/.fixture-*
+# nix-build result symlink
+/result
+/web/**/*.js

@@ -21,6 +21,10 @@ export class EventCache {
   constructor(dbPath?: string, repoNameFor?: (dir: string) => string) {
     const p = dbPath ?? path.join(dataDir(), "cache.db");
     this.db = new Database(p, { create: true });
+    // Concurrent invocations are normal (menubar polls every 5 min, web serves
+    // on demand, users run CLI in parallel): WAL + busy timeout so writers
+    // queue instead of failing with SQLITE_BUSY.
+    this.db.exec("PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 10000;");
     this.repoNameFor = repoNameFor ?? ((dir: string) => resolveRepo(dir).name);
     this.migrate();
     this.repoStmtInsert = this.db.prepare(
@@ -183,6 +187,16 @@ export class EventCache {
       )
       .all(sinceIso) as Array<{ key: string; provider: string }>;
     return new Map(rows.map((r) => [r.key, r.provider]));
+  }
+
+  /** Accounts present in the local cache, for `budgets init` seeding. */
+  detectedAccounts(): Array<{ provider: string; accountKey: string; events: number }> {
+    return this.db
+      .query(
+        `SELECT provider AS provider, account_key AS accountKey, COUNT(*) AS events
+         FROM events GROUP BY provider, account_key ORDER BY events DESC`,
+      )
+      .all() as Array<{ provider: string; accountKey: string; events: number }>;
   }
 
   /** All-time per-provider stats for the provenance view. */

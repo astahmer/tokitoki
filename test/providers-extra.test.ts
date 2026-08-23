@@ -5,6 +5,7 @@ import path from "node:path";
 
 import { antigravityCliProvider } from "../src/providers/antigravity-cli.ts";
 import { SKELETON_PROVIDERS } from "../src/providers/skeletons.ts";
+import { grokProvider } from "../src/providers/grok.ts";
 import {
   extractT3SessionDocs,
   t3CodeProvider,
@@ -129,18 +130,17 @@ void (async () => {
   }
 
   {
-    // grok honors GROK_HOME and filters extensions; missing dirs list nothing.
+    // grok (real adapter) honors GROK_HOME and filters to .jsonl; missing dirs list nothing.
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "grok-home-"));
     try {
-      const grok = SKELETON_PROVIDERS.find((p) => p.id === "grok")!;
       withEnv("GROK_HOME", home, () => {
-        assert.deepEqual(grok.listFiles(grok.discoverRoots()[0]!), []);
-        const sessions = path.join(home, "sessions");
-        fs.mkdirSync(sessions);
-        fs.writeFileSync(path.join(sessions, "s1.jsonl"), "{}");
+        assert.deepEqual(grokProvider.listFiles(grokProvider.discoverRoots()[0]!), []);
+        const sessions = path.join(home, "sessions", "2026", "08");
+        fs.mkdirSync(sessions, { recursive: true });
+        fs.writeFileSync(path.join(sessions, "rollout-x.jsonl"), "{}");
         fs.writeFileSync(path.join(sessions, "notes.txt"), "x");
-        const files = grok.listFiles(grok.discoverRoots()[0]!);
-        assert.deepEqual(files, [path.join(sessions, "s1.jsonl")]);
+        const files = grokProvider.listFiles(grokProvider.discoverRoots()[0]!);
+        assert.deepEqual(files, [path.join(sessions, "rollout-x.jsonl")]);
       });
     } finally {
       fs.rmSync(home, { recursive: true, force: true });

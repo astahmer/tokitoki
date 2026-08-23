@@ -17,6 +17,11 @@ export interface SyncAdapter {
   readonly label: string;
   pull(): AsyncIterable<string>;
   push(lines: string[]): Promise<void>;
+  /**
+   * Local folder where presence heartbeats live, when the transport is
+   * filesystem-backed (null = presence not supported over this transport).
+   */
+  heartbeatDir?(): string | null;
 }
 
 /** `[sync]` section of config.toml / config.json. */

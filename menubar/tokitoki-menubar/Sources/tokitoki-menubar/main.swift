@@ -2,8 +2,12 @@ import SwiftUI
 import AppKit
 import UserNotifications
 
-// tokitoki menu-bar extra: native SwiftUI MenuBarExtra that shells out to the
-// compiled `dist/tokitoki` CLI. No Electron, no webview.
+// tokitoki menu-bar extra: AppKit NSStatusItem + NSPopover hosting the SwiftUI
+// ContentView. Deliberately NOT SwiftUI MenuBarExtra: mutating a MenuBarExtra
+// label on a bare (non-bundled) binary intermittently drops the status item
+// from the menu bar while leaving the popover window orphaned on screen
+// (observed 2026-08-24: no layer-25 window, stuck 320pt layer-101 panel).
+// NSStatusItem + title-change guards are deterministic.
 
 struct ReportRow: Codable {
     let bucket: String
@@ -64,12 +68,48 @@ struct AnomaliesPayload: Codable {
     let anomalies: [AnomalyItem]
 }
 
+struct MachineHeartbeat: Codable {
+    let machineId: String
+    let host: String
+    let ts: Double
+    let state: String
+}
+
+// MARK: - tools contract (tokitoki tools --json)
+
+struct ToolRow: Codable {
+    let tool: String
+    let requests: Int
+    let tokens: Double
+    let costUsd: Double
+}
+
+struct ToolsPayload: Codable {
+    struct Period: Codable { let since: String; let until: String }
+    let period: Period
+    let tools: [ToolRow]
+}
+
+// Combined snapshot from `tokitoki menubar-payload --json` (single CLI
+// process instead of seven parallel ones that thrashed memory).
+struct MenubarPayload: Codable {
+    let today: ReportPayload
+    let week: ReportPayload
+    let reposMonth: ReportPayload?
+    let budgets: [BudgetRow]
+    let anomalies: AnomaliesPayload?
+    let topTools: ToolsPayload?
+    let presence: [MachineHeartbeat]?
+}
+
 @MainActor
 final class Model: ObservableObject {
     @Published var title: String = "…"
     @Published var today: ReportPayload?
     @Published var week: ReportPayload?
     @Published var repos: [ReportRow] = []
+    @Published var topTools: [ToolRow] = []
+    @Published var activeOtherMachines = 0
     @Published var budgets: [BudgetRow] = []
     @Published var anomalyLine: String?
     /// nil = no budgets configured; "ok" | "warn" | "exceeded"
@@ -97,32 +137,64 @@ final class Model: ObservableObject {
         timer = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refresh() }
         }
+        // e2e seam: poll a sentinel file to trigger a deterministic close
+        // (synthetic HID/AX events don't route reliably to accessory apps).
+        if ProcessInfo.processInfo.environment["TOKITOKI_MENUBAR_TEST"] == "1" {
+            let closeFile = URL(fileURLWithPath: "/tmp/tokitoki-menubar.close")
+            Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { [weak self] _ in
+                if FileManager.default.fileExists(atPath: closeFile.path) {
+                    try? FileManager.default.removeItem(at: closeFile)
+                    Task { @MainActor in
+                        AppDelegate.shared?.closePopover()
+                        FileHandle.standardError.write(Data("[tokitoki-menubar] test-close fired\n".utf8))
+                    }
+                }
+            }
+        }
     }
 
     func refresh() {
         Task { @MainActor in
-            let cli = invocation
-            async let t = Self.runJSON(ReportPayload.self, cli, ["report", "--last", "day", "--by", "provider", "--json"])
-            async let w = Self.runJSON(ReportPayload.self, cli, ["report", "--last", "week", "--by", "provider", "--json"])
-            async let r = Self.runJSON(ReportPayload.self, cli, ["report", "--last", "month", "--by", "repo", "--json"])
-            async let b = Self.runJSON([BudgetRow].self, cli, ["budgets", "--json"])
-            async let a = Self.runJSON(AnomaliesPayload.self, cli, ["anomalies", "--json"])
             do {
-                let (t0, w0, r0, b0, a0): (ReportPayload?, ReportPayload?, ReportPayload?, [BudgetRow]?, AnomaliesPayload?) = try await (t, w, r, b, a)
-                dbg("fetched · budgets=\(b0?.count ?? -1) anomalies=\(a0?.anomalies.count ?? -1)")
-                self.today = t0
-                self.week = w0
-                self.repos = Array((r0?.rows ?? []).sorted { $0.requests > $1.requests }.prefix(3))
-                if let t0 { self.title = Self.title(for: t0) } else { self.title = "tokitoki" }
+                let p = try await Self.runJSON(MenubarPayload.self, invocation, ["menubar-payload", "--json"])!
+                dbg("fetched · budgets=\(p.budgets.count) anomalies=\(p.anomalies?.anomalies.count ?? -1)")
+                self.today = p.today
+                self.week = p.week
+                if let rm = p.reposMonth {
+                    self.repos = Array(rm.rows.sorted { $0.requests > $1.requests }.prefix(3))
+                }
+                self.topTools = Array((p.topTools?.tools ?? []).prefix(3))
+                let local = ProcessInfo.processInfo.hostName
+                self.activeOtherMachines = (p.presence ?? []).filter { $0.state == "active" && $0.machineId != local }.count
+                applyBudgets(p.budgets)
+                var newTitle = Self.title(for: p.today)
+                newTitle = Self.badged(newTitle, worst: worstState)
+                setTitleIfChanged(newTitle)
                 self.errorText = nil
-                applyBudgets(b0 ?? [])
-                applyAnomalies(a0)
+                applyAnomalies(p.anomalies)
             } catch {
                 self.errorText = "\(error.localizedDescription)"
-                self.title = "tokitoki ⚠️"
+                setTitleIfChanged("tokitoki ⚠️")
                 dbg("refresh failed: \(error.localizedDescription)")
             }
         }
+    }
+
+    /// Guard against redundant NSStatusItem title writes (visibility regression).
+    private func setTitleIfChanged(_ newTitle: String) {
+        guard newTitle != title else { return }
+        title = newTitle
+        AppDelegate.shared?.syncButtonTitle(title)
+    }
+
+    static func badged(_ base: String, worst: String?) -> String {
+        let dot: String
+        switch worst {
+        case "exceeded": dot = "🔴 "
+        case "warn": dot = "🟠 "
+        default: dot = ""
+        }
+        return dot + base
     }
 
     // MARK: budget state → badge + notifications
@@ -137,39 +209,24 @@ final class Model: ObservableObject {
             if r.level > levelFor(worst) { worst = r.state }
         }
         worstState = rows.isEmpty ? nil : worst
-        updateTitleBadge()
         guard !rows.isEmpty else { return }
 
         // Notify only on transitions INTO warn/exceeded (not while staying there).
         // State is persisted BEFORE attempting delivery so a crash/missing
         // bundle can never cause re-notification spam.
         dbg("levels=\(current) notified=\(notifiedKeys.count)")
-        var changed = false
         for (label, level) in current where level > 0 {
             let prev = lastLevels[label] ?? 0
             guard level > prev else { continue }
             let key = "\(label)|\(level)"
             guard !notifiedKeys.contains(key) else { continue }
             notifiedKeys.insert(key)
-            changed = true
             let row = rows.first { $0.label == label }
             saveNotifiedKeys()
             dbg("transition · \(key) · state-file=\(Self.stateFileURL.path)")
             notify(label: label, level: level, used: row?.used ?? 0, cap: row?.cap ?? 0)
         }
         lastLevels = current
-    }
-
-    private func updateTitleBadge() {
-        // Emoji dot rather than tinted SF symbol: the status bar renders
-        // template images monochrome, which would erase the state color.
-        let dot: String
-        switch worstState {
-        case "exceeded": dot = "🔴 "
-        case "warn": dot = "🟠 "
-        default: dot = ""
-        }
-        title = dot + title
     }
 
     private func applyAnomalies(_ payload: AnomaliesPayload?) {
@@ -271,24 +328,97 @@ private func humanCount(_ n: Double) -> String {
     }
 }
 
-@main
-struct TokitokiApp: App {
-    @StateObject private var model = Model()
+// MARK: - AppKit shell (NSStatusItem + NSPopover)
 
-    init() {
-        // Polling must not depend on the menu being opened once — MenuBarExtra
-        // instantiates ContentView lazily, so kick off from app init.
-        _model = StateObject(wrappedValue: Model())
-        model.start(invocation: resolveInvocation())
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    static weak var shared: AppDelegate?
+
+    private var statusItem: NSStatusItem?
+    private let popover = NSPopover()
+    private var monitors: [Any] = []
+    var model: Model?
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        AppDelegate.shared = self
+        NSApp.setActivationPolicy(.accessory)
+
+        guard let model = model else {
+            FileHandle.standardError.write(Data("[tokitoki-menubar] no model\n".utf8)); return
+        }
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        item.button?.title = model.title
+        item.button?.font = NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize - 1, weight: .regular)
+        item.button?.target = self
+        item.button?.action = #selector(togglePopover(_:))
+        statusItem = item
+        FileHandle.standardError.write(Data(
+            "[tokitoki-menubar] statusItem created · button=\(item.button != nil ? "ok" : "NIL") title=[\(model.title)]\n".utf8))
+
+        let content = ContentView(model: model)
+        popover.contentViewController = NSHostingController(rootView: content)
+        // .transient: AppKit's own outside-click dismissal — works for real
+        // user clicks without any TCC permissions. Synthetic HID events don't
+        // route here (they never activate the accessory app), so tests use
+        // the dev.tokitoki.menubar.close distributed notification instead.
+        popover.behavior = .transient
+        popover.animates = false
+
+        installEventMonitors()
     }
 
-    var body: some Scene {
-        MenuBarExtra {
-            ContentView(model: model)
-        } label: {
-            Text(model.title)
+    /// Close the popover when the user clicks outside it (or presses Escape).
+    /// .applicationDefined behavior means AppKit won't do this for us, and
+    /// accessory-app key-window tracking is unreliable — hence the monitors.
+    private func installEventMonitors() {
+        // Local monitor: escape reaches us when the popover is key (real usage).
+        if let local = NSEvent.addLocalMonitorForEvents(matching: [.keyDown], handler: { [weak self] event in
+            guard let self else { return event }
+            if self.popover.isShown && event.keyCode == 53 {
+                self.popover.performClose(nil)
+                return nil
+            }
+            return event
+        }) {
+            monitors.append(local)
         }
-        .menuBarExtraStyle(.window)
+
+    }
+
+    @objc func closePopover() {
+        FileHandle.standardError.write(Data("[tokitoki-menubar] closePopover fired\n".utf8))
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            FileHandle.standardError.write(Data("[tokitoki-menubar] pre-close isShown=\(self.popover.isShown)\n".utf8))
+            self.popover.performClose(nil)
+            self.popover.close()
+            // Known bare-binary quirk: the popover window can linger on screen
+            // after a logical close (isShown=false but window still composited).
+            // Force-order it out and mark the popover as fully detached.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                if let w = self.popover.contentViewController?.view.window {
+                    FileHandle.standardError.write(Data("[tokitoki-menubar] force ordering out lingering popover window\n".utf8))
+                    w.orderOut(nil)
+                }
+            }
+        }
+    }
+
+    func syncButtonTitle(_ title: String) {
+        statusItem?.button?.title = title
+    }
+
+    @objc func togglePopover(_ sender: Any?) {
+        guard let button = statusItem?.button else { return }
+        if popover.isShown {
+            popover.performClose(sender)
+        } else {
+            // Accessory apps must activate before showing or the popover
+            // never becomes key — synthetic AND real outside clicks/escapes
+            // then fail to close it.
+            NSApp.activate(ignoringOtherApps: true)
+            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+            popover.contentViewController?.view.window?.makeKey()
+        }
     }
 }
 
@@ -326,13 +456,28 @@ func resolveInvocation() -> CLIInvocation {
     return CLIInvocation(executable: cliURL("~/dev/tokitoki/dist/tokitoki"), prefixArgs: [])
 }
 
+MainActor.assumeIsolated {
+    let model = Model()
+    model.start(invocation: resolveInvocation())
+    let app = NSApplication.shared
+    let delegate = AppDelegate()
+    delegate.model = model
+    app.delegate = delegate
+    app.setActivationPolicy(.accessory)
+    app.run()
+}
+
 struct ContentView: View {
     @ObservedObject var model: Model
     let invocation = resolveInvocation()
     @State var dashboardProcess: Process?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        // Fixed frame + ScrollView: an unconstrained-height NSHostingView lets
+        // the popover balloon toward full screen height as rows appear
+        // (observed 346x988); this pins the dropdown geometry.
+        ScrollView(.vertical) {
+            VStack(alignment: .leading, spacing: 6) {
             if let e = model.errorText {
                 Text("error: \(e)").font(.caption).foregroundStyle(.red)
             }
@@ -341,6 +486,10 @@ struct ContentView: View {
             section(title: "this week", payload: model.week)
             Divider()
             budgetsSection
+            if model.activeOtherMachines > 0 {
+                Text("other machines active: \(model.activeOtherMachines)")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             anomaliesRow
             if !model.repos.isEmpty {
                 Text("top repos (month)").font(.caption).bold()
@@ -349,6 +498,18 @@ struct ContentView: View {
                         Text(r.bucket).lineLimit(1)
                         Spacer()
                         Text("\(humanCount(Double(r.requests))) req").foregroundStyle(.secondary)
+                    }.font(.caption)
+                }
+                Divider()
+            }
+            if !model.topTools.isEmpty {
+                Text("top tools (today)").font(.caption).bold()
+                ForEach(model.topTools, id: \.tool) { t in
+                    HStack {
+                        Text(t.tool).lineLimit(1)
+                        Spacer()
+                        Text(t.costUsd >= 0.01 ? String(format: "$%.2f", t.costUsd) : humanCount(t.tokens))
+                            .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                     }.font(.caption)
                 }
                 Divider()
@@ -362,9 +523,10 @@ struct ContentView: View {
             }
             Text("every 5 min · \(invocation.executable.path)")
                 .font(.caption2).foregroundStyle(.tertiary).lineLimit(1)
+            }
         }
         .padding(10)
-        .frame(width: 320)
+        .frame(width: 320, height: 480)
         .onAppear { model.refresh() } // refresh-on-menu-open (polling runs regardless)
     }
 

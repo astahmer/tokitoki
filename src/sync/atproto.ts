@@ -108,6 +108,24 @@ export class AtprotoAdapter implements SyncAdapter {
     }
   }
 
+  /** Publish an arbitrary record under a custom collection (public share). */
+  async putCustomRecord(
+    collection: string,
+    rkey: string,
+    record: unknown,
+  ): Promise<{ cid: string; rkey: string }> {
+    await this.ensureSession();
+    const res = await this.request("/xrpc/com.atproto.repo.putRecord", {
+      method: "POST",
+      body: JSON.stringify({ repo: this.did, collection, rkey, record }),
+    });
+    if (!res.ok) {
+      throw new Error(`atproto putRecord failed (${res.status}): ${await res.text()}`);
+    }
+    const body = (await res.json()) as { cid?: string };
+    return { cid: body.cid ?? "", rkey };
+  }
+
   async *pull(): AsyncIterable<string> {
     await this.ensureSession();
     let cursor: string | undefined;

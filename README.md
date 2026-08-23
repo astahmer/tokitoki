@@ -91,6 +91,10 @@ tokitoki chart --last month                 # daily token bars
  tokitoki chart --last week --spark          # compact sparkline
 tokitoki chart --last month --by provider --spark   # one sparkline per provider
 tokitoki pie --by model                     # share-of-tokens legend with cost bars
+
+tokitoki budgets                            # [budgets] gauge state (day/week/month caps)
+tokitoki budgets --json                     # menubar/web contract: [{scope,label,cap,used,unit,ratio,state,daysLeft}]
+tokitoki sources                            # provenance: store paths, files/events scanned, accounts, models per provider
 ```
 
 Table output uses letter-suffixed numbers (`1.71B`, `23.7M`), `%cache`
@@ -267,12 +271,48 @@ Crossings print a ⚠ banner and POST to the ntfy topic. Alerts dedupe per
 (scope, period, pattern, threshold) in `<data-dir>/alerts.json` — a threshold
 fires once per period.
 
+### Menu-bar integration
+
+`tokitoki budgets --json` is the menubar contract. The SwiftUI app
+(`menubar/`) polls it on the same 5-min timer as its reports and adds:
+
+- **title badge**: 🟠 when any budget ≥80%, 🔴 when any exceeded (emoji dots —
+  the macOS status bar renders SF symbols monochrome)
+- **Budgets section**: per-cap `ProgressView` tinted by state + `$used / $cap`
+  + days left in the period (hidden entirely when no `[budgets]` config)
+- **anomaly row**: top flagged day from `tokitoki anomalies --json`, if any
+- **native notifications** on threshold *crossings* (not while staying past
+  one), deduped per (label, level) in `<data-dir>/menubar-state.json` so a
+  restart never re-notifies; permission requested lazily, denial degrades to
+  badge-only
+
 ## Pricing data
 
 Model prices auto-sync from LiteLLM's community pricing JSON into
 `<data-dir>/pricing.json` (7-day TTL, 1h retry throttle when offline). The
 embedded snapshot is the offline fallback. Unknown models estimate as $0 with
 a one-time stderr note.
+
+## Supported harnesses
+
+| Provider | id | Status | Store | Notes |
+|---|---|---|---|---|
+| Claude Code | `claude-code` | ✅ working | `~/.claude/projects` JSONL | tokens + tools + emails |
+| pi | `pi` | ✅ working | `$PI_DIR/agent/sessions` JSONL | tokens, cost reported by harness |
+| Codex CLI | `codex` | ✅ working | `~/.codex/sessions` JSONL | delta-usage rollouts, best effort on unknown shapes |
+| T3 Code | `t3code` | ◐ indexed only | `~/Library/Application Support/t3code/IndexedDB/*.leveldb` | threads searchable (titles/prompts); store exposes **no token usage** |
+| Antigravity CLI | `antigravity-cli` | ◐ provenance only | `~/.gemini/antigravity-cli/conversations/*.db` | protobuf blobs; no usage exposed |
+| Cursor | `cursor` | ◐ indexed only | `state.vscdb` + `ai-tracking/ai-code-tracking.db` | transcripts/summaries searchable; **no token counts in any inspected store** (199k activity-hash rows verified) |
+| Grok CLI | `grok` | ✅ working | `$GROK_HOME/sessions/**/*.jsonl` | tolerant codex-family parser (`last_token_usage` deltas preferred, flat `usage` spellings accepted) |
+| Gemini CLI | `gemini-cli` | ✅ working | `~/.gemini/tmp/<hash>/chats/session-*.json` | per-message `tokens` objects when stats are recorded; sessions without them stay search-only |
+| Aider | `aider` | 📐 skeleton | `.aider.chat.history.jsonl` per repo | needs per-repo discovery |
+| Goose | `goose` | 📐 skeleton | `~/.config/goose/sessions` JSONL | — |
+| Amp | `amp` | 📐 skeleton | `~/.local/share/amp/threads` JSON | — |
+| Zed | `zed` | 📐 skeleton | `~/.local/share/zed` sqlite | schema needs inspection |
+
+All providers honor a per-provider `paths` config override plus the env var
+shown by `tokitoki sources`. Skeletons emit no events until their store exists
+and a real adapter replaces them.
 
 ## Status / known limits
 
@@ -282,10 +322,16 @@ a one-time stderr note.
 - `report` rebuilds the sqlite cache lazily when log/event counts diverge;
   very large logs may want a faster merge strategy later
 
-## Roadmap (competitive scan 2026-08)
+## Roadmap (competitive scan 2026-08 + web UX backlog)
 
 What ccusage / CodexBar / openusage.ai have that we don't yet, cheapest-first:
 
+- **Web UX polish backlog** (2026-08-23 visual pass): calendar-heatmap cells
+  need a light-mode-visible color ramp (current accent/20 levels nearly
+  invisible on white); verify TanStack `formatGroup` tooltips visually
+  (implemented, not screenshot-verified); session-detail request timeline
+  could be a chart instead of a table; keyboard navigation + focus rings for
+  table/tabs; responsive layout pass for narrow viewports
 - **5-hour billing blocks** (ccusage `blocks`) — Claude-specific session-window
   monitoring with active-block tracking; needs per-request timestamps we
   already store, just a different bucketing
@@ -308,3 +354,20 @@ What ccusage / CodexBar / openusage.ai have that we don't yet, cheapest-first:
 - <https://github.com/ccusage/ccusage>
 - <https://github.com/steipete/CodexBar>
 - openusage.ai
+
+## Changelog
+
+### v0.4.0
+- sessions page: FTS5 search across every harness, snippet highlights,
+  filter rail; `tokitoki sessions --search`
+- harness coverage: t3code/antigravity indexed (provenance), skeletons +
+  supported-matrix for cursor/grok/gemini-cli/aider/goose/amp/zed
+- tool-level cost attribution (`--by tool`, treemap mosaic in web, top
+  tools in menubar) — token-cost inspired
+- budgets: `tokitoki budgets init` seeds per-account caps from detected
+  accounts; ntfy push at 80%/100%
+- multi-machine presence: `.hb` heartbeats on sync push, machines strip
+  in Sources tab + `tokitoki presence`, menubar active-machines line
+- explicit period headers everywhere; duration ranges (`--last 24h`,
+  `--from/--to` ISO); `-v`; exports json/md/csv
+- light/dark theme with proper heatmap ramp contrast (light mode fixed)

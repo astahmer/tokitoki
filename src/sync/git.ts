@@ -3,7 +3,6 @@ import os from "node:os";
 import path from "node:path";
 
 import type { SyncAdapter } from "./types.ts";
-
 /**
  * Private git repo as the transport. Each machine commits its own
  * `<machineId>.jsonl`; pull fetches and reads everyone else's files.
@@ -25,6 +24,10 @@ export class GitAdapter implements SyncAdapter {
 
   private ownFile(): string {
     return path.join(this.workdir, `${this.machineId}.jsonl`);
+  }
+
+  heartbeatDir(): string | null {
+    return this.workdir;
   }
 
   /** Run a git command, throwing on non-zero exit with stderr attached. */
@@ -70,6 +73,18 @@ export class GitAdapter implements SyncAdapter {
   async push(lines: string[]): Promise<void> {
     await this.syncRepo();
     fs.writeFileSync(this.ownFile(), lines.join("\n") + (lines.length > 0 ? "\n" : ""));
+    // Presence heartbeat rides along with every push so other machines can
+    // see this host without any extra network round-trip.
+    const hb = path.join(this.workdir, `${this.machineId}.hb`);
+    try {
+      fs.writeFileSync(
+        hb,
+        JSON.stringify({ machine: this.machineId, host: os.hostname(), ts: Date.now() }),
+      );
+      await this.git(["add", `${this.machineId}.hb`]);
+    } catch {
+      // presence is decorative; never fail an event push over it
+    }
     await this.git(["add", `${this.machineId}.jsonl`]);
     const status = await this.git(["status", "--porcelain"], true);
     if (status.trim().length === 0) return; // nothing new

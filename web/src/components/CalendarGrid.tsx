@@ -1,11 +1,13 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 
 import type { GridCell } from "../lib/api";
 import { formatCost, humanCount } from "../lib/fmt";
 
 export type GridMetric = "tokens" | "cost" | "requests";
 
-const LEVEL_BG = ["bg-panel2", "bg-accent/20", "bg-accent/45", "bg-accent/70", "bg-accent"];
+// Classes defined in index.css — light mode gets solid tint mixes (alpha
+// steps were invisible on white), dark mode keeps the alpha ramp.
+const LEVEL_BG = ["heat-0", "heat-1", "heat-2", "heat-3", "heat-4"];
 const DAY_LABELS = ["Mon", "", "Wed", "", "Fri", "", "Sun"];
 const CELL = 13; // px pitch: 12px square + 1px gap
 
@@ -31,13 +33,26 @@ interface BuiltCell {
   iso: string;
   level: number;
   title: string;
+  requests: number;
+  tokens: number;
+  costUsd: number;
 }
 
 /**
  * GitHub-style contribution grid: weeks as COLUMNS left→right, weekdays
  * Mon..Sun as fixed ROWS top→bottom, month labels along the top.
+ * Cells show a rich hover card (date + requests + tokens + cost).
  */
 export function CalendarGrid({ cells, metric }: { cells: GridCell[]; metric: GridMetric }) {
+  const [hover, setHover] = useState<{
+    x: number;
+    y: number;
+    iso: string;
+    requests: number;
+    tokens: number;
+    costUsd: number;
+  } | undefined>(undefined);
+
   const grid = useMemo(() => {
     const byDay = new Map(cells.map((c) => [c.day, c]));
     const max = Math.max(0, ...cells.map((c) => metricValue(c, metric)));
@@ -64,15 +79,17 @@ export function CalendarGrid({ cells, metric }: { cells: GridCell[]; metric: Gri
           continue;
         }
         const iso = localIso(probe);
-        const value = metricValue(byDay.get(iso) ?? { day: iso, tokens: 0, costUsd: 0, requests: 0 }, metric);
+        const cell = byDay.get(iso) ?? { day: iso, tokens: 0, costUsd: 0, requests: 0 };
+        const value = metricValue(cell, metric);
         const frac = max > 0 && value > 0 ? value / max : 0;
         const level = value <= 0 ? 0 : frac < 0.25 ? 1 : frac < 0.5 ? 2 : frac < 0.75 ? 3 : 4;
         week.push({
           iso,
           level,
-          title: `${iso} · ${metric}: ${
-            metric === "cost" ? formatCost(value) : humanCount(value)
-          }`,
+          title: `${iso} · ${metric}: ${metric === "cost" ? formatCost(value) : humanCount(value)}`,
+          requests: cell.requests,
+          tokens: cell.tokens,
+          costUsd: cell.costUsd,
         });
       }
       // Label a month when its first observable day appears in this column.
@@ -124,7 +141,19 @@ export function CalendarGrid({ cells, metric }: { cells: GridCell[]; metric: Gri
                 <span
                   key={j}
                   title={cell.title}
-                  className={`mr-px size-[12px] rounded-[2px] ${LEVEL_BG[cell.level]}`}
+                  onMouseEnter={(e) => {
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    setHover({
+                      x: rect.left + rect.width / 2,
+                      y: rect.top,
+                      iso: cell.iso,
+                      requests: cell.requests,
+                      tokens: cell.tokens,
+                      costUsd: cell.costUsd,
+                    });
+                  }}
+                  onMouseLeave={() => setHover(undefined)}
+                  className={`mr-px size-[12px] cursor-default rounded-[2px] ${LEVEL_BG[cell.level]}`}
                 />
               ),
             )}
@@ -138,6 +167,18 @@ export function CalendarGrid({ cells, metric }: { cells: GridCell[]; metric: Gri
           more
         </div>
       </div>
+      {hover !== undefined && (
+        <div
+          className="pointer-events-none fixed z-50 -translate-x-1/2 -translate-y-full rounded-md border border-edge bg-panel px-2.5 py-1.5 text-[11px] shadow-lg"
+          style={{ left: hover.x, top: hover.y - 6 }}
+        >
+          <div className="font-medium">{hover.iso}</div>
+          <div className="text-muted">
+            {hover.requests.toLocaleString("en-US")} req · {humanCount(hover.tokens)} tok ·{" "}
+            {formatCost(hover.costUsd)}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

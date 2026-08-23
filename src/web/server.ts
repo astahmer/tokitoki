@@ -1,7 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import { apiAnomalies, apiExport, apiGrid, apiSessionDetail, apiSessions, apiSources, apiSummary, apiTable, apiTimeseries, type WindowParams } from "./api.ts";
+import { apiAnomalies, apiBudgets, apiExport, apiGrid, apiSessionDetail, apiSessionSearch, apiSessions, apiSources, apiSummary, apiTable, apiTimeseries, type WindowParams } from "./api.ts";
+import { atprotoConfig, buildSharePayload, describePayload, publishShare, readShareState } from "../share.ts";
 
 export interface WebServerOptions {
   port?: number;
@@ -35,7 +36,8 @@ export function startWebServer(options: WebServerOptions = {}): Bun.Server<undef
       const { pathname } = url;
       try {
         if (pathname.startsWith("/api/")) {
-          return api(request, pathname, url);
+          // await (not return) so rejections hit the catch below → 400s stay 400s
+          return await api(request, pathname, url);
         }
         if (pathname === "/" || pathname === "/index.html") {
           if (!fs.existsSync(indexHtml)) {
@@ -68,7 +70,7 @@ export function startWebServer(options: WebServerOptions = {}): Bun.Server<undef
     });
   }
 
-  function api(request: Request, pathname: string, url: URL): Response {
+  async function api(request: Request, pathname: string, url: URL): Promise<Response> {
     const win = (): WindowParams => ({
       last: url.searchParams.get("last") ?? undefined,
       from: url.searchParams.get("from") ?? undefined,
@@ -107,8 +109,40 @@ export function startWebServer(options: WebServerOptions = {}): Bun.Server<undef
         const top = Number(url.searchParams.get("top") ?? "25");
         return json(apiSessions(win(), providers, account === "" ? undefined : account, top, period));
       }
+      case "/api/budgets":
+        return json(apiBudgets());
       case "/api/sources":
         return json(apiSources());
+      case "/api/share": {
+        const state = readShareState();
+        return json({
+          enabled: state.enabled,
+          lastPublished: state.lastPublished ?? null,
+          atprotoConfigured: atprotoConfig() !== null,
+        });
+      }
+      case "/api/share/preview": {
+        const scope = url.searchParams.get("scope") === "month" ? "month" : "week";
+        const includeRepos = url.searchParams.get("include-repos") === "1";
+        const payload = buildSharePayload(scope, { includeRepos });
+        return json({ payload, lines: describePayload(payload, includeRepos) });
+      }
+      case "/api/share/publish": {
+        if (request.method !== "POST") return text("method not allowed\n", 405);
+        const body = (await request.json().catch(() => ({}))) as {
+          scope?: string;
+          includeRepos?: boolean;
+          confirm?: boolean;
+        };
+        if (body.confirm !== true) return text("confirmation required\n", 400);
+        const scope = body.scope === "month" ? "month" : "week";
+        const state = readShareState();
+        if (!state.enabled) return json({ error: "public sharing is disabled" }, 403);
+        return publishShare(scope, { includeRepos: body.includeRepos === true })
+          .then((r) => json({ ok: true, cid: r.cid, rkey: r.rkey, at: r.at }))
+          .catch((err: unknown) =>
+            json({ error: err instanceof Error ? err.message : String(err) }, 502));
+      }
       case "/api/export": {
         const format = url.searchParams.get("format") ?? "json";
         const by = url.searchParams.get("by") ?? "model";
@@ -121,6 +155,13 @@ export function startWebServer(options: WebServerOptions = {}): Bun.Server<undef
             "content-disposition": `attachment; filename="${exp.filename}"`,
           },
         });
+      }
+      case "/api/sessions/search": {
+        const q = url.searchParams.get("q") ?? "";
+        if (q.trim().length === 0) return text("q is required\n", 400);
+        const page = Number(url.searchParams.get("page") ?? "1");
+        const providers = url.searchParams.getAll("provider").filter((p) => p.length > 0);
+        return json(apiSessionSearch(win(), q, providers, Number.isFinite(page) ? page : 1));
       }
       case "/api/sessions/detail": {
         const provider = url.searchParams.get("provider");

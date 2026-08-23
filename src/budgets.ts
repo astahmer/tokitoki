@@ -2,6 +2,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+import TOML from "@iarna/toml";
+
 import type { TokitokiConfig } from "./config.ts";
 
 /**
@@ -206,4 +208,138 @@ export function processBudgetAlerts(
     }
   }
   return [`\x1b[33m${lines.join("\n")}\x1b[0m`];
+}
+
+// ------------------------------------------------------------------ init
+
+/** Monthly cost-equivalent starter caps, by provider family. */
+export function starterMonthlyCap(provider: string): number {
+  if (provider === "codex" || provider === "claude-code") return 200;
+  return 50;
+}
+
+export interface DetectedAccount {
+  provider: string;
+  accountKey: string;
+  events: number;
+}
+
+export interface SeedResult {
+  configPathUsed: string;
+  added: Array<{ pattern: string; cap: number }>;
+  skipped: string[];
+  forced: boolean;
+}
+
+function budgetPattern(provider: string, accountKey: string): string {
+  // Patterns match accountKey only; qualify ambiguous shared keys.
+  const shared = new Set(["default", "codex", "openai"]);
+  return shared.has(accountKey) ? `${accountKey}*` : accountKey;
+}
+
+/**
+ * Merge seeded per-account budgets into the user's config file, preserving
+ * everything outside the [budgets] block. TOML configs are edited textually
+ * (only the [budgets] section is rewritten); JSON configs are re-serialized.
+ */
+export function seedBudgetsConfig(
+  detected: DetectedAccount[],
+  opts: { force?: boolean; configPath?: string; now?: Date } = {},
+): SeedResult {
+  const { stringify } = require("@iarna/toml") as typeof import("@iarna/toml");
+  const target = opts.configPath ?? configSeedPath();
+  const force = opts.force === true;
+  const existingRaw = (() => {
+    try {
+      return fs.readFileSync(target, "utf8");
+    } catch {
+      return null;
+    }
+  })();
+
+  let budgets: BudgetsConfig = {};
+  let otherToml = "";
+  if (existingRaw !== null && target.endsWith(".toml")) {
+    // Line-based block extraction: [budgets] runs until the next top-level
+    // table header ([x], not [budgets.accounts.y]) or EOF.
+    const lines = existingRaw.split("\n");
+    const start = lines.findIndex((l) => l.trim() === "[budgets]");
+    if (start >= 0) {
+      let end = lines.length;
+      for (let i = start + 1; i < lines.length; i++) {
+        const t = lines[i]!.trim();
+        if (t.startsWith("[") && !t.startsWith("[budgets.")) {
+          end = i;
+          break;
+        }
+      }
+      const blockText = lines.slice(start, end).join("\n");
+      otherToml = [...lines.slice(0, start), ...lines.slice(end)].join("\n");
+      try {
+        const parsed = TOML.parse(blockText) as { budgets?: BudgetsConfig };
+        budgets = parsed.budgets ?? {};
+      } catch {
+        budgets = {};
+      }
+    }
+  } else if (existingRaw !== null) {
+    try {
+      const parsed = JSON.parse(existingRaw) as { budgets?: BudgetsConfig };
+      budgets = parsed.budgets ?? {};
+    } catch {
+      budgets = {};
+    }
+  }
+
+  const result: SeedResult = { configPathUsed: target, added: [], skipped: [], forced: force };
+
+  if (force) {
+    // Full rebuild: seeded caps + accounts replace anything previously there.
+    budgets = {};
+  }
+  budgets.accounts ??= {};
+  for (const acc of detected) {
+    const pattern = budgetPattern(acc.provider, acc.accountKey);
+    if (!force && budgets.accounts[pattern] !== undefined) {
+      result.skipped.push(pattern);
+      continue;
+    }
+    const cap = starterMonthlyCap(acc.provider);
+    budgets.accounts[pattern] = { monthly: cap };
+    result.added.push({ pattern, cap });
+  }
+
+  if (budgets.monthly === undefined) {
+    const sum = Object.values(budgets.accounts).reduce((t, c) => t + (c.monthly ?? 0), 0);
+    if (sum > 0) budgets.monthly = sum;
+  }
+
+  const header = `# seeded by \`tokitoki budgets init\` on ${(opts.now ?? new Date()).toISOString().slice(0, 10)}\n`;
+  if (target.endsWith(".toml")) {
+    const block = (TOML.stringify({ budgets } as never) as string).replace(
+      /^\[budgets\]\n/,
+      `[budgets]\n${header}`,
+    );
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, otherToml.trimEnd() + (otherToml.trim().length > 0 ? "\n\n" : "") + block);
+  } else {
+    let full: Record<string, unknown> = {};
+    try {
+      full = JSON.parse(existingRaw ?? "{}") as Record<string, unknown>;
+    } catch {
+      full = {};
+    }
+    full.budgets = budgets;
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, JSON.stringify(full, null, 2) + "\n");
+  }
+  return result;
+}
+
+function configSeedPath(): string {
+  const override = process.env.TOKITOKI_CONFIG;
+  if (override !== undefined && override.length > 0) return override;
+  const toml = path.join(os.homedir(), ".config", "tokitoki", "config.toml");
+  if (fs.existsSync(toml)) return toml;
+  return path.join(os.homedir(), ".config", "tokitoki", "config.json");
 }

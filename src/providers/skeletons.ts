@@ -3,12 +3,15 @@ import path from "node:path";
 
 import { providerConfig } from "../config.ts";
 import { homePath, type EntryContext, type Provider } from "./types.ts";
-
 /**
  * Skeleton providers for well-known harnesses whose stores are NOT present on
- * this machine. They keep the supported-matrix honest (`tokitoki sources`
- * lists them with 0 files) and document the expected formats so wiring a real
- * adapter later is a matter of implementing parseLine.
+ * this machine AND whose formats are not yet modeled. They keep the
+ * supported-matrix honest (`tokitoki sources` lists them with 0 files) and
+ * document the expected formats so wiring a real adapter later is a matter of
+ * implementing parseLine.
+ *
+ * (cursor / grok / gemini-cli graduated to real adapters — see their own
+ * files; aider/goose/amp/zed remain documented skeletons.)
  *
  * Each skeleton:
  * - resolves its canonical store path (env override honored where the harness
@@ -64,36 +67,6 @@ function makeSkeleton(spec: SkeletonSpec): Provider {
   };
 }
 
-export const cursorProvider = makeSkeleton({
-  id: "cursor",
-  label: "Cursor",
-  envVar: "CURSOR_DIR",
-  // Chats live in User/globalStorage/state.vscdb (sqlite, composerData keys).
-  dirBase: "/.cursor",
-  subPath: "/User/globalStorage",
-  extensions: [".vscdb", ".db"],
-  note: "expected store state.vscdb sqlite; parse ItemTable composerData keys for token counts",
-});
-
-export const grokProvider = makeSkeleton({
-  id: "grok",
-  label: "Grok CLI",
-  envVar: "GROK_HOME",
-  dirBase: "/.grok",
-  subPath: "/sessions",
-  extensions: [".jsonl"],
-  note: "expected JSONL rollouts under $GROK_HOME/sessions (same shape family as codex)",
-});
-
-export const geminiCliProvider = makeSkeleton({
-  id: "gemini-cli",
-  label: "Gemini CLI",
-  envVar: "GEMINI_CLI_DIR",
-  dirBase: "/.gemini/tmp",
-  extensions: [".json"],
-  note: "expected ~/.gemini/tmp/<hash>/chats/session-*.json; tokens only present with /stats enabled",
-});
-
 export const aiderProvider = makeSkeleton({
   id: "aider",
   label: "Aider",
@@ -134,9 +107,6 @@ export const zedProvider = makeSkeleton({
 
 /** Registered after real providers; all emit no events on this machine. */
 export const SKELETON_PROVIDERS: Provider[] = [
-  cursorProvider,
-  grokProvider,
-  geminiCliProvider,
   aiderProvider,
   gooseProvider,
   ampProvider,

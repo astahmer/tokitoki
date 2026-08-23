@@ -109,7 +109,17 @@ export function UsageTable({
 
   const gaugeCell = (r: Row) => {
     const g = data.gauges[r.bucket];
-    if (g !== undefined) return <Gauge frac={g.frac} label={g.label} />;
+    if (g !== undefined) {
+      const used = g.unit === "usd" ? formatCost(g.used) : g.used.toLocaleString("en-US");
+      const cap = g.unit === "usd" ? formatCost(g.cap) : g.cap.toLocaleString("en-US");
+      return (
+        <Gauge
+          frac={g.frac}
+          label={g.label}
+          tooltip={`${r.bucket}: ${used} of ${cap} this month (${(g.frac * 100).toFixed(1)}%)`}
+        />
+      );
+    }
     return (
       <span className="inline-flex items-baseline gap-1.5">
         {formatCost(r.costUsd)}
@@ -120,21 +130,23 @@ export function UsageTable({
 
   return (
     <Table className="w-full text-xs">
-      <Table.Head>
-        {COLUMNS.map((c) => (
-          <Table.Header
-            key={c.key}
-            onClick={() => clickColumn(c.key)}
-            className={`cursor-pointer text-[10px] tracking-wider whitespace-nowrap uppercase select-none hover:text-kumo-default ${
-              c.numeric ? "text-right" : "text-left"
-            }`}
-            aria-sort={sortKey === c.key ? (asc ? "ascending" : "descending") : "none"}
-          >
-            {c.label}
-            {sortKey === c.key ? (asc ? " ↑" : " ↓") : ""}
-          </Table.Header>
-        ))}
-      </Table.Head>
+      <Table.Header>
+        <Table.Row>
+          {COLUMNS.map((c) => (
+            <Table.Head
+              key={c.key}
+              onClick={() => clickColumn(c.key)}
+              className={`cursor-pointer text-[10px] tracking-wider whitespace-nowrap uppercase select-none hover:text-kumo-default ${
+                c.numeric ? "text-right" : "text-left"
+              }`}
+              aria-sort={sortKey === c.key ? (asc ? "ascending" : "descending") : "none"}
+            >
+              {c.label}
+              {sortKey === c.key ? (asc ? " ↑" : " ↓") : ""}
+            </Table.Head>
+          ))}
+        </Table.Row>
+      </Table.Header>
       <Table.Body>
         {rows.map((r) => (
           <Table.Row key={r.bucket}>
@@ -147,7 +159,7 @@ export function UsageTable({
             <Table.Cell className="text-right">{cellFor(r, "inputTokens")}</Table.Cell>
             <Table.Cell className="text-right">{cellFor(r, "outputTokens")}</Table.Cell>
             <Table.Cell className="text-right">{cellFor(r, "cacheReadTokens")}</Table.Cell>
-            <Table.Cell className="text-right">{cellFor(r, "cachePct")}%</Table.Cell>
+            <Table.Cell className="whitespace-nowrap text-right">{cellFor(r, "cachePct")}</Table.Cell>
             <Table.Cell className="text-right">{r.sharePct}%</Table.Cell>
             <Table.Cell className="whitespace-nowrap text-right">{gaugeCell(r)}</Table.Cell>
           </Table.Row>

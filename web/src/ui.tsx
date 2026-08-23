@@ -72,11 +72,20 @@ export function DeltaBadge({ current, previous }: { current: number; previous?: 
 }
 
 /** Plan-quota gauge bar (replaces the cost cell for matched accounts). */
-export function Gauge({ frac, label }: { frac: number; label: string }) {
+export function Gauge({
+  frac,
+  label,
+  tooltip,
+}: {
+  frac: number;
+  label: string;
+  /** Exact usage-vs-cap text for hover; falls back to label. */
+  tooltip?: string;
+}) {
   const clamped = Math.max(0, Math.min(1, frac));
   const pct = Math.round(clamped * 100);
   return (
-    <div className="flex min-w-36 flex-col gap-0.5">
+    <div className="flex min-w-36 flex-col gap-0.5" title={tooltip ?? `${pct}% ${label}`}>
       <Meter
         value={pct}
         label={`${pct}% ${label}`}
@@ -171,6 +180,16 @@ export function TableSkeleton({ rows = 8, cols = 10 }: { rows?: number; cols?: n
           ))}
         </div>
       ))}
+    </div>
+  );
+}
+
+/** Friendly empty state with an actionable suggestion. */
+export function EmptyState({ message }: { message: string }) {
+  return (
+    <div className="flex flex-col items-center gap-1 py-8 text-center">
+      <span className="text-2xl opacity-40">∅</span>
+      <p className="max-w-md whitespace-pre-line text-xs text-kumo-subtle">{message}</p>
     </div>
   );
 }

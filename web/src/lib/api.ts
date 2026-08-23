@@ -241,7 +241,14 @@ export interface ProviderSource {
   models: string[];
 }
 
-export function fetchSources(): Promise<{ providers: ProviderSource[] }> {
+export interface MachinePresence {
+  machineId: string;
+  host: string;
+  ts: number;
+  state: "active" | "recent" | "stale";
+}
+
+export function fetchSources(): Promise<{ providers: ProviderSource[]; machines: MachinePresence[] }> {
   return get("/api/sources");
 }
 

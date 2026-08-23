@@ -9,6 +9,7 @@ import { lineToEvent, type SyncAdapter, type SyncConfig } from "./types.ts";
 import { DirAdapter } from "./dir.ts";
 import { GitAdapter } from "./git.ts";
 import { AtprotoAdapter } from "./atproto.ts";
+import { writeHeartbeat } from "../presence.ts";
 
 export * from "./types.ts";
 
@@ -74,6 +75,9 @@ export async function runSync(adapter: SyncAdapter, mode: "push" | "pull" | "bot
     const lines = localLines();
     await adapter.push(lines);
     result.pushed = lines.length;
+    // git adapter already commits its own heartbeat inside push(); dir
+    // adapter gets one written alongside the events file.
+    if (adapter.id === "dir") writeHeartbeat(adapter.heartbeatDir?.() ?? "", localMachineId());
   }
 
   if (mode === "pull" || mode === "both") {

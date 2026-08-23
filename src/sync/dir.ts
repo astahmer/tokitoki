@@ -23,6 +23,10 @@ export class DirAdapter implements SyncAdapter {
     return path.join(this.dir, `${this.machineId}.jsonl`);
   }
 
+  heartbeatDir(): string | null {
+    return this.dir;
+  }
+
   async push(lines: string[]): Promise<void> {
     fs.mkdirSync(this.dir, { recursive: true });
     // Full atomic rewrite of OUR file: pushes are idempotent and Syncthing

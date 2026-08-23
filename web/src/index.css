@@ -34,3 +34,36 @@ html {
 html[data-mode="dark"] {
   color-scheme: dark;
 }
+
+/*
+ * Heatmap ramp — dedicated classes instead of bg-accent/NN because the
+ * low-end alpha steps were invisible on light backgrounds. Light mode uses
+ * progressively darker accent fills; dark mode keeps the alpha ramp.
+ */
+.heat-0 {
+  @apply bg-panel2;
+}
+.heat-1 {
+  background-color: color-mix(in oklab, var(--color-accent) 35%, white);
+}
+html[data-mode="dark"] .heat-1 {
+  background-color: color-mix(in oklab, var(--color-accent) 20%, transparent);
+}
+.heat-2 {
+  background-color: color-mix(in oklab, var(--color-accent) 60%, white);
+}
+html[data-mode="dark"] .heat-2 {
+  background-color: color-mix(in oklab, var(--color-accent) 45%, transparent);
+}
+.heat-3 {
+  background-color: color-mix(in oklab, var(--color-accent) 80%, black);
+}
+html[data-mode="dark"] .heat-3 {
+  background-color: color-mix(in oklab, var(--color-accent) 70%, transparent);
+}
+.heat-4 {
+  background-color: color-mix(in oklab, var(--color-accent) 100%, black);
+}
+html[data-mode="dark"] .heat-4 {
+  @apply bg-accent;
+}

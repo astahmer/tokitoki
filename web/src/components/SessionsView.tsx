@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 
-import { Badge, Input, Surface, Table } from "@cloudflare/kumo";
+import { Badge, Button, Input, Surface, Table } from "@cloudflare/kumo";
 
 import {
   fetchSessionDetail,

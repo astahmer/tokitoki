@@ -20,6 +20,12 @@ export interface UsageEvent {
   costUsd?: number;
   projectDir?: string;
   sessionId?: string;
+  /**
+   * Tool/function that caused the request, when the harness records it:
+   * "Edit", "bash:rg", "mcp__pencil__execute", ... Absent for plain
+   * text/thinking turns and older events (pre tool-extraction).
+   */
+  tool?: string;
 }
 
 /** True when the event carries all fields downstream code relies on. */
