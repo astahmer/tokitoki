@@ -50,6 +50,12 @@ export interface Provider {
 
   /** Session text extraction for the search index (absent = not searchable). */
   extractSessionDocs?: ExtractSessionDocs;
+
+  /**
+   * Provenance note shown by `tokitoki sources` — e.g. stores found on disk
+   * that expose no token usage, or skeleton providers awaiting a real store.
+   */
+  usageNote?: string;
 }
 
 /** One indexable conversation extracted from a provider store file. */

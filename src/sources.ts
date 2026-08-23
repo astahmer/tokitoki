@@ -19,6 +19,8 @@ export interface ProviderSource {
   /** Effective roots scanned on the last/current discovery pass. */
   roots: string[];
   filesFound: number;
+  /** Provenance note (e.g. "no usage data exposed"). */
+  usageNote?: string;
   /** Files with a persisted scan cursor (i.e. seen by at least one scan). */
   trackedFiles: number;
   /** Tracked files whose cursor offset still matches their size. */
@@ -59,6 +61,7 @@ export function collectSources(cache: EventCache, providers: Provider[] = PROVID
       id: p.id,
       label: p.label,
       envVar: p.envVar,
+      usageNote: p.usageNote,
       roots,
       filesFound: files.length,
       trackedFiles: tracked,
@@ -88,6 +91,7 @@ export function renderSources(sources: ProviderSource[]): string {
       `  events: ${s.events.toLocaleString("en-US")} · accounts: ${accounts.length > 0 ? accounts : "(none)"}`,
     );
     lines.push(`  models: ${s.models.length > 0 ? s.models.join(", ") : "(none)"}`);
+    if (s.usageNote !== undefined) lines.push(`  note: ${s.usageNote}`);
     lines.push("");
   }
   return lines.join("\n").trimEnd();

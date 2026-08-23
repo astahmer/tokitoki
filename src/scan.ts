@@ -14,6 +14,13 @@ export interface ScanResult {
 const CHUNK_SIZE = 8 * 1024 * 1024;
 
 /**
+ * Bump when provider extraction logic changes in a way that should re-derive
+ * already-scanned events (e.g. adding the `tool` field). Re-emitted events
+ * keep their stable ids, so cache/log dedupe makes replays idempotent.
+ */
+export const EXTRACTION_VERSION = 2;
+
+/**
  * Incrementally scan one provider's session stores.
  *
  * Cursor semantics per file:
@@ -46,6 +53,14 @@ export function scanProvider(provider: Provider, machineId: string): ScanResult 
     const fresh = entry === undefined;
     let offset = fresh ? 0 : entry.offset;
     const state: FileScanState = fresh ? {} : { ...(entry.state ?? {}) };
+    let replayed = false;
+    // Extraction logic changed since this file was scanned → full replay.
+    if (!fresh && state.extractionVersion !== EXTRACTION_VERSION) {
+      offset = 0;
+      for (const k of Object.keys(state)) delete state[k];
+      replayed = true;
+    }
+    state.extractionVersion = EXTRACTION_VERSION;
     // Truncated or replaced file → start over
     if (!fresh && offset > size) {
       offset = 0;
@@ -62,7 +77,7 @@ export function scanProvider(provider: Provider, machineId: string): ScanResult 
 
     let touched = false;
     try {
-      const ctxBase = { path: file, state, freshFile: fresh && offset === 0, machineId };
+      const ctxBase = { path: file, state, freshFile: (fresh && offset === 0) || replayed, machineId };
       let leftover = "";
 
       while (offset < size) {
