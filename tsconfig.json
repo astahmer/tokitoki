@@ -7,7 +7,7 @@
       "ES2023"
     ],
     "types": [
-      "node"
+      "bun"
     ],
     "strict": true,
     "noUncheckedIndexedAccess": true,

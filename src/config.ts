@@ -4,9 +4,21 @@ import path from "node:path";
 
 import TOML from "@iarna/toml";
 
+import type { SyncConfig } from "./sync/types.ts";
+
 export interface ProviderConfig {
   /** Override roots to scan for this provider */
   paths?: string[];
+}
+
+/**
+ * User-configured plan quota estimate. Providers don't expose subscription
+ * caps, so these are honest user-set approximations used only for gauges.
+ */
+export interface PlanConfig {
+  kind?: "subscription";
+  monthlyRequestCap?: number;
+  monthlyCostCap?: number;
 }
 
 export interface TokitokiConfig {
@@ -16,7 +28,15 @@ export interface TokitokiConfig {
    * overlapping files.
    */
   extraEventFiles?: string[];
+  /** Cross-machine sync transport ([sync] section). See src/sync/. */
+  sync?: SyncConfig;
   providers?: Record<string, ProviderConfig>;
+  /**
+   * Plan quota estimates keyed by accountKey pattern (exact match, or
+   * trailing `*` for prefix match). Matched rows render a usage gauge
+   * instead of a cost cell. Most useful with `--by account`.
+   */
+  plans?: Record<string, PlanConfig>;
 }
 
 export function configPath(): string {
@@ -55,6 +75,8 @@ function normalize(value: unknown): TokitokiConfig {
   const cfg = (value ?? {}) as TokitokiConfig;
   if (!Array.isArray(cfg.extraEventFiles)) delete cfg.extraEventFiles;
   if (cfg.providers !== undefined && typeof cfg.providers !== "object") delete cfg.providers;
+  if (cfg.plans !== undefined && typeof cfg.plans !== "object") delete cfg.plans;
+  if (cfg.sync !== undefined && typeof cfg.sync !== "object") delete cfg.sync;
   return cfg;
 }
 

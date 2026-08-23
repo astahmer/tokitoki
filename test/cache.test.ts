@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -70,13 +70,12 @@ describe("EventCache", () => {
       ]);
       const rows = cache.aggregate("2026-08-01T00:00:00.000Z", "model");
       expect(rows).toHaveLength(2);
-      // sorted by tokens desc
-      expect(rows[0]!.bucket).toBe("m-b");
-      expect(rows[0]!.inputTokens).toBe(1000);
-      expect(rows[1]!.bucket).toBe("m-a");
-      expect(rows[1]!.requests).toBe(2);
-      expect(rows[1]!.inputTokens).toBe(110);
-      expect(rows[1]!.costUsd).toBeCloseTo(0.55);
+      // aggregation is order-independent here; sorting happens in report layer
+      const byBucket = Object.fromEntries(rows.map((r) => [r.bucket, r]));
+      expect(byBucket["m-b"]!.inputTokens).toBe(1000);
+      expect(byBucket["m-a"]!.requests).toBe(2);
+      expect(byBucket["m-a"]!.inputTokens).toBe(110);
+      expect(byBucket["m-a"]!.costUsd).toBeCloseTo(0.55);
     } finally {
       cache.close();
     }

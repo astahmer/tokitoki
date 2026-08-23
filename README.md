@@ -53,12 +53,21 @@ accounts. Merges the best of `ccusage`, CodexBar, and openusage.ai.
 
 ## Setup
 
+Requires [Bun](https://bun.sh) (no Node toolchain needed):
+
 ```sh
-pnpm install
-pnpm link --global   # optional, exposes `tokitoki`
-# or run ad hoc:
-npx tsx src/cli.ts scan
+bun install
+# run ad hoc:
+bun src/cli.ts scan
+bun link          # optional, exposes `tokitoki`
 ```
+
+Standalone binary (no runtime needed on target machine):
+
+```sh
+bun run compile   # → dist/tokitoki
+```
+
 
 ## Usage
 
@@ -68,7 +77,34 @@ tokitoki scan --provider pi         # one provider (pi | claude-code | codex)
 tokitoki today                      # today's usage grouped by model
 tokitoki report --last week --by account
 tokitoki report --last month --json # machine-readable
+
+# sort by any column, filter by provider (repeatable), toggle Δ vs previous period
+tokitoki report --last week --by model --sort cost        # default order: cost desc
+tokitoki report --last week --sort %cache --asc
+tokitoki report --last week --provider pi --provider codex
+tokitoki report --last week --no-delta                   # Δ on by default
+
+# ASCII visuals + evolution over time
+tokitoki chart --last month                 # daily token bars
+ tokitoki chart --last week --spark          # compact sparkline
+tokitoki chart --last month --by provider --spark   # one sparkline per provider
+tokitoki pie --by model                     # share-of-tokens legend with cost bars
 ```
+
+Table output uses letter-suffixed numbers (`1.71B`, `23.7M`), `%cache`
+(cache share of prompt tokens), a `%share` column (share of cost — falls
+back to token share when every row costs $0), `sess` (distinct sessions) and
+`avg/req` (tokens per request) columns, human costs, and a TOTAL row.
+Sortable columns: `name | requests | sessions | avg | input | output | cache |
+%cache | cost`.
+
+When `--delta` is on (default for `report`), each cost cell carries `▲/▼`
+vs the equally-sized previous window (`▲` green / `▼` red on TTYs;
+`▲new` = bucket absent last period).
+
+`today` and `report --last month` end with a burn line:
+`burn: $X.XX/day → projected $Y by month end` (request-based when all costs
+are $0). `today` also lists the top-3 projects month-to-date.
 
 Dimensions: `model | project | account | machine | provider`.
 Periods: `day` = local calendar day; `week`/`month` = rolling 7/30 days.
@@ -80,12 +116,95 @@ Multi-machine merge: sync `~/.local/share/tokitoki/events.jsonl` between Macs
 ```json
 {
   "extraEventFiles": ["~/syncthing/tokitoki-other-mac/events.jsonl"],
-  "providers": { "pi": { "paths": ["/custom/pi/sessions"] } }
+  "providers": { "pi": { "paths": ["/custom/pi/sessions"] } },
+  "plans": {
+    "codex-work": { "kind": "subscription", "monthlyRequestCap": 30000 },
+    "opencode-*": { "kind": "subscription", "monthlyCostCap": 200 }
+  }
 }
 ```
 
 Events dedupe on a stable id `(provider, accountKey, sessionId, entryId)` —
 the same session synced to two machines counts once.
+
+## Sync (cross-machine)
+
+`tokitoki sync [--backend dir|git|atproto] [--push|--pull|--both]` moves
+normalized events between machines. Backend + connection come from `[sync]`
+in config.toml:
+
+### dir — Syncthing folder (zero infra)
+
+```toml
+[sync]
+backend = "dir"
+path = "~/Sync/tokitoki"   # one <machineId>.jsonl per machine, no conflicts
+```
+
+Each machine writes only its own file; pull reads everyone else's. Point your
+Syncthing shared folder at that path on both Macs and run `tokitoki sync` on
+each (or a launchd/cron job hourly).
+
+### git — private repo
+
+```toml
+[sync]
+backend = "git"
+url = "git@github.com:you/tokitoki-events-private.git"
+branch = "main"
+```
+
+Push = commit this machine's file + push; pull = fetch + read other machines'
+files. Works with any private git host; auth is whatever your ssh-agent/
+credential helper already has.
+
+### atproto — scaffold (lexicon unpublished)
+
+```toml
+[sync]
+backend = "atproto"
+pds = "https://bsky.social"      # or cirrus/your PDS
+handle = "you.bsky.social"
+# app password via TOKITOKI_ATPROTO_APP_PASSWORD env (preferred) or appPassword here
+```
+
+Stores one record per event under `tokitoki.<handle>.usage`. ⚠️ Guarded behind
+`--sync-atproto`: the lexicon is NOT published yet and the nsid embeds a handle
+label, so strict PDS validation may reject writes until a real lexicon is
+registered.
+
+Pulled lines land in `~/.local/share/tokitoki/remote-events.jsonl` — never in
+your local log — and merge into every report through the normal dedupe path,
+so re-pulling identical lines is always a no-op.
+
+### Plan gauges (honest approximation)
+
+Rows whose accountKey matches a `plans` pattern (exact or trailing `*`) show
+a month-to-date usage gauge instead of a cost cell — most useful with
+`--by account`. Providers don't expose subscription quotas, so caps are
+user-configured estimates; the gauge is only as honest as the cap you set.
+
+- Tests + runner are Bun-native (`bun test`, imports from `bun:test`); sqlite is `bun:sqlite`
+## Web dashboard
+
+```sh
+tokitoki web            # → http://localhost:7788  (--port to change)
+```
+
+Local-only, dependency-free single page served by Bun.serve:
+
+- Summary cards: week cost (with Δ vs previous week), burn/day + projected
+  month-end, requests, sessions, tokens, cache %
+- Multi-account tabs: every accountKey gets its own segment; picking one
+  scopes cards, chart, and table to it
+- Group-by dimension tabs (model / provider / account / machine / project)
+- Sortable table (click headers) with share-of-total bars
+- Inline-SVG stacked area chart of daily tokens per bucket over 30 days
+
+Visual direction follows openusage.ai's dark-card look with CodexBar-style
+monospace numbers. API endpoints (`/api/summary`, `/api/timeseries`,
+`/api/table`) reuse the exact CLI aggregation — see `src/web/api.ts` if you
+want to script them.
 
 ## Status / known limits
 

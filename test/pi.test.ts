@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 
 import { piProvider } from "../src/providers/pi.ts";
 import type { EntryContext } from "../src/providers/types.ts";
