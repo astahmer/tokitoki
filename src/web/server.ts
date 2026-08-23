@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import { apiGrid, apiSummary, apiTable, apiTimeseries } from "./api.ts";
+import { apiAnomalies, apiExport, apiGrid, apiSessionDetail, apiSessions, apiSources, apiSummary, apiTable, apiTimeseries, type WindowParams } from "./api.ts";
 
 export interface WebServerOptions {
   port?: number;
@@ -69,13 +69,18 @@ export function startWebServer(options: WebServerOptions = {}): Bun.Server<undef
   }
 
   function api(request: Request, pathname: string, url: URL): Response {
+    const win = (): WindowParams => ({
+      last: url.searchParams.get("last") ?? undefined,
+      from: url.searchParams.get("from") ?? undefined,
+      to: url.searchParams.get("to") ?? undefined,
+    });
     switch (pathname) {
       case "/api/summary":
-        return json(apiSummary());
+        return json(apiSummary(win()));
       case "/api/timeseries": {
         const by = url.searchParams.get("by") ?? "provider";
         const days = Number(url.searchParams.get("days") ?? "30");
-        return json(apiTimeseries(by, days));
+        return json(apiTimeseries(by, { ...win(), days: Number.isFinite(days) ? days : 30 }));
       }
       case "/api/table": {
         const by = url.searchParams.get("by") ?? "model";
@@ -84,12 +89,46 @@ export function startWebServer(options: WebServerOptions = {}): Bun.Server<undef
         const providers = url.searchParams.getAll("provider").filter((p) => p.length > 0);
         const delta = url.searchParams.get("delta") !== "0";
         const showEmail = url.searchParams.get("showEmail") === "1";
-        return json(apiTable(by, period, account === "" ? undefined : account, providers, delta, showEmail));
+        return json(apiTable(by, win(), period, account === "" ? undefined : account, providers, delta, showEmail));
+      }
+      case "/api/anomalies": {
+        const metric = url.searchParams.get("metric") ?? "tokens";
+        return json(apiAnomalies(win(), metric));
       }
       case "/api/grid": {
         const days = Number(url.searchParams.get("days") ?? "365");
         const metric = url.searchParams.get("metric") ?? "tokens";
-        return json(apiGrid(days, metric));
+        return json(apiGrid({ ...win(), days: Number.isFinite(days) ? days : 365 }, metric));
+      }
+      case "/api/sessions": {
+        const period = url.searchParams.get("period") ?? "week";
+        const account = url.searchParams.get("account") ?? undefined;
+        const providers = url.searchParams.getAll("provider").filter((p) => p.length > 0);
+        const top = Number(url.searchParams.get("top") ?? "25");
+        return json(apiSessions(win(), providers, account === "" ? undefined : account, top, period));
+      }
+      case "/api/sources":
+        return json(apiSources());
+      case "/api/export": {
+        const format = url.searchParams.get("format") ?? "json";
+        const by = url.searchParams.get("by") ?? "model";
+        const account = url.searchParams.get("account") ?? undefined;
+        const providers = url.searchParams.getAll("provider").filter((p) => p.length > 0);
+        const exp = apiExport(format, by, win(), account === "" ? undefined : account, providers);
+        return new Response(exp.content, {
+          headers: {
+            "content-type": exp.contentType,
+            "content-disposition": `attachment; filename="${exp.filename}"`,
+          },
+        });
+      }
+      case "/api/sessions/detail": {
+        const provider = url.searchParams.get("provider");
+        const sessionId = url.searchParams.get("id");
+        if (provider === null || provider.length === 0 || sessionId === null || sessionId.length === 0) {
+          return text("provider and id are required\n", 400);
+        }
+        return json(apiSessionDetail(provider, sessionId));
       }
       default:
         if (request.method !== "GET") return text("method not allowed\n", 405);

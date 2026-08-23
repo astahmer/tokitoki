@@ -5,6 +5,7 @@ import path from "node:path";
 import TOML from "@iarna/toml";
 
 import type { SyncConfig } from "./sync/types.ts";
+import type { BudgetsConfig } from "./budgets.ts";
 
 export interface ProviderConfig {
   /** Override roots to scan for this provider */
@@ -37,6 +38,8 @@ export interface TokitokiConfig {
    * instead of a cost cell. Most useful with `--by account`.
    */
   plans?: Record<string, PlanConfig>;
+  /** [budgets] — USD caps per period + optional ntfy topic for push alerts. */
+  budgets?: BudgetsConfig;
 }
 
 export function configPath(): string {
@@ -77,6 +80,7 @@ function normalize(value: unknown): TokitokiConfig {
   if (cfg.providers !== undefined && typeof cfg.providers !== "object") delete cfg.providers;
   if (cfg.plans !== undefined && typeof cfg.plans !== "object") delete cfg.plans;
   if (cfg.sync !== undefined && typeof cfg.sync !== "object") delete cfg.sync;
+  if (cfg.budgets !== undefined && typeof cfg.budgets !== "object") delete cfg.budgets;
   return cfg;
 }
 

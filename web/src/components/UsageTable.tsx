@@ -138,7 +138,9 @@ export function UsageTable({
       <Table.Body>
         {rows.map((r) => (
           <Table.Row key={r.bucket}>
-            <Table.Cell className="whitespace-nowrap">{renderName(r)}</Table.Cell>
+            {/* min-w reserves the space emails will occupy, so toggling
+                show-email swaps text in place instead of shifting columns */}
+            <Table.Cell className="min-w-44 whitespace-nowrap lg:min-w-64">{renderName(r)}</Table.Cell>
             <Table.Cell className="text-right">{cellFor(r, "requests")}</Table.Cell>
             <Table.Cell className="text-right">{cellFor(r, "sessions")}</Table.Cell>
             <Table.Cell className="text-right">{cellFor(r, "avg")}</Table.Cell>

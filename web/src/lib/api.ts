@@ -31,7 +31,14 @@ export interface TablePayload {
   emails?: Record<string, string>;
 }
 
+export interface ApiWindow {
+  since: string;
+  until: string | null;
+  label: string;
+}
+
 export interface SummaryPayload {
+  window: ApiWindow;
   cost: number;
   requests: number;
   sessions: number;
@@ -90,4 +97,58 @@ export function fetchTimeseries(by: string, days: number): Promise<TimeseriesPay
 
 export function fetchGrid(days: number, metric: string): Promise<{ metric: string; cells: GridCell[] }> {
   return get(`/api/grid?days=${days}&metric=${metric}`);
+}
+
+// ---------------------------------------------------------------- sessions
+
+export interface SessionRow {
+  sessionId: string;
+  provider: string;
+  accountKey: string;
+  startedAt: string;
+  requests: number;
+  models: string[];
+  repos: string[];
+  totalTokens: number;
+  cachePct: number;
+  costUsd: number;
+}
+
+export interface SessionsPayload {
+  period: string;
+  rows: SessionRow[];
+}
+
+export interface SessionEvent {
+  ts: string;
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  costUsd: number;
+}
+
+export interface SessionDetailPayload {
+  provider: string;
+  sessionId: string;
+  events: SessionEvent[];
+}
+
+export function fetchSessions(params: {
+  period: string;
+  providers?: string[];
+  account?: string;
+  top?: number;
+}): Promise<SessionsPayload> {
+  const q = new URLSearchParams({ period: params.period });
+  if (params.account) q.set("account", params.account);
+  for (const p of params.providers ?? []) q.append("provider", p);
+  if (params.top !== undefined) q.set("top", String(params.top));
+  return get<SessionsPayload>(`/api/sessions?${q.toString()}`);
+}
+
+export function fetchSessionDetail(provider: string, sessionId: string): Promise<SessionDetailPayload> {
+  return get<SessionDetailPayload>(
+    `/api/sessions/detail?provider=${encodeURIComponent(provider)}&id=${encodeURIComponent(sessionId)}`,
+  );
 }

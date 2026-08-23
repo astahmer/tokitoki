@@ -135,3 +135,42 @@ export function Info({ text, children }: { text: string; children: ReactNode }) 
     </Tooltip>
   );
 }
+
+/**
+ * Loading placeholders built on Kumo tokens. Rendered only on first load —
+ * refetches keep stale data visible (stale-while-revalidate) so toggling
+ * filters or emails never collapses/shifts the layout.
+ */
+export function SkeletonBlock({ className = "" }: { className?: string }) {
+  return (
+    <div
+      aria-hidden="true"
+      className={`animate-pulse rounded-lg bg-kumo-recessed ${className}`}
+    />
+  );
+}
+
+export function SummaryCardsSkeleton() {
+  return (
+    <div className="mb-4 grid grid-cols-2 gap-3 md:grid-cols-4 lg:grid-cols-7">
+      {Array.from({ length: 7 }, (_, i) => (
+        <SkeletonBlock key={i} className="h-[68px]" />
+      ))}
+    </div>
+  );
+}
+
+export function TableSkeleton({ rows = 8, cols = 10 }: { rows?: number; cols?: number }) {
+  return (
+    <div className="space-y-2" aria-hidden="true">
+      <SkeletonBlock className="h-5" />
+      {Array.from({ length: rows }, (_, r) => (
+        <div key={r} className="flex gap-2">
+          {Array.from({ length: cols }, (_, c) => (
+            <SkeletonBlock key={c} className={`h-4 flex-1 ${r === 0 ? "opacity-60" : ""}`} />
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+}

@@ -45,6 +45,7 @@ export class EventCache {
       );
       CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);
       CREATE INDEX IF NOT EXISTS idx_events_provider ON events(provider);
+      CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id);
       CREATE TABLE IF NOT EXISTS repo_dirs (
         dir TEXT PRIMARY KEY,
         name TEXT NOT NULL
@@ -124,6 +125,27 @@ export class EventCache {
       )
       .all(sinceIso) as Array<{ key: string; provider: string }>;
     return new Map(rows.map((r) => [r.key, r.provider]));
+  }
+
+  /** All-time per-provider stats for the provenance view. */
+  providerStats(): Map<string, { events: number; models: Set<string>; accounts: Set<string> }> {
+    const rows = this.db
+      .query(
+        `SELECT provider, model, account_key, COUNT(*) AS n FROM events GROUP BY provider, model, account_key`,
+      )
+      .all() as Array<{ provider: string; model: string; account_key: string; n: number }>;
+    const out = new Map<string, { events: number; models: Set<string>; accounts: Set<string> }>();
+    for (const r of rows) {
+      let entry = out.get(r.provider);
+      if (entry === undefined) {
+        entry = { events: 0, models: new Set(), accounts: new Set() };
+        out.set(r.provider, entry);
+      }
+      entry.events += r.n;
+      entry.models.add(r.model);
+      if (r.account_key !== null && r.account_key.length > 0) entry.accounts.add(r.account_key);
+    }
+    return out;
   }
 
   private ensureRepoMap(): void {
@@ -231,8 +253,11 @@ export class EventCache {
     return fromRawRow({ ...row, bucket: "TOTAL" });
   }
 
-  /** Metrics per local calendar day since `sinceIso` (UTC-stored ts). */
-  dailyTotals(sinceIso: string): DailyTotal[] {
+  /** Metrics per local calendar day since `sinceIso` (UTC-stored ts),
+   *  optionally bounded above by `untilIso`. */
+  dailyTotals(sinceIso: string, untilIso?: string): DailyTotal[] {
+    const bound = untilIso !== undefined ? "AND ts < ?" : "";
+    const params: SQLQueryBindings[] = untilIso !== undefined ? [sinceIso, untilIso] : [sinceIso];
     const rows = this.db
       .query(
         `
@@ -241,12 +266,12 @@ export class EventCache {
                SUM(cost_usd) AS cost_usd,
                COUNT(*) AS requests
         FROM events
-        WHERE ts >= ?
+        WHERE ts >= ? ${bound}
         GROUP BY day
         ORDER BY day
         `,
       )
-      .all(sinceIso) as Array<{
+      .all(...params) as Array<{
         day: string;
         tokens: number | null;
         cost_usd: number | null;
@@ -318,6 +343,82 @@ export class EventCache {
   close(): void {
     this.db.close();
   }
+
+  /**
+   * Costliest / heaviest sessions in the window, grouped by (provider,
+   * session_id). Ordered by cost desc, tokens desc so free accounts still
+   * surface by volume. Null session_ids (events without one) are excluded.
+   */
+  topSessions(opts: {
+    sinceIso: string;
+    untilIso?: string;
+    providers?: string[];
+    accountKey?: string;
+    limit?: number;
+  }): SessionSummary[] {
+    this.ensureRepoMap();
+    const where = this.whereClause(opts.providers, opts.untilIso, opts.accountKey);
+    const rows = this.db
+      .query(
+        `
+        SELECT e.provider AS provider,
+               e.session_id AS session_id,
+               MIN(e.ts) AS first_ts,
+               MAX(e.ts) AS last_ts,
+               COUNT(*) AS requests,
+               MIN(e.account_key) AS account_key,
+               GROUP_CONCAT(DISTINCT e.model) AS models,
+               GROUP_CONCAT(DISTINCT COALESCE(r.name, '(no repo)')) AS repos,
+               SUM(e.input_tokens) AS input_tokens,
+               SUM(e.output_tokens) AS output_tokens,
+               SUM(e.cache_read_tokens) AS cache_read_tokens,
+               SUM(e.cache_write_tokens) AS cache_write_tokens,
+               SUM(e.cost_usd) AS cost_usd
+        FROM events e
+        LEFT JOIN repo_dirs r ON e.project_dir = r.dir
+        WHERE e.session_id IS NOT NULL AND ${where.sql}
+        GROUP BY e.provider, e.session_id
+        ORDER BY cost_usd DESC, input_tokens + output_tokens + cache_read_tokens + cache_write_tokens DESC
+        LIMIT ?
+        `,
+      )
+      .all(opts.sinceIso, ...where.params, opts.limit ?? 10) as Array<RawSessionRow>;
+    return rows.map(sessionFromRaw);
+  }
+
+  /** Providers that have events for a session id (drill-down disambiguation). */
+  sessionProviders(sessionId: string): string[] {
+    const rows = this.db
+      .query(
+        "SELECT DISTINCT provider FROM events WHERE session_id = ? ORDER BY provider",
+      )
+      .all(sessionId) as Array<{ provider: string }>;
+    return rows.map((r) => r.provider);
+  }
+
+  /** Request-by-request timeline for one session, ordered by ts. */
+  sessionDetail(provider: string, sessionId: string): SessionEventRow[] {
+    const rows = this.db
+      .query(
+        `
+        SELECT ts, model, input_tokens, output_tokens,
+               cache_read_tokens, cache_write_tokens, cost_usd
+        FROM events
+        WHERE provider = ? AND session_id = ?
+        ORDER BY ts, id
+        `,
+      )
+      .all(provider, sessionId) as Array<RawSessionEventRow>;
+    return rows.map((r) => ({
+      ts: r.ts,
+      model: r.model,
+      inputTokens: r.input_tokens ?? 0,
+      outputTokens: r.output_tokens ?? 0,
+      cacheReadTokens: r.cache_read_tokens ?? 0,
+      cacheWriteTokens: r.cache_write_tokens ?? 0,
+      costUsd: r.cost_usd ?? 0,
+    }));
+  }
 }
 
 export type Dimension = "model" | "project" | "repo" | "account" | "machine" | "provider";
@@ -370,4 +471,90 @@ export interface SeriesBucket {
   bucket: string;
   days: string[];
   values: number[];
+}
+
+interface RawSessionRow {
+  provider: string;
+  session_id: string | null;
+  first_ts: string;
+  last_ts: string;
+  requests: number;
+  account_key: string | null;
+  models: string | null;
+  repos: string | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  cache_read_tokens: number | null;
+  cache_write_tokens: number | null;
+  cost_usd: number | null;
+}
+
+/** Leaderboard row: one coding-agent session across all its requests. */
+export interface SessionSummary {
+  sessionId: string;
+  provider: string;
+  accountKey: string;
+  /** First request timestamp (ISO). */
+  startedAt: string;
+  lastRequestAt: string;
+  requests: number;
+  models: string[];
+  repos: string[];
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  totalTokens: number;
+  cachePct: number;
+  costUsd: number;
+}
+
+function sessionFromRaw(r: RawSessionRow): SessionSummary {
+  const inputTokens = r.input_tokens ?? 0;
+  const outputTokens = r.output_tokens ?? 0;
+  const cacheReadTokens = r.cache_read_tokens ?? 0;
+  const cacheWriteTokens = r.cache_write_tokens ?? 0;
+  return {
+    sessionId: r.session_id ?? "?",
+    provider: r.provider,
+    accountKey: r.account_key ?? "default",
+    startedAt: r.first_ts,
+    lastRequestAt: r.last_ts,
+    requests: r.requests,
+    models: (r.models ?? "?").split(",").filter((m) => m.length > 0),
+    repos: (r.repos ?? "(no repo)").split(",").filter((x) => x.length > 0),
+    inputTokens,
+    outputTokens,
+    cacheReadTokens,
+    cacheWriteTokens,
+    totalTokens: inputTokens + outputTokens + cacheReadTokens + cacheWriteTokens,
+    cachePct: cachePctOf(inputTokens, cacheReadTokens),
+    costUsd: r.cost_usd ?? 0,
+  };
+}
+
+function cachePctOf(inputTokens: number, cacheReadTokens: number): number {
+  const denom = inputTokens + cacheReadTokens;
+  if (denom <= 0) return 0;
+  return Math.round((cacheReadTokens / denom) * 100);
+}
+
+export interface SessionEventRow {
+  ts: string;
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  costUsd: number;
+}
+
+interface RawSessionEventRow {
+  ts: string;
+  model: string;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  cache_read_tokens: number | null;
+  cache_write_tokens: number | null;
+  cost_usd: number | null;
 }

@@ -29,6 +29,7 @@ interface ClaudeAssistantMessage {
 export const claudeCodeProvider: Provider = {
   id: "claude-code",
   label: "Claude Code",
+  envVar: "CLAUDE_CONFIG_DIR",
 
   discoverRoots(): string[] {
     const override = providerConfig(this.id)?.paths;

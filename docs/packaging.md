@@ -128,3 +128,19 @@ stdenvNoCC.mkDerivation (finalAttrs: {
 - Re-run compile, refresh hashes, update both Option A/B files if both exist
 - `nix run .#update-pins` picks up the new rev/hash automatically once the
   GitHub release exists
+
+## nixfiles package (prebuilt route)
+
+`~/dev/nixfiles/packages/tokitoki/default.nix` is a template with placeholder
+hashes (deliberately NOT wired into flake.nix — it would break evaluation).
+Bootstrap flow:
+
+1. `bun run compile && bun build --compile --target=bun-linux-x64 src/cli.ts --outfile dist/tokitoki-linux`
+2. Cut a GitHub release with the binaries; note the URL
+3. `nix store prefetch-file <url>` (or `nix hash file <local>`) → real hash
+4. Fill `version`/`url`/`hash` in `packages/tokitoki/default.nix`, extend platforms
+5. Wire into `flake.nix`: `tokitoki = pkgs'.callPackage ./packages/tokitoki { };`
+6. Repo convention: add to `assets/cli-tools/cli-tools.sh` (`list_term`) +
+   `assets/cli-tools/overview.html` tool card, then `nixapply`
+
+A source-build derivation waits on a bunDeps-style builder in nixpkgs.

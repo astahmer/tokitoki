@@ -33,6 +33,7 @@ interface CodexTokenUsage {
 export const codexProvider: Provider = {
   id: "codex",
   label: "Codex",
+  envVar: "CODEX_HOME",
 
   discoverRoots(): string[] {
     const override = providerConfig(this.id)?.paths;

@@ -3,19 +3,18 @@
  * 1. @source: Tailwind v4 does not scan node_modules by default; without this
  *    every Kumo component renders unstyled.
  * 2. Kumo styles register its @theme tokens before Tailwind's import.
+ *
+ * Style policy (kumo-first): typography, spacing, radii, shadows and
+ * component looks come from Kumo/Tailwind defaults. The only custom CSS kept
+ * here is the semantic color bridge below, which maps the app's legacy
+ * utility names (text-muted, bg-panel, border-edge, ...) onto Kumo tokens so
+ * they flip automatically with <html data-mode>.
  */
 @source "../../node_modules/@cloudflare/kumo/dist/**/*.{js,jsx,ts,tsx}";
 @import "@cloudflare/kumo/styles";
 @import "tailwindcss";
 
-/*
- * Legacy app palette mapped onto Kumo semantic tokens. `@theme inline` keeps
- * the var() references live in the generated utilities, so text-muted /
- * bg-panel / bg-accent / ... flip automatically with <html data-mode>.
- */
 @theme inline {
-  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-
   --color-bg: var(--color-kumo-base);
   --color-panel: var(--color-kumo-elevated);
   --color-panel2: var(--color-kumo-recessed);
@@ -28,14 +27,7 @@
   --color-warn: var(--color-kumo-warning);
 }
 
-html,
-body {
-  background: var(--color-kumo-base);
-  color: var(--text-color-kumo-default);
-  font-family: var(--font-mono);
-}
-
-/* Smooth mode switch without flashing chart colors */
+/* Mode switching without flashing chart colors */
 html {
   color-scheme: light;
 }

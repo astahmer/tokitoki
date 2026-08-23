@@ -4,8 +4,15 @@ import { formatCost, humanCount } from "../lib/fmt";
 import type { SummaryPayload } from "../lib/api";
 
 export function SummaryCards({ summary }: { summary: SummaryPayload }) {
+  const w = summary.window;
+  const until = w.until === null ? "now" : new Date(w.until).toLocaleString([], { dateStyle: "short", timeStyle: "short" });
+  const since = new Date(w.since).toLocaleString([], { dateStyle: "short", timeStyle: "short" });
   return (
-    <div className="mb-4 grid grid-cols-2 gap-3 md:grid-cols-4 lg:grid-cols-7">
+    <div className="mb-4">
+      <div className="mb-2 text-xs text-kumo-subtle">
+        period: {since} → {until} ({w.label})
+      </div>
+    <div className="grid grid-cols-2 gap-3 md:grid-cols-4 lg:grid-cols-7">
       <Card label="week cost" value={formatCost(summary.cost)}>
         {summary.prevWeekCost !== null && (
           <Badge variant={summary.cost >= summary.prevWeekCost ? "error" : "success"}>
@@ -19,6 +26,7 @@ export function SummaryCards({ summary }: { summary: SummaryPayload }) {
       <Card label="%cache" value={`${summary.cachePct}%`} />
       <Card label="burn / day" value={formatCost(summary.burnPerDay)} />
       <Card label="projected month" value={formatCost(summary.projectedMonthEnd)} />
+      </div>
     </div>
   );
 }

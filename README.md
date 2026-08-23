@@ -232,6 +232,48 @@ src/web/api.ts ◀── same aggregation as the CLI (EventCache) ── /api/* 
 - [Menu-bar app](menubar/tokitoki-menubar/) — native SwiftUI MenuBarExtra
   (macOS 13+), `swift build`, refreshes every 5 min from the compiled CLI
 
+## Backfill imports
+
+`tokitoki import <file.csv> [--source anthropic|openai|openrouter] [--dry-run]`
+merges provider console exports into your history. Source is auto-detected
+from headers; rows are deduped by a stable content hash so re-importing the
+same file never double-counts. Events are attributed to provider
+`<source>-import` and account `imported`.
+
+Expected column shapes (header names matched fuzzily, case-insensitive):
+
+| source | needs | notes |
+|---|---|---|
+| anthropic console | timestamp, model, input/output/cache tokens, cost | per-request rows; `Transaction ID` present |
+| openai usage | date, model, token columns | aggregated daily rows → one event each |
+| openrouter activity | timestamp (UTC), model, prompt/completion tokens, cost | `Provider` column present |
+
+Unparseable rows (bad dates, zero tokens) are counted as skipped, never fatal.
+
+## Budgets + ntfy alerts
+
+```toml
+[budgets]
+daily = 10      # USD caps, global
+monthly = 200
+ntfy = "https://ntfy.sh/your-topic"   # optional push on threshold crossing
+
+[budgets.accounts."codex*"]           # accountKey pattern (trailing * = prefix)
+monthly = 120
+```
+
+After every scan/report/today, burn vs caps is checked at 80% and 100%.
+Crossings print a ⚠ banner and POST to the ntfy topic. Alerts dedupe per
+(scope, period, pattern, threshold) in `<data-dir>/alerts.json` — a threshold
+fires once per period.
+
+## Pricing data
+
+Model prices auto-sync from LiteLLM's community pricing JSON into
+`<data-dir>/pricing.json` (7-day TTL, 1h retry throttle when offline). The
+embedded snapshot is the offline fallback. Unknown models estimate as $0 with
+a one-time stderr note.
+
 ## Status / known limits
 
 - Codex provider is best effort (format observed on codex 0.146.x); unknown

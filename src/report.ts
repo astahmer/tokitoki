@@ -265,6 +265,41 @@ export function totalRow(rows: AggRow[]): AggRow {
   );
 }
 
+// ------------------------------------------------------- repo efficiency
+
+/** Efficiency metrics for one repo bucket. */
+export interface RepoEfficiency {
+  /** costUsd / requests (0 when no requests) */
+  avgCostPerReq: number;
+  /** cachePct this period (for reference) */
+  cachePct: number;
+  /** percentage-point change vs the previous period (negative = improving) */
+  cacheTrendPts: number;
+  /** totalTokens / sessions (0 when no sessions) */
+  tokensPerSession: number;
+  /**
+   * "Expensive AND cache-hostile" ranking score: avgCostPerReq ×
+   * (1 − cachePct/100). High = each request costs a lot AND bypasses cache.
+   */
+  hostilityScore: number;
+}
+
+export function repoEfficiency(row: AggRow, prev?: AggRow): RepoEfficiency {
+  const avgCostPerReq = row.requests > 0 ? row.costUsd / row.requests : 0;
+  const cp = cachePct(row.inputTokens, row.cacheReadTokens);
+  let trend = 0;
+  if (prev !== undefined && prev.requests > 0) {
+    trend = cp - cachePct(prev.inputTokens, prev.cacheReadTokens);
+  }
+  return {
+    avgCostPerReq,
+    cachePct: cp,
+    cacheTrendPts: trend,
+    tokensPerSession: row.sessions > 0 ? totalTokens(row) / row.sessions : 0,
+    hostilityScore: avgCostPerReq * (1 - cp / 100),
+  };
+}
+
 const HEADER = ["name", "req", "sess", "avg/req", "input", "output", "cache", "%cache", "%share", "cost"];
 
 /** Optional context that enriches the table beyond plain aggregation. */
@@ -283,6 +318,8 @@ export interface TableContext {
   colorizeDelta?: (text: string, kind: "up" | "down") => string;
   /** When set, append an AVG/day row (totals divided by this many days). */
   avgDays?: number;
+  /** Appended after the cost column (e.g. repo-efficiency metrics). */
+  extraColumns?: Array<{ header: string; align?: "left" | "right"; cell: (row: AggRow) => string }>;
 }
 
 function deltaCell(costCell: string, cost: number, prev: number | undefined, ctx: TableContext): string {
@@ -311,7 +348,8 @@ export function renderTable(rows: AggRow[], ctx: TableContext = {}): string {
     const sharePct = grandTotal > 0 ? Math.round((shareRaw / grandTotal) * 100) : 0;
     const gauge = ctx.gaugeFor?.(name ?? r.bucket);
     const baseCost = gauge ?? formatCost(r.costUsd);
-    const prev = ctx.prevCostById?.get(r.bucket);
+    // TOTAL compares against the previous window's global total.
+    const prev = r.bucket === "TOTAL" ? ctx.totalPrevCost : ctx.prevCostById?.get(r.bucket);
     const displayName = name ?? r.bucket;
     const email = ctx.emailFor?.get(displayName);
     return [
@@ -329,22 +367,25 @@ export function renderTable(rows: AggRow[], ctx: TableContext = {}): string {
   };
 
   const body = rows.map((r) => cellsFor(r));
-  const totalCells = cellsFor(totals);
-  totalCells[0] = "TOTAL";
-  // TOTAL Δ compares against the previous window's global total.
-  if (ctx.prevCostById !== undefined || ctx.totalPrevCost !== undefined) {
-    totalCells[9] = deltaCell(formatCost(totals.costUsd), totals.costUsd, ctx.totalPrevCost, ctx);
-  }
-
-  const all = [HEADER, ...body, ["-", ...totalCells.slice(1)]];
-  const widths = HEADER.map((_, i) => Math.max(...all.map((row) => row[i]?.length ?? 0)));
+  const extras = ctx.extraColumns ?? [];
+  const header = [...HEADER, ...extras.map((c) => c.header)];
+  const bodyCells = (r: AggRow): string[] => {
+    const cells = cellsFor(r);
+    return [...cells, ...extras.map((c) => c.cell(r))];
+  };
+  const all = [header, ...body, bodyCells(totals)];
+  const widths = header.map((_, i) => Math.max(...all.map((row) => row[i]?.length ?? 0)));
+  const aligns: Array<"left" | "right"> = [
+    ...HEADER.map((_, i) => (i === 0 ? "left" : "right") as "left" | "right"),
+    ...extras.map((c) => c.align ?? "right"),
+  ];
   const line = (cells: string[]): string =>
-    cells.map((c, i) => c.padEnd(widths[i] ?? 0)).join("  ");
+    cells.map((c, i) => (aligns[i] === "left" ? c.padEnd(widths[i] ?? 0) : c.padStart(widths[i] ?? 0))).join("  ");
 
-  const out = [line(HEADER), widths.map((w) => "-".repeat(w ?? 0)).join("  ")];
+  const out = [line(header), widths.map((w) => "-".repeat(w ?? 0)).join("  ")];
   for (const cells of body) out.push(line(cells));
   out.push(widths.map((w) => "-".repeat(w ?? 0)).join("  "));
-  out.push(line(totalCells));
+  out.push(line(bodyCells(totals)));
   if (ctx.avgDays !== undefined && ctx.avgDays > 0) {
     const avg: AggRow = {
       bucket: "AVG/day",
@@ -356,7 +397,7 @@ export function renderTable(rows: AggRow[], ctx: TableContext = {}): string {
       cacheWriteTokens: totals.cacheWriteTokens / ctx.avgDays,
       costUsd: totals.costUsd / ctx.avgDays,
     };
-    const avgCells = cellsFor(avg);
+    const avgCells = bodyCells(avg);
     avgCells[0] = "AVG/day";
     avgCells[9] = formatCost(avg.costUsd); // no delta on the average row
     out.push(line(avgCells));
@@ -383,4 +424,51 @@ export function renderMiniProjects(rows: AggRow[]): string {
   const out = [line(MINI_HEADER), widths.map((w) => "-".repeat(w ?? 0)).join("  ")];
   for (const cells of body) out.push(line(cells));
   return out.join("\n");
+}
+
+// ------------------------------------------------------- markdown export
+
+const MD_HEADER = ["name", "req", "sess", "avg/req", "input", "output", "cache", "%cache", "%share", "cost"];
+
+function mdRow(cells: string[]): string {
+  return `| ${cells.join(" | ")} |`;
+}
+
+/**
+ * Markdown export: period header + a proper GitHub-flavored table with a
+ * TOTAL row. Same cell semantics as the ASCII table (letters, %share on
+ * cost when any cost is recorded, tokens otherwise).
+ */
+export function renderMarkdownTable(rows: AggRow[], windowLabel: string): string {
+  const totals = totalRow(rows);
+  const shareByCost = totals.costUsd > 0;
+  const grand = shareByCost ? totals.costUsd : totals.inputTokens + totals.outputTokens + totals.cacheReadTokens;
+  const cellsFor = (r: AggRow): string[] => [
+    r.bucket,
+    formatInt(r.requests),
+    formatInt(r.sessions),
+    humanCount(avgTokensPerReq(r)),
+    humanCount(r.inputTokens),
+    humanCount(r.outputTokens),
+    humanCount(r.cacheReadTokens),
+    `${cachePct(r.inputTokens, r.cacheReadTokens)}%`,
+    grand > 0 ? `${Math.round(((shareByCost ? r.costUsd : totalTokens(r)) / grand) * 100)}%` : "0%",
+    formatCost(r.costUsd),
+  ];
+  const body = rows.map(cellsFor);
+  const all = [MD_HEADER, ...body];
+  const widths = MD_HEADER.map((_, i) => Math.max(...all.map((row) => row[i]?.length ?? 0)));
+  const lines = [
+    "# tokitoki usage",
+    "",
+    `period: ${windowLabel}`,
+    "",
+    mdRow(MD_HEADER.map((h, i) => h.padEnd(widths[i] ?? 0))),
+    mdRow(widths.map((w) => "-".repeat(Math.max(3, w)))),
+    ...body.map((cells) => mdRow(cells.map((c, i) => (i === 0 ? c.padEnd(widths[i] ?? 0) : c.padStart(widths[i] ?? 0))))),
+    mdRow(
+      cellsFor(totals).map((c, i) => (i === 0 ? "**TOTAL**".padEnd(widths[i] ?? 0) : c.padStart(widths[i] ?? 0))),
+    ),
+  ];
+  return lines.join("\n");
 }

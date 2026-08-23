@@ -29,6 +29,8 @@ export interface EntryContext {
 export interface Provider {
   id: string;
   label: string;
+  /** Env override honored by discoverRoots (e.g. CLAUDE_CONFIG_DIR) — shown in sources. */
+  envVar?: string;
 
   /**
    * Roots to scan for this provider's session stores. Must respect the

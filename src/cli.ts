@@ -1,21 +1,42 @@
 #!/usr/bin/env bun
 import { parseArgs, type ParsedInvocation } from "./args.ts";
+import fs from "node:fs";
 import { localMachineId } from "./machine.ts";
+import { appendEvents } from "./store.ts";
 import { PROVIDERS, getProvider } from "./providers/index.ts";
 import { scanProvider } from "./scan.ts";
-import { DIMENSIONS, EventCache, type AggRow, type Dimension, type SeriesBucket } from "./cache.ts";
-import { renderTable, renderMiniProjects, resolveExtraFiles, resolveSortColumn, sinceIsoFor, sinceIsoForDays, previousWindow, monthStartIso, sortRows, formatDelta, deltaInfo, totalRow, totalTokens, planGaugeFn, renderBurnLine, burnProjection } from "./report.ts";
+import { DIMENSIONS, EventCache, type AggRow, type Dimension, type SeriesBucket, type SessionSummary } from "./cache.ts";
+import { renderTable, renderMiniProjects, renderMarkdownTable, resolveExtraFiles, resolveSortColumn, sinceIsoFor, sinceIsoForDays, previousWindow, monthStartIso, sortRows, formatDelta, deltaInfo, totalRow, totalTokens, planGaugeFn, renderBurnLine, burnProjection, type TableContext } from "./report.ts";
 import { accountEmailMap } from "./accounts.ts";
 import { renderGrid } from "./grid.ts";
-import { bar, formatCost, humanCount, sparkline } from "./format.ts";
+import { detectAnomalies, ANOMALY_METRICS, anomalyFooter } from "./anomalies.ts";
+import { processBudgetAlerts } from "./budgets.ts";
+import { importCsv, IMPORT_SOURCES } from "./import.ts";
+import { repoEfficiency } from "./report.ts";
+import { bar, formatCost, humanCount, sparkline, formatInt, cachePct } from "./format.ts";
 import { loadConfig } from "./config.ts";
 import { getSyncBackend, runSync } from "./sync/index.ts";
 import type { SyncConfig } from "./sync/types.ts";
 import { startWebServer } from "./web/server.ts";
+import { UserError } from "./errors.ts";
+import {
+  calendarDayWindow,
+  fmtLocal,
+  parseDuration,
+  resolveCalendarWindow,
+  resolveTimeWindow,
+  windowLine,
+  type Period,
+  type TimeWindow,
+} from "./period.ts";
+import { collectSources, renderSources } from "./sources.ts";
 
-type Period = "day" | "week" | "month";
+export { UserError } from "./errors.ts";
 
-const PERIODS: Period[] = ["day", "week", "month"];
+const pkg = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8")) as {
+  version: string;
+};
+const VERSION = pkg.version;
 const CHART_DIMENSIONS = ["provider", "model"] as const;
 
 const DIMENSION_LIST = "model|provider|account|machine|project|repo";
@@ -32,49 +53,97 @@ const COMMAND_HELP: Record<string, CommandHelp> = {
     flags: "  --provider <id>   only scan this harness (repeatable not allowed here)",
     example: "tokitoki scan",
   },
+  sources: {
+    usage: "tokitoki sources",
+    flags: `  provenance per provider: store roots (w/ env overrides), file counts,
+  cursor freshness, events, accounts (+emails) and models seen.`,
+    example: "tokitoki sources",
+  },
   report: {
-    usage: "tokitoki report [--last day|week|month] [--by <dimension>]",
-    flags: `  --last day|week|month     rolling window (default: week)
-  --since YYYY-MM-DD        absolute range start (disables Δ)
-  --until YYYY-MM-DD        absolute range end, inclusive
+    usage: "tokitoki report [--last <window>] [--from <date>] [--to <date>] [--by <dimension>]",
+    flags: `  --last day|week|month     ROLLING window ending now (day = last 24h).
+                            Also accepts durations: 24h, 2days, 150m, 1w
+  --from <date>             absolute start (YYYY-MM-DD or ISO timestamp)
+  --to <date>               absolute end, defaults to now; mutually exclusive
+                            with --last (aliases: --since/--until)
   --by ${DIMENSION_LIST}
   --sort requests|sessions|avg|input|output|cache|%cache|%share|cost|name
   --asc                     ascending sort
   --provider <id>           filter (repeatable)
-  --delta / --no-delta      Δ vs previous window (default: delta)
+  --delta / --no-delta      Δ vs previous window (named periods only;
+                            default: delta)
   --show-email              render account rows as name <email> (implies --by account
                             unless an explicit --by is given)
   --json                    machine-readable output`,
     example: "tokitoki report --last week --by provider",
   },
   export: {
-    usage: "tokitoki export [--format csv|json] [--out <file>]",
-    flags: `  same filters/sorting as report (--last/--since/--until/--by/--provider/--sort)
-  --format csv|json         output format (default: csv)
+    usage: "tokitoki export [--format csv|json|md] [--out <file>]",
+    flags: `  same window/filters/sorting as report (--last/--from/--to/--by/--provider/--sort)
+  --format csv|json|md      output format (default: csv); md = markdown table
+                            with period header
   --out <file>              write to file instead of stdout`,
-    example: "tokitoki export --last month --by repo --format csv --out usage.csv",
+    example: "tokitoki export --last month --by repo --format md --out usage.md",
   },
   today: {
     usage: "tokitoki today",
-    flags: "  shortcut for report --last day (plus top projects this month)",
+    flags: "  calendar day so far (local midnight → now), plus top projects MTD",
     example: "tokitoki today",
   },
   week: { usage: "tokitoki week", flags: "  shortcut for report --last week", example: "tokitoki week" },
   month: { usage: "tokitoki month", flags: "  shortcut for report --last month", example: "tokitoki month" },
   chart: {
-    usage: "tokitoki chart [--last day|week|month]",
-    flags: "  --by provider|model   one sparkline row per bucket\n  --spark               compact inline sparklines\n  (default period: week)",
+    usage: "tokitoki chart [--last day|week|month|<duration>]",
+    flags: `  --by provider|model   one sparkline row per bucket
+  --spark               compact inline sparklines
+  (rolling windows like report; default period: week)`,
     example: "tokitoki chart --last month --spark",
   },
   pie: {
-    usage: "tokitoki pie [--last day|week|month] [--by provider|model]",
+    usage: "tokitoki pie [--last day|week|month|<duration>] [--by provider|model]",
     flags: "  share-of-tokens legend bars with cost (default period: week)",
     example: "tokitoki pie --last week",
   },
   grid: {
-    usage: "tokitoki grid [--last month|quarter|year]",
-    flags: "  --metric tokens|cost|requests   cell intensity (default: tokens)\n  (default window: month)",
+    usage: "tokitoki grid [--last month|quarter|year|<duration>]",
+    flags: `  --metric tokens|cost|requests   cell intensity (default: tokens)
+  trailing day-counts by name (month/quarter/year), durations (--last 90d)
+  or absolute ranges (--from/--to). Default window: month.`,
     example: "tokitoki grid --last quarter",
+  },
+  anomalies: {
+    usage: "tokitoki anomalies [--last month|quarter|year|<duration>] [--metric tokens|cost|requests]",
+    flags: `  --last <window>           default: month (also durations/--from/--to)
+  --metric tokens|cost|requests
+  --json                    machine-readable output
+
+A day is flagged when its metric exceeds 3× the trailing 14-day average
+(2× when that stretch was mostly idle). Today is never flagged.`,
+    example: "tokitoki anomalies --last quarter",
+  },
+  repos: {
+    usage: "tokitoki repos [--last day|week|month|<duration>] [--worst N] [--provider <id>]",
+    flags: `  efficiency ranking per repo. Score = avg cost/request ×
+  (1 − cache%). High score = expensive AND cache-hostile.
+  --worst N                 show only the N worst (default: all)`,
+    example: "tokitoki repos --worst 5",
+  },
+  import: {
+    usage: "tokitoki import <file.csv> [--source anthropic|openai|openrouter] [--dry-run]",
+    flags: `  backfill console usage exports. Source is auto-detected from headers.
+  --source <id>             override detection
+  --dry-run                 parse + summarize without writing`,
+    example: "tokitoki import ~/Downloads/anthropic-usage.csv",
+  },
+  sessions: {
+    usage: "tokitoki sessions [--last day|week|month|<duration>] [--top N] [--by provider|repo]",
+    flags: `  --last day|week|month     rolling window (default: week); durations ok
+  --top N                   leaderboard size (default: 10)
+  --by provider|repo        group the leaderboard under section headers
+  --session <id>            drill into one session: request timeline + running total
+  --provider <id>           filter (repeatable)
+  --json                    machine-readable output`,
+    example: "tokitoki sessions --last week --top 5",
   },
   sync: {
     usage: "tokitoki sync [--backend dir|git|atproto] [--push|--pull|--both]",
@@ -117,17 +186,27 @@ Usage: tokitoki <command> [options]
 
 Commands:
   scan       incrementally scan harness stores into the local cache
-  report     aggregate a rolling window (--last day|week|month, default week)
+  sources    where each provider's data comes from (roots, cursors, freshness)
+  report     aggregate a rolling window (--last day|week|month|24h, default week)
   today      shortcut for report --last day (+ top projects MTD)
   week       shortcut for report --last week
   month      shortcut for report --last month
   chart      daily token evolution as ASCII bars / sparklines
   pie        share-of-tokens legend with cost bars
   grid       GitHub-style calendar heatmap (horizontal, weeks = columns)
+  sessions   costliest/most token-heavy sessions (+ per-request drill-down)
+  anomalies  unusual-activity days vs trailing baseline
+  repos      repo efficiency ranking (expensive AND cache-hostile)
+  import     backfill usage CSVs from provider consoles
   sync       push/pull events across machines (dir | git | atproto backends)
   web        local dashboard (default :7788)
 
 Run 'tokitoki help <command>' or 'tokitoki <command> --help' for details.
+
+Window semantics: --last day|week|month are ROLLING (end at now); durations
+like 24h/2days/150m/1w work too; --from/--to pin absolute ranges.
+
+Version: tokitoki v${VERSION} (-v/--version)
 `;
 
 function main(argv: string[]): void {
@@ -135,6 +214,11 @@ function main(argv: string[]): void {
   if (argv.includes("-h") || argv.includes("--help")) {
     const cmd = argv.find((a) => !a.startsWith("-") && a !== "help");
     printHelp(cmd);
+    return;
+  }
+  // -v/--version right behind help.
+  if (argv.includes("-v") || argv.includes("--version")) {
+    console.log(`tokitoki v${VERSION}`);
     return;
   }
   try {
@@ -146,12 +230,17 @@ function main(argv: string[]): void {
     assertKnownFlags(parsed.command, parsed.flags);
     switch (parsed.command) {
       case "scan": runScan(parsed); break;
+      case "sources": runSources(parsed); break;
       case "report": runReport(parsed); break;
       case "export": runExport(parsed); break;
       case "today": case "week": case "month": runShortcut(parsed); break;
       case "chart": runChart(parsed); break;
       case "pie": runPie(parsed); break;
       case "grid": runGrid(parsed); break;
+      case "sessions": runSessions(parsed); break;
+      case "anomalies": runAnomalies(parsed); break;
+      case "repos": runRepos(parsed); break;
+      case "import": runImport(parsed); break;
       case "sync": runSyncCommand(parsed); break;
       case "web": runWeb(parsed); break;
       default: {
@@ -172,13 +261,18 @@ function main(argv: string[]): void {
 /** Flags each command accepts — anything else is a typo we can suggest around. */
 const KNOWN_FLAGS: Record<string, string[]> = {
   scan: ["provider"],
-  report: ["last", "by", "json", "sort", "asc", "provider", "delta", "no-delta", "show-email", "show-emails", "since", "until"],
+  sources: [],
+  report: ["last", "by", "json", "sort", "asc", "provider", "delta", "no-delta", "show-email", "show-emails", "since", "until", "from", "to"],
   today: ["provider", "json", "show-email", "show-emails"],
   week: ["provider", "json", "show-email", "show-emails"],
   month: ["provider", "json", "show-email", "show-emails"],
-  chart: ["last", "by", "spark", "provider"],
-  pie: ["last", "by", "provider"],
-  grid: ["last", "metric"],
+  chart: ["last", "by", "spark", "provider", "from", "to"],
+  pie: ["last", "by", "provider", "from", "to"],
+  grid: ["last", "metric", "since", "until", "from", "to"],
+  sessions: ["last", "by", "top", "session", "json", "provider", "since", "until", "account", "from", "to"],
+  anomalies: ["last", "metric", "json", "since", "until", "from", "to"],
+  repos: ["last", "worst", "provider", "from", "to"],
+  import: ["source", "dry-run"],
   sync: ["backend", "push", "pull", "both", "sync-atproto"],
   export: ["last", "by", "format", "out", "sort", "asc", "provider", "since", "until", "show-email", "show-emails"],
   web: ["port"],
@@ -240,26 +334,6 @@ function flagStrings(parsed: ParsedInvocation, key: string): string[] {
   return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [v as string];
 }
 
-function resolvePeriod(raw: string | undefined, fallback: Period = "week"): Period {
-  const period = raw ?? fallback;
-  if (!PERIODS.includes(period as Period)) {
-    throw new UserError(
-      `invalid period: ${period} (valid: ${PERIODS.join(", ")})`,
-      `tokitoki report --last ${fallback}`,
-    );
-  }
-  return period as Period;
-}
-
-export class UserError extends Error {
-  /** Exact next command that fixes the problem, printed as a dimmed hint. */
-  hint?: string;
-  constructor(message: string, hint?: string) {
-    super(message);
-    this.hint = hint;
-  }
-}
-
 function withCache<T>(fn: (cache: EventCache) => T): T {
   const cache = new EventCache();
   try {
@@ -286,21 +360,59 @@ function runScan(parsed: ParsedInvocation): void {
       `${result.provider}: +${result.eventsEmitted} events (${result.filesScanned} files updated)`,
     );
   }
+  // Budget banners after scan output (ntfy pushes fire in the background).
+  for (const line of budgetBanners()) console.log(line);
+}
+
+/** Evaluate configured budgets against current windows; returns banner lines. */
+function budgetBanners(): string[] {
+  const cfg = loadConfig();
+  if (cfg.budgets === undefined) return [];
+  return withCache((cache) => {
+    const spend = (sinceIso: string): number => cache.totals(sinceIso).costUsd;
+    const accountSpend = (sinceIso: string): Array<{ key: string; daily: number; weekly: number; monthly: number }> =>
+      cache.aggregate(sinceIso, "account").map((r) => ({ key: r.bucket, daily: r.costUsd, weekly: r.costUsd, monthly: r.costUsd }));
+    return processBudgetAlerts(
+      cfg,
+      {
+        daily: spend(sinceIsoFor("day")),
+        weekly: spend(sinceIsoFor("week")),
+        monthly: spend(monthStartIso()),
+      },
+      [
+        ...accountSpend(sinceIsoFor("day")),
+        ...accountSpend(sinceIsoFor("week")),
+        ...accountSpend(monthStartIso()),
+      ],
+    );
+  });
+}
+
+// ---------------------------------------------------------------- sources
+
+function runSources(parsed: ParsedInvocation): void {
+  try {
+    const out = withCache((cache) => {
+      cache.sync(resolveExtraFiles(loadConfig()));
+      return renderSources(collectSources(cache));
+    });
+    console.log(out);
+  } catch (err) {
+    handleError(err);
+  }
 }
 
 // ---------------------------------------------------------------- report
 
 interface ReportOptions {
-  period: Period;
+  /** Resolved --last/--from/--to window (rolling periods keep Δ support). */
+  window: TimeWindow;
   groupBy: Dimension;
   json: boolean;
   sort?: ReturnType<typeof resolveSortColumn>;
   asc: boolean;
   providers: string[];
   delta: boolean;
-  /** Absolute range override (YYYY-MM-DD, inclusive). Disables Δ. */
-  since?: string;
-  until?: string;
 }
 
 function reportOptions(parsed: ParsedInvocation, defaultPeriod?: Period): ReportOptions {
@@ -309,7 +421,15 @@ function reportOptions(parsed: ParsedInvocation, defaultPeriod?: Period): Report
   // Emails key off accounts: --show-email implies --by account unless the user
   // picked a dimension explicitly.
   const groupByRaw = explicitBy ?? (showEmailRequested ? "account" : undefined);
-  const period = resolvePeriod(defaultPeriod ?? flagString(parsed, "last"), "week");
+  // --since/--until remain accepted as aliases of --from/--to.
+  const from = flagString(parsed, "from") ?? flagString(parsed, "since");
+  const to = flagString(parsed, "to") ?? flagString(parsed, "until");
+  const window = resolveTimeWindow({
+    last: flagString(parsed, "last"),
+    from,
+    to,
+    fallbackPeriod: defaultPeriod ?? "week",
+  });
   const groupBy = (groupByRaw ?? "model") as Dimension;
   if (!DIMENSIONS.includes(groupBy)) {
     throw new UserError(
@@ -331,27 +451,18 @@ function reportOptions(parsed: ParsedInvocation, defaultPeriod?: Period): Report
   }
 
   // --delta is the default; --no-delta disables Δ vs previous period.
-  // Explicit --since/--until ranges also disable it (there is no "previous range").
+  // Δ needs an equally-sized predecessor, so only named rolling periods get
+  // it; duration (--last 24h) and absolute (--from/--to) windows disable it.
   const delta = parsed.flags["no-delta"] === true ? false : flagBool(parsed, "delta") || parsed.flags["delta"] === undefined;
 
-  const since = flagString(parsed, "since");
-  const until = flagString(parsed, "until");
-  for (const [label, value] of [["--since", since], ["--until", until]] as const) {
-    if (value !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
-      throw new UserError(`invalid ${label}: ${value} (expected YYYY-MM-DD)`, "tokitoki report --since 2026-08-01");
-    }
-  }
-
   return {
-    period,
+    window,
     groupBy,
     json: flagBool(parsed, "json"),
     sort,
     asc: flagBool(parsed, "asc"),
     providers: flagStrings(parsed, "provider"),
-    delta: delta && since === undefined,
-    since,
-    until,
+    delta: delta && window.period !== undefined,
   };
 }
 
@@ -361,13 +472,9 @@ function runReport(parsed: ParsedInvocation): void {
   try {
     const out = withCache((cache) => {
       cache.sync(resolveExtraFiles(loadConfig()));
-      // Explicit --since/--until overrides the rolling window (delta disabled).
-      const sinceIso = opts.since !== undefined
-        ? new Date(`${opts.since}T00:00:00`).toISOString()
-        : sinceIsoFor(opts.period);
-      const untilIso = opts.until !== undefined
-        ? new Date(`${opts.until}T23:59:59.999`).toISOString()
-        : undefined;
+      const w = opts.window;
+      const sinceIso = w.sinceIso;
+      const untilIso = w.untilIso;
       const days = rangeDays(sinceIso, untilIso);
       const rows = cache.aggregate(sinceIso, opts.groupBy, opts.providers, untilIso);
       if (opts.json) {
@@ -375,14 +482,15 @@ function runReport(parsed: ParsedInvocation): void {
         // menu-bar app needs a single spawn per period.
         const total = cache.totals(sinceIso, opts.providers);
         let prevTotalCost: number | undefined;
-        if (opts.delta) {
-          const prev = previousWindow(opts.period);
+        if (opts.delta && w.period !== undefined) {
+          const prev = previousWindow(w.period);
           prevTotalCost = cache.totals(prev.sinceIso, opts.providers, prev.untilIso).costUsd;
         }
         const mtd = cache.totals(monthStartIso(), opts.providers);
         return JSON.stringify(
           {
-            period: opts.period,
+            window: { since: sinceIso, until: untilIso ?? null, label: w.label },
+            period: w.period ?? null,
             groupBy: opts.groupBy,
             rows,
             total,
@@ -394,10 +502,10 @@ function runReport(parsed: ParsedInvocation): void {
         );
       }
 
-      const ctx: Parameters<typeof renderTable>[1] = {};
+      const ctx: TableContext = {};
       ctx.total = cache.totals(sinceIso, opts.providers);
-      if (opts.delta) {
-        const prev = previousWindow(opts.period);
+      if (opts.delta && w.period !== undefined) {
+        const prev = previousWindow(w.period);
         const prevRows = cache.aggregate(prev.sinceIso, opts.groupBy, opts.providers, prev.untilIso);
         ctx.prevCostById = new Map(prevRows.map((r) => [r.bucket, r.costUsd]));
         ctx.totalPrevCost = cache.totals(prev.sinceIso, opts.providers, prev.untilIso).costUsd;
@@ -431,16 +539,57 @@ function runReport(parsed: ParsedInvocation): void {
       if (showEmail && opts.groupBy !== "account") {
         text += "\n\x1b[2mnote: emails render per account — rerun with --by account\x1b[0m";
       }
-      if (opts.period === "month") {
+      if (w.period === "month") {
         const mtd = ctx.total ?? totalRow(rows);
         text += `\n${renderBurnLine(mtd.costUsd, mtd.requests)}`;
       }
-      return text;
+      // Repo efficiency columns when grouping by repo.
+      if (opts.groupBy === "repo") {
+        const prevMap = new Map<string, AggRow>();
+        const prev = previousWindow(w.period!);
+        for (const r of cache.aggregate(prev.sinceIso, "repo", opts.providers, prev.untilIso)) {
+          prevMap.set(r.bucket, r);
+        }
+        ctx.extraColumns = buildRepoExtras(rows, prevMap);
+        text = renderTable(sortRows(rows, opts.sort, opts.asc), { ...ctx, avgDays: days });
+      }
+      // Spike flags inside the window.
+      const anomalies = detectAnomalies(cache.dailyTotals(sinceIso), {});
+      const footer = anomalyFooter(anomalies);
+      if (footer.length > 0) text += `\n${footer}`;
+      // Budget warnings last.
+      for (const line of budgetBanners()) text += `\n${line}`;
+      return `${windowLine(w)}\n${text}`;
     });
     console.log(out);
   } catch (err) {
     handleError(err);
   }
+}
+
+/** Extra table columns for `--by repo`: efficiency metrics per bucket. */
+function buildRepoExtras(
+  rows: AggRow[],
+  prevById: Map<string, AggRow>,
+): NonNullable<TableContext["extraColumns"]> {
+  void rows;
+  return [
+    {
+      header: "avg $/req",
+      cell: (row) => `$${(row.requests > 0 ? row.costUsd / row.requests : 0).toFixed(4)}`,
+    },
+    {
+      header: "cache Δ",
+      cell: (row) => {
+        const eff = repoEfficiency(row, prevById.get(row.bucket));
+        return `${eff.cacheTrendPts >= 0 ? "+" : ""}${eff.cacheTrendPts}pp`;
+      },
+    },
+    {
+      header: "tok/sess",
+      cell: (row) => humanCount(repoEfficiency(row).tokensPerSession),
+    },
+  ];
 }
 
 /** Whole days covered by a window, inclusive of both ends (min 1). */
@@ -455,20 +604,30 @@ function rangeDays(sinceIso: string, untilIso?: string): number {
 function runExport(parsed: ParsedInvocation): void {
   const opts = reportOptions(parsed);
   const format = flagString(parsed, "format") ?? "csv";
-  if (format !== "csv" && format !== "json") {
-    throw new UserError(`invalid --format: ${format} (valid: csv, json)`, "tokitoki export --format csv");
+  if (format !== "csv" && format !== "json" && format !== "md") {
+    throw new UserError(
+      `invalid --format: ${format} (valid: csv, json, md)`,
+      "tokitoki export --format md",
+    );
   }
   try {
     const out = withCache((cache) => {
       cache.sync(resolveExtraFiles(loadConfig()));
-      const sinceIso = opts.since !== undefined
-        ? new Date(`${opts.since}T00:00:00`).toISOString()
-        : sinceIsoFor(opts.period);
-      const untilIso = opts.until !== undefined
-        ? new Date(`${opts.until}T23:59:59.999`).toISOString()
-        : undefined;
-      const rows = sortRows(cache.aggregate(sinceIso, opts.groupBy, opts.providers, untilIso), opts.sort, opts.asc);
-      if (format === "json") return JSON.stringify({ period: opts.period, groupBy: opts.groupBy, rows }, null, 2);
+      const w = opts.window;
+      const rows = sortRows(
+        cache.aggregate(w.sinceIso, opts.groupBy, opts.providers, w.untilIso),
+        opts.sort,
+        opts.asc,
+      );
+      const windowLabel = `${fmtLocal(w.sinceIso)} → ${w.untilIso === undefined ? "now" : fmtLocal(w.untilIso)} (${w.label})`;
+      if (format === "json") {
+        return JSON.stringify(
+          { window: { since: w.sinceIso, until: w.untilIso ?? null, label: w.label }, groupBy: opts.groupBy, rows },
+          null,
+          2,
+        );
+      }
+      if (format === "md") return renderMarkdownTable(rows, windowLabel);
       const head = ["bucket", "requests", "sessions", "inputTokens", "outputTokens", "cacheReadTokens", "costUsd"];
       const lines = [head.join(",")];
       for (const r of rows) {
@@ -510,9 +669,10 @@ function runShortcut(parsed: ParsedInvocation): void {
 
 function runToday(parsed: ParsedInvocation): void {
   try {
+    const w = calendarDayWindow();
     const out = withCache((cache) => {
       cache.sync(resolveExtraFiles(loadConfig()));
-      const sinceIso = sinceIsoFor("day");
+      const sinceIso = w.sinceIso;
       const rows = cache.aggregate(sinceIso, "model", flagStrings(parsed, "provider"));
       const total = cache.totals(sinceIso, flagStrings(parsed, "provider"));
       let text = renderTable(sortRows(rows), { total });
@@ -525,7 +685,10 @@ function runToday(parsed: ParsedInvocation): void {
         .slice(0, 3);
       const mini = renderMiniProjects(projects);
       if (mini.length > 0) text += `\n\ntop projects (month-to-date):\n${mini}`;
-      return text;
+      const footer = anomalyFooter(detectAnomalies(cache.dailyTotals(sinceIsoForDays(14)), {}));
+      if (footer.length > 0) text += `\n${footer}`;
+      for (const line of budgetBanners()) text += `\n${line}`;
+      return `${windowLine(w)}\n${text}`;
     });
     console.log(out);
   } catch (err) {
@@ -541,7 +704,7 @@ function shortcutPeriod(command: string): string {
 
 function runChart(parsed: ParsedInvocation): void {
   try {
-    const period = resolvePeriod(flagString(parsed, "last"), "week");
+    const w = resolveTimeWindow({ last: flagString(parsed, "last"), from: flagString(parsed, "from"), to: flagString(parsed, "to"), fallbackPeriod: "week" });
     const spark = flagBool(parsed, "spark");
     const by = flagString(parsed, "by");
     if (by !== undefined && !CHART_DIMENSIONS.includes(by as (typeof CHART_DIMENSIONS)[number])) {
@@ -553,22 +716,26 @@ function runChart(parsed: ParsedInvocation): void {
 
     const out = withCache((cache) => {
       cache.sync(resolveExtraFiles(loadConfig()));
-      if (spark) return sparkSection(cache, period, by);
-      const sinceIso = sinceIsoFor(period);
-      const days = cache.dailyTotals(sinceIso);
-      if (days.length === 0) return "no usage recorded in this window — run `tokitoki scan` first";
+      if (spark) return `${windowLine(w)}\n${sparkSection(cache, w, by)}`;
+      const sinceIso = w.sinceIso;
+      const days = cache.dailyTotals(sinceIso, w.untilIso);
+      if (days.length === 0) return `${windowLine(w)}\nno usage recorded in this window — run \`tokitoki scan\` first`;
       const max = Math.max(...days.map((d) => d.tokens));
       const bars = days
         .map((d) => `${d.day}  ${coloredBar(max > 0 ? d.tokens / max : 0, 30)}  ${humanCount(d.tokens)}`)
         .join("\n");
-      // Δ vs the equally-sized previous window (total tokens)
-      const prev = previousWindow(period);
-      const curTotal = totalTokens(cache.totals(sinceIso));
-      const prevTotal = cache.totals(prev.sinceIso, undefined, prev.untilIso);
-      const prevTokens = prevTotal.inputTokens + prevTotal.outputTokens + prevTotal.cacheReadTokens + prevTotal.cacheWriteTokens;
-      const d = deltaInfo(curTotal, prevTokens);
-      const deltaLine = d.kind === "" ? null : `Δ vs previous period: ${formatDelta(d)} (tokens)`;
-      return deltaLine === null ? bars : `${bars}\n${deltaLine}`;
+      // Δ vs the equally-sized previous window (total tokens) — only for
+      // named rolling periods, where a predecessor exists.
+      let deltaLine: string | null = null;
+      if (w.period !== undefined) {
+        const prev = previousWindow(w.period);
+        const curTotal = totalTokens(cache.totals(sinceIso));
+        const prevTotal = cache.totals(prev.sinceIso, undefined, prev.untilIso);
+        const prevTokens = prevTotal.inputTokens + prevTotal.outputTokens + prevTotal.cacheReadTokens + prevTotal.cacheWriteTokens;
+        const d = deltaInfo(curTotal, prevTokens);
+        deltaLine = d.kind === "" ? null : `Δ vs previous period: ${formatDelta(d)} (tokens)`;
+      }
+      return `${windowLine(w)}\n${deltaLine === null ? bars : `${bars}\n${deltaLine}`}`;
     });
     console.log(out);
   } catch (err) {
@@ -580,7 +747,7 @@ function runChart(parsed: ParsedInvocation): void {
 
 function runPie(parsed: ParsedInvocation): void {
   try {
-    const period = resolvePeriod(flagString(parsed, "last"), "week");
+    const w = resolveTimeWindow({ last: flagString(parsed, "last"), from: flagString(parsed, "from"), to: flagString(parsed, "to"), fallbackPeriod: "week" });
     const groupBy = (flagString(parsed, "by") ?? "provider") as Dimension;
     if (groupBy !== "provider" && groupBy !== "model") {
       throw new UserError(
@@ -591,8 +758,8 @@ function runPie(parsed: ParsedInvocation): void {
 
     const out = withCache((cache) => {
       cache.sync(resolveExtraFiles(loadConfig()));
-      const rows = cache.aggregate(sinceIsoFor(period), groupBy, flagStrings(parsed, "provider"));
-      return renderPie(rows);
+      const rows = cache.aggregate(w.sinceIso, groupBy, flagStrings(parsed, "provider"), w.untilIso);
+      return `${windowLine(w)}\n${renderPie(rows)}`;
     });
     console.log(out);
   } catch (err) {
@@ -633,13 +800,7 @@ type GridWindow = keyof typeof GRID_WINDOWS;
 
 function runGrid(parsed: ParsedInvocation): void {
   try {
-    const windowRaw = flagString(parsed, "last") ?? "month";
-    if (!(windowRaw in GRID_WINDOWS)) {
-      throw new UserError(
-        `invalid window: ${windowRaw} (valid: ${Object.keys(GRID_WINDOWS).join(", ")})`,
-        "tokitoki grid --last month",
-      );
-    }
+    const w = resolveCalendarWindow({ last: flagString(parsed, "last"), from: flagString(parsed, "from") ?? flagString(parsed, "since"), to: flagString(parsed, "to") ?? flagString(parsed, "until") }, "month");
     const metricRaw = flagString(parsed, "metric") ?? "tokens";
     if (metricRaw !== "tokens" && metricRaw !== "cost" && metricRaw !== "requests") {
       throw new UserError(
@@ -649,11 +810,10 @@ function runGrid(parsed: ParsedInvocation): void {
     }
     const out = withCache((cache) => {
       cache.sync(resolveExtraFiles(loadConfig()));
-      const days = GRID_WINDOWS[windowRaw as GridWindow];
-      const daily = cache.dailyTotals(sinceIsoForDays(days));
-      if (daily.length === 0) return "no usage recorded — run `tokitoki scan` first";
-      const start = new Date(Date.now() - (days - 1) * 24 * 3600_000);
-      return renderGrid(daily, start, { metric: metricRaw });
+      const daily = cache.dailyTotals(w.sinceIso, w.untilIso);
+      if (daily.length === 0) return `${windowLine(w)}\nno usage recorded — run \`tokitoki scan\` first`;
+      const start = new Date(new Date(w.sinceIso).getTime());
+      return `${windowLine(w)}\n${renderGrid(daily, start, { metric: metricRaw })}`;
     });
     console.log(out);
   } catch (err) {
@@ -661,7 +821,307 @@ function runGrid(parsed: ParsedInvocation): void {
   }
 }
 
+// ---------------------------------------------------------------- sessions
+
+const SESSION_DIMENSIONS = ["provider", "repo"] as const;
+
+function runSessions(parsed: ParsedInvocation): void {
+  try {
+    const drillId = flagString(parsed, "session");
+    const topN = Math.max(1, Math.min(Number(flagString(parsed, "top") ?? "10") || 10, 100));
+    const by = flagString(parsed, "by");
+    if (by !== undefined && !(SESSION_DIMENSIONS as readonly string[]).includes(by)) {
+      throw new UserError(
+        `invalid --by: ${by} (valid: ${SESSION_DIMENSIONS.join(", ")})`,
+        "tokitoki sessions --by provider",
+      );
+    }
+    const json = flagBool(parsed, "json");
+    const providers = flagStrings(parsed, "provider");
+
+    const out = withCache((cache) => {
+      cache.sync(resolveExtraFiles(loadConfig()));
+      const w = resolveTimeWindow({ last: flagString(parsed, "last"), from: flagString(parsed, "from"), to: flagString(parsed, "to"), fallbackPeriod: "week" });
+      const sinceIso = w.sinceIso;
+      const filter = { sinceIso, untilIso: w.untilIso, providers: providers.length > 0 ? providers : undefined };
+
+      if (drillId !== undefined) {
+        return renderSessionDrill(cache, drillId, json);
+      }
+
+      const rows = cache.topSessions({ ...filter, limit: topN });
+      if (json) {
+        return JSON.stringify({ window: { since: w.sinceIso, until: w.untilIso ?? null, label: w.label }, top: topN, rows }, null, 2);
+      }
+      if (rows.length === 0) {
+        return `${windowLine(w)}\nno sessions recorded in this window — run \`tokitoki scan\` first`;
+      }
+      return `${windowLine(w)}\n${renderSessionLeaderboard(rows, { by: by as (typeof SESSION_DIMENSIONS)[number] | undefined })}`;
+    });
+    console.log(out);
+  } catch (err) {
+    handleError(err);
+  }
+}
+
+interface SessionColumn {
+  header: string;
+  align: "left" | "right";
+  maxWidth?: number;
+  render: (s: SessionSummary) => string;
+}
+
+const SESSION_COLUMNS: SessionColumn[] = [
+  { header: "date", align: "left", render: (s) => s.startedAt.slice(0, 16).replace("T", " ") },
+  { header: "provider", align: "left", render: (s) => s.provider },
+  { header: "account", align: "left", render: (s) => s.accountKey },
+  {
+    header: "model(s)",
+    align: "left",
+    render: (s) => {
+      const joined = s.models.join(",");
+      return joined.length > 28 ? `${joined.slice(0, 27)}…` : joined;
+    },
+  },
+  { header: "repo", align: "left", render: (s) => s.repos[0] ?? "(no repo)" },
+  { header: "req", align: "right", render: (s) => formatInt(s.requests) },
+  { header: "tokens", align: "right", render: (s) => humanCount(s.totalTokens) },
+  { header: "%cache", align: "right", render: (s) => `${s.cachePct}%` },
+  { header: "cost", align: "right", render: (s) => formatCost(s.costUsd) },
+];
+
+function sessionTable(rows: SessionSummary[]): string {
+  const cells = rows.map((r) => SESSION_COLUMNS.map((c) => c.render(r)));
+  const widths = SESSION_COLUMNS.map((c, i) =>
+    Math.max(c.header.length, ...cells.map((row) => row[i]!.length)),
+  );
+  const pad = (text: string, width: number, align: "left" | "right") =>
+    align === "left" ? text.padEnd(width) : text.padStart(width);
+  const divider = widths.map((w) => "-".repeat(w)).join("  ");
+  const out = [
+    SESSION_COLUMNS.map((c, i) => pad(c.header, widths[i]!, c.align)).join("  "),
+    divider,
+  ];
+  for (const row of cells) {
+    out.push(row.map((cell, i) => pad(cell, widths[i]!, SESSION_COLUMNS[i]!.align)).join("  "));
+  }
+  return out.join("\n");
+}
+
+function renderSessionLeaderboard(
+  rows: SessionSummary[],
+  opts: { by?: (typeof SESSION_DIMENSIONS)[number] },
+): string {
+  if (opts.by === undefined) return sessionTable(rows);
+  // Section per provider / repo, each with its own mini-leaderboard.
+  const keyOf = (s: SessionSummary) =>
+    opts.by === "provider"
+      ? s.provider
+      : s.repos.length > 1
+        ? `${s.repos[0]} +${s.repos.length - 1}`
+        : (s.repos[0] ?? "(no repo)");
+  const groups = new Map<string, SessionSummary[]>();
+  for (const r of rows) {
+    const k = keyOf(r);
+    let list = groups.get(k);
+    if (list === undefined) {
+      list = [];
+      groups.set(k, list);
+    }
+    list.push(r);
+  }
+  const sections: string[] = [];
+  for (const [key, list] of [...groups.entries()].sort(
+    (a, b) => sumCost(b[1]) - sumCost(a[1]),
+  )) {
+    sections.push(`${key}  (${list.length} session${list.length === 1 ? "" : "s"})`);
+    sections.push(sessionTable(list));
+    sections.push("");
+  }
+  return sections.join("\n").trimEnd();
+}
+
+function sumCost(rows: SessionSummary[]): number {
+  return rows.reduce((acc, r) => acc + r.costUsd, 0);
+}
+
+function renderSessionDrill(cache: EventCache, sessionId: string, json: boolean): string {
+  const matches = cache.sessionProviders(sessionId);
+  if (matches.length === 0) {
+    throw new UserError(`no session '${sessionId}' in the local data`, "tokitoki scan && tokitoki sessions --top 25");
+  }
+  if (matches.length > 1) {
+    throw new UserError(
+      `session id exists under multiple providers: ${matches.join(", ")}`,
+      `tokitoki sessions --session ${sessionId} --provider <one-of-them>`,
+    );
+  }
+  const events = cache.sessionDetail(matches[0]!, sessionId);
+  let runningTokens = 0;
+  const detailRows = events.map((e, i) => {
+    runningTokens += e.inputTokens + e.outputTokens + e.cacheReadTokens + e.cacheWriteTokens;
+    return { n: i + 1, ...e, runningTokens };
+  });
+  if (json) {
+    return JSON.stringify({ provider: matches[0], sessionId, events: detailRows }, null, 2);
+  }
+  const header = `session ${sessionId} · ${matches[0]} · ${events.length} requests`;
+  const widths = [4, 9, 22, 10, 10, 10, 8, 9, 11];
+  const headers = ["#", "time", "model", "input", "output", "cache-rd", "%cache", "cost", "run.tok"];
+  const lines = [header, headers.map((h, i) => (i <= 2 ? h.padEnd(widths[i]!) : h.padStart(widths[i]!).slice(0, widths[i]!))).join("  "), widths.map((w) => "-".repeat(w)).join("  ")];
+  for (const r of detailRows) {
+    const cells = [
+      String(r.n).padEnd(widths[0]!),
+      r.ts.slice(11, 19).padEnd(widths[1]!),
+      r.model.slice(0, 21).padEnd(widths[2]!),
+      humanCount(r.inputTokens).padStart(widths[3]!),
+      humanCount(r.outputTokens).padStart(widths[4]!),
+      humanCount(r.cacheReadTokens).padStart(widths[5]!),
+      `${cachePct(r.inputTokens, r.cacheReadTokens)}%`.padStart(widths[6]!),
+      formatCost(r.costUsd).padStart(widths[7]!),
+      humanCount(r.runningTokens).padStart(widths[8]!),
+    ];
+    lines.push(cells.join("  "));
+  }
+  return lines.join("\n");
+}
+
 // ---------------------------------------------------------------- sync
+
+function runAnomalies(parsed: ParsedInvocation): void {
+  try {
+    const w = resolveCalendarWindow({ last: flagString(parsed, "last"), from: flagString(parsed, "from") ?? flagString(parsed, "since"), to: flagString(parsed, "to") ?? flagString(parsed, "until") }, "month");
+    // Baseline needs trailing days: derive from the window length.
+    const windowDays = Math.max(
+      1,
+      Math.round((Date.now() - new Date(w.sinceIso).getTime()) / 86_400_000),
+    );
+    const metricRaw = flagString(parsed, "metric") ?? "tokens";
+    if (!ANOMALY_METRICS.includes(metricRaw as never)) {
+      throw new UserError(
+        `invalid --metric: ${metricRaw} (valid: ${ANOMALY_METRICS.join(", ")})`,
+        "tokitoki anomalies --metric tokens",
+      );
+    }
+    const json = flagBool(parsed, "json");
+    const out = withCache((cache) => {
+      cache.sync(resolveExtraFiles(loadConfig()));
+      const daily = cache.dailyTotals(w.sinceIso, w.untilIso);
+      const found = detectAnomalies(daily, { metric: metricRaw as "tokens" | "cost" | "requests" });
+      if (json) return JSON.stringify({ window: { since: w.sinceIso, until: w.untilIso ?? null, label: w.label }, metric: metricRaw, anomalies: found }, null, 2);
+      if (found.length === 0) return `${windowLine(w)}\nno unusual activity in this window`;
+      const header = ["date", "metric", "value", "baseline(14d)", "ratio"];
+      const rows = found.map((a) => [
+        a.day,
+        a.metric,
+        metricRaw === "cost" ? formatCost(a.value) : humanCount(a.value),
+        metricRaw === "cost" ? formatCost(a.baseline) : humanCount(a.baseline),
+        `${a.ratio.toFixed(1)}x`,
+      ]);
+      const widths = header.map((_, i) => Math.max(header[i]!.length, ...rows.map((r) => r[i]!.length)));
+      const lines = [
+        `${windowLine(w)}`,
+        widths.map((w, i) => (i === 0 ? header[i]!.padEnd(w) : header[i]!.padStart(w))).join("  "),
+        widths.map((w) => "-".repeat(w)).join("  "),
+        ...rows.map((r) => r.map((c, i) => (i === 0 ? c.padEnd(widths[i]!) : c.padStart(widths[i]!))).join("  ")),
+      ];
+      return lines.join("\n");
+    });
+    console.log(out);
+  } catch (err) {
+    handleError(err);
+  }
+}
+
+// ---------------------------------------------------------------- repos
+
+function runRepos(parsed: ParsedInvocation): void {
+  try {
+    const worst = Math.max(1, Math.min(Number(flagString(parsed, "worst") ?? "0") || 0, 100));
+    const providers = flagStrings(parsed, "provider");
+    const out = withCache((cache) => {
+      cache.sync(resolveExtraFiles(loadConfig()));
+      const w = resolveTimeWindow({ last: flagString(parsed, "last"), from: flagString(parsed, "from"), to: flagString(parsed, "to"), fallbackPeriod: "week" });
+      const rows = cache.aggregate(w.sinceIso, "repo", providers.length > 0 ? providers : undefined, w.untilIso);
+      if (rows.length === 0) return `${windowLine(w)}\nno usage recorded in this window — run \`tokitoki scan\` first`;
+      let prevRows = new Map<string, AggRow>();
+      if (w.period !== undefined) {
+        const prev = previousWindow(w.period);
+        prevRows = new Map(
+          cache.aggregate(prev.sinceIso, "repo", providers.length > 0 ? providers : undefined, prev.untilIso).map((r) => [r.bucket, r]),
+        );
+      }
+      const ranked = rows
+        .map((r) => ({ row: r, eff: repoEfficiency(r, prevRows.get(r.bucket)) }))
+        .sort((a, b) => b.eff.hostilityScore - a.eff.hostilityScore);
+      const shown = worst > 0 ? ranked.slice(0, worst) : ranked;
+      const header = ["repo", "req", "avg $/req", "%cache", "cache Δ", "tok/sess", "score"];
+      const body = shown.map(({ row, eff }) => [
+        row.bucket,
+        formatInt(row.requests),
+        `$${eff.avgCostPerReq.toFixed(4)}`,
+        `${eff.cachePct}%`,
+        `${eff.cacheTrendPts >= 0 ? "+" : ""}${eff.cacheTrendPts}pp`,
+        humanCount(eff.tokensPerSession),
+        eff.hostilityScore.toFixed(4),
+      ]);
+      const widths = header.map((_, i) => Math.max(header[i]!.length, ...body.map((r) => r[i]!.length)));
+      const aligns: Array<"left" | "right"> = ["left", "right", "right", "right", "right", "right", "right"];
+      const fmt = (cells: string[]): string => cells.map((c, i) => (aligns[i] === "left" ? c.padEnd(widths[i]!) : c.padStart(widths[i]!))).join("  ");
+      return [
+        `${windowLine(w)}`,
+        `repo efficiency · score = avg $/req × (1 − cache%) — higher is worse`,
+        "",
+        fmt(header),
+        widths.map((w) => "-".repeat(w)).join("  "),
+        ...body.map(fmt),
+      ].join("\n");
+    });
+    console.log(out);
+  } catch (err) {
+    handleError(err);
+  }
+}
+
+// ---------------------------------------------------------------- import
+
+function runImport(parsed: ParsedInvocation): void {
+  try {
+    const file = parsed.rest[0];
+    if (file === undefined || file.length === 0) {
+      throw new UserError("import needs a CSV file", "tokitoki import ~/Downloads/usage.csv --dry-run");
+    }
+    let text: string;
+    try {
+      text = fs.readFileSync(file, "utf8");
+    } catch {
+      throw new UserError(`cannot read ${file}`, "tokitoki import ./usage.csv --dry-run");
+    }
+    const dryRun = flagBool(parsed, "dry-run");
+    const result = importCsv(text, localMachineId());
+    if (result.source === null) {
+      throw new UserError(
+        "could not recognize this CSV's columns",
+        "try re-exporting from the provider console, or check README#backfill-imports",
+      );
+    }
+    const sourceOverride = flagString(parsed, "source");
+    if (sourceOverride !== undefined && sourceOverride !== result.source) {
+      console.log(`note: headers look like '${result.source}' (asked for '${sourceOverride}')`);
+    }
+    const label = `${result.source}-import`;
+    if (dryRun) {
+      console.log(`dry-run: would import ${result.events.length} events from ${result.source} (${result.skipped} rows skipped)`);
+      return;
+    }
+    // Insert into the append-log so cursors/cache treat them like any event.
+    const written = appendEvents(result.events);
+    withCache((cache) => cache.sync(resolveExtraFiles(loadConfig())));
+    console.log(`imported ${written} events from ${file} as ${label} (${result.skipped} rows skipped)`);
+  } catch (err) {
+    handleError(err);
+  }
+}
 
 function runSyncCommand(parsed: ParsedInvocation): void {
   const modeRaw = flagBool(parsed, "pull") ? "pull" : flagBool(parsed, "push") ? "push" : "both";
@@ -744,12 +1204,12 @@ function nextFreePort(from: number): number {
 // ---------------------------------------------------------------- helpers
 
 /** Daily evolution as compact sparklines (one row per top bucket). */
-function sparkSection(cache: EventCache, period: Period, by: string | undefined): string {
+function sparkSection(cache: EventCache, w: TimeWindow, by: string | undefined): string {
   let series: SeriesBucket[];
   if (by === "model" || by === "provider") {
-    series = cache.seriesDaily(sinceIsoFor(period), by);
+    series = cache.seriesDaily(w.sinceIso, by);
   } else {
-    const days = cache.dailyTotals(sinceIsoFor(period));
+    const days = cache.dailyTotals(w.sinceIso, w.untilIso);
     series = [
       { bucket: "total", days: days.map((d) => d.day), values: days.map((d) => d.tokens) },
     ];

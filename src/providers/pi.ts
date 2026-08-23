@@ -16,6 +16,7 @@ import { walkJsonl } from "./claude-code.ts";
 export const piProvider: Provider = {
   id: "pi",
   label: "pi",
+  envVar: "PI_DIR",
 
   discoverRoots(): string[] {
     const override = providerConfig(this.id)?.paths;
