@@ -1,0 +1,47 @@
+import { afterAll, describe, expect, test } from "bun:test";
+import fs from "node:fs";
+
+// Fake HOME with harness stores so email resolution is hermetic.
+const home = `/tmp/tokitoki-accounts-test-${Date.now()}`;
+process.env.HOME = home;
+delete process.env.CLAUDE_CONFIG_DIR;
+process.env.CODEX_HOME = `${home}/.codex`;
+
+fs.mkdirSync(`${home}/.codex`, { recursive: true });
+// claude-code: ~/.claude.json → oauthAccount.emailAddress
+fs.writeFileSync(
+  `${home}/.claude.json`,
+  JSON.stringify({ oauthAccount: { emailAddress: "me@example.com" } }),
+);
+// codex: auth.json → JWT id_token payload (unsigned header, real b64 payload)
+const payload = Buffer.from(JSON.stringify({ email: "codex@example.com" }))
+  .toString("base64")
+  .replaceAll("+", "-")
+  .replaceAll("/", "_")
+  .replace(/=+$/, "");
+fs.writeFileSync(
+  `${home}/.codex/auth.json`,
+  JSON.stringify({ tokens: { id_token: `fakeheader.${payload}.fakesig` } }),
+);
+
+const { accountEmailFor } = await import("../src/accounts.ts");
+
+afterAll(() => {
+  fs.rmSync(home, { recursive: true, force: true });
+});
+
+describe("account email resolution", () => {
+  test("claude-code reads oauthAccount.emailAddress", () => {
+    expect(accountEmailFor("claude-code")).toBe("me@example.com");
+  });
+
+  test("codex decodes the JWT id_token payload", () => {
+    expect(accountEmailFor("codex")).toBe("codex@example.com");
+  });
+
+  test("providers without local identity return null", () => {
+    expect(accountEmailFor("pi")).toBeNull();
+    expect(accountEmailFor("opencode")).toBeNull();
+    expect(accountEmailFor("unknown-provider")).toBeNull();
+  });
+});

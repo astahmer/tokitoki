@@ -4,7 +4,9 @@ import { localMachineId } from "./machine.ts";
 import { PROVIDERS, getProvider } from "./providers/index.ts";
 import { scanProvider } from "./scan.ts";
 import { DIMENSIONS, EventCache, type AggRow, type Dimension, type SeriesBucket } from "./cache.ts";
-import { renderTable, renderMiniProjects, resolveExtraFiles, resolveSortColumn, sinceIsoFor, previousWindow, monthStartIso, sortRows, formatDelta, deltaInfo, totalRow, totalTokens, planGaugeFn, renderBurnLine } from "./report.ts";
+import { renderTable, renderMiniProjects, resolveExtraFiles, resolveSortColumn, sinceIsoFor, sinceIsoForDays, previousWindow, monthStartIso, sortRows, formatDelta, deltaInfo, totalRow, totalTokens, planGaugeFn, renderBurnLine, burnProjection } from "./report.ts";
+import { accountEmailMap } from "./accounts.ts";
+import { renderGrid } from "./grid.ts";
 import { bar, formatCost, humanCount, sparkline } from "./format.ts";
 import { loadConfig } from "./config.ts";
 import { getSyncBackend, runSync } from "./sync/index.ts";
@@ -23,7 +25,7 @@ Usage: tokitoki <command> [options]
 Commands:
   scan [--provider <id>]                     incrementally scan harness stores
   report --last <day|week|month>             aggregate over a rolling window
-      [--by model|project|account|machine|provider] [--json]
+      [--by model|project|repo|account|machine|provider] [--json]
       [--sort requests|sessions|avg|input|output|cache|%cache|cost|name]
       [--asc] [--provider <id>]... [--delta/--no-delta]
   today | week | month                       shortcuts for report
@@ -31,6 +33,9 @@ Commands:
       [--by provider|model] [--spark]
   pie [--last day|week|month]                share-of-tokens legend w/ cost bars
       [--by provider|model]
+  grid [--last month|quarter|year]           GitHub-style calendar heatmap
+      [--metric tokens|cost|requests]
+  report --show-email                        render account rows as name <email>
   sync [--backend dir|git|atproto]           push/pull events across machines
       [--push|--pull|--both] (default: both; backend + url/path from [sync]
       in config.toml)
@@ -63,6 +68,9 @@ function main(argv: string[]): void {
       break;
     case "pie":
       runPie(parsed);
+      break;
+    case "grid":
+      runGrid(parsed);
       break;
     case "sync":
       runSyncCommand(parsed);
@@ -179,13 +187,34 @@ function reportOptions(parsed: ParsedInvocation, defaultPeriod?: Period): Report
 
 function runReport(parsed: ParsedInvocation): void {
   const opts = reportOptions(parsed);
+  const showEmail = flagBool(parsed, "show-email");
   try {
     const out = withCache((cache) => {
       cache.sync(resolveExtraFiles(loadConfig()));
       const sinceIso = sinceIsoFor(opts.period);
       const rows = cache.aggregate(sinceIso, opts.groupBy, opts.providers);
       if (opts.json) {
-        return JSON.stringify({ period: opts.period, groupBy: opts.groupBy, rows }, null, 2);
+        // Enriched shape: totals + burn + previous-window cost so the
+        // menu-bar app needs a single spawn per period.
+        const total = cache.totals(sinceIso, opts.providers);
+        let prevTotalCost: number | undefined;
+        if (opts.delta) {
+          const prev = previousWindow(opts.period);
+          prevTotalCost = cache.totals(prev.sinceIso, opts.providers, prev.untilIso).costUsd;
+        }
+        const mtd = cache.totals(monthStartIso(), opts.providers);
+        return JSON.stringify(
+          {
+            period: opts.period,
+            groupBy: opts.groupBy,
+            rows,
+            total,
+            prevTotalCost,
+            burn: burnProjection(mtd.costUsd),
+          },
+          null,
+          2,
+        );
       }
 
       const ctx: Parameters<typeof renderTable>[1] = {};
@@ -205,6 +234,20 @@ function runReport(parsed: ParsedInvocation): void {
       }
       if (opts.delta && process.env.NO_COLOR === undefined) {
         ctx.colorizeDelta = deltaColorizer;
+      }
+      if (showEmail) {
+        // Emails resolve live from harness stores (claude-code, codex); shown
+        // only when the provider attribution for an accountKey is unambiguous.
+        const providersByKey = new Map<string, Set<string>>();
+        for (const [key, provider] of cache.accountProviders(sinceIso)) {
+          let set = providersByKey.get(key);
+          if (set === undefined) {
+            set = new Set();
+            providersByKey.set(key, set);
+          }
+          set.add(provider);
+        }
+        ctx.emailFor = accountEmailMap(providersByKey.keys(), providersByKey);
       }
 
       let text = renderTable(sortRows(rows, opts.sort, opts.asc), ctx);
@@ -341,6 +384,36 @@ export function renderPie(rows: AggRow[]): string {
     `${"TOTAL".padEnd(nameWidth)}  ${bar(1, 20)}  100%  ${formatCost(sorted.reduce((s, r) => s + r.costUsd, 0))}`,
   );
   return lines.join("\n");
+}
+
+// ---------------------------------------------------------------- grid
+
+const GRID_WINDOWS = { day: 1, week: 7, month: 30, quarter: 91, year: 365 } as const;
+
+type GridWindow = keyof typeof GRID_WINDOWS;
+
+function runGrid(parsed: ParsedInvocation): void {
+  try {
+    const windowRaw = flagString(parsed, "last") ?? "year";
+    if (!(windowRaw in GRID_WINDOWS)) {
+      throw new UserError(`invalid --last for grid: ${windowRaw} (valid: month, quarter, year)`);
+    }
+    const metricRaw = flagString(parsed, "metric") ?? "tokens";
+    if (metricRaw !== "tokens" && metricRaw !== "cost" && metricRaw !== "requests") {
+      throw new UserError(`invalid --metric: ${metricRaw} (valid: tokens, cost, requests)`);
+    }
+    const out = withCache((cache) => {
+      cache.sync(resolveExtraFiles(loadConfig()));
+      const days = GRID_WINDOWS[windowRaw as GridWindow];
+      const daily = cache.dailyTotals(sinceIsoForDays(days));
+      if (daily.length === 0) return "no usage recorded — run `tokitoki scan` first";
+      const start = new Date(Date.now() - (days - 1) * 24 * 3600_000);
+      return renderGrid(daily, start, { metric: metricRaw });
+    });
+    console.log(out);
+  } catch (err) {
+    handleError(err);
+  }
 }
 
 // ---------------------------------------------------------------- sync

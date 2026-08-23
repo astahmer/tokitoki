@@ -21,5 +21,6 @@
   "include": [
     "src",
     "test"
-  ]
+  ],
+  "exclude": ["web", "dist", "menubar"]
 }

@@ -76,7 +76,9 @@ tokitoki scan                       # incremental scan of all providers
 tokitoki scan --provider pi         # one provider (pi | claude-code | codex)
 tokitoki today                      # today's usage grouped by model
 tokitoki report --last week --by account
+tokitoki report --last week --show-email --by account  # name <email> rows
 tokitoki report --last month --json # machine-readable
+tokitoki grid --last year [--metric tokens|cost|requests]  # calendar heatmap
 
 # sort by any column, filter by provider (repeatable), toggle Δ vs previous period
 tokitoki report --last week --by model --sort cost        # default order: cost desc
@@ -188,23 +190,47 @@ user-configured estimates; the gauge is only as honest as the cap you set.
 ## Web dashboard
 
 ```sh
+bun run web:build       # vite build → dist/web/  (required once)
 tokitoki web            # → http://localhost:7788  (--port to change)
+bun run web:dev         # vite dev server :5177, /api proxied to :7788
 ```
 
-Local-only, dependency-free single page served by Bun.serve:
+React + TypeScript SPA built with Vite, styled with Tailwind CSS v4,
+primitives hand-rolled shadcn-style on **Base UI** (Switch/Tabs-class
+accessibility without Radix weight), charts via **TanStack Charts**
+(line timeseries + polar donut).
 
-- Summary cards: week cost (with Δ vs previous week), burn/day + projected
-  month-end, requests, sessions, tokens, cache %
-- Multi-account tabs: every accountKey gets its own segment; picking one
-  scopes cards, chart, and table to it
-- Group-by dimension tabs (model / provider / account / machine / project)
-- Sortable table (click headers) with share-of-total bars
-- Inline-SVG stacked area chart of daily tokens per bucket over 30 days
+Build flow:
 
-Visual direction follows openusage.ai's dark-card look with CodexBar-style
-monospace numbers. API endpoints (`/api/summary`, `/api/timeseries`,
-`/api/table`) reuse the exact CLI aggregation — see `src/web/api.ts` if you
-want to script them.
+```text
+web/src (React+TW) ──vite build──▶ dist/web/ ──Bun.serve static──▶ browser
+                                        ▲
+src/web/api.ts ◀── same aggregation as the CLI (EventCache) ── /api/* JSON
+```
+
+- `Bun.serve` (src/web/server.ts) serves `dist/web/` statically and keeps
+  `/api/*` JSON endpoints; if `dist/web/` is missing it returns a helpful
+  "run bun run web:build" message. No duplicated SQL: API responses come
+  from the exact CLI aggregation in src/web/api.ts.
+- Parity with the CLI: period + group-by tabs (incl. repo), provider filter
+  chips, multi-account tabs, click-to-sort table (%share, %cache, Δ vs
+  previous window, plan gauges), evolution chart, donut share, and a
+  GitHub-style calendar heatmap (`/api/grid`, metric switchable; the same
+  grid exists on the CLI as `tokitoki grid`).
+- Account emails: providers expose the logged-in address read live from
+  local harness stores (claude-code → ~/.claude.json oauthAccount;
+  codex → JWT payload in ~/.codex/auth.json; pi/opencode are key-only →
+  null). Toggle "show emails" in the web UI (persisted to localStorage) or
+  pass `--show-email` to `report`.
+
+## Docs
+
+- [Publishing the ATProto lexicon](docs/atproto-lexicon.md) — NSID choice,
+  schema doc, hosting/announcement, versioning rules, adapter flip checklist
+- [Packaging](docs/packaging.md) — compiled binary, cross-compile targets,
+  release/checksum flow, nix packaging recipe (source + prebuilt), nixfiles wiring + cli-tools cockpit reminder
+- [Menu-bar app](menubar/tokitoki-menubar/) — native SwiftUI MenuBarExtra
+  (macOS 13+), `swift build`, refreshes every 5 min from the compiled CLI
 
 ## Status / known limits
 

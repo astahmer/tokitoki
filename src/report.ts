@@ -16,6 +16,12 @@ export function sinceIsoFor(period: "day" | "week" | "month"): string {
   return new Date(now.getTime() - ms).toISOString();
 }
 
+/** Extended windows for the calendar grid (quarter ≈ 91d, year = 365d). */
+export function sinceIsoForDays(days: number, now: Date = new Date()): string {
+  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate() - (days - 1));
+  return start.toISOString();
+}
+
 /**
  * Equally-sized window immediately before the current one.
  * `day` uses local calendar days; week/month roll back by their length.
@@ -271,6 +277,8 @@ export interface TableContext {
   totalPrevCost?: number;
   /** Returns a gauge cell for buckets matching a configured plan. */
   gaugeFor?: (bucket: string) => string | undefined;
+  /** Optional account email per bucket, rendered as "name <email>". */
+  emailFor?: Map<string, string>;
   /** TTY colorizer for delta strings; receives ("▲12%", "up"|"down"). */
   colorizeDelta?: (text: string, kind: "up" | "down") => string;
 }
@@ -302,8 +310,10 @@ export function renderTable(rows: AggRow[], ctx: TableContext = {}): string {
     const gauge = ctx.gaugeFor?.(name ?? r.bucket);
     const baseCost = gauge ?? formatCost(r.costUsd);
     const prev = ctx.prevCostById?.get(r.bucket);
+    const displayName = name ?? r.bucket;
+    const email = ctx.emailFor?.get(displayName);
     return [
-      name ?? r.bucket,
+      email !== undefined ? `${displayName} <${email}>` : displayName,
       formatInt(r.requests),
       formatInt(r.sessions),
       humanCount(avgTokensPerReq(r)),

@@ -38,8 +38,14 @@ describe("web api + server", () => {
     fs.rmSync(dataDir, { recursive: true, force: true });
   });
 
-  test("/ serves the dashboard html", async () => {
+  test("/ serves the built SPA when present, helpful 503 otherwise", async () => {
     const res = await fetch(`http://localhost:${server.port}/`);
+    const built = fs.existsSync(path.join(import.meta.dir, "../dist/web/index.html"));
+    if (!built) {
+      expect(res.status).toBe(503);
+      expect(await res.text()).toContain("web:build");
+      return;
+    }
     expect(res.status).toBe(200);
     const html = await res.text();
     expect(html).toContain("<!doctype html>");
@@ -97,5 +103,39 @@ describe("web api + server", () => {
     expect(res.status).toBe(400);
     const body = (await res.json()) as { error?: string };
     expect(body.error).toContain("invalid dimension");
+  });
+
+  test("/api/grid returns daily cells and validates metric", async () => {
+    const ok = await fetch(`http://localhost:${server.port}/api/grid?days=30&metric=cost`);
+    const body = (await ok.json()) as { metric: string; cells: Array<{ day: string; costUsd: number }> };
+    expect(ok.status).toBe(200);
+    expect(body.metric).toBe("cost");
+    expect(Array.isArray(body.cells)).toBe(true);
+
+    const bad = await fetch(`http://localhost:${server.port}/api/grid?days=30&metric=bogus`);
+    expect(bad.status).toBe(400);
+  });
+
+  test("/api/table delta badges + provider filter + emails opt-in", async () => {
+    const res = await fetch(
+      `http://localhost:${server.port}/api/table?by=model&period=week&provider=pi`,
+    );
+    const body = (await res.json()) as {
+      total: { requests: number };
+      prevCostById?: Record<string, number>;
+      gauges: Record<string, unknown>;
+    };
+    expect(res.status).toBe(200);
+    // All seeded events are pi.
+    expect(body.total.requests).toBeGreaterThanOrEqual(3);
+    expect(body.prevCostById).toBeDefined();
+    expect(body.gauges).toBeDefined();
+
+    // showEmail off by default → no emails payload.
+    const noEmail = await fetch(
+      `http://localhost:${server.port}/api/table?by=model&period=week`,
+    );
+    const noEmailBody = (await noEmail.json()) as { emails?: Record<string, string> };
+    expect(noEmailBody.emails).toBeUndefined();
   });
 });

@@ -1,6 +1,6 @@
 {
   "name": "tokitoki",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Unified coding-agent usage & session analytics across machines, harnesses, and accounts",
   "type": "module",
   "engines": {
@@ -10,16 +10,28 @@
     "tokitoki": "./bin/tokitoki.js"
   },
   "scripts": {
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p web/tsconfig.json",
     "test": "bun test",
     "tokitoki": "bun src/cli.ts",
-    "compile": "bun build --compile src/cli.ts --outfile dist/tokitoki"
+    "compile": "bun build --compile src/cli.ts --outfile dist/tokitoki",
+    "web:build": "cd web && vite build",
+    "web:dev": "cd web && vite"
   },
   "dependencies": {
     "@iarna/toml": "2.2.5"
   },
   "devDependencies": {
+    "@base-ui-components/react": "1.0.0-rc.0",
+    "@tailwindcss/vite": "4.3.3",
+    "@tanstack/charts": "0.14.0",
     "@types/bun": "1.4.0",
-    "typescript": "7.0.2"
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.4",
+    "@vitejs/plugin-react": "6.1.0",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "tailwindcss": "4.3.3",
+    "typescript": "7.0.2",
+    "vite": "8.2.2"
   }
 }

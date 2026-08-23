@@ -4,6 +4,7 @@ import { Database, type SQLQueryBindings } from "bun:sqlite";
 
 import type { UsageEvent } from "./types.ts";
 import { dataDir, eventsFile, readEventsFile } from "./store.ts";
+import { resolveRepo } from "./repos.ts";
 
 /**
  * SQLite cache over the merged event logs. Rebuildable at any time: it is a
@@ -11,11 +12,18 @@ import { dataDir, eventsFile, readEventsFile } from "./store.ts";
  */
 export class EventCache {
   private db: Database;
+  private repoStmtInsert: ReturnType<Database["prepare"]>;
+  /** Injectable for tests; defaults to real filesystem resolution. */
+  private repoNameFor: (dir: string) => string;
 
-  constructor(dbPath?: string) {
+  constructor(dbPath?: string, repoNameFor?: (dir: string) => string) {
     const p = dbPath ?? path.join(dataDir(), "cache.db");
     this.db = new Database(p, { create: true });
+    this.repoNameFor = repoNameFor ?? ((dir: string) => resolveRepo(dir).name);
     this.migrate();
+    this.repoStmtInsert = this.db.prepare(
+      "INSERT OR REPLACE INTO repo_dirs (dir, name) VALUES (?, ?)",
+    );
   }
 
   private migrate(): void {
@@ -37,6 +45,10 @@ export class EventCache {
       );
       CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);
       CREATE INDEX IF NOT EXISTS idx_events_provider ON events(provider);
+      CREATE TABLE IF NOT EXISTS repo_dirs (
+        dir TEXT PRIMARY KEY,
+        name TEXT NOT NULL
+      );
     `);
   }
 
@@ -99,6 +111,34 @@ export class EventCache {
     return row.n;
   }
 
+  /**
+   * Make sure every distinct project_dir in events has a repo mapping.
+   * Dirs are stable, so the table only ever grows; unknown dirs are resolved
+   * once via resolveRepo and cached forever.
+   */
+  /** Distinct (accountKey → provider) pairs seen in the window. */
+  accountProviders(sinceIso: string): Map<string, string> {
+    const rows = this.db
+      .query(
+        `SELECT DISTINCT account_key AS key, provider FROM events WHERE ts >= ?`,
+      )
+      .all(sinceIso) as Array<{ key: string; provider: string }>;
+    return new Map(rows.map((r) => [r.key, r.provider]));
+  }
+
+  private ensureRepoMap(): void {
+    const dirs = this.db
+      .query(
+        `SELECT DISTINCT e.project_dir AS dir FROM events e
+         WHERE e.project_dir IS NOT NULL
+           AND NOT EXISTS (SELECT 1 FROM repo_dirs r WHERE r.dir = e.project_dir)`,
+      )
+      .all() as Array<{ dir: string }>;
+    for (const { dir } of dirs) {
+      this.repoStmtInsert.run(dir, this.repoNameFor(dir));
+    }
+  }
+
   private whereClause(
     providers?: string[],
     untilIso?: string,
@@ -133,16 +173,22 @@ export class EventCache {
     untilIso?: string,
     accountKey?: string,
   ): AggRow[] {
+    // Repo rollup needs the mapping populated before joining on it.
+    if (groupBy === "repo") this.ensureRepoMap();
     const column =
       groupBy === "project"
         ? "COALESCE(project_dir, '(no project)')"
-        : groupBy === "account"
-          ? "account_key"
-          : groupBy === "machine"
-            ? "machine_id"
-            : groupBy === "provider"
-              ? "provider"
-              : "model";
+        : groupBy === "repo"
+          ? "COALESCE(repo_dirs.name, '(no repo)')"
+          : groupBy === "account"
+            ? "account_key"
+            : groupBy === "machine"
+              ? "machine_id"
+              : groupBy === "provider"
+                ? "provider"
+                : "model";
+    const join =
+      groupBy === "repo" ? "FROM events LEFT JOIN repo_dirs ON events.project_dir = repo_dirs.dir" : "FROM events";
     const where = this.whereClause(providers, untilIso, accountKey);
     const rows = this.db
       .query(
@@ -155,7 +201,7 @@ export class EventCache {
                SUM(cache_read_tokens) AS cache_read_tokens,
                SUM(cache_write_tokens) AS cache_write_tokens,
                SUM(cost_usd) AS cost_usd
-        FROM events
+        ${join}
         WHERE ${where.sql}
         GROUP BY bucket
         `,
@@ -185,21 +231,33 @@ export class EventCache {
     return fromRawRow({ ...row, bucket: "TOTAL" });
   }
 
-  /** Total tokens per local calendar day since `sinceIso` (UTC-stored ts). */
+  /** Metrics per local calendar day since `sinceIso` (UTC-stored ts). */
   dailyTotals(sinceIso: string): DailyTotal[] {
     const rows = this.db
       .query(
         `
         SELECT date(ts, 'localtime') AS day,
-               SUM(input_tokens + output_tokens + cache_read_tokens + cache_write_tokens) AS tokens
+               SUM(input_tokens + output_tokens + cache_read_tokens + cache_write_tokens) AS tokens,
+               SUM(cost_usd) AS cost_usd,
+               COUNT(*) AS requests
         FROM events
         WHERE ts >= ?
         GROUP BY day
         ORDER BY day
         `,
       )
-      .all(sinceIso) as Array<{ day: string; tokens: number | null }>;
-    return rows.map((r) => ({ day: r.day ?? "?", tokens: r.tokens ?? 0 }));
+      .all(sinceIso) as Array<{
+        day: string;
+        tokens: number | null;
+        cost_usd: number | null;
+        requests: number | null;
+      }>;
+    return rows.map((r) => ({
+      day: r.day ?? "?",
+      tokens: r.tokens ?? 0,
+      costUsd: r.cost_usd ?? 0,
+      requests: r.requests ?? 0,
+    }));
   }
 
   /**
@@ -208,7 +266,7 @@ export class EventCache {
    * query + JS-side top-N selection (a JOIN/CTE form of this was pathologically
    * slow on ~100k rows).
    */
-  seriesDaily(sinceIso: string, groupBy: Exclude<Dimension, "project">, topN = 5): SeriesBucket[] {
+  seriesDaily(sinceIso: string, groupBy: Exclude<Dimension, "project" | "repo">, topN = 5): SeriesBucket[] {
     const column =
       groupBy === "account"
         ? "account_key"
@@ -262,9 +320,9 @@ export class EventCache {
   }
 }
 
-export type Dimension = "model" | "project" | "account" | "machine" | "provider";
+export type Dimension = "model" | "project" | "repo" | "account" | "machine" | "provider";
 
-export const DIMENSIONS: Dimension[] = ["model", "project", "account", "machine", "provider"];
+export const DIMENSIONS: Dimension[] = ["model", "project", "repo", "account", "machine", "provider"];
 
 interface RawAggRow {
   bucket: string;
@@ -304,6 +362,8 @@ export interface AggRow {
 export interface DailyTotal {
   day: string;
   tokens: number;
+  costUsd: number;
+  requests: number;
 }
 
 export interface SeriesBucket {
