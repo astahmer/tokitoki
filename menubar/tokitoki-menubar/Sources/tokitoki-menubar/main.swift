@@ -35,39 +35,189 @@ struct ReportPayload: Codable {
     let burn: Burn
 }
 
+// MARK: - budgets / anomalies contracts (tokitoki budgets --json, anomalies --json)
+
+struct BudgetRow: Codable {
+    let scope: String
+    let label: String
+    let cap: Double
+    let used: Double
+    let ratio: Double
+    let state: String
+    let daysLeft: Double?
+
+    var level: Int { state == "exceeded" ? 100 : state == "warn" ? 80 : 0 }
+}
+
+struct AnomalyItem: Codable {
+    let day: String
+    let metric: String
+    let value: Double
+    let baseline: Double
+    let ratio: Double
+}
+
+struct AnomaliesPayload: Codable {
+    struct Window: Codable { let since: String; let until: String?; let label: String }
+    let window: Window
+    let metric: String
+    let anomalies: [AnomalyItem]
+}
+
 @MainActor
 final class Model: ObservableObject {
     @Published var title: String = "…"
     @Published var today: ReportPayload?
     @Published var week: ReportPayload?
     @Published var repos: [ReportRow] = []
+    @Published var budgets: [BudgetRow] = []
+    @Published var anomalyLine: String?
+    /// nil = no budgets configured; "ok" | "warn" | "exceeded"
+    @Published var worstState: String?
     @Published var errorText: String?
 
     private var timer: Timer?
+    private var invocation: CLIInvocation = CLIInvocation(executable: URL(fileURLWithPath: "/usr/bin/false"), prefixArgs: [])
+    private var lastLevels: [String: Int] = [:]
+    private var notifiedKeys: Set<String> = []
 
-    func start(binURL: URL) {
-        refresh(binURL: binURL)
+    private static let debug = ProcessInfo.processInfo.environment["TOKITOKI_MENUBAR_DEBUG"] == "1"
+
+    /// Env-gated stderr tracing (`TOKITOKI_MENUBAR_DEBUG=1`) — no-op normally.
+    fileprivate func dbg(_ msg: @autoclosure () -> String) {
+        if Self.debug { FileHandle.standardError.write(Data(("[tokitoki-menubar] " + msg() + "\n").utf8)) }
+    }
+
+    func start(invocation: CLIInvocation) {
+        self.invocation = invocation
+        dbg("start · exec=\(invocation.executable.path) prefix=\(invocation.prefixArgs)")
+        notifiedKeys = Self.loadNotifiedKeys()
+        dbg("loaded \(notifiedKeys.count) notified keys from \(Self.stateFileURL.path)")
+        refresh()
         timer = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.refresh(binURL: binURL) }
+            Task { @MainActor in self?.refresh() }
         }
     }
 
-    func refresh(binURL: URL) {
+    func refresh() {
         Task { @MainActor in
-            async let t = Self.runReport(binURL, ["report", "--last", "day", "--by", "provider", "--json"])
-            async let w = Self.runReport(binURL, ["report", "--last", "week", "--by", "provider", "--json"])
-            async let r = Self.runReport(binURL, ["report", "--last", "month", "--by", "repo", "--json"])
+            let cli = invocation
+            async let t = Self.runJSON(ReportPayload.self, cli, ["report", "--last", "day", "--by", "provider", "--json"])
+            async let w = Self.runJSON(ReportPayload.self, cli, ["report", "--last", "week", "--by", "provider", "--json"])
+            async let r = Self.runJSON(ReportPayload.self, cli, ["report", "--last", "month", "--by", "repo", "--json"])
+            async let b = Self.runJSON([BudgetRow].self, cli, ["budgets", "--json"])
+            async let a = Self.runJSON(AnomaliesPayload.self, cli, ["anomalies", "--json"])
             do {
-                let (t0, w0, r0) = try await (t, w, r)
+                let (t0, w0, r0, b0, a0): (ReportPayload?, ReportPayload?, ReportPayload?, [BudgetRow]?, AnomaliesPayload?) = try await (t, w, r, b, a)
+                dbg("fetched · budgets=\(b0?.count ?? -1) anomalies=\(a0?.anomalies.count ?? -1)")
                 self.today = t0
                 self.week = w0
                 self.repos = Array((r0?.rows ?? []).sorted { $0.requests > $1.requests }.prefix(3))
                 if let t0 { self.title = Self.title(for: t0) } else { self.title = "tokitoki" }
                 self.errorText = nil
+                applyBudgets(b0 ?? [])
+                applyAnomalies(a0)
             } catch {
                 self.errorText = "\(error.localizedDescription)"
                 self.title = "tokitoki ⚠️"
+                dbg("refresh failed: \(error.localizedDescription)")
             }
+        }
+    }
+
+    // MARK: budget state → badge + notifications
+
+    private func applyBudgets(_ rows: [BudgetRow]) {
+        dbg("applyBudgets rows=\(rows.count) states=\(rows.map { $0.state })")
+        budgets = rows
+        var current: [String: Int] = [:]
+        var worst = "ok"
+        for r in rows {
+            current[r.label] = max(current[r.label] ?? 0, r.level)
+            if r.level > levelFor(worst) { worst = r.state }
+        }
+        worstState = rows.isEmpty ? nil : worst
+        updateTitleBadge()
+        guard !rows.isEmpty else { return }
+
+        // Notify only on transitions INTO warn/exceeded (not while staying there).
+        // State is persisted BEFORE attempting delivery so a crash/missing
+        // bundle can never cause re-notification spam.
+        dbg("levels=\(current) notified=\(notifiedKeys.count)")
+        var changed = false
+        for (label, level) in current where level > 0 {
+            let prev = lastLevels[label] ?? 0
+            guard level > prev else { continue }
+            let key = "\(label)|\(level)"
+            guard !notifiedKeys.contains(key) else { continue }
+            notifiedKeys.insert(key)
+            changed = true
+            let row = rows.first { $0.label == label }
+            saveNotifiedKeys()
+            dbg("transition · \(key) · state-file=\(Self.stateFileURL.path)")
+            notify(label: label, level: level, used: row?.used ?? 0, cap: row?.cap ?? 0)
+        }
+        lastLevels = current
+    }
+
+    private func updateTitleBadge() {
+        // Emoji dot rather than tinted SF symbol: the status bar renders
+        // template images monochrome, which would erase the state color.
+        let dot: String
+        switch worstState {
+        case "exceeded": dot = "🔴 "
+        case "warn": dot = "🟠 "
+        default: dot = ""
+        }
+        title = dot + title
+    }
+
+    private func applyAnomalies(_ payload: AnomaliesPayload?) {
+        guard let top = payload?.anomalies.first else { anomalyLine = nil; return }
+        anomalyLine = "⚠︎ \(top.day) \(top.metric) \(String(format: "%.1f", top.ratio))× baseline"
+    }
+
+    private func levelFor(_ state: String) -> Int {
+        state == "exceeded" ? 100 : state == "warn" ? 80 : 0
+    }
+
+    // MARK: notifications + persisted dedupe state
+
+    private static var stateFileURL: URL {
+        // Mirror the CLI convention (<data-home>/tokitoki/) even when
+        // XDG_DATA_HOME is set — never write bare into the data home.
+        let xdg = ProcessInfo.processInfo.environment["XDG_DATA_HOME"]
+        let base = xdg.flatMap { $0.isEmpty ? nil : URL(fileURLWithPath: $0).appendingPathComponent("tokitoki") }
+            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/share/tokitoki")
+        return base.appendingPathComponent("menubar-state.json")
+    }
+
+    private static func loadNotifiedKeys() -> Set<String> {
+        guard let data = try? Data(contentsOf: stateFileURL),
+              let keys = try? JSONDecoder().decode([String].self, from: data) else { return [] }
+        return Set(keys)
+    }
+
+    private func saveNotifiedKeys() {
+        let url = Self.stateFileURL
+        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        if let data = try? JSONEncoder().encode(Array(notifiedKeys).sorted()) {
+            try? data.write(to: url)
+        }
+    }
+
+    private func notify(label: String, level: Int, used: Double, cap: Double) {
+        // UNUserNotificationCenter hard-crashes outside a real .app bundle
+        // (bare swift-build binary): degrade to badge-only in that case.
+        guard Bundle.main.bundleIdentifier != nil else { return }
+        let center = UNUserNotificationCenter.current()
+        center.requestAuthorization(options: [.alert]) { granted, _ in
+            guard granted else { return } // badge already reflects the state
+            let content = UNMutableNotificationContent()
+            content.title = "tokitoki budget \(level)%"
+            content.body = "\(label): $\(String(format: "%.2f", used)) / $\(String(format: "%.2f", cap))"
+            let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
+            center.add(request)
         }
     }
 
@@ -76,19 +226,19 @@ final class Model: ObservableObject {
         return humanCount(Double(p.total.requests)) + " req"
     }
 
-    static func runReport(_ binURL: URL, _ args: [String]) async throws -> ReportPayload? {
-        let out = try await runCLI(binURL, args)
+    static func runJSON<T: Decodable>(_ type: T.Type, _ cli: CLIInvocation, _ args: [String]) async throws -> T? {
+        let out = try await runCLI(cli, args)
         guard !out.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
         guard let data = out.data(using: .utf8) else { return nil }
-        return try JSONDecoder().decode(ReportPayload.self, from: data)
+        return try JSONDecoder().decode(T.self, from: data)
     }
 
-    static func runCLI(_ binURL: URL, _ args: [String]) async throws -> String {
+    static func runCLI(_ cli: CLIInvocation, _ args: [String]) async throws -> String {
         try await withCheckedThrowingContinuation { cont in
             DispatchQueue.global(qos: .utility).async {
                 let proc = Process()
-                proc.executableURL = binURL
-                proc.arguments = args
+                proc.executableURL = cli.executable
+                proc.arguments = cli.prefixArgs + args
                 let pipe = Pipe()
                 let errPipe = Pipe()
                 proc.standardOutput = pipe
@@ -125,6 +275,13 @@ private func humanCount(_ n: Double) -> String {
 struct TokitokiApp: App {
     @StateObject private var model = Model()
 
+    init() {
+        // Polling must not depend on the menu being opened once — MenuBarExtra
+        // instantiates ContentView lazily, so kick off from app init.
+        _model = StateObject(wrappedValue: Model())
+        model.start(invocation: resolveInvocation())
+    }
+
     var body: some Scene {
         MenuBarExtra {
             ContentView(model: model)
@@ -135,24 +292,43 @@ struct TokitokiApp: App {
     }
 }
 
-/// Locate dist/tokitoki by walking up from this binary (repo layout),
+/// How to invoke the CLI: compiled dist binary preferred, `bun src/cli.ts`
+/// fallback when dist hasn't been built yet.
+struct CLIInvocation {
+    let executable: URL
+    let prefixArgs: [String]
+}
+
+/// Locate the CLI by walking up from this binary (repo layout);
 /// $TOKITOKI_BIN override wins.
-func resolveBin() -> URL {
+func resolveInvocation() -> CLIInvocation {
+    func cliURL(_ s: String) -> URL {
+        URL(fileURLWithPath: (s as NSString).expandingTildeInPath)
+    }
     if let override = ProcessInfo.processInfo.environment["TOKITOKI_BIN"], !override.isEmpty {
-        return URL(fileURLWithPath: override)
+        return CLIInvocation(executable: URL(fileURLWithPath: override), prefixArgs: [])
     }
     var url = Bundle.main.executableURL ?? URL(fileURLWithPath: CommandLine.arguments[0])
     for _ in 0..<6 {
         url.deleteLastPathComponent()
-        let candidate = url.appendingPathComponent("dist/tokitoki")
-        if FileManager.default.fileExists(atPath: candidate.path) { return candidate }
+        let repoRoot = url
+        if FileManager.default.fileExists(atPath: repoRoot.appendingPathComponent("dist/tokitoki").path) {
+            return CLIInvocation(executable: repoRoot.appendingPathComponent("dist/tokitoki"), prefixArgs: [])
+        }
+        let cliTs = repoRoot.appendingPathComponent("src/cli.ts")
+        if FileManager.default.fileExists(atPath: cliTs.path) {
+            let bunCandidates = ["~/.bun/bin/bun", "/opt/homebrew/bin/bun", "/usr/local/bin/bun"]
+            for candidate in bunCandidates where FileManager.default.fileExists(atPath: cliURL(candidate).path) {
+                return CLIInvocation(executable: cliURL(candidate), prefixArgs: [cliTs.path])
+            }
+        }
     }
-    return URL(fileURLWithPath: "~/dev/tokitoki/dist/tokitoki", resolvingTildeInPath: true)
+    return CLIInvocation(executable: cliURL("~/dev/tokitoki/dist/tokitoki"), prefixArgs: [])
 }
 
 struct ContentView: View {
     @ObservedObject var model: Model
-    let binURL = resolveBin()
+    let invocation = resolveInvocation()
     @State var dashboardProcess: Process?
 
     var body: some View {
@@ -164,6 +340,8 @@ struct ContentView: View {
             Divider()
             section(title: "this week", payload: model.week)
             Divider()
+            budgetsSection
+            anomaliesRow
             if !model.repos.isEmpty {
                 Text("top repos (month)").font(.caption).bold()
                 ForEach(model.repos, id: \.bucket) { r in
@@ -179,15 +357,15 @@ struct ContentView: View {
                 Button("Open dashboard") { openDashboard() }
                     .keyboardShortcut("o")
                 Spacer()
-                Button("Refresh") { model.refresh(binURL: binURL) }
+                Button("Refresh") { model.refresh() }
                     .keyboardShortcut("r")
             }
-            Text("every 5 min · \(binURL.path)")
+            Text("every 5 min · \(invocation.executable.path)")
                 .font(.caption2).foregroundStyle(.tertiary).lineLimit(1)
         }
         .padding(10)
         .frame(width: 320)
-        .onAppear { model.start(binURL: binURL) }
+        .onAppear { model.refresh() } // refresh-on-menu-open (polling runs regardless)
     }
 
     @ViewBuilder
@@ -228,11 +406,53 @@ struct ContentView: View {
         return "\(Int(round((p.total.cacheReadTokens ?? 0) / total * 100)))%"
     }
 
+    @ViewBuilder
+    private var budgetsSection: some View {
+        if !model.budgets.isEmpty {
+            Text("budgets").font(.caption).bold()
+            ForEach(model.budgets, id: \.label) { b in
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack {
+                        Text(b.label).font(.caption).lineLimit(1)
+                        Spacer()
+                        Text(String(format: "$%.2f / $%.0f", b.used, b.cap))
+                            .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                    }
+                    ProgressView(value: min(b.ratio, 1))
+                        .tint(color(for: b.state))
+                    HStack {
+                        Text("\(Int(round(b.ratio * 100)))% used").font(.caption2).foregroundStyle(.secondary)
+                        Spacer()
+                        if let d = b.daysLeft { Text("\(String(format: "%.0f", d))d left")
+                            .font(.caption2).foregroundStyle(.secondary) }
+                    }
+                }
+                .padding(.vertical, 1)
+            }
+            Divider()
+        }
+    }
+
+    @ViewBuilder
+    private var anomaliesRow: some View {
+        if let line = model.anomalyLine {
+            Text(line).font(.caption).foregroundStyle(.orange).lineLimit(1)
+        }
+    }
+
+    private func color(for state: String) -> Color {
+        switch state {
+        case "exceeded": return .red
+        case "warn": return .orange
+        default: return .green
+        }
+    }
+
     private func openDashboard() {
         if dashboardProcess?.isRunning != true {
             let proc = Process()
-            proc.executableURL = binURL
-            proc.arguments = ["web"]
+            proc.executableURL = invocation.executable
+            proc.arguments = invocation.prefixArgs + ["web"]
             try? proc.run()
             dashboardProcess = proc
         }
