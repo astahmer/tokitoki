@@ -1,0 +1,129 @@
+import fs from "node:fs";
+import path from "node:path";
+
+import type { UsageEvent } from "../types.ts";
+import { providerConfig } from "../config.ts";
+import { eventId } from "../machine.ts";
+import { estimateCost } from "../pricing.ts";
+import { homePath, type EntryContext, type Provider } from "./types.ts";
+
+interface ClaudeUsage {
+  input_tokens?: number;
+  output_tokens?: number;
+  cache_creation_input_tokens?: number;
+  cache_read_input_tokens?: number;
+}
+
+interface ClaudeAssistantMessage {
+  id?: string;
+  model?: string;
+  usage?: ClaudeUsage;
+}
+
+/**
+ * Claude Code stores sessions as JSONL files under
+ * $CLAUDE_CONFIG_DIR/projects/<encoded-cwd>/... (incl. subagents/).
+ * Assistant lines carry message.usage with token counts; some builds also
+ * carry a costUSD field.
+ */
+export const claudeCodeProvider: Provider = {
+  id: "claude-code",
+  label: "Claude Code",
+
+  discoverRoots(): string[] {
+    const override = providerConfig(this.id)?.paths;
+    if (override !== undefined && override.length > 0) return override;
+    return [homePath("CLAUDE_CONFIG_DIR", "/.claude/projects")];
+  },
+
+  listFiles(root: string): string[] {
+    return walkJsonl(root);
+  },
+
+  parseLine(line: string, ctx: EntryContext): UsageEvent[] {
+    let entry: Record<string, unknown>;
+    try {
+      entry = JSON.parse(line) as Record<string, unknown>;
+    } catch {
+      return [];
+    }
+    if (entry.type !== "assistant") return [];
+
+    const message = entry.message as ClaudeAssistantMessage | undefined;
+    const usage = message?.usage;
+    if (usage === undefined) return [];
+
+    const inputTokens = usage.input_tokens ?? 0;
+    const outputTokens = usage.output_tokens ?? 0;
+    // Skip empty assistant stubs (e.g. thinking-only retries)
+    if (inputTokens === 0 && outputTokens === 0) return [];
+
+    const sessionId = typeof entry.sessionId === "string" ? entry.sessionId : pathId(ctx.path);
+    const entryId =
+      (typeof message?.id === "string" ? message.id : undefined) ??
+      (typeof entry.requestId === "string" ? entry.requestId : undefined) ??
+      (typeof entry.uuid === "string" ? entry.uuid : sessionId);
+
+    const ts = typeof entry.timestamp === "string" ? entry.timestamp : new Date().toISOString();
+    const model = typeof message?.model === "string" ? message.model : "unknown";
+    const projectDir = typeof entry.cwd === "string" ? entry.cwd : undefined;
+
+    const costRaw = entry.costUSD ?? entry.costUsd;
+    const costUsd = typeof costRaw === "number" ? costRaw : estimateCost(model, {
+      inputTokens,
+      outputTokens,
+      cacheReadTokens: usage.cache_read_input_tokens ?? 0,
+      cacheWriteTokens: usage.cache_creation_input_tokens ?? 0,
+    });
+
+    const event: UsageEvent = {
+      id: eventId("claude-code", "default", sessionId, entryId),
+      ts,
+      machineId: ctx.machineId,
+      provider: this.id,
+      accountKey: "default",
+      model,
+      inputTokens,
+      outputTokens,
+      cacheReadTokens: usage.cache_read_input_tokens,
+      cacheWriteTokens: usage.cache_creation_input_tokens,
+      costUsd,
+      projectDir,
+      sessionId,
+    };
+    return [event];
+  },
+};
+
+/** Session id fallback derived from the claude-code directory layout. */
+function pathId(p: string): string {
+  return path.basename(p).replace(/\.jsonl$/, "");
+}
+
+/** Recursive *.jsonl listing, sorted for deterministic cursor behavior. */
+export function walkJsonl(root: string): string[] {
+  let stats: fs.Stats;
+  try {
+    stats = fs.statSync(root);
+  } catch {
+    return [];
+  }
+  if (!stats.isDirectory()) return [root];
+  const out: string[] = [];
+  const queue = [root];
+  while (queue.length > 0) {
+    const dir = queue.pop() as string;
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const e of entries) {
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) queue.push(full);
+      else if (e.isFile() && e.name.endsWith(".jsonl")) out.push(full);
+    }
+  }
+  return out.sort();
+}

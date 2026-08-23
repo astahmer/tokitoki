@@ -1,0 +1,114 @@
+import { describe, expect, it } from "vitest";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
+import { EventCache } from "../src/cache.ts";
+import { readEventsFile } from "../src/store.ts";
+import type { UsageEvent } from "../src/types.ts";
+
+function makeEvent(overrides: Partial<UsageEvent> & Pick<UsageEvent, "id">): UsageEvent {
+  return {
+    ts: "2026-08-23T09:00:00.000Z",
+    machineId: "mac-one",
+    provider: "pi",
+    accountKey: "opencode-go",
+    model: "ox-alpha-free",
+    inputTokens: 100,
+    outputTokens: 50,
+    cacheReadTokens: 10,
+    cacheWriteTokens: 5,
+    costUsd: 0.01,
+    projectDir: "/Users/me/dev/proj",
+    sessionId: "s1",
+    ...overrides,
+  };
+}
+
+describe("store.readEventsFile", () => {
+  it("parses valid lines, skips corrupt and partial trailing lines", () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "tk-store-"));
+    const file = path.join(dir, "events.jsonl");
+    writeFileSync(file, JSON.stringify(makeEvent({ id: "a" })) + "\nbroken{\n" + JSON.stringify(makeEvent({ id: "b" })) + "\n{\"id\":\"partial");
+    const events = readEventsFile(file);
+    expect(events.map((e) => e.id)).toEqual(["a", "b"]);
+  });
+});
+
+describe("EventCache", () => {
+  it("dedupes on stable id across machines and files", () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "tk-cache-"));
+    const cache = new EventCache(path.join(dir, "cache.db"));
+    try {
+      const sameLogicalEventMac1 = makeEvent({ id: "pi:k:s1:m1", machineId: "mac-one" });
+      const sameLogicalEventMac2 = makeEvent({ id: "pi:k:s1:m1", machineId: "mac-two", inputTokens: 100 });
+      expect(cache.insert([sameLogicalEventMac1])).toBe(1);
+      // Same logical usage synced from another machine counts once
+      expect(cache.insert([sameLogicalEventMac2])).toBe(0);
+      expect(cache.insert([makeEvent({ id: "pi:k:s1:m2" })])).toBe(1);
+      expect(cache.count()).toBe(2);
+    } finally {
+      cache.close();
+    }
+  });
+
+  it("aggregates by dimension within a time window", () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "tk-cache2-"));
+    const cache = new EventCache(path.join(dir, "cache.db"));
+    try {
+      cache.insert([
+        makeEvent({ id: "1", model: "m-a", inputTokens: 100, outputTokens: 100, costUsd: 0.5 }),
+        makeEvent({ id: "2", model: "m-a", inputTokens: 10, outputTokens: 10, costUsd: 0.05 }),
+        makeEvent({ id: "3", model: "m-b", inputTokens: 1000, outputTokens: 5, costUsd: 2 }),
+        makeEvent({
+          id: "old",
+          model: "m-a",
+          ts: "2020-01-01T00:00:00.000Z",
+          inputTokens: 50000,
+          outputTokens: 50000,
+        }),
+      ]);
+      const rows = cache.aggregate("2026-08-01T00:00:00.000Z", "model");
+      expect(rows).toHaveLength(2);
+      // sorted by tokens desc
+      expect(rows[0]!.bucket).toBe("m-b");
+      expect(rows[0]!.inputTokens).toBe(1000);
+      expect(rows[1]!.bucket).toBe("m-a");
+      expect(rows[1]!.requests).toBe(2);
+      expect(rows[1]!.inputTokens).toBe(110);
+      expect(rows[1]!.costUsd).toBeCloseTo(0.55);
+    } finally {
+      cache.close();
+    }
+  });
+
+  it("rebuild is a pure projection of the merged logs", () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "tk-cache3-"));
+    process.env.TOKITOKI_DATA_DIR = dir;
+    const localLog = path.join(dir, "events.jsonl");
+    const remoteLog = path.join(dir, "remote.jsonl");
+    writeFileSync(localLog, JSON.stringify(makeEvent({ id: "x1" })) + "\n");
+    // Remote machine saw the same session (synced) plus its own event
+    writeFileSync(
+      remoteLog,
+      JSON.stringify(makeEvent({ id: "x1", machineId: "mac-two" })) +
+        "\n" +
+        JSON.stringify(makeEvent({ id: "x2", machineId: "mac-two" })) +
+        "\n",
+    );
+    const cache = new EventCache(path.join(dir, "cache.db"));
+    try {
+      cache.rebuild([remoteLog]);
+      expect(cache.count()).toBe(2);
+      const byMachine = cache.aggregate("2026-01-01T00:00:00.000Z", "machine");
+      expect(byMachine).toHaveLength(2); // mac-one has x1, mac-two has x2
+      expect(Object.fromEntries(byMachine.map((r) => [r.bucket, r.requests]))).toEqual({
+        "mac-one": 1,
+        "mac-two": 1,
+      });
+    } finally {
+      cache.close();
+      delete process.env.TOKITOKI_DATA_DIR;
+    }
+  });
+});
