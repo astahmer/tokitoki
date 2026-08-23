@@ -5,6 +5,8 @@ import { Database, type SQLQueryBindings } from "bun:sqlite";
 import type { UsageEvent } from "./types.ts";
 import { dataDir, eventsFile, readEventsFile } from "./store.ts";
 import { resolveRepo } from "./repos.ts";
+import { ensureSessionFts } from "./sessionIndex.ts";
+import { EXTRACTION_VERSION } from "./scan.ts";
 
 /**
  * SQLite cache over the merged event logs. Rebuildable at any time: it is a
@@ -41,7 +43,8 @@ export class EventCache {
         cache_write_tokens INTEGER NOT NULL DEFAULT 0,
         cost_usd REAL NOT NULL DEFAULT 0,
         project_dir TEXT,
-        session_id TEXT
+        session_id TEXT,
+        tool TEXT
       );
       CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);
       CREATE INDEX IF NOT EXISTS idx_events_provider ON events(provider);
@@ -51,6 +54,45 @@ export class EventCache {
         name TEXT NOT NULL
       );
     `);
+    // Older caches predate the tool column; ALTER is idempotent-guarded.
+    const cols = this.db.query("PRAGMA table_info(events)").all() as Array<{ name: string }>;
+    if (!cols.some((c) => c.name === "tool")) {
+      this.db.exec("ALTER TABLE events ADD COLUMN tool TEXT");
+    }
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS meta (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );
+    `);
+    try {
+      ensureSessionFts(this.db);
+    } catch {
+      // fts5 unavailable in this sqlite build — search features degrade.
+    }
+  }
+
+  /** Raw database handle (used by the session search index). */
+  get database(): Database {
+    return this.db;
+  }
+
+  /**
+   * True when the cache was built by older extraction logic (e.g. before the
+   * tool dimension existed) and must be rebuilt from the event logs even
+   * though event ids are unchanged.
+   */
+  isStaleFor(extractionVersion: number): boolean {
+    const row = this.db
+      .query("SELECT value FROM meta WHERE key = 'extraction_version'")
+      .get() as { value?: string } | undefined;
+    return row?.value !== String(extractionVersion);
+  }
+
+  markExtractionVersion(extractionVersion: number): void {
+    this.db
+      .prepare("INSERT OR REPLACE INTO meta (key, value) VALUES ('extraction_version', ?)")
+      .run(String(extractionVersion));
   }
 
   /** Insert events, ignoring duplicates (dedupe on the stable id). */
@@ -60,8 +102,8 @@ export class EventCache {
       INSERT OR IGNORE INTO events (
         id, ts, machine_id, provider, account_key, model,
         input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
-        cost_usd, project_dir, session_id
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        cost_usd, project_dir, session_id, tool
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const tx = this.db.transaction((rows: UsageEvent[]) => {
       let inserted = 0;
@@ -80,6 +122,7 @@ export class EventCache {
           e.costUsd ?? 0,
           e.projectDir ?? null,
           e.sessionId ?? null,
+          e.tool ?? null,
         ).changes;
       }
       return inserted;
@@ -91,14 +134,29 @@ export class EventCache {
   rebuild(extraFiles: string[]): void {
     this.db.exec("DELETE FROM events");
     const files = [eventsFile(), ...extraFiles];
+    // First occurrence wins (local log precedes synced ones), EXCEPT when a
+    // later duplicate is tool-attributed and the kept one is not: extraction
+    // replays re-append enriched events under the same stable id.
+    const byId = new Map<string, UsageEvent>();
+    const hasTool = (e: UsageEvent) => e.tool !== undefined;
     for (const file of files) {
-      // Dedup within/across files happens via INSERT OR IGNORE
-      this.insert(readEventsFile(file));
+      for (const e of readEventsFile(file)) {
+        const kept = byId.get(e.id);
+        if (kept === undefined || (!hasTool(kept) && hasTool(e))) byId.set(e.id, e);
+      }
     }
+    this.insert(Array.from(byId.values()));
   }
 
   /** Ensure the cache reflects every line in the local + extra logs. */
   sync(extraFiles: string[]): void {
+    // Extraction logic changed since this cache was built → full rebuild
+    // (ids are unchanged but derived fields like `tool` may differ).
+    if (this.isStaleFor(EXTRACTION_VERSION)) {
+      this.rebuild(extraFiles);
+      this.markExtractionVersion(EXTRACTION_VERSION);
+      return;
+    }
     const count = this.count();
     const total = new Set<string>();
     for (const file of [eventsFile(), ...extraFiles]) {
@@ -206,9 +264,11 @@ export class EventCache {
             ? "account_key"
             : groupBy === "machine"
               ? "machine_id"
-              : groupBy === "provider"
-                ? "provider"
-                : "model";
+              : groupBy === "tool"
+                ? TOOL_BUCKET_SQL
+                : groupBy === "provider"
+                  ? "provider"
+                  : "model";
     const join =
       groupBy === "repo" ? "FROM events LEFT JOIN repo_dirs ON events.project_dir = repo_dirs.dir" : "FROM events";
     const where = this.whereClause(providers, untilIso, accountKey);
@@ -421,9 +481,24 @@ export class EventCache {
   }
 }
 
-export type Dimension = "model" | "project" | "repo" | "account" | "machine" | "provider";
+export type Dimension =
+  | "model"
+  | "project"
+  | "repo"
+  | "account"
+  | "machine"
+  | "provider"
+  | "tool";
 
-export const DIMENSIONS: Dimension[] = ["model", "project", "repo", "account", "machine", "provider"];
+export const DIMENSIONS: Dimension[] = [
+  "model",
+  "project",
+  "repo",
+  "account",
+  "machine",
+  "provider",
+  "tool",
+];
 
 interface RawAggRow {
   bucket: string;
@@ -538,6 +613,21 @@ function cachePctOf(inputTokens: number, cacheReadTokens: number): number {
   if (denom <= 0) return 0;
   return Math.round((cacheReadTokens / denom) * 100);
 }
+
+/**
+ * Tool-dimension bucket: provider-qualified so identically-named tools from
+ * different harnesses don't merge, with MCP namespacing rolled up to the
+ * server (`codex/mcp:pencil`). Unattributed turns (plain text/thinking) land
+ * under '(unattributed)' per provider.
+ */
+const TOOL_BUCKET_SQL = `
+  provider || '/' || CASE
+    WHEN tool IS NULL THEN '(unattributed)'
+    WHEN substr(tool, 1, 5) = 'mcp__' AND instr(substr(tool, 6), '__') > 0
+      THEN 'mcp:' || substr(tool, 6, instr(substr(tool, 6), '__') - 1)
+    ELSE tool
+  END
+`; // referenced twice (SELECT + GROUP BY), keep in sync
 
 export interface SessionEventRow {
   ts: string;

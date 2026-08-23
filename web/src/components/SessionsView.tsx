@@ -1,54 +1,94 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
-import { Badge, Surface, Table } from "@cloudflare/kumo";
+import { Badge, Input, Surface, Table } from "@cloudflare/kumo";
 
 import {
   fetchSessionDetail,
   fetchSessions,
+  fetchSessionsSearch,
   type SessionDetailPayload,
   type SessionRow,
+  type SessionSearchRow,
 } from "../lib/api";
 import { cachePct, formatCost, humanCount } from "../lib/fmt";
-import { Heading, SkeletonBlock } from "../ui";
+import type { WindowSelection } from "../lib/api";
+import { EmptyState, Heading, SkeletonBlock } from "../ui";
 import { useAsyncStaleWhileRevalidate } from "../lib/useAsync";
 
+const PAGE_SIZE = 50;
+
 /**
- * Session leaderboard + request-timeline drill-down. Shares the dashboard's
- * period / provider / account filters so both views stay in sync.
+ * Sessions landing view: full-text search across every harness's conversations,
+ * falling back to the cost-first leaderboard when no query is typed. Shares the
+ * dashboard's window / provider / account filters so both views stay in sync.
  */
 export function SessionsView({
-  period,
+  win,
   providers,
   account,
 }: {
-  period: string;
+  win: WindowSelection;
   providers: string[];
   account?: string;
 }) {
-  const sessions = useAsyncStaleWhileRevalidate(
-    () => fetchSessions({ period, providers, account, top: 25 }),
-    [period, providers.join("|"), account],
-  );
+  const [query, setQuery] = useState("");
+  const [submitted, setSubmitted] = useState("");
+  const [page, setPage] = useState(1);
   const [selected, setSelected] = useState<SessionRow | undefined>(undefined);
+
+  // Debounce: index updates are incremental but still touch disk on edit.
+  const [debounced, setDebounced] = useState("");
+  useEffect(() => {
+    if (query === debounced) return;
+    const t = setTimeout(() => {
+      setDebounced(query);
+      setPage(1);
+    }, 350);
+    return () => clearTimeout(t);
+  }, [query, debounced]);
+
+  const searching = submitted.trim().length > 0;
+  const sessions = useAsyncStaleWhileRevalidate(
+    () =>
+      searching
+        ? // Leaderboard isn't rendered while searching; skip the fetch.
+          Promise.resolve({ window: { since: "", until: null, label: "" }, rows: [] })
+        : fetchSessions({ providers, account, top: 25, ...win }),
+    [win.from ?? "", win.to ?? "", win.last ?? "", providers.join("|"), account],
+  );
 
   return (
     <>
       <Surface as="section" className="mb-4 p-4">
-        <Heading>sessions · costliest first</Heading>
-        {sessions.state === "loading" ? (
+        <div className="mb-3 flex items-center justify-between">
+          <Heading>sessions · click a row for its request timeline</Heading>
+        </div>
+        <div className="mb-3 flex items-center gap-2">
+          <Input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") setSubmitted(query);
+            }}
+            placeholder='search all conversations — try "kumo treemap" or "migrate pds"'
+            className="max-w-md"
+          />
+          {searching && (
+            <Button variant="secondary" onClick={() => { setSubmitted(""); setQuery(""); }}>
+              clear
+            </Button>
+          )}
+        </div>
+        {searching ? (
+          <SearchResults query={submitted} page={page} setPage={setPage} providers={providers} win={win} onSelect={setSelected} selectedId={selected?.sessionId} />
+        ) : sessions.state === "loading" ? (
           <SkeletonBlock className="h-72" />
         ) : sessions.state === "error" ? (
           <p className="text-xs text-kumo-danger">{sessions.error}</p>
         ) : sessions.data.rows.length === 0 ? (
-          <p className="py-6 text-center text-xs text-kumo-subtle">
-            no sessions recorded in this window
-          </p>
+          <EmptyState message="no sessions recorded in this window — try widening the range or clearing filters" />
         ) : (
-          <SessionTable
-            rows={sessions.data.rows}
-            selected={selected?.sessionId}
-            onSelect={setSelected}
-          />
+          <SessionTable rows={sessions.data.rows} selected={selected?.sessionId} onSelect={setSelected} />
         )}
       </Surface>
       {selected !== undefined && (
@@ -58,6 +98,121 @@ export function SessionsView({
       )}
     </>
   );
+}
+
+function SearchResults({
+  query,
+  page,
+  setPage,
+  providers,
+  win,
+  onSelect,
+  selectedId,
+}: {
+  query: string;
+  page: number;
+  setPage: (p: number) => void;
+  providers: string[];
+  win: WindowSelection;
+  onSelect: (row: SessionRow) => void;
+  selectedId?: string;
+}) {
+  const res = useAsyncStaleWhileRevalidate(
+    () => fetchSessionsSearch({ q: query, page, providers, ...win }),
+    [query, String(page), win.from ?? "", win.to ?? "", win.last ?? "", providers.join("|")],
+  );
+
+  if (res.state === "loading") return <SkeletonBlock className="h-72" />;
+  if (res.state === "error") return <p className="text-xs text-kumo-danger">{res.error}</p>;
+  const data = res.data;
+  if (data.rows.length === 0) {
+    return <EmptyState message={`no sessions match “${query}” — check spelling or widen the range`} />;
+  }
+  return (
+    <div>
+      <p className="mb-2 text-[11px] text-kumo-subtle">
+        {res.refreshing ? "searching…" : `${data.rows.length} match${data.rows.length === 1 ? "" : "es"}`} · search {data.searchMs}ms · indexed {data.indexedFiles} changed file(s)
+        {data.hasMore && ` · page ${data.page}`}
+      </p>
+      <div className="space-y-2">
+        {data.rows.map((r) => (
+          <SearchHit key={`${r.provider}/${r.sessionId}`} row={r} onClick={() => onSelect(toRow(r))} dimmed={selectedId === r.sessionId} />
+        ))}
+      </div>
+      {(page > 1 || data.hasMore) && (
+        <div className="mt-3 flex items-center gap-2">
+          <Button variant="secondary" disabled={page <= 1} onClick={() => setPage(page - 1)}>
+            ← prev
+          </Button>
+          <span className="text-[11px] text-kumo-subtle">page {page}</span>
+          <Button variant="secondary" disabled={!data.hasMore} onClick={() => setPage(page + 1)}>
+            next →
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Render [[match]] markers as highlighted spans. */
+function Snippet({ text }: { text: string }) {
+  const parts = text.split(/(\[\[.*?\]\])/g);
+  return (
+    <span>
+      {parts.map((p, i) =>
+        p.startsWith("[[") && p.endsWith("]]") ? (
+          <mark key={i} className="rounded-sm bg-kumo-warning/30 px-0.5 text-inherit">
+            {p.slice(2, -2)}
+          </mark>
+        ) : (
+          <span key={i}>{p}</span>
+        ),
+      )}
+    </span>
+  );
+}
+
+function SearchHit({ row: r, onClick, dimmed }: { row: SessionSearchRow; onClick: () => void; dimmed?: boolean }) {
+  return (
+    <button
+      onClick={onClick}
+      className={`block w-full rounded-md border border-kumo-border/60 p-2.5 text-left transition-colors hover:bg-kumo-recessed ${dimmed ? "bg-kumo-recessed/60" : "bg-kumo-surface"}`}
+    >
+      <div className="flex items-baseline justify-between gap-3">
+        <span className="truncate text-xs font-medium">
+          {r.title.length > 0 ? r.title : "(no title)"}
+        </span>
+        <span className="whitespace-nowrap text-right text-[10px] text-kumo-subtle">
+          {r.requests.toLocaleString("en-US")} req · {humanCount(r.totalTokens)} tok · {r.cachePct}% cache · {formatCost(r.costUsd)}
+        </span>
+      </div>
+      <div className="mt-0.5 line-clamp-2 text-[11px] text-kumo-subtle">
+        <Snippet text={r.snippet} />
+      </div>
+      <div className="mt-1 flex gap-2 text-[10px] text-kumo-faint">
+        <span>{r.startedAt.slice(0, 16).replace("T", " ")}</span>
+        <Badge variant="neutral">{r.provider}</Badge>
+        <span className="truncate">{r.accountKey}</span>
+        {r.repos[0] && <span className="truncate">{r.repos[0]}</span>}
+        <span className="ml-auto truncate opacity-70">{r.sessionId}</span>
+      </div>
+    </button>
+  );
+}
+
+function toRow(r: SessionSearchRow): SessionRow {
+  return {
+    provider: r.provider,
+    sessionId: r.sessionId,
+    startedAt: r.startedAt || new Date().toISOString(),
+    accountKey: r.accountKey,
+    models: [],
+    repos: r.repos,
+    requests: r.requests,
+    totalTokens: r.totalTokens,
+    cachePct: r.cachePct,
+    costUsd: r.costUsd,
+  };
 }
 
 function SessionTable({
@@ -72,20 +227,22 @@ function SessionTable({
   return (
     <div className="overflow-x-auto">
       <Table className="w-full text-xs">
-        <Table.Head>
-          {["date", "provider", "account", "model(s)", "repo", "req", "tokens", "%cache", "cost"].map(
-            (h, i) => (
-              <Table.Header
-                key={h}
-                className={`text-[10px] tracking-wider whitespace-nowrap uppercase select-none ${
-                  i >= 5 ? "text-right" : "text-left"
-                }`}
-              >
-                {h}
-              </Table.Header>
-            ),
-          )}
-        </Table.Head>
+        <Table.Header>
+          <Table.Row>
+            {["date", "provider", "account", "model(s)", "repo", "req", "tokens", "%cache", "cost"].map(
+              (h, i) => (
+                <Table.Head
+                  key={h}
+                  className={`text-[10px] tracking-wider whitespace-nowrap uppercase select-none ${
+                    i >= 5 ? "text-right" : "text-left"
+                  }`}
+                >
+                  {h}
+                </Table.Head>
+              ),
+            )}
+          </Table.Row>
+        </Table.Header>
         <Table.Body>
           {rows.map((r) => (
             <Table.Row
@@ -183,20 +340,20 @@ function Timeline({ payload }: { payload: SessionDetailPayload }) {
       </div>
       <div className="max-h-96 overflow-y-auto">
         <Table className="w-full text-xs">
-          <Table.Head>
+          <Table.Header>
             {["#", "time", "model", "input", "output", "cache-rd", "%cache", "cost", "run.tok"].map(
               (h, i) => (
-                <Table.Header
+                <Table.Head
                   key={h}
                   className={`text-[10px] tracking-wider whitespace-nowrap uppercase select-none ${
                     i >= 3 ? "text-right" : "text-left"
                   }`}
                 >
                   {h}
-                </Table.Header>
+                </Table.Head>
               ),
             )}
-          </Table.Head>
+          </Table.Header>
           <Table.Body>
             {rows.map((r, i) => (
               <Table.Row key={i}>

@@ -5,7 +5,8 @@ import type { UsageEvent } from "../types.ts";
 import { providerConfig } from "../config.ts";
 import { eventId } from "../machine.ts";
 import { estimateCost } from "../pricing.ts";
-import { homePath, type EntryContext, type Provider } from "./types.ts";
+import { extractCodexToolName, shellToolName } from "../tools.ts";
+import { homePath, type EntryContext, type Provider, type SessionDoc } from "./types.ts";
 
 interface CodexTokenUsage {
   input_tokens?: number;
@@ -75,6 +76,32 @@ export const codexProvider: Provider = {
       state.model = payload.model;
       return [];
     }
+
+    // Tool attribution: remember the most recent tool call; the token_count
+    // that follows it (same turn step) inherits it.
+    if (entry.type === "response_item") {
+      const kind = payload.type;
+      if (kind === "custom_tool_call" || kind === "function_call") {
+        const name = typeof payload.name === "string" ? payload.name : "";
+        const input = typeof payload.input === "string" ? payload.input : "";
+        if (name.length > 0) {
+          state.lastTool = extractCodexToolName(name, input) ?? name;
+          if (name === "exec" && state.lastTool === "exec") {
+            // exec without a parseable cmd stays generic
+          }
+        }
+        return [];
+      }
+      if (kind === "item_completed") {
+        const item = payload.item as Record<string, unknown> | undefined;
+        if (item !== undefined && item.type === "CommandExecution") {
+          const cmd = Array.isArray(item.command) ? (item.command[item.command.length - 1] as unknown) : item.command;
+          state.lastTool = shellToolName(cmd as string | undefined);
+        }
+        return [];
+      }
+      return [];
+    }
     if (entry.type !== "event_msg" || payload.type !== "token_count") return [];
 
     const info = payload.info as Record<string, unknown> | undefined;
@@ -119,10 +146,79 @@ export const codexProvider: Provider = {
       }),
       projectDir: typeof state.cwd === "string" ? state.cwd : undefined,
       sessionId,
+      tool: typeof state.lastTool === "string" ? state.lastTool : undefined,
     };
+    state.lastTool = undefined;
     return [event];
   },
+
+  extractSessionDocs: extractCodexSessionDocs,
 };
+
+const BODY_CAP = 1024 * 1024;
+
+/**
+ * Full-text extraction for codex rollouts. Text lives in response_item
+ * message payloads (content blocks typed input_text/output_text); tool calls
+ * contribute their name + a command prefix.
+ */
+export function extractCodexSessionDocs(file: string): SessionDoc[] {
+  let raw: string;
+  try {
+    raw = fs.readFileSync(file, "utf8");
+  } catch {
+    return [];
+  }
+  let sessionId = path.basename(file).replace(/^rollout-|\.jsonl$/g, "").split("-").slice(-1)[0] ?? "unknown";
+  let startedAt: string | undefined;
+  let title = "";
+  let body = "";
+  const push = (text: string): void => {
+    if (body.length + text.length > BODY_CAP) return;
+    body += text.replace(/\s+/g, " ").slice(0, 2000) + "\n";
+  };
+  for (const line of raw.split("\n")) {
+    if (line.length === 0) continue;
+    let entry: Record<string, unknown>;
+    try {
+      entry = JSON.parse(line) as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+    const payload = entry.payload as Record<string, unknown> | undefined;
+    if (payload === undefined) continue;
+    if (entry.type === "session_meta") {
+      if (typeof payload.session_id === "string") sessionId = payload.session_id;
+      if (typeof payload.timestamp === "string") startedAt = payload.timestamp;
+      continue;
+    }
+    if (entry.timestamp !== undefined && startedAt === undefined && typeof entry.timestamp === "string") {
+      startedAt = entry.timestamp;
+    }
+    if (entry.type !== "response_item") continue;
+    const kind = payload.type;
+    if (kind === "message") {
+      const role = typeof payload.role === "string" ? payload.role : "";
+      if (!Array.isArray(payload.content)) continue;
+      for (const block of payload.content) {
+        if (block === null || typeof block !== "object") continue;
+        const b = block as Record<string, unknown>;
+        if (typeof b.text !== "string" || b.text.length === 0) continue;
+        if ((b.type === "input_text" && role === "user") || (b.type === "output_text" && role === "assistant")) {
+          if (role === "user" && title.length === 0) title = b.text.replace(/\s+/g, " ").trim().slice(0, 200);
+          push(b.text);
+        }
+      }
+    } else if (kind === "function_call" || kind === "custom_tool_call") {
+      const name = typeof payload.name === "string" ? payload.name : "tool";
+      const input = typeof payload.input === "string" ? payload.input : "";
+      push(`[tool:${name}${input.length > 0 ? ` ${input.slice(0, 120)}` : ""}]`);
+    }
+    if (body.length >= BODY_CAP) break;
+  }
+  if (body.length === 0) return [];
+  return [{ sessionId, startedAt, title, body }];
+}
 
 function walkRollouts(root: string): string[] {
   let stats: fs.Stats;

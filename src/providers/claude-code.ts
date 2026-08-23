@@ -5,7 +5,8 @@ import type { UsageEvent } from "../types.ts";
 import { providerConfig } from "../config.ts";
 import { eventId } from "../machine.ts";
 import { estimateCost } from "../pricing.ts";
-import { homePath, type EntryContext, type Provider } from "./types.ts";
+import { shellToolName } from "../tools.ts";
+import { homePath, type EntryContext, type Provider, type SessionDoc } from "./types.ts";
 
 interface ClaudeUsage {
   input_tokens?: number;
@@ -18,6 +19,24 @@ interface ClaudeAssistantMessage {
   id?: string;
   model?: string;
   usage?: ClaudeUsage;
+  content?: unknown;
+}
+
+/** First tool_use block name in an assistant message, if any. */
+function toolUseName(content: unknown): string | undefined {
+  if (!Array.isArray(content)) return undefined;
+  for (const block of content) {
+    if (block === null || typeof block !== "object") continue;
+    const b = block as Record<string, unknown>;
+    if (b.type === "tool_use" && typeof b.name === "string" && b.name.length > 0) {
+      if (b.name === "Bash") {
+        const input = b.input as Record<string, unknown> | undefined;
+        return shellToolName(input?.command);
+      }
+      return b.name;
+    }
+  }
+  return undefined;
 }
 
 /**
@@ -91,14 +110,74 @@ export const claudeCodeProvider: Provider = {
       costUsd,
       projectDir,
       sessionId,
+      tool: toolUseName(message?.content),
     };
     return [event];
   },
+
+  extractSessionDocs: extractClaudeSessionDocs,
 };
 
 /** Session id fallback derived from the claude-code directory layout. */
 function pathId(p: string): string {
   return path.basename(p).replace(/\.jsonl$/, "");
+}
+
+const BODY_CAP = 1024 * 1024;
+
+/** Text out of a claude message content (string or block array). */
+function claudeTextBlocks(content: unknown, kind: "user" | "assistant"): string[] {
+  if (typeof content === "string") return kind === "user" ? [content] : [];
+  const out: string[] = [];
+  if (!Array.isArray(content)) return out;
+  for (const block of content) {
+    if (block === null || typeof block !== "object") continue;
+    const b = block as Record<string, unknown>;
+    if (b.type === "text" && typeof b.text === "string") out.push(b.text);
+    else if (kind === "assistant" && b.type === "tool_use" && typeof b.name === "string") {
+      out.push(`[tool:${b.name}]`);
+    }
+  }
+  return out;
+}
+
+/** Full-text extraction: one conversation per .jsonl file. */
+export function extractClaudeSessionDocs(file: string): SessionDoc[] {
+  let raw: string;
+  try {
+    raw = fs.readFileSync(file, "utf8");
+  } catch {
+    return [];
+  }
+  let sessionId = pathId(file);
+  let startedAt: string | undefined;
+  let title = "";
+  let body = "";
+  for (const line of raw.split("\n")) {
+    if (line.length === 0) continue;
+    let entry: Record<string, unknown>;
+    try {
+      entry = JSON.parse(line) as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+    if (typeof entry.sessionId === "string") sessionId = entry.sessionId;
+    if (startedAt === undefined && typeof entry.timestamp === "string") startedAt = entry.timestamp;
+    const type = entry.type;
+    if (type !== "user" && type !== "assistant") continue;
+    const message = entry.message as Record<string, unknown> | undefined;
+    const role = typeof message?.role === "string" ? message.role : type;
+    for (const text of claudeTextBlocks(message?.content, role as "user" | "assistant")) {
+      if (role === "user" && title.length === 0) {
+        title = text.replace(/\s+/g, " ").trim().slice(0, 200);
+      }
+      if (body.length + text.length > BODY_CAP) break;
+      body += text.replace(/\s+/g, " ").slice(0, 2000) + "\n";
+    }
+    if (body.length >= BODY_CAP) break;
+  }
+  if (body.length === 0) return [];
+  return [{ sessionId, startedAt, title, body }];
 }
 
 /** Recursive *.jsonl listing, sorted for deterministic cursor behavior. */

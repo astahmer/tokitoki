@@ -1,8 +1,11 @@
+import fs from "node:fs";
+
 import type { UsageEvent } from "../types.ts";
 import { providerConfig } from "../config.ts";
 import { eventId } from "../machine.ts";
 import { estimateCost } from "../pricing.ts";
-import { homePath, type EntryContext, type Provider } from "./types.ts";
+import { shellToolName } from "../tools.ts";
+import { homePath, type EntryContext, type Provider, type SessionDoc } from "./types.ts";
 import { walkJsonl } from "./claude-code.ts";
 
 /**
@@ -60,6 +63,23 @@ export const piProvider: Provider = {
     const usage = message?.usage as Record<string, number | Record<string, number>> | undefined;
     if (usage === undefined) return [];
 
+    // Tool attribution: assistant messages carry toolCall content blocks.
+    let tool: string | undefined;
+    if (message?.role === "assistant" && Array.isArray(message.content)) {
+      for (const block of message.content) {
+        if (block === null || typeof block !== "object") continue;
+        const b = block as Record<string, unknown>;
+        if (b.type !== "toolCall" || typeof b.name !== "string" || b.name.length === 0) continue;
+        if (b.name === "bash") {
+          const args = b.arguments as Record<string, unknown> | undefined;
+          tool = shellToolName(args?.command);
+        } else {
+          tool = b.name;
+        }
+        break;
+      }
+    }
+
     const inputTokens = toNum(usage.input);
     const outputTokens = toNum(usage.output);
     if (inputTokens === 0 && outputTokens === 0) return [];
@@ -96,13 +116,76 @@ export const piProvider: Provider = {
       costUsd,
       projectDir: typeof state.cwd === "string" ? state.cwd : undefined,
       sessionId,
+      tool,
     };
     return [event];
   },
+
+  extractSessionDocs: extractPiSessionDocs,
 };
 
 function toNum(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+const BODY_CAP = 1024 * 1024;
+
+/** Text out of a pi message content (string or block array). */
+function piTextBlocks(content: unknown, role: string): string[] {
+  if (typeof content === "string") return role === "user" ? [content] : [];
+  const out: string[] = [];
+  if (!Array.isArray(content)) return out;
+  for (const block of content) {
+    if (block === null || typeof block !== "object") continue;
+    const b = block as Record<string, unknown>;
+    if (b.type === "text" && typeof b.text === "string") out.push(b.text);
+    else if (role === "assistant" && b.type === "toolCall" && typeof b.name === "string") {
+      out.push(`[tool:${b.name}]`);
+    }
+  }
+  return out;
+}
+
+/** Full-text extraction: one session per file (session line sets the id). */
+export function extractPiSessionDocs(file: string): SessionDoc[] {
+  let raw: string;
+  try {
+    raw = fs.readFileSync(file, "utf8");
+  } catch {
+    return [];
+  }
+  let sessionId: string | undefined;
+  let startedAt: string | undefined;
+  let title = "";
+  let body = "";
+  for (const line of raw.split("\n")) {
+    if (line.length === 0) continue;
+    let entry: Record<string, unknown>;
+    try {
+      entry = JSON.parse(line) as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+    if (entry.type === "session") {
+      if (typeof entry.id === "string") sessionId = entry.id;
+      if (typeof entry.timestamp === "string") startedAt = entry.timestamp;
+      continue;
+    }
+    if (entry.type !== "message") continue;
+    const message = entry.message as Record<string, unknown> | undefined;
+    const role = typeof message?.role === "string" ? message.role : "";
+    if (role !== "user" && role !== "assistant") continue;
+    for (const text of piTextBlocks(message?.content, role)) {
+      if (role === "user" && title.length === 0) {
+        title = text.replace(/\s+/g, " ").trim().slice(0, 200);
+      }
+      if (body.length + text.length > BODY_CAP) break;
+      body += text.replace(/\s+/g, " ").slice(0, 2000) + "\n";
+    }
+    if (body.length >= BODY_CAP) break;
+  }
+  if (sessionId === undefined || body.length === 0) return [];
+  return [{ sessionId, startedAt, title, body }];
 }
 
 /** Deterministic fallback when an entry lacks an id. */

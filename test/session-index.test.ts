@@ -1,0 +1,134 @@
+import { describe, expect, it } from "bun:test";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
+import { Database } from "bun:sqlite";
+
+import {
+  escapeFtsQuery,
+  rebuildSessionIndex,
+  searchSessions,
+  updateSessionIndex,
+} from "../src/sessionIndex.ts";
+import type { Provider } from "../src/providers/types.ts";
+
+function tmpDb(): Database {
+  return new Database(path.join(os.tmpdir(), `tokitoki-fts-${Date.now()}-${Math.random().toString(36).slice(2)}.db`), {
+    create: true,
+  });
+}
+
+const CLAUDE_LINE = (text: string): string =>
+  JSON.stringify({
+    type: "user",
+    sessionId: "sess-1",
+    timestamp: "2026-08-20T10:00:00Z",
+    cwd: "/tmp/proj",
+    message: { role: "user", content: text },
+  });
+
+describe("escapeFtsQuery", () => {
+  it("quotes terms and ANDs them", () => {
+    expect(escapeFtsQuery("kumo treemap")).toBe(`"kumo" "treemap"`);
+  });
+
+  it("neutralizes fts5 syntax in user input", () => {
+    // Column filters, booleans, NEAR, quotes — all become inert literals.
+    const out = escapeFtsQuery('body:password OR NEAR("x"');
+    expect(out).toBe(`"body:password" "OR" "NEAR(""x"""`);
+    // The escaped query must be accepted by a real FTS5 MATCH without error.
+    const db = tmpDb();
+    const res = searchSessions(db, { query: 'body:password OR NEAR("x"' });
+    expect(res.rows).toEqual([]);
+    db.close();
+  });
+});
+
+describe("session index", () => {
+  /** Fake provider deriving one doc per .jsonl file from its real content. */
+  function fakeProvider(dir: string): Provider {
+    return {
+      id: "fake",
+      label: "Fake",
+      discoverRoots: () => [dir],
+      listFiles: (root) =>
+        fs
+          .readdirSync(root)
+          .filter((f) => f.endsWith(".jsonl"))
+          .map((f) => path.join(root, f)),
+      parseLine: () => [],
+      extractSessionDocs: (file) => {
+        const raw = fs.readFileSync(file, "utf8");
+        const texts = [...raw.matchAll(/"content":"([^"]+)"/g)].map((m) => m[1]!);
+        if (texts.length === 0) return [];
+        const id = path.basename(file, ".jsonl");
+        return [
+          {
+            sessionId: `sess-${id}`,
+            startedAt: "2026-08-20T10:00:00Z",
+            title: texts[0]!,
+            body: texts.join("\n"),
+          },
+        ];
+      },
+    };
+  }
+
+  it("indexes, finds by content, and respects incremental freshness", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tokitoki-stores-"));
+    const file = path.join(dir, "a.jsonl");
+    fs.writeFileSync(file, `${CLAUDE_LINE("migrate the pds to cirrus")}\n`);
+    fs.writeFileSync(path.join(dir, "b.jsonl"), `${CLAUDE_LINE("unrelated chat about weather")}\n`);
+
+    const db = tmpDb();
+    let stats = updateSessionIndex(db, [fakeProvider(dir)]);
+    expect(stats.filesIndexed).toBe(2);
+    expect(stats.docsIndexed).toBe(2);
+
+    // Search hits the right session with a snippet around the match.
+    const hit = searchSessions(db, { query: "cirrus" });
+    expect(hit.rows.length).toBe(1);
+    expect(hit.rows[0]!.sessionId).toBe("sess-a");
+    expect(hit.rows[0]!.snippet).toContain("[[cirrus]]");
+
+    // Unchanged files are skipped on the next incremental pass.
+    stats = updateSessionIndex(db, [fakeProvider(dir)]);
+    expect(stats.filesIndexed).toBe(0);
+
+    // Modified file gets reindexed.
+    await new Promise((r) => setTimeout(r, 20));
+    fs.appendFileSync(file, `${CLAUDE_LINE("follow-up question")}\n`);
+    fs.utimesSync(file, new Date(), new Date(Date.now() + 100));
+    stats = updateSessionIndex(db, [fakeProvider(dir)]);
+    expect(stats.filesIndexed).toBe(1);
+    expect(searchSessions(db, { query: "follow-up" }).rows.length).toBe(1);
+    db.close();
+  });
+
+  it("force rebuild replaces everything exactly once", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tokitoki-stores-"));
+    fs.writeFileSync(path.join(dir, "only.jsonl"), `${CLAUDE_LINE("hello world")}\n`);
+    const provider = fakeProvider(dir);
+    const db = tmpDb();
+    updateSessionIndex(db, [provider]);
+    const first = rebuildSessionIndex(db, [provider]);
+    expect(first.docsIndexed).toBe(1);
+    // No duplicates after rebuild.
+    expect(searchSessions(db, { query: "hello" }).rows.length).toBe(1);
+    db.close();
+  });
+
+  it("multi-term queries require all terms", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tokitoki-stores-"));
+    fs.writeFileSync(
+      path.join(dir, "s.jsonl"),
+      `${CLAUDE_LINE("kumo treemap rollout")}\n${CLAUDE_LINE("plain text only")}\n`,
+    );
+    const db = tmpDb();
+    rebuildSessionIndex(db, [fakeProvider(dir)]);
+    expect(searchSessions(db, { query: "kumo treemap" }).rows.length).toBe(1);
+    expect(searchSessions(db, { query: "kumo missingterm" }).rows.length).toBe(0);
+    db.close();
+  });
+});

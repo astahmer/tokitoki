@@ -22,6 +22,7 @@ export interface GaugeInfo {
 
 export interface TablePayload {
   by: string;
+  window: ApiWindow;
   rows: Row[];
   total: Row;
   accounts: Array<{ key: string; requests: number; email: string | null }>;
@@ -29,6 +30,14 @@ export interface TablePayload {
   totalPrevCost?: number;
   gauges: Record<string, GaugeInfo>;
   emails?: Record<string, string>;
+}
+
+export interface GaugeInfo {
+  frac: number;
+  label: string;
+  used: number;
+  cap: number;
+  unit: "requests" | "usd";
 }
 
 export interface ApiWindow {
@@ -51,6 +60,7 @@ export interface SummaryPayload {
 
 export interface TimeseriesPayload {
   by: string;
+  window: ApiWindow;
   days: string[];
   series: Array<{ bucket: string; values: number[] }>;
 }
@@ -60,6 +70,24 @@ export interface GridCell {
   tokens: number;
   costUsd: number;
   requests: number;
+}
+
+/** Window selection shared by every fetcher: preset/duration `last` OR explicit from/to. */
+export interface WindowSelection {
+  last?: string;
+  from?: string;
+  to?: string;
+}
+
+function windowQuery(w: WindowSelection): URLSearchParams {
+  const q = new URLSearchParams();
+  if (w.from !== undefined && w.from.length > 0) {
+    q.set("from", w.from);
+    if (w.to !== undefined && w.to.length > 0) q.set("to", w.to);
+  } else if (w.last !== undefined && w.last.length > 0) {
+    q.set("last", w.last);
+  }
+  return q;
 }
 
 async function get<T>(path: string): Promise<T> {
@@ -77,13 +105,15 @@ export function fetchSummary(): Promise<SummaryPayload> {
 
 export function fetchTable(params: {
   by: string;
-  period: string;
+  period?: string;
   account?: string;
   providers?: string[];
   delta?: boolean;
   showEmail?: boolean;
-}): Promise<TablePayload> {
-  const q = new URLSearchParams({ by: params.by, period: params.period });
+} & WindowSelection): Promise<TablePayload> {
+  const q = windowQuery(params);
+  q.set("by", params.by);
+  if (params.period !== undefined) q.set("period", params.period);
   if (params.account) q.set("account", params.account);
   for (const p of params.providers ?? []) q.append("provider", p);
   if (params.delta === false) q.set("delta", "0");
@@ -91,8 +121,10 @@ export function fetchTable(params: {
   return get<TablePayload>(`/api/table?${q.toString()}`);
 }
 
-export function fetchTimeseries(by: string, days: number): Promise<TimeseriesPayload> {
-  return get<TimeseriesPayload>(`/api/timeseries?by=${by}&days=${days}`);
+export function fetchTimeseries(by: string, days: number, win?: WindowSelection): Promise<TimeseriesPayload> {
+  const q = win !== undefined ? windowQuery(win) : new URLSearchParams({ days: String(days) });
+  q.set("by", by);
+  return get<TimeseriesPayload>(`/api/timeseries?${q.toString()}`);
 }
 
 export function fetchGrid(days: number, metric: string): Promise<{ metric: string; cells: GridCell[] }> {
@@ -101,7 +133,7 @@ export function fetchGrid(days: number, metric: string): Promise<{ metric: strin
 
 // ---------------------------------------------------------------- sessions
 
-export interface SessionRow {
+export type SessionRow = {
   sessionId: string;
   provider: string;
   accountKey: string;
@@ -112,10 +144,10 @@ export interface SessionRow {
   totalTokens: number;
   cachePct: number;
   costUsd: number;
-}
+};
 
 export interface SessionsPayload {
-  period: string;
+  window: ApiWindow;
   rows: SessionRow[];
 }
 
@@ -135,12 +167,13 @@ export interface SessionDetailPayload {
 }
 
 export function fetchSessions(params: {
-  period: string;
+  period?: string;
   providers?: string[];
   account?: string;
   top?: number;
-}): Promise<SessionsPayload> {
-  const q = new URLSearchParams({ period: params.period });
+} & WindowSelection): Promise<SessionsPayload> {
+  const q = windowQuery(params);
+  if (params.period !== undefined) q.set("period", params.period);
   if (params.account) q.set("account", params.account);
   for (const p of params.providers ?? []) q.append("provider", p);
   if (params.top !== undefined) q.set("top", String(params.top));
@@ -151,4 +184,120 @@ export function fetchSessionDetail(provider: string, sessionId: string): Promise
   return get<SessionDetailPayload>(
     `/api/sessions/detail?provider=${encodeURIComponent(provider)}&id=${encodeURIComponent(sessionId)}`,
   );
+}
+
+// ---------------------------------------------------------------- sessions search
+
+export interface SessionSearchRow {
+  provider: string;
+  sessionId: string;
+  accountKey: string;
+  startedAt: string;
+  title: string;
+  /** Snippet with [[match]] markers around hits. */
+  snippet: string;
+  requests: number;
+  totalTokens: number;
+  cachePct: number;
+  costUsd: number;
+  repos: string[];
+}
+
+export interface SessionSearchPayload {
+  window: ApiWindow;
+  query: string;
+  page: number;
+  hasMore: boolean;
+  searchMs: number;
+  indexedFiles: number;
+  indexMs: number;
+  rows: SessionSearchRow[];
+}
+
+export function fetchSessionsSearch(params: {
+  q: string;
+  page?: number;
+  providers?: string[];
+} & WindowSelection): Promise<SessionSearchPayload> {
+  const q = windowQuery(params);
+  q.set("q", params.q);
+  if (params.page !== undefined && params.page > 1) q.set("page", String(params.page));
+  for (const p of params.providers ?? []) q.append("provider", p);
+  return get<SessionSearchPayload>(`/api/sessions/search?${q.toString()}`);
+}
+
+// ---------------------------------------------------------------- sources
+
+export interface ProviderSource {
+  id: string;
+  label: string;
+  envVar?: string;
+  roots: string[];
+  filesFound: number;
+  trackedFiles: number;
+  upToDateFiles: number;
+  events: number;
+  accounts: Array<{ key: string; email: string | null }>;
+  models: string[];
+}
+
+export function fetchSources(): Promise<{ providers: ProviderSource[] }> {
+  return get("/api/sources");
+}
+
+// ---------------------------------------------------------------- anomalies
+
+export interface AnomalyRow {
+  day: string;
+  metric: string;
+  value: number;
+  baseline: number;
+  ratio: number;
+}
+
+export function fetchAnomalies(win?: WindowSelection, metric = "tokens"): Promise<{ window: ApiWindow; metric: string; anomalies: AnomalyRow[] }> {
+  const q = win !== undefined ? windowQuery(win) : new URLSearchParams();
+  q.set("metric", metric);
+  return get(`/api/anomalies?${q.toString()}`);
+}
+
+// ---------------------------------------------------------------- budgets
+
+export interface BudgetRow {
+  scope: "daily" | "weekly" | "monthly";
+  pattern: string;
+  spend: number;
+  cap: number;
+  pct: number;
+  level: number;
+}
+
+export interface BudgetAlertInfo {
+  scope: "daily" | "weekly" | "monthly";
+  pattern: string;
+  spend: number;
+  cap: number;
+  pct: number;
+  level: number;
+}
+
+export function fetchBudgets(): Promise<{ configured: boolean; rows: BudgetRow[]; alerts: BudgetAlertInfo[] }> {
+  return get("/api/budgets");
+}
+
+// ---------------------------------------------------------------- export
+
+/** Build a download link reflecting the currently-selected filters. */
+export function exportUrl(opts: {
+  format: "json" | "md" | "csv";
+  by: string;
+  account?: string;
+  providers?: string[];
+} & WindowSelection): string {
+  const q = windowQuery(opts);
+  q.set("format", opts.format);
+  q.set("by", opts.by);
+  if (opts.account !== undefined && opts.account.length > 0) q.set("account", opts.account);
+  for (const p of opts.providers ?? []) q.append("provider", p);
+  return `/api/export?${q.toString()}`;
 }

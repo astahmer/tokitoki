@@ -47,7 +47,30 @@ export interface Provider {
    * skip unrelated entry types. State persists between scans via ctx.state.
    */
   parseLine(line: string, ctx: EntryContext): UsageEvent[];
+
+  /** Session text extraction for the search index (absent = not searchable). */
+  extractSessionDocs?: ExtractSessionDocs;
 }
+
+/** One indexable conversation extracted from a provider store file. */
+export interface SessionDoc {
+  sessionId: string;
+  /** Account label when derivable without extra work (best effort). */
+  accountKey?: string;
+  /** ISO-8601 session start when the format records one. */
+  startedAt?: string;
+  /** First user prompt, truncated — the row's human handle. */
+  title: string;
+  /** Concatenated user+assistant text and tool names. Capped at ~1MB. */
+  body: string;
+}
+
+/**
+ * Optional full-text extraction for the sessions search index. Implementations
+ * re-walk a raw store file independently of scan cursors; freshness is keyed
+ * on file mtime+size instead.
+ */
+export type ExtractSessionDocs = (file: string) => SessionDoc[];
 
 /** Read an env-overridable path with a default under $HOME. */
 export function homePath(envVar: string, suffix: string): string {
