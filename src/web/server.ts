@@ -22,12 +22,47 @@ const MIME: Record<string, string> = {
 };
 
 function defaultStaticRoot(): string {
-  return path.join(import.meta.dir, "..", "..", "dist", "web");
+  // Running from source: prefer the repo's own build so web edits show up
+  // immediately; the stable copy is only a fallback for old installs.
+  const dataHome = process.env.XDG_DATA_HOME ?? path.join(process.env.HOME ?? "~", ".local", "share");
+  const stable = path.join(dataHome, "tokitoki", "web");
+  // Source layout: src/web/server.ts → <repo>/dist/web. Packaged layout:
+  // dist/cli.js → sibling dist/web. Repo build wins so edits show up live;
+  // the stable copy is only a fallback.
+  const candidates = [
+    path.join(import.meta.dir, "..", "..", "dist", "web"),
+    path.join(import.meta.dir, "web"),
+  ];
+  for (const dir of candidates) {
+    if (fs.existsSync(path.join(dir, "index.html"))) return dir;
+  }
+  return fs.existsSync(path.join(stable, "index.html")) ? stable : candidates[0]!;
+}
+
+/** True when running from a source checkout that can rebuild the SPA. */
+function isSourceCheckout(): boolean {
+  return fs.existsSync(path.join(import.meta.dir, "..", "..", "web", "vite.config.ts"));
 }
 
 /** Start the dashboard. Returns the Bun server (caller keeps it alive). */
 export function startWebServer(options: WebServerOptions = {}): Bun.Server<undefined> {
-  const staticRoot = options.staticRoot ?? defaultStaticRoot();
+  let staticRoot = options.staticRoot ?? defaultStaticRoot();
+  // Auto-build once when the SPA was never built (fresh clone / new machine).
+  // Built assets are gitignored, so this is a normal first-run state. Only
+  // possible in a source checkout — published packages ship dist/web prebuilt.
+  if (options.staticRoot === undefined && !fs.existsSync(path.join(staticRoot, "index.html")) && isSourceCheckout()) {
+    try {
+      const repoRoot = path.resolve(import.meta.dir, "..", "..");
+      console.error("web UI not built — building once (`bun run web:build`)…");
+      const bun = Bun.which("bun") ?? process.execPath;
+      const result = Bun.spawnSync([bun, "run", "web:build"], { cwd: repoRoot, stdout: "inherit", stderr: "inherit" });
+      if (result.exitCode === 0) {
+        staticRoot = path.join(repoRoot, "dist", "web");
+      }
+    } catch {
+      // build failure surfaces as the 503 hint below
+    }
+  }
   const indexHtml = path.join(staticRoot, "index.html");
   return Bun.serve({
     port: options.port ?? 7788,

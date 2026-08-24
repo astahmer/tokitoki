@@ -40,6 +40,25 @@ export interface TokitokiConfig {
   plans?: Record<string, PlanConfig>;
   /** [budgets] — USD caps per period + optional ntfy topic for push alerts. */
   budgets?: BudgetsConfig;
+  /**
+   * [ui] — visibility toggles for menubar/dashboard surfaces. Entries are
+   * provider ids or `provider:account` pairs; hidden ones are excluded from
+   * the menubar payload / dashboard queries respectively.
+   */
+  ui?: {
+    hidden?: {
+      /** Hidden from the menu-bar preview rows. */
+      menubar?: string[];
+      /** Hidden from the web dashboard. */
+      dashboard?: string[];
+    };
+    /** Show only these providers in the menubar preview (empty = all). */
+    menubarProviders?: string[];
+    /** Max provider percentages shown in the status-item preview line. */
+    menubarPreviewLines?: number;
+    /** "inline" (default): preview always in the status item. "hover": only while pointing at it. */
+    menubarPreviewMode?: "inline" | "hover";
+  };
 }
 
 export function configPath(): string {

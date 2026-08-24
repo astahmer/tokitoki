@@ -26,6 +26,33 @@ export interface UsageEvent {
    * text/thinking turns and older events (pre tool-extraction).
    */
   tool?: string;
+  /** Embedded provider quota snapshot (codex rate_limits), when present. */
+  quota?: QuotaSnapshot;
+}
+
+/**
+ * Provider-embedded quota snapshot (real rate-limit data from the harness,
+ * currently codex rollout `rate_limits`). Distinct from user-set plan caps:
+ * this is what the provider itself reports.
+ */
+export interface QuotaWindow {
+  /** Provider-reported share of the window consumed, 0–100. */
+  usedPct: number;
+  /** Window length in minutes (300 = 5h, 10080 = weekly, ...). */
+  windowMinutes: number;
+  /** Unix epoch seconds when the window resets. */
+  resetsAtEpoch: number;
+}
+
+export interface QuotaSnapshot {
+  primary?: QuotaWindow;
+  secondary?: QuotaWindow;
+  credits?: { hasCredits: boolean; unlimited: boolean; balance: string };
+}
+
+/** Optional on UsageEvent — only providers with embedded quota set it. */
+export interface UsageEventQuota {
+  quota?: QuotaSnapshot;
 }
 
 /** True when the event carries all fields downstream code relies on. */

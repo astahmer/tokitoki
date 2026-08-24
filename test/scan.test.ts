@@ -3,7 +3,7 @@ import { mkdtempSync, appendFileSync, mkdirSync, readFileSync, writeFileSync } f
 import os from "node:os";
 import path from "node:path";
 
-import { scanProvider } from "../src/scan.ts";
+import { scanProvider, scanProviderCore } from "../src/scan.ts";
 import { eventsFile, loadCursors } from "../src/store.ts";
 import { walkJsonl } from "../src/providers/claude-code.ts";
 import type { UsageEvent } from "../src/types.ts";
@@ -126,3 +126,103 @@ describe("scanProvider", () => {
     }
   });
 });
+
+describe("cursor shards", () => {
+  it("persists a per-provider shard and merges it into loadCursors", () => {
+    const env = setup();
+    try {
+      const file = path.join(env.sessions, "s.jsonl");
+      writeFileSync(file, assistantLine("msg_1"));
+      const p = fakeProvider(env.sessions);
+      scanProvider(p, MACHINE);
+
+      const shard = path.join(process.env.TOKITOKI_DATA_DIR!, "cursors", "fake.json");
+      expect(readFileSync(shard, "utf8").length).toBeGreaterThan(0);
+      // merged view (legacy + shards) still resolves the cursor
+      expect(loadCursors()[file]!.offset).toBe(assistantLine("msg_1").length);
+
+      // incremental resume: append → only the new bytes are consumed
+      appendFileSync(file, assistantLine("msg_2"));
+      expect(scanProvider(p, MACHINE).eventsEmitted).toBe(1);
+    } finally {
+      delete process.env.TOKITOKI_DATA_DIR;
+    }
+  });
+
+  it("shard saves are restricted to the scanning provider's own files", () => {
+    const env = setup();
+    try {
+      // legacy cursors.json with an entry for another provider's file
+      const foreign = path.join(env.sessions, "other.jsonl");
+      writeFileSync(
+        path.join(process.env.TOKITOKI_DATA_DIR!, "cursors.json"),
+        JSON.stringify({ [foreign]: { offset: 123 } }),
+      );
+      const file = path.join(env.sessions, "s.jsonl");
+      writeFileSync(file, assistantLine("msg_1"));
+      scanProvider(fakeProvider(env.sessions), MACHINE);
+
+      const shard = JSON.parse(
+        readFileSync(path.join(process.env.TOKITOKI_DATA_DIR!, "cursors", "fake.json"), "utf8"),
+      ) as Record<string, unknown>;
+      expect(Object.keys(shard)).not.toContain(foreign);
+      expect(Object.keys(shard)).toContain(file);
+    } finally {
+      delete process.env.TOKITOKI_DATA_DIR;
+    }
+  });
+
+  it("scanProviderCore streams batches through hooks", () => {
+    const env = setup();
+    try {
+      const file = path.join(env.sessions, "s.jsonl");
+      writeFileSync(file, assistantLine("msg_1") + assistantLine("msg_2"));
+      let batchEvents = 0;
+      let savedOffsets: Record<string, { offset: number }> | undefined;
+      const result = scanProviderCore(fakeProvider(env.sessions), MACHINE, {
+        onEvents: (events) => {
+          batchEvents += events.length;
+        },
+        onSaveCursors: (cursors) => {
+          savedOffsets = cursors as Record<string, { offset: number }>;
+        },
+      });
+      expect(result.eventsEmitted).toBe(2);
+      expect(batchEvents).toBe(2);
+      expect(savedOffsets?.[file]?.offset).toBe((assistantLine("msg_1") + assistantLine("msg_2")).length);
+    } finally {
+      delete process.env.TOKITOKI_DATA_DIR;
+    }
+  });
+});
+
+describe("oversized lines", () => {
+  it("consumes lines larger than the read chunk instead of stalling", () => {
+    const env = setup();
+    try {
+      const file = path.join(env.sessions, "s.jsonl");
+      // small line, then a >CHUNK_SIZE monster line, then a normal line
+      const filler = " ".repeat(9 * 1024 * 1024);
+      writeFileSync(
+        file,
+        assistantLine("msg_1") +
+          JSON.stringify({ type: "assistant", message: { id: "msg_big", model: "m1", usage: { input_tokens: 1, output_tokens: 1 }, filler }, requestId: "req_big", uuid: "u_big", timestamp: "2026-08-23T09:00:01.000Z", sessionId: "sess" }) +
+          "\n" +
+          assistantLine("msg_2"),
+      );
+      const p = fakeProvider(env.sessions);
+      const res = scanProvider(p, MACHINE);
+      expect(res.eventsEmitted).toBe(3);
+      expect(loadCursors()[file]!.offset).toBe(fsStatSize(file));
+      // no stall → rescan finds nothing
+      expect(scanProvider(p, MACHINE).eventsEmitted).toBe(0);
+    } finally {
+      delete process.env.TOKITOKI_DATA_DIR;
+    }
+  });
+});
+
+function fsStatSize(file: string): number {
+  // eslint-disable-next-line -- local helper keeps imports minimal
+  return require("node:fs").statSync(file).size as number;
+}

@@ -1,6 +1,13 @@
 # Packaging tokitoki
 
-## Compiled binary (local)
+> 2026-08-25: the compiled-binary flow (`bun run compile` / `release`) was
+> removed — everything runs from source via `bun src/cli.ts` (the menubar app
+> resolves bun automatically). Compiled binaries couldn't rebuild or even see
+> `dist/web`, so they served stale UI assets from `~/.local/share/tokitoki/web`
+> or 503'd with "web UI not built". The notes below are kept for reference if a
+> standalone build is ever needed again.
+
+## Compiled binary (local, historical)
 
 ```sh
 bun run compile          # bun build --compile src/cli.ts --outfile dist/tokitoki

@@ -62,12 +62,22 @@ bun src/cli.ts scan
 bun link          # optional, exposes `tokitoki`
 ```
 
-Standalone binary (no runtime needed on target machine):
+## Publishing
 
 ```sh
-bun run compile   # → dist/tokitoki
+pnpm pack            # runs prepack: tests + typecheck + build (SPA + bundled CLI)
+npm publish          # ships bin/ shim + dist/cli.js + dist/web assets
 ```
 
+The package is bun-only (`engines.bun`): `dist/cli.js` is a `bun build
+--target=bun` bundle, and the SPA is baked into the tarball so installed
+copies never need node_modules or a web build. The `bin/tokitoki.js` shim
+prefers the built CLI and falls back to `src/cli.ts` in unbuilt checkouts.
+Verify a tarball before publishing:
+
+```sh
+tar -xzf tokitoki-*.tgz -C /tmp && bun /tmp/package/bin/tokitoki.js --version
+```
 
 ## Usage
 
@@ -231,8 +241,8 @@ src/web/api.ts ◀── same aggregation as the CLI (EventCache) ── /api/* 
 
 - [Publishing the ATProto lexicon](docs/atproto-lexicon.md) — NSID choice,
   schema doc, hosting/announcement, versioning rules, adapter flip checklist
-- [Packaging](docs/packaging.md) — compiled binary, cross-compile targets,
-  release/checksum flow, nix packaging recipe (source + prebuilt), nixfiles wiring + cli-tools cockpit reminder
+- [Packaging](docs/packaging.md) — source-first run model (compiled-binary flow removed 2026-08-25),
+  historical cross-compile/release notes, nix packaging recipe
 - [Menu-bar app](menubar/tokitoki-menubar/) — native SwiftUI MenuBarExtra
   (macOS 13+), `swift build`, refreshes every 5 min from the compiled CLI
 

@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import type { UsageEvent } from "../types.ts";
+import type { QuotaWindow, UsageEvent } from "../types.ts";
 import { providerConfig } from "../config.ts";
 import { eventId } from "../machine.ts";
 import { estimateCost } from "../pricing.ts";
@@ -149,6 +149,43 @@ export const codexProvider: Provider = {
       tool: typeof state.lastTool === "string" ? state.lastTool : undefined,
     };
     state.lastTool = undefined;
+
+    // Embedded quota: real provider-reported rate-limit windows. Prefer over
+    // any derived estimate (see src/limits.ts).
+    if (rateLimits !== undefined && typeof rateLimits === "object") {
+      const rl = rateLimits as Record<string, unknown>;
+      const win = (w: unknown): QuotaWindow | undefined => {
+        if (typeof w !== "object" || w === null) return undefined;
+        const o = w as Record<string, unknown>;
+        const usedPct = o.used_percent;
+        const windowMinutes = o.window_minutes;
+        const resetsAtEpoch = o.resets_at;
+        if (
+          typeof usedPct !== "number" ||
+          typeof windowMinutes !== "number" ||
+          typeof resetsAtEpoch !== "number"
+        )
+          return undefined;
+        return { usedPct, windowMinutes, resetsAtEpoch };
+      };
+      const creditsRaw = rl.credits as Record<string, unknown> | undefined;
+      const credits =
+        creditsRaw && typeof creditsRaw.has_credits === "boolean"
+          ? {
+              hasCredits: creditsRaw.has_credits,
+              unlimited: creditsRaw.unlimited === true,
+              balance: typeof creditsRaw.balance === "string" ? creditsRaw.balance : "0",
+            }
+          : undefined;
+      const primary = win(rl.primary);
+      const secondary = win(rl.secondary);
+      if (primary !== undefined || secondary !== undefined || credits !== undefined) {
+        event.quota = {};
+        if (primary !== undefined) event.quota.primary = primary;
+        if (secondary !== undefined) event.quota.secondary = secondary;
+        if (credits !== undefined) event.quota.credits = credits;
+      }
+    }
     return [event];
   },
 

@@ -104,13 +104,16 @@ struct LimitWindow: Codable {
     let windowEnd: String?
 }
 
-struct AccountLimits: Codable {
+struct AccountLimits: Codable, Identifiable {
     let provider: String
     let accountKey: String
+    let email: String?
     let planLabel: String?
     let windows: [LimitWindow]
     let bankedResets: Int?
     let bankedExpiresAt: String?
+
+    var id: String { "\(provider)@\(accountKey)" }
 }
 
 struct UiPreviewConfig: Codable {
@@ -208,8 +211,7 @@ final class Model: ObservableObject {
                 applyBudgets(p.budgets)
                 self.limits = p.limits ?? []
                 self.previewMode = p.uiPreview?.previewMode ?? "inline"
-                var newTitle = composeTitle(today: p.today, preview: Self.previewText(p.limits ?? [], cfg: p.uiPreview), hovering: isHovering, mode: self.previewMode)
-                newTitle = Self.badged(newTitle, worst: worstState)
+                let newTitle = composeTitle(today: p.today, preview: Self.previewText(p.limits ?? [], cfg: p.uiPreview), hovering: isHovering, mode: self.previewMode)
                 setTitleIfChanged(newTitle)
                 self.errorText = nil
                 applyAnomalies(p.anomalies)
@@ -340,30 +342,40 @@ final class Model: ObservableObject {
         }
     }
 
+    static func providerGlyph(_ provider: String) -> String {
+        switch provider {
+        case "claude-code": return "◈"
+        case "codex": return "⬡"
+        case "opencode-go", "opencode": return "✦"
+        case "openrouter": return "◉"
+        case "gemini-cli": return "✧"
+        case "cursor": return "⌁"
+        case "grok": return "✳"
+        default: return "●"
+        }
+    }
+
     /// Primary window for a card/bar: first with a real quota denominator,
     /// else the first window. Mirrors the popover hero logic.
     static func primaryWindow(_ l: AccountLimits) -> LimitWindow? {
         l.windows.first { $0.usedPct != nil } ?? l.windows.first
     }
 
-    /// Compact "cw 34% cc 81%" line from each account's primary window.
+    /// Compact icon + remaining percentage line from each account's primary window.
     static func previewText(_ limits: [AccountLimits], cfg: UiPreviewConfig?) -> String? {
         let maxLines = cfg?.previewLines ?? 3
         guard maxLines > 0 else { return nil }
         let parts: [String] = limits.compactMap { l in
             guard let w = primaryWindow(l), let pct = w.usedPct else { return nil }
-            return "\(shortTag(l.provider)) \(Int(pct.rounded()))%"
+            return "\(Self.providerGlyph(l.provider)) \(Int(max(0, 100 - pct).rounded()))%"
         }
         guard !parts.isEmpty else { return nil }
         return Array(parts.prefix(maxLines)).joined(separator: " · ")
     }
 
     func composeTitle(today: ReportPayload?, preview: String?, hovering: Bool, mode: String) -> String {
-        var base = today.map { Self.baseTitle(for: $0) } ?? "…"
-        guard let preview else { return base }
-        if mode == "hover" && !hovering { return base }
-        base += "  ·  " + preview
-        return base
+        guard let preview, mode != "hover" || hovering else { return "tokitoki" }
+        return preview
     }
 
     /// Hover expansion seam (hover-only preview mode + tests).
@@ -375,7 +387,7 @@ final class Model: ObservableObject {
                                  preview: Self.previewText(p?.limits ?? [], cfg: currentPreviewCfg),
                                  hovering: isHovering,
                                  mode: previewMode)
-            setTitleIfChanged(Self.badged(t, worst: worstState))
+            setTitleIfChanged(t)
         }
     }
     var currentPayloadForTitle: MenubarPayload?
@@ -552,7 +564,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var hoverMonitor: Any?
     private func refreshHoverMonitor() {
         if let hoverMonitor { NSEvent.removeMonitor(hoverMonitor); self.hoverMonitor = nil }
-        guard model?.previewMode == "hover", let button = statusItem?.button else { return }
+        guard model?.previewMode == "hover", statusItem?.button != nil else { return }
         hoverMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved, .leftMouseUp, .rightMouseUp]) { [weak self] event in
             guard let self, let button = self.statusItem?.button,
                   let window = button.window else { return }
@@ -673,8 +685,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
-/// How to invoke the CLI: compiled dist binary preferred, `bun src/cli.ts`
-/// fallback when dist hasn't been built yet.
+/// How to invoke the CLI: `bun src/cli.ts` preferred (always current),
+/// compiled dist binary only as a bun-less fallback.
 struct CLIInvocation {
     let executable: URL
     let prefixArgs: [String]
@@ -693,15 +705,15 @@ func resolveInvocation() -> CLIInvocation {
     for _ in 0..<6 {
         url.deleteLastPathComponent()
         let repoRoot = url
-        if FileManager.default.fileExists(atPath: repoRoot.appendingPathComponent("dist/tokitoki").path) {
-            return CLIInvocation(executable: repoRoot.appendingPathComponent("dist/tokitoki"), prefixArgs: [])
-        }
         let cliTs = repoRoot.appendingPathComponent("src/cli.ts")
         if FileManager.default.fileExists(atPath: cliTs.path) {
             let bunCandidates = ["~/.bun/bin/bun", "/opt/homebrew/bin/bun", "/usr/local/bin/bun"]
             for candidate in bunCandidates where FileManager.default.fileExists(atPath: cliURL(candidate).path) {
                 return CLIInvocation(executable: cliURL(candidate), prefixArgs: [cliTs.path])
             }
+        }
+        if FileManager.default.fileExists(atPath: repoRoot.appendingPathComponent("dist/tokitoki").path) {
+            return CLIInvocation(executable: repoRoot.appendingPathComponent("dist/tokitoki"), prefixArgs: [])
         }
     }
     return CLIInvocation(executable: cliURL("~/dev/tokitoki/dist/tokitoki"), prefixArgs: [])
@@ -732,10 +744,9 @@ struct ContentView: View {
                         .padding(8).frame(maxWidth: .infinity, alignment: .leading)
                         .background(.red.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
                 }
-                heroCard
                 if !model.limits.isEmpty { limitsSection }
+                heroCard
                 if !(model.today?.rows ?? []).isEmpty { pieCard() }
-                budgetsSection
                 if let p = model.today {
                     card(title: "today by provider", icon: "chart.bar.fill") {
                         HStack(alignment: .bottom, spacing: 3) {
@@ -756,6 +767,7 @@ struct ContentView: View {
                 anomaliesRow
                 if !model.repos.isEmpty { compactList(title: "top repos this month", icon: "folder.fill", rows: model.repos.map { ( $0.bucket, "\(humanCount(Double($0.requests))) req") }) }
                 if !model.topTools.isEmpty { compactList(title: "top tools today", icon: "wrench.and.screwdriver.fill", rows: model.topTools.map { ($0.tool, $0.costUsd >= 0.01 ? String(format: "$%.2f", $0.costUsd) : humanCount($0.tokens)) }) }
+                budgetsSection
                 HStack(spacing: 8) {
                     Button(action: openDashboard) { Label("Dashboard", systemImage: "safari") }.buttonStyle(.borderedProminent)
                     Button(action: { model.refresh() }) { Label("Refresh", systemImage: "arrow.clockwise") }.buttonStyle(.bordered)
@@ -775,8 +787,8 @@ struct ContentView: View {
         HStack(alignment: .top) {
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
-                    Circle().fill(color(for: model.worstState ?? "ok")).frame(width: 8, height: 8)
-                    Text("TODAY").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+                    Circle().fill(.blue).frame(width: 8, height: 8)
+                    Text("ACTIVITY TODAY").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
                 }
                 Text(model.today.map { String(format: "$%.2f", $0.total.costUsd) } ?? "—")
                     .font(.system(size: 30, weight: .bold, design: .rounded)).monospacedDigit()
@@ -819,9 +831,9 @@ struct ContentView: View {
     // MARK: - v3: per-account limit cards (the hero)
 
     @ViewBuilder private var limitsSection: some View {
-        card(title: "usage · resets", icon: "gauge.with.needle") {
+        card(title: "remaining · resets", icon: "gauge.with.needle") {
             VStack(alignment: .leading, spacing: 9) {
-                ForEach(model.limits, id: \.provider) { l in
+                ForEach(model.limits) { l in
                     AccountLimitCard(limits: l)
                         .accessibilityLabel("limit-card-\(l.provider)-\(l.accountKey)")
                 }
@@ -992,10 +1004,18 @@ struct ContentView: View {
             let proc = Process()
             proc.executableURL = invocation.executable
             proc.arguments = invocation.prefixArgs + ["web"]
-            try? proc.run()
-            dashboardProcess = proc
+            do {
+                try proc.run()
+                dashboardProcess = proc
+            } catch {
+                NSSound.beep()
+                return
+            }
         }
-        if let url = URL(string: "http://localhost:7788") {
+        // The CLI binds asynchronously. Waiting briefly avoids opening the
+        // browser into a connection-refused/503 page on a cold launch.
+        let url = URL(string: "http://localhost:7788")!
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
             NSWorkspace.shared.open(url)
         }
     }
@@ -1015,8 +1035,13 @@ struct AccountLimitCard: View {
         VStack(alignment: .leading, spacing: 4) {
             headerRow
             primaryRow
-            ForEach(Array(secondaryWindows.enumerated()), id: \.offset) { _, w in
-                secondaryRow(w)
+            if !secondaryWindows.isEmpty {
+                HStack(spacing: 8) {
+                    ForEach(Array(secondaryWindows.enumerated()), id: \.offset) { _, w in
+                        secondaryRow(w)
+                    }
+                    Spacer(minLength: 0)
+                }
             }
             bankedRow
         }
@@ -1025,12 +1050,29 @@ struct AccountLimitCard: View {
 
     private var headerRow: some View {
         HStack(spacing: 5) {
-            Circle().fill(sharedProviderColor(limits.provider)).frame(width: 7, height: 7)
-            Text("\(limits.provider) \u{00b7} \(limits.accountKey)")
+            Text(Model.providerGlyph(limits.provider))
+                .font(.caption.weight(.bold))
+                .foregroundStyle(sharedProviderColor(limits.provider))
+            Text(accountLabel)
                 .font(.caption.weight(.medium)).lineLimit(1)
             Spacer()
+            if let url = providerConsoleURL(limits.provider) {
+                Button { NSWorkspace.shared.open(url) } label: {
+                    Image(systemName: "arrow.up.right.square")
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .help("Open \(limits.provider) usage dashboard")
+            }
             planBadge
         }
+    }
+
+    private var accountLabel: String {
+        if let email = limits.email, !email.isEmpty {
+            return "\(email) · \(limits.accountKey)"
+        }
+        return "\(limits.provider) · \(limits.accountKey)"
     }
 
     @ViewBuilder private var planBadge: some View {
@@ -1046,19 +1088,27 @@ struct AccountLimitCard: View {
     @ViewBuilder private var primaryRow: some View {
         if let p = primary {
             if let pct = p.usedPct {
-                ProgressView(value: min(pct / 100, 1))
-                    .tint(barTint(pct))
-                primaryMeta(p, pct: pct)
+                let remaining = max(0, min(100, 100 - pct))
+                Button {
+                    if let url = providerConsoleURL(limits.provider) { NSWorkspace.shared.open(url) }
+                } label: {
+                    ProgressView(value: remaining / 100)
+                        .tint(barTint(remaining))
+                }
+                .buttonStyle(.plain)
+                .help("Open \(limits.provider) usage dashboard")
+                primaryMeta(p, remaining: remaining)
             } else {
                 primaryDerivedMeta(p)
             }
         }
     }
 
-    private func primaryMeta(_ p: LimitWindow, pct: Double) -> some View {
+    private func primaryMeta(_ p: LimitWindow, remaining: Double) -> some View {
         HStack {
-            Text("\(Int(pct.rounded()))% of \(p.kind)")
+            Text("\(Int(remaining.rounded()))% remaining")
                 .font(.caption.monospacedDigit().weight(.semibold))
+                .foregroundStyle(barTint(remaining))
             Spacer()
             Text("resets in " + countdown(p.resetsAt))
                 .font(.caption2).foregroundStyle(.secondary)
@@ -1067,7 +1117,7 @@ struct AccountLimitCard: View {
 
     private func primaryDerivedMeta(_ p: LimitWindow) -> some View {
         HStack {
-            Text("\(p.kind): \(humanCount(p.tokens)) tok")
+            Text("\(humanCount(p.tokens)) tokens")
                 .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
             Spacer()
             Text("resets in " + countdown(p.resetsAt))
@@ -1076,17 +1126,12 @@ struct AccountLimitCard: View {
     }
 
     private func secondaryRow(_ w: LimitWindow) -> some View {
-        HStack {
-            Text(windowGlyph(w.kind) + " " + w.kind)
-                .font(.caption2).foregroundStyle(.secondary)
-            Spacer()
-            Text(humanCount(w.tokens) + " tok")
-                .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
-            if let pct = w.usedPct {
-                Text("\(Int(pct.rounded()))%")
-                    .font(.caption2.monospacedDigit().weight(.medium))
-            }
-        }
+        let label = w.usedPct.map { "\(windowGlyph(w.kind)) \(Int(max(0, 100 - $0).rounded()))%" }
+            ?? "\(windowGlyph(w.kind)) \(humanCount(w.tokens))"
+        return Text(label)
+            .font(.caption2.monospacedDigit().weight(.medium))
+            .foregroundStyle(w.usedPct.map { barTint(max(0, 100 - $0)) } ?? .secondary)
+            .help("\(w.kind): \(w.usedPct.map { "\(Int(max(0, 100 - $0).rounded()))% remaining" } ?? "rolling") · resets in \(countdown(w.resetsAt)) · \(humanCount(w.tokens)) tokens")
     }
 
     @ViewBuilder private var bankedRow: some View {
@@ -1154,11 +1199,24 @@ func parseISO(_ s: String) -> Date? {
     isoFractional.date(from: s) ?? isoPlain.date(from: s)
 }
 
-private func barTint(_ pct: Double) -> Color {
-    switch pct {
-    case 90...: return .red
-    case 70..<90: return .orange
-    default: return .green
+private func providerConsoleURL(_ provider: String) -> URL? {
+    switch provider {
+    case "claude-code": return URL(string: "https://claude.ai/settings/usage")
+    case "codex": return URL(string: "https://platform.openai.com/usage")
+    case "openrouter": return URL(string: "https://openrouter.ai/activity")
+    case "opencode-go", "opencode": return URL(string: "https://opencode.ai/zen")
+    case "gemini-cli": return URL(string: "https://aistudio.google.com/usage")
+    case "cursor": return URL(string: "https://cursor.com/dashboard")
+    default: return nil
+    }
+}
+
+private func barTint(_ remaining: Double) -> Color {
+    switch remaining {
+    case ..<5: return .red
+    case ..<20: return .orange
+    case ..<50: return .cyan
+    default: return .blue
     }
 }
 

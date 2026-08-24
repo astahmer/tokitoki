@@ -1,10 +1,10 @@
 import path from "node:path";
 
+import fs from "node:fs";
 import { Database, type SQLQueryBindings } from "bun:sqlite";
 
-import type { UsageEvent } from "./types.ts";
-import { dataDir, eventsFile, readEventsFile } from "./store.ts";
-import { resolveRepo } from "./repos.ts";
+import type { QuotaWindow, UsageEvent } from "./types.ts";
+import { dataDir, eventsFile, readEventsFile, readEventsTail } from "./store.ts";import { resolveRepo } from "./repos.ts";
 import { ensureSessionFts } from "./sessionIndex.ts";
 import { EXTRACTION_VERSION } from "./scan.ts";
 
@@ -12,6 +12,22 @@ import { EXTRACTION_VERSION } from "./scan.ts";
  * SQLite cache over the merged event logs. Rebuildable at any time: it is a
  * pure projection of (local + extra) JSONL files deduped on event id.
  */
+interface UsageRow {
+  tokens: number;
+  cost: number;
+  requests: number;
+}
+
+const ZERO_ROW: UsageRow = { tokens: 0, cost: 0, requests: 0 };
+
+export interface QuotaSnapshotRow {
+  accountKey: string;
+  windowMinutes: number;
+  usedPct: number;
+  resetsAt: number;
+  creditsJson: string | null;
+  capturedAt: string;
+}
 export class EventCache {
   private db: Database;
   private repoStmtInsert: ReturnType<Database["prepare"]>;
@@ -68,6 +84,19 @@ export class EventCache {
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS quota_snapshots (
+        provider TEXT NOT NULL,
+        account_key TEXT NOT NULL,
+        window_minutes INTEGER NOT NULL,
+        used_pct REAL NOT NULL,
+        resets_at INTEGER NOT NULL,
+        captured_at TEXT NOT NULL,
+        event_id TEXT NOT NULL,
+        credits_json TEXT,
+        PRIMARY KEY (provider, account_key, window_minutes, captured_at)
+      );
+      CREATE INDEX IF NOT EXISTS idx_quota_lookup
+        ON quota_snapshots(provider, account_key, captured_at);
     `);
     try {
       ensureSessionFts(this.db);
@@ -131,7 +160,46 @@ export class EventCache {
       }
       return inserted;
     });
-    return tx(events) as number;
+    const n = tx(events) as number;
+    this.insertQuotaSnapshots(events);
+    return n;
+  }
+
+  /**
+   * Persist provider-embedded quota snapshots (codex rate_limits). One row
+   * per window per event; latest captured_at per (provider, account, window)
+   * wins in queries.
+   */
+  private insertQuotaSnapshots(events: UsageEvent[]): void {
+    const rows: Array<{ e: UsageEvent; w: QuotaWindow }> = [];
+    for (const e of events) {
+      if (e.quota === undefined) continue;
+      for (const w of [e.quota.primary, e.quota.secondary]) {
+        if (w !== undefined) rows.push({ e, w });
+      }
+    }
+    if (rows.length === 0) return;
+    const stmt = this.db.prepare(`
+      INSERT OR REPLACE INTO quota_snapshots (
+        provider, account_key, window_minutes, used_pct, resets_at,
+        captured_at, event_id, credits_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    const tx = this.db.transaction(() => {
+      for (const { e, w } of rows) {
+        stmt.run(
+          e.provider,
+          e.accountKey,
+          Math.round(w.windowMinutes),
+          w.usedPct,
+          Math.round(w.resetsAtEpoch),
+          e.ts,
+          e.id,
+          e.quota?.credits !== undefined ? JSON.stringify(e.quota.credits) : null,
+        );
+      }
+    });
+    tx();
   }
 
   /** Full rebuild from all known event log files. */
@@ -139,17 +207,77 @@ export class EventCache {
     this.db.exec("DELETE FROM events");
     const files = [eventsFile(), ...extraFiles];
     // First occurrence wins (local log precedes synced ones), EXCEPT when a
-    // later duplicate is tool-attributed and the kept one is not: extraction
-    // replays re-append enriched events under the same stable id.
+    // later duplicate is strictly richer than the kept one: tool-attributed
+    // beats unattributed, embedded quota beats none (extraction replays
+    // re-append enriched events under the same stable id).
     const byId = new Map<string, UsageEvent>();
-    const hasTool = (e: UsageEvent) => e.tool !== undefined;
+    const richness = (e: UsageEvent): number => (e.tool !== undefined ? 2 : 0) + (e.quota !== undefined ? 1 : 0);
     for (const file of files) {
       for (const e of readEventsFile(file)) {
         const kept = byId.get(e.id);
-        if (kept === undefined || (!hasTool(kept) && hasTool(e))) byId.set(e.id, e);
+        if (kept === undefined || richness(e) > richness(kept)) byId.set(e.id, e);
       }
     }
     this.insert(Array.from(byId.values()));
+    this.recordLogOffsets(files);
+  }
+
+  /**
+   * Upsert with the same richness semantics as rebuild: existing rows are
+   * upgraded only when the incoming event is strictly richer (tool and/or
+   * quota added). Plain INSERT OR IGNORE keeps first-occurrence-wins.
+   */
+  private upsertRicher(events: UsageEvent[]): void {
+    if (events.length === 0) return;
+    this.insert(events);
+    const needsTool = events.some((e) => e.tool !== undefined);
+    if (!needsTool) return;
+    const stmt = this.db.prepare("UPDATE events SET tool = ? WHERE id = ? AND tool IS NULL");
+    const tx = this.db.transaction(() => {
+      for (const e of events) {
+        if (e.tool !== undefined) stmt.run(e.tool, e.id);
+      }
+    });
+    tx();
+  }
+
+  // -- log-offset tracking -------------------------------------------------
+
+  /** meta key holding {file → consumed byte offset} for append-only logs. */
+  private static LOG_OFFSETS_KEY = "log_offsets";
+
+  private logOffsets(): Record<string, number> {
+    const row = this.db
+      .query("SELECT value FROM meta WHERE key = ?")
+      .get(EventCache.LOG_OFFSETS_KEY) as { value?: string } | undefined;
+    if (row?.value === undefined) return {};
+    try {
+      return JSON.parse(row.value) as Record<string, number>;
+    } catch {
+      return {};
+    }
+  }
+
+  private saveLogOffsets(offsets: Record<string, number>): void {
+    this.db
+      .prepare("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)")
+      .run(EventCache.LOG_OFFSETS_KEY, JSON.stringify(offsets));
+  }
+
+  /**
+   * Record every known log's current size as consumed. Used after rebuild or
+   * after a direct scan-time ingest so sync() does not re-read those bytes.
+   */
+  recordLogOffsets(files: string[] = [eventsFile()]): void {
+    const offsets = this.logOffsets();
+    for (const file of files) {
+      try {
+        offsets[file] = fs.statSync(file).size;
+      } catch {
+        // file missing — leave any previous entry alone
+      }
+    }
+    this.saveLogOffsets(offsets);
   }
 
   /** Ensure the cache reflects every line in the local + extra logs. */
@@ -161,12 +289,44 @@ export class EventCache {
       this.markExtractionVersion(EXTRACTION_VERSION);
       return;
     }
-    const count = this.count();
-    const total = new Set<string>();
-    for (const file of [eventsFile(), ...extraFiles]) {
-      for (const e of readEventsFile(file)) total.add(e.id);
+
+    const files = [eventsFile(), ...extraFiles];
+    const offsets = this.logOffsets();
+    let needsFullRebuild = false;
+    const tails: Array<{ file: string; from: number }> = [];
+    for (const file of files) {
+      let size = 0;
+      try {
+        size = fs.statSync(file).size;
+      } catch {
+        continue; // vanished — nothing to consume
+      }
+      const from = offsets[file];
+      if (from === undefined || from > size) {
+        // Never tracked (cache predates offset tracking) or the file shrank /
+        // was replaced wholesale by a sync backend → full projection is the
+        // only safe answer.
+        needsFullRebuild = true;
+        break;
+      }
+      if (from < size) tails.push({ file, from });
     }
-    if (total.size !== count) this.rebuild(extraFiles);
+    if (needsFullRebuild) {
+      this.rebuild(extraFiles);
+      return;
+    }
+    if (tails.length === 0) return;
+
+    // Local log first so first-occurrence-wins matches rebuild semantics,
+    // then upgrade enriched duplicates from later logs.
+    let offsetsChanged = false;
+    for (const { file, from } of tails) {
+      const { events, newSize } = readEventsTail(file, from);
+      this.upsertRicher(events);
+      offsets[file] = newSize;
+      offsetsChanged = true;
+    }
+    if (offsetsChanged) this.saveLogOffsets(offsets);
   }
 
   count(): number {
@@ -197,6 +357,52 @@ export class EventCache {
          FROM events GROUP BY provider, account_key ORDER BY events DESC`,
       )
       .all() as Array<{ provider: string; accountKey: string; events: number }>;
+  }
+
+  /** Usage summed over an account's events since a cutoff (ISO-8601). */
+  windowUsageForAccount(provider: string, accountKey: string, sinceIso: string): {
+    tokens: number;
+    cost: number;
+    requests: number;
+  } {
+    const row = this.db
+      .query(
+        `SELECT COALESCE(SUM(input_tokens + output_tokens), 0) AS tokens,
+                COALESCE(SUM(cost_usd), 0) AS cost,
+                COUNT(*) AS requests
+         FROM events WHERE provider = ? AND account_key = ? AND ts >= ?`,
+      )
+      .get(provider, accountKey, sinceIso) as UsageRow | undefined;
+    return row ?? ZERO_ROW;
+  }
+
+  /**
+   * Latest embedded quota snapshot per window length for one provider+account.
+   * Real provider-reported data (currently codex rate_limits only).
+   */
+  latestQuotaSnapshots(provider: string, accountKey: string): QuotaSnapshotRow[] {
+    try {
+      return this.db
+        .query(
+          `SELECT qs.account_key AS accountKey, qs.window_minutes AS windowMinutes,
+                  qs.used_pct AS usedPct, qs.resets_at AS resetsAt,
+                  qs.credits_json AS creditsJson, qs.captured_at AS capturedAt
+           FROM quota_snapshots qs
+           JOIN (
+             SELECT window_minutes, MAX(captured_at) AS captured_at
+             FROM quota_snapshots
+             WHERE provider = ? AND account_key = ?
+             GROUP BY window_minutes
+           ) latest
+             ON qs.window_minutes = latest.window_minutes
+            AND qs.captured_at = latest.captured_at
+           WHERE qs.provider = ? AND qs.account_key = ?`,
+        )
+        .all(provider, accountKey, provider, accountKey) as QuotaSnapshotRow[];
+    } catch {
+      // table missing in pre-migration cache — treated as no embedded data
+      return [];
+    }
   }
 
   /** All-time per-provider stats for the provenance view. */
@@ -325,6 +531,38 @@ export class EventCache {
       )
       .get(sinceIso, ...where.params) as RawAggRow;
     return fromRawRow({ ...row, bucket: "TOTAL" });
+  }
+
+  /**
+   * Total + per-account spend for three windows in two queries (instead of
+   * six full scans). Used by the post-scan budget banners, which run on every
+   * scan and must stay near-free.
+   */
+  spendSnapshot(dayIso: string, weekIso: string, monthIso: string): {
+    totals: { day: number; week: number; month: number };
+    accounts: Array<{ key: string; day: number; week: number; month: number }>;
+  } {
+    const cond = (col: string, a: string, b: string, c: string): string =>
+      `SUM(CASE WHEN ts >= ? THEN ${col} ELSE 0 END) AS ${a},` +
+      `SUM(CASE WHEN ts >= ? THEN ${col} ELSE 0 END) AS ${b},` +
+      `SUM(CASE WHEN ts >= ? THEN ${col} ELSE 0 END) AS ${c}`;
+    const params = [dayIso, weekIso, monthIso];
+    const totalRow = this.db
+      .query(
+        `SELECT ${cond("cost_usd", "d", "w", "m")} FROM events`,
+      )
+      .get(...params) as { d: number; w: number; m: number };
+    const accountRows = this.db
+      .query(
+        `SELECT account_key AS key, ${cond("cost_usd", "d", "w", "m")}
+         FROM events WHERE account_key IS NOT NULL AND account_key != ''
+         GROUP BY account_key`,
+      )
+      .all(...params) as Array<{ key: string; d: number; w: number; m: number }>;
+    return {
+      totals: { day: totalRow.d ?? 0, week: totalRow.w ?? 0, month: totalRow.m ?? 0 },
+      accounts: accountRows.map((r) => ({ key: r.key, day: r.d, week: r.w, month: r.m })),
+    };
   }
 
   /** Metrics per local calendar day since `sinceIso` (UTC-stored ts),

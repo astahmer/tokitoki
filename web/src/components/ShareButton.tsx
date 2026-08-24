@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 
-import { Badge, Banner, Button, Dialog, Text } from "@cloudflare/kumo";
+import { Badge, Banner, Button, Dialog } from "@cloudflare/kumo";
 
 interface ShareStatus {
   enabled: boolean;
@@ -84,21 +84,21 @@ export function ShareButton(): React.ReactNode {
         <Dialog size="sm" className="p-6">
           <div className="mb-3 flex items-center justify-between gap-4">
             <Dialog.Title className="text-base font-semibold">Public sharing</Dialog.Title>
-            <Badge tone={status?.enabled ? "success" : "neutral"}>
+            <Badge variant={status?.enabled ? "success" : "neutral"}>
               {status?.enabled ? "enabled" : "disabled"}
             </Badge>
           </div>
 
           {status?.atprotoConfigured === false && (
-            <Banner tone="warning" className="mb-3">
+            <Banner variant="alert" className="mb-3">
               no [sync] handle/app-password configured — add them to config to publish
             </Banner>
           )}
 
           {status?.lastPublished !== null && status?.lastPublished !== undefined && (
-            <Text size="xs" tone="subtle" className="mb-3 block">
+            <span className="mb-3 block text-xs opacity-70">
               last: dev.tokitoki.share/{status.lastPublished.rkey} · {status.lastPublished.at}
-            </Text>
+            </span>
           )}
 
           <div className="mb-2 flex gap-2">
@@ -127,12 +127,12 @@ export function ShareButton(): React.ReactNode {
           </div>
 
           {result !== null && (
-            <Banner tone="success" className="mb-2">
+            <Banner className="mb-2">
               {result}
             </Banner>
           )}
           {error !== null && (
-            <Banner tone="danger" className="mb-2">
+            <Banner variant="error" className="mb-2">
               {error}
             </Banner>
           )}

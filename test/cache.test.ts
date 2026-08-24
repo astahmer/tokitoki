@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -105,6 +105,67 @@ describe("EventCache", () => {
         "mac-one": 1,
         "mac-two": 1,
       });
+    } finally {
+      cache.close();
+      delete process.env.TOKITOKI_DATA_DIR;
+    }
+  });
+});
+
+describe("EventCache.sync (incremental)", () => {
+  it("consumes only appended tails and preserves dedupe/richness", () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "tk-cache-sync-"));
+    process.env.TOKITOKI_DATA_DIR = dir;
+    const log = path.join(dir, "events.jsonl");
+    writeFileSync(log, JSON.stringify(makeEvent({ id: "a" })) + "\n" + JSON.stringify(makeEvent({ id: "b" })) + "\n");
+    const cache = new EventCache(path.join(dir, "cache.db"));
+    try {
+      cache.sync([]);
+      expect(cache.count()).toBe(2);
+
+      // Append-only growth: sync picks up exactly the tail, no rebuild.
+      // 'a2' duplicates an existing id with a tool attribution → upgrade.
+      appendFileSync(
+        log,
+        JSON.stringify(makeEvent({ id: "c", tool: "Bash" })) + "\n" +
+        JSON.stringify(makeEvent({ id: "a", tool: "Read" })) + "\n",
+      );
+      cache.sync([]);
+      expect(cache.count()).toBe(3);
+      const rows = cache.database.query("SELECT id, tool FROM events ORDER BY id").all() as Array<{ id: string; tool: string | null }>;
+      expect(rows.find((r) => r.id === "a")?.tool).toBe("Read");
+
+      // Partial trailing line is not consumed until completed.
+      appendFileSync(log, '{"id":"partial');
+      cache.sync([]);
+      expect(cache.count()).toBe(3);
+      appendFileSync(log, '"}\n'); // completes the line: valid JSON, invalid event → skipped but consumed
+      // now the line is complete: {"id":"partial"} — invalid event shape, skipped but consumed
+      cache.sync([]);
+      expect(cache.count()).toBe(3);
+    } finally {
+      cache.close();
+      delete process.env.TOKITOKI_DATA_DIR;
+    }
+  });
+
+  it("full-rebuilds when an extra log shrinks (replaced by sync backend)", () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "tk-cache-shrink-"));
+    process.env.TOKITOKI_DATA_DIR = dir;
+    const localLog = path.join(dir, "events.jsonl");
+    const remoteLog = path.join(dir, "remote.jsonl");
+    writeFileSync(localLog, JSON.stringify(makeEvent({ id: "l1" })) + "\n");
+    writeFileSync(remoteLog, JSON.stringify(makeEvent({ id: "r1" })) + "\n" + JSON.stringify(makeEvent({ id: "r2" })) + "\n");
+    const cache = new EventCache(path.join(dir, "cache.db"));
+    try {
+      cache.sync([remoteLog]);
+      expect(cache.count()).toBe(3);
+      // Sync backend rewrote the remote log to a shorter history
+      writeFileSync(remoteLog, JSON.stringify(makeEvent({ id: "r9" })) + "\n");
+      cache.sync([remoteLog]);
+      expect(cache.count()).toBe(2); // l1 + r9
+      const ids = (cache.database.query("SELECT id FROM events ORDER BY id").all() as Array<{ id: string }>).map((r) => r.id);
+      expect(ids).toEqual(["l1", "r9"]);
     } finally {
       cache.close();
       delete process.env.TOKITOKI_DATA_DIR;

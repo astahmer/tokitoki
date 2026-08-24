@@ -3,12 +3,20 @@ import { parseArgs, type FlagValue, type ParsedInvocation } from "./args.ts";
 import fs from "node:fs";
 import path from "node:path";
 import { localMachineId } from "./machine.ts";
-import { appendEvents } from "./store.ts";
+import { appendEvents, eventsFile, saveProviderCursors } from "./store.ts";
 import { PROVIDERS, getProvider } from "./providers/index.ts";
-import { scanProvider } from "./scan.ts";
+import { scanProviderCore, type ScanResult } from "./scan.ts";
+import type { UsageEvent } from "./types.ts";
 import { DIMENSIONS, EventCache, type AggRow, type Dimension, type SeriesBucket, type SessionSummary } from "./cache.ts";
 import { renderTable, renderMiniProjects, renderMarkdownTable, resolveExtraFiles, resolveSortColumn, sinceIsoFor, sinceIsoForDays, previousWindow, monthStartIso, sortRows, formatDelta, deltaInfo, totalRow, totalTokens, planGaugeFn, renderBurnLine, burnProjection, type TableContext } from "./report.ts";
 import { accountEmailMap } from "./accounts.ts";
+import { computeLimits } from "./limits.ts";
+import {
+  assertValidSurface,
+  isVisibleOn,
+  setMenubarProviders,
+  setSurfaceVisibility,
+} from "./uiToggles.ts";
 import { renderGrid } from "./grid.ts";
 import { detectAnomalies, ANOMALY_METRICS, anomalyFooter } from "./anomalies.ts";
 import { processBudgetAlerts, seedBudgetsConfig } from "./budgets.ts";
@@ -17,7 +25,7 @@ import { computeBudgetStatus, gaugesForMenubar } from "./budget-status.ts";
 import { importCsv, IMPORT_SOURCES } from "./import.ts";
 import { repoEfficiency } from "./report.ts";
 import { bar, formatCost, humanCount, sparkline, formatInt, cachePct } from "./format.ts";
-import { loadConfig } from "./config.ts";
+import { loadConfig, configPath } from "./config.ts";
 import {
   buildSharePayload,
   describePayload,
@@ -227,6 +235,16 @@ Rows always show every configured scope×pattern; state is ok | warn (≥80%)
     flags: "  internal: combined json snapshot consumed by the menu-bar app",
     example: "tokitoki menubar-payload --json",
   },
+  ui: {
+    usage: "tokitoki ui [--list] [--hide <provider[:account]>] [--show <provider[:account]>]\n                  [--menubar-only <provider>...] [--surface menubar|dashboard]",
+    flags:
+      "  --list                show current visibility state\n" +
+      "  --hide <target>       hide a provider or provider:account pair\n" +
+      "  --show <target>       un-hide a previously hidden target\n" +
+      "  --surface <s>         which surface (default: menubar)\n" +
+      "  --menubar-only <p>    restrict menubar preview to these providers (repeatable; none = all)",
+    example: "tokitoki ui --hide codex:codex:plus --surface dashboard",
+  },
   web: {
     usage: "tokitoki web [--port <n>]",
     flags: "  local dashboard, default port 7788",
@@ -279,6 +297,7 @@ Commands:
   share      opt-in sanitized public stats via atproto (--enable|--disable|--status)
   export     dump any report as json/csv/markdown
   menubar-payload  combined json snapshot for the menu-bar app (internal)
+  ui         show/hide providers per surface (menubar preview, dashboard)
   import     backfill usage CSVs from provider consoles
   reindex    force-rebuild the session search index (full-text)
   sync       push/pull events across machines (dir | git | atproto backends)
@@ -312,7 +331,7 @@ export async function main(argv: string[]): Promise<void> {
     }
     assertKnownFlags(parsed.command, parsed.flags);
     switch (parsed.command) {
-      case "scan": runScan(parsed); break;
+      case "scan": await runScan(parsed); break;
       case "sources": runSources(parsed); break;
       case "report": runReport(parsed); break;
       case "export": runExport(parsed); break;
@@ -325,6 +344,7 @@ export async function main(argv: string[]): Promise<void> {
       case "anomalies": runAnomalies(parsed); break;
     case "budgets": runBudgets(parsed); break;
     case "menubar-payload": runMenubarPayload(parsed); break;
+    case "ui": runUi(parsed); break;
     case "presence": runPresence(parsed); break;
     case "tools": runTools(parsed); break;
       case "repos": runRepos(parsed); break;
@@ -350,6 +370,7 @@ export async function main(argv: string[]): Promise<void> {
 /** Flags each command accepts — anything else is a typo we can suggest around. */
 const KNOWN_FLAGS: Record<string, string[]> = {
   "menubar-payload": ["json"],
+  ui: ["list", "hide", "show", "surface", "menubar-only"],
   scan: ["provider"],
   sources: [],
   report: ["last", "by", "json", "sort", "asc", "provider", "delta", "no-delta", "show-email", "show-emails", "since", "until", "from", "to"],
@@ -438,23 +459,124 @@ function withCache<T>(fn: (cache: EventCache) => T): T {
 
 // ---------------------------------------------------------------- scan
 
-function runScan(parsed: ParsedInvocation): void {
+/** Parallel provider scans cap: enough to overlap the big harness stores
+ * without 12 workers each buffering multi-MB read chunks. */
+const MAX_SCAN_WORKERS = 4;
+
+interface ScanOutcome {
+  result: ScanResult;
+  events: UsageEvent[];
+}
+
+/**
+ * Run one provider scan inside a Bun worker. Events stream back in batches;
+ * the worker persists its own cursor shard so an interrupted scan resumes
+ * instead of replaying gigabytes.
+ */
+function scanInWorker(providerId: string, machineId: string): Promise<ScanOutcome> {
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(new URL("./scan-worker.ts", import.meta.url));
+    const events: UsageEvent[] = [];
+    const onMessage = (ev: MessageEvent) => {
+      const msg = ev.data as
+        | { type: "events"; events: UsageEvent[] }
+        | { type: "done"; result: ScanResult }
+        | { type: "error"; message: string };
+      if (msg.type === "events") {
+        events.push(...msg.events);
+      } else if (msg.type === "done") {
+        cleanup();
+        resolve({ result: msg.result, events });
+      } else {
+        cleanup();
+        reject(new Error(msg.message));
+      }
+    };
+    const onError = (err: unknown) => {
+      cleanup();
+      reject(err instanceof Error ? err : new Error(String(err)));
+    };
+    const cleanup = () => {
+      worker.removeEventListener("message", onMessage);
+      worker.removeEventListener("error", onError);
+      void worker.terminate();
+    };
+    worker.addEventListener("message", onMessage);
+    worker.addEventListener("error", onError);
+    worker.postMessage({ type: "scan", providerId, machineId });
+  });
+}
+
+async function runScan(parsed: ParsedInvocation): Promise<void> {
   const only = flagString(parsed, "provider");
-  const providers = only !== undefined ? [getProvider(only)] : [...PROVIDERS];
-  for (const p of providers) {
-    if (p === undefined) {
-      throw new UserError(
-        `unknown provider: ${only}`,
-        `tokitoki scan (known: ${PROVIDERS.map((x) => x.id).join(", ")})`,
-      );
-    }
-    const result = scanProvider(p, localMachineId());
-    console.log(
-      `${result.provider}: +${result.eventsEmitted} events (${result.filesScanned} files updated)`,
+  if (only !== undefined && getProvider(only) === undefined) {
+    throw new UserError(
+      `unknown provider: ${only}`,
+      `tokitoki scan (known: ${PROVIDERS.map((x) => x.id).join(", ")})`,
     );
   }
+  const providerIds = only !== undefined ? [only] : PROVIDERS.map((p) => p.id);
+  const machineId = localMachineId();
+
+  // Direct cache handle for the ingest below — bypasses withCache's lazy sync
+  // semantics: we insert exactly the freshly extracted events and mark the log
+  // consumed, so the next report pays zero re-read cost.
+  const cache = new EventCache();
+  try {
+    let cursor = 0;
+    let printed = 0;
+    const outcomes: ScanOutcome[] = [];
+    const launchNext = (): Promise<void> => {
+      if (cursor >= providerIds.length) return Promise.resolve();
+      const id = providerIds[cursor++]!;
+      return runWithWorkerFallback(id, machineId)
+        .then((outcome) => {
+          outcomes.push(outcome);
+          // Single writer: batches are appended by this process only.
+          appendEvents(outcome.events);
+          cache.insert(outcome.events);
+          const { provider, eventsEmitted, filesScanned } = outcome.result;
+          if (eventsEmitted === 0 && filesScanned === 0) {
+            // Nothing new on disk — one quiet italic line instead of a zero row.
+            console.log(scanQuiet(`${provider} - no changes`));
+          } else {
+            console.log(
+              `${provider}: ${scanAdded(`+${eventsEmitted} events (${filesScanned} files updated)`)}`,
+            );
+          }
+          printed++;
+        })
+        .then(launchNext);
+    };
+    await Promise.all(
+      Array.from({ length: Math.min(MAX_SCAN_WORKERS, providerIds.length) }, () => launchNext()),
+    );
+    void printed;
+    // Mark everything appended above as already consumed so report-time
+    // sync() skips re-reading the tail. Only safe because insert() just
+    // ingested those exact events; a stale-extraction rebuild supersedes it.
+    cache.recordLogOffsets([eventsFile()]);
+  } finally {
+    cache.close();
+  }
+
   // Budget banners after scan output (ntfy pushes fire in the background).
   for (const line of budgetBanners()) console.log(line);
+}
+
+/** Worker-per-provider with inline fallback when workers are unavailable. */
+async function runWithWorkerFallback(providerId: string, machineId: string): Promise<ScanOutcome> {
+  try {
+    return await scanInWorker(providerId, machineId);
+  } catch {
+    const provider = getProvider(providerId)!;
+    const events: UsageEvent[] = [];
+    const result = scanProviderCore(provider, machineId, {
+      onEvents: (batch) => events.push(...batch),
+      onSaveCursors: (cursors) => saveProviderCursors(provider.id, cursors),
+    });
+    return { result, events };
+  }
 }
 
 /** Evaluate configured budgets against current windows; returns banner lines. */
@@ -462,21 +584,11 @@ function budgetBanners(): string[] {
   const cfg = loadConfig();
   if (cfg.budgets === undefined) return [];
   return withCache((cache) => {
-    const spend = (sinceIso: string): number => cache.totals(sinceIso).costUsd;
-    const accountSpend = (sinceIso: string): Array<{ key: string; daily: number; weekly: number; monthly: number }> =>
-      cache.aggregate(sinceIso, "account").map((r) => ({ key: r.bucket, daily: r.costUsd, weekly: r.costUsd, monthly: r.costUsd }));
+    const snap = cache.spendSnapshot(sinceIsoFor("day"), sinceIsoFor("week"), monthStartIso());
     return processBudgetAlerts(
       cfg,
-      {
-        daily: spend(sinceIsoFor("day")),
-        weekly: spend(sinceIsoFor("week")),
-        monthly: spend(monthStartIso()),
-      },
-      [
-        ...accountSpend(sinceIsoFor("day")),
-        ...accountSpend(sinceIsoFor("week")),
-        ...accountSpend(monthStartIso()),
-      ],
+      { daily: snap.totals.day, weekly: snap.totals.week, monthly: snap.totals.month },
+      snap.accounts.map((a) => ({ key: a.key, daily: a.day, weekly: a.week, monthly: a.month })),
     );
   });
 }
@@ -1608,6 +1720,16 @@ function coloredSpark(text: string): string {
   return process.stdout.isTTY === true ? `\x1b[36m${text}\x1b[0m` : text;
 }
 
+/** git-diff addition green for changed providers — color only on a TTY. */
+function scanAdded(text: string): string {
+  return process.stdout.isTTY === true ? `\x1b[32m${text}\x1b[0m` : text;
+}
+
+/** Italic dim for unchanged providers — color only on a TTY. */
+function scanQuiet(text: string): string {
+  return process.stdout.isTTY === true ? `\x1b[2;3m${text}\x1b[0m` : text;
+}
+
 /** ▲ green when spend rose, ▼ red when it fell — color only on a TTY. */
 function deltaColorizer(text: string, kind: "up" | "down"): string {
   if (process.stdout.isTTY !== true) return text;
@@ -1675,7 +1797,53 @@ function runMenubarPayload(parsed: ParsedInvocation): void {
   capture("anomalies", () => runAnomalies(inv("anomalies", { json: true })));
   capture("topTools", () => runTools(inv("tools", { last: "day", top: "3", json: true })));
   capture("presence", () => runPresence(inv("presence", { json: true })));
+  capture("uiPreview", () => {
+    const config = loadConfig();
+    console.log(
+      JSON.stringify({
+        previewLines: config.ui?.menubarPreviewLines ?? 3,
+        previewMode: config.ui?.menubarPreviewMode ?? "inline",
+      }),
+    );
+  });
+  capture("limits", () => {
+    const config = loadConfig();
+    withCache((cache) => {
+      cache.sync(config.extraEventFiles ?? []);
+      const limits = computeLimits(cache, config).filter((l) =>
+        isVisibleOn(config, "menubar", l.provider, l.accountKey),
+      );
+      console.log(JSON.stringify(limits));
+    });
+  });
   console.log(JSON.stringify(parts));
+}
+
+function runUi(parsed: ParsedInvocation): void {
+  const surfaceRaw = flagString(parsed, "surface") ?? "menubar";
+  assertValidSurface(surfaceRaw);
+  const hide = flagString(parsed, "hide");
+  const show = flagString(parsed, "show");
+  const menubarOnly = parsed.flags["menubar-only"];
+
+  if (parsed.flags.list !== undefined || (hide === undefined && show === undefined && menubarOnly === undefined)) {
+    const cfg = loadConfig();
+    console.log(`surface visibility (config: ${configPath()})`);
+    for (const s of ["menubar", "dashboard"] as const) {
+      const hidden = cfg.ui?.hidden?.[s] ?? [];
+      console.log(`  ${s}: hidden=[${hidden.join(", ")}]`);
+    }
+    console.log(`  menubarProviders: [${(cfg.ui?.menubarProviders ?? []).join(", ")}] (empty = all)`);
+    return;
+  }
+  if (hide !== undefined) setSurfaceVisibility(hide, surfaceRaw, false);
+  if (show !== undefined) setSurfaceVisibility(show, surfaceRaw, true);
+  if (menubarOnly !== undefined) {
+    const vals = Array.isArray(menubarOnly) ? menubarOnly : [String(menubarOnly)];
+    if (!(vals.length === 1 && vals[0] === "all")) setMenubarProviders(vals.map(String));
+    else setMenubarProviders([]);
+  }
+  console.log(`ok — run 'tokitoki ui --list' to inspect`);
 }
 
 // Only auto-run when executed directly — importing must stay side-effect

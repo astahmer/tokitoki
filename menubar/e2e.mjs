@@ -166,6 +166,17 @@ end tell`;
     return { found: true, x, y, w, h };
 }
 
+function axStatusTitle(pid) {
+    const script = `
+tell application "System Events"
+  tell (first process whose unix id is ${pid})
+    return value of attribute "AXTitle" of menu bar item 1 of menu bar 1
+  end tell
+end tell`;
+    const res = spawnSync("osascript", ["-e", script], { encoding: "utf8", timeout: 30_000 });
+    return res.stdout?.trim() ?? "";
+}
+
 const AGENT_LABEL = "dev.tokitoki.menubar";
 const AGENT_PLIST = `${process.env.HOME}/Library/LaunchAgents/${AGENT_LABEL}.plist`;
 const wasLoaded = spawnSync("launchctl", ["list", AGENT_LABEL], { encoding: "utf8" }).status === 0;
@@ -202,6 +213,14 @@ try {
         pass(`ax status item: pos=(${ax.x},${ax.y}) size=${ax.w}x${ax.h}`);
     } else {
         fail(`ax status item missing or zero-size: ${JSON.stringify(ax)} stderr=${stderrBuf.slice(-300)}`);
+    }
+    const statusTitle = axStatusTitle(child.pid);
+    if (statusTitle && !statusTitle.includes("$") && (statusTitle.includes("%") || statusTitle === "tokitoki")) {
+        pass(`status preview is remaining-only: ${statusTitle}`);
+    } else if (statusTitle) {
+        fail(`status preview contains spend/budget emphasis: ${statusTitle}`);
+    } else {
+        say("status title unavailable via AX — visual proof remains authoritative");
     }
 
     // --- 2: visual proof — glyphs are actually drawn in the captured rect ---
