@@ -17,6 +17,7 @@
  * Usage: bun menubar/e2e.mjs [path-to-binary]
  */
 import { spawn, spawnSync } from "node:child_process";
+import fs from "node:fs";
 import { inflateSync } from "node:zlib";
 import { setTimeout as sleep } from "node:timers/promises";
 
@@ -42,7 +43,9 @@ function decodePng(path) {
         const len = buf.readUInt32BE(pos);
         const type = buf.toString("ascii", pos + 4, pos + 8);
         if (type === "IDAT") idat.push(buf.subarray(pos + 8, pos + 8 + len));
-        if (type === "IHDR") ct = buf[pos + 25];
+        // pos sits on the length field: sig(8) + len(4) + "IHDR"(4) +
+        // width(4) + height(4) + bitDepth(1) → colorType at pos+17.
+        if (type === "IHDR") ct = buf[pos + 17];
         pos += 12 + len;
     }
     const ch = { 0: 1, 2: 3, 3: 1, 4: 2, 6: 4 }[ct] ?? 4;
@@ -73,17 +76,28 @@ function decodePng(path) {
 }
 
 function inkRatioInRect(png, rx, ry, rw, rh) {
-    // count columns containing at least one dark pixel inside rect
+    // count columns whose pixels deviate from the dominant background luma.
+    // Background-agnostic: works for white-on-dark (menu bar) AND
+    // dark-on-light content, unlike a hardcoded dark-pixel threshold.
+    const lumaAt = (x, y) => {
+        const o = y * png.stride + x * png.ch;
+        const r = png.out[o], g = png.ch >= 3 ? png.out[o + 1] : r, b = png.ch >= 3 ? png.out[o + 2] : r;
+        return (r * 299 + g * 587 + b * 114) / 1000;
+    };
+    const hist = new Array(256).fill(0);
+    for (let y = ry; y < Math.min(ry + rh, png.h); y++) {
+        for (let x = rx; x < Math.min(rx + rw, png.w); x++) {
+            hist[Math.min(255, Math.max(0, Math.round(lumaAt(x, y))))]++;
+        }
+    }
+    const bgLuma = hist.indexOf(Math.max(...hist));
     let inkCols = 0;
     for (let x = rx; x < Math.min(rx + rw, png.w); x++) {
-        let col = false;
         for (let y = ry; y < Math.min(ry + rh, png.h); y++) {
-            const o = y * png.stride + x * png.ch;
-            const r = png.out[o], g = png.ch >= 3 ? png.out[o + 1] : r, b = png.ch >= 3 ? png.out[o + 2] : r;
-            const lum = (r * 299 + g * 587 + b * 114) / 1000;
-            if (lum < 140) { col = true; break; }
+            // antialiased small status-bar glyphs deviate only ~20-30 luma
+            // from a light menu bar — threshold tuned on live captures
+            if (Math.abs(lumaAt(x, y) - bgLuma) > 18) { inkCols++; break; }
         }
-        if (col) inkCols++;
     }
     return inkCols / Math.max(1, rw);
 }
@@ -113,6 +127,21 @@ function listWindows() {
         const [, pid, id, layer, x, y, w, h] = l.split(/\s+/).map(Number);
         return { pid, id, layer, x, y, w, h };
     });
+}
+
+const RIGHT_CLICK_SNIPPET = (x, y) => `
+import AppKit
+import CoreGraphics
+let bounds = CGDisplayBounds(CGMainDisplayID())
+let point = CGPoint(x: ${x}, y: bounds.height - ${y})
+let source = CGEventSource(stateID: .hidSystemState)
+for type in [CGEventType.rightMouseDown, CGEventType.rightMouseUp] {
+    CGEvent(mouseEventSource: source, mouseType: type, mouseCursorPosition: point, mouseButton: .right)?.post(tap: .cghidEventTap)
+}
+`;
+
+function rightClickStatusItem(ax) {
+    return spawnSync("swift", ["-e", RIGHT_CLICK_SNIPPET(ax.x + ax.w / 2, ax.y + ax.h / 2)], { encoding: "utf8", timeout: 30_000 });
 }
 
 function axStatusItem(pid) {
@@ -202,6 +231,15 @@ try {
     }
 
     // --- 4: click opens, escape closes ---
+    // The popover renders whatever the latest fetch produced; wait for the
+    // first successful payload (up to 60s) so content assertions are stable.
+    let fetched = stderrBuf.includes("fetched");
+    for (let i = 0; i < 60 && !fetched; i++) {
+        await sleepMs(1000);
+        fetched = stderrBuf.includes("fetched");
+    }
+    if (!fetched) say("payload fetch not observed within 60s — clicking anyway");
+
     const clickScript = `
 tell application "System Events"
   click menu bar item 1 of menu bar 1 of (first process whose unix id is ${child.pid})
@@ -215,6 +253,55 @@ end tell`;
         pass(`dropdown opened on click: ${panel.w}x${panel.h} @(${panel.x},${panel.y})`);
     } else {
         fail(`dropdown did not open on click (status=${clicked.status} ${clicked.stderr?.split("\n")[0] ?? ""}): ${JSON.stringify(windows)}`);
+    }
+
+    // --- 4b: popover content proof — limits cards + pie layer ---
+    // Deterministic seam: app writes what it rendered on every open.
+    let proof = null;
+    for (let i = 0; i < 6; i++) {
+        try { proof = JSON.parse(fs.readFileSync("/tmp/tokitoki-menubar.popover.json", "utf8")); break; } catch {}
+        await sleepMs(300);
+    }
+    if (proof && proof.hasPie === true && proof.limitCards >= 1 && Array.isArray(proof.accounts) && proof.accounts.length >= 1) {
+        pass(`popover content proof: limitCards=${proof.limitCards} accounts=[${proof.accounts.join(", ")}] hasPie=${proof.hasPie}`);
+    } else {
+        fail(`popover content proof missing/incomplete: ${JSON.stringify(proof)}`);
+    }
+
+    // Visual: the pie + colored bars must actually paint — assert chromatic
+    // pixels inside the captured panel (gray material UI alone has none).
+    // Retries: compositing can lag the open by a second or two.
+    if (panel) {
+        const cap = `/tmp/tokitoki-menubar-panel-e2e-${child.pid}.png`;
+        let bestRatio = -1;
+        for (let attempt = 0; attempt < 6 && bestRatio <= 0.003; attempt++) {
+            await sleepMs(1000);
+            spawnSync("screencapture", ["-x", `-R${panel.x},${panel.y},${panel.w},${panel.h}`, cap]);
+            try {
+                const png = decodePng(cap);
+                let chroma = 0, total = 0;
+                for (let y = 0; y < png.h; y++) {
+                    for (let x = 0; x < png.w; x++) {
+                        const o = y * png.stride + x * png.ch;
+                        const r = png.out[o], g = png.ch >= 3 ? png.out[o + 1] : r, b = png.ch >= 3 ? png.out[o + 2] : r;
+                        total++;
+                        if (Math.max(r, g, b) - Math.min(r, g, b) > 45) chroma++;
+                    }
+                }
+                // Dark thinMaterial backgrounds keep absolute color counts
+                // low even when fully rendered — the assertion only needs to
+                // separate "accents painted" from "nothing rendered".
+                bestRatio = Math.max(bestRatio, chroma / Math.max(1, total));
+            } catch (e) {
+                say(`chromatic decode failed (${e.message}) — needs Screen Recording permission`);
+                break;
+            }
+        }
+        if (bestRatio > 0.0008) {
+            pass(`chromatic paint check: ${(bestRatio * 100).toFixed(2)}% colored pixels (pie/bars drawn)`);
+        } else if (bestRatio >= 0) {
+            fail(`chromatic paint check: only ${(bestRatio * 100).toFixed(3)}% colored pixels across retries — pie/bars likely not rendering`);
+        }
     }
     // Close via either test seam (file sentinel polled by the app when
     // TOKITOKI_MENUBAR_TEST=1, or distributed notification), then wait.
@@ -232,6 +319,44 @@ end tell`;
         windows = listWindows().filter((w) => w.pid === child.pid);
         fail(`dropdown stayed open after close seams: ${JSON.stringify(windows)}`);
     }
+
+    // --- 5: context menu contains safe lifecycle actions ---
+    // Launch a fresh test instance with a deterministic test-only trigger.
+    // Real secondary clicks use the same showContextMenu path; the trigger
+    // avoids depending on Accessibility modifier delivery in CI.
+    child.kill("SIGTERM");
+    await sleepMs(400);
+    const contextChild = spawn(BIN, [], {
+        stdio: ["ignore", "pipe", "pipe"],
+        env: { ...process.env, TOKITOKI_MENUBAR_DEBUG: "1", TOKITOKI_MENUBAR_TEST_CONTEXT: "1" },
+    });
+    let contextErr = "";
+    contextChild.stderr.on("data", (d) => { contextErr += d.toString(); });
+    await sleepMs(1500);
+    const menuScript = `
+tell application "System Events"
+  set p to first process whose unix id is ${contextChild.pid}
+  tell p
+    set labels to {}
+    repeat with m in (every menu)
+      repeat with i in (every menu item of m)
+        set end of labels to (name of i)
+      end repeat
+    end repeat
+    return labels as text
+  end tell
+end tell`;
+    const menuResult = spawnSync("osascript", ["-e", menuScript], { encoding: "utf8", timeout: 30_000 });
+    const menuText = menuResult.stdout ?? "";
+    let contextLabels = [];
+    try { contextLabels = JSON.parse(fs.readFileSync("/tmp/tokitoki-menubar.context-menu.json", "utf8")); } catch {}
+    if (contextLabels.includes("Quit tokitoki") && contextLabels.includes("Open Dashboard") && contextLabels.includes("Start at Login")) {
+        pass("context menu includes Open Dashboard, Start at Login, and Quit tokitoki");
+    } else {
+        fail(`context menu missing expected items: ${menuText || menuResult.stderr || contextErr}`);
+    }
+    spawnSync("osascript", ["-e", `tell application "System Events" to key code 53`], { timeout: 30_000 });
+    contextChild.kill("SIGTERM");
 } finally {
     child.kill("SIGTERM");
     if (wasLoaded) {

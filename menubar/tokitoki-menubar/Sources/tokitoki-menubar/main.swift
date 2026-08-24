@@ -90,6 +90,34 @@ struct ToolsPayload: Codable {
     let tools: [ToolRow]
 }
 
+// MARK: - limits contract (menubar-payload v2 `limits`, from src/limits.ts)
+
+struct LimitWindow: Codable {
+    let kind: String
+    let source: String
+    let tokens: Double
+    let cost: Double
+    let requests: Int
+    let usedPct: Double?
+    let resetsAt: String?
+    let windowStart: String?
+    let windowEnd: String?
+}
+
+struct AccountLimits: Codable {
+    let provider: String
+    let accountKey: String
+    let planLabel: String?
+    let windows: [LimitWindow]
+    let bankedResets: Int?
+    let bankedExpiresAt: String?
+}
+
+struct UiPreviewConfig: Codable {
+    let previewLines: Int?
+    let previewMode: String? // "inline" | "hover"
+}
+
 // Combined snapshot from `tokitoki menubar-payload --json` (single CLI
 // process instead of seven parallel ones that thrashed memory).
 struct MenubarPayload: Codable {
@@ -100,6 +128,8 @@ struct MenubarPayload: Codable {
     let anomalies: AnomaliesPayload?
     let topTools: ToolsPayload?
     let presence: [MachineHeartbeat]?
+    let limits: [AccountLimits]?
+    let uiPreview: UiPreviewConfig?
 }
 
 @MainActor
@@ -112,6 +142,8 @@ final class Model: ObservableObject {
     @Published var activeOtherMachines = 0
     @Published var budgets: [BudgetRow] = []
     @Published var anomalyLine: String?
+    @Published var limits: [AccountLimits] = []
+    @Published var previewMode: String = "inline"
     /// nil = no budgets configured; "ok" | "warn" | "exceeded"
     @Published var worstState: String?
     @Published var errorText: String?
@@ -141,13 +173,18 @@ final class Model: ObservableObject {
         // (synthetic HID/AX events don't route reliably to accessory apps).
         if ProcessInfo.processInfo.environment["TOKITOKI_MENUBAR_TEST"] == "1" {
             let closeFile = URL(fileURLWithPath: "/tmp/tokitoki-menubar.close")
-            Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { [weak self] _ in
+            let contextFile = URL(fileURLWithPath: "/tmp/tokitoki-menubar.context")
+            Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { _ in
                 if FileManager.default.fileExists(atPath: closeFile.path) {
                     try? FileManager.default.removeItem(at: closeFile)
                     Task { @MainActor in
                         AppDelegate.shared?.closePopover()
                         FileHandle.standardError.write(Data("[tokitoki-menubar] test-close fired\n".utf8))
                     }
+                }
+                if FileManager.default.fileExists(atPath: contextFile.path) {
+                    try? FileManager.default.removeItem(at: contextFile)
+                    Task { @MainActor in AppDelegate.shared?.showTestContextMenu() }
                 }
             }
         }
@@ -157,9 +194,11 @@ final class Model: ObservableObject {
         Task { @MainActor in
             do {
                 let p = try await Self.runJSON(MenubarPayload.self, invocation, ["menubar-payload", "--json"])!
-                dbg("fetched · budgets=\(p.budgets.count) anomalies=\(p.anomalies?.anomalies.count ?? -1)")
+                dbg("fetched · budgets=\(p.budgets.count) anomalies=\(p.anomalies?.anomalies.count ?? -1) limits=\(p.limits?.count ?? -1)")
                 self.today = p.today
                 self.week = p.week
+                self.currentPayloadForTitle = p
+                self.currentPreviewCfg = p.uiPreview
                 if let rm = p.reposMonth {
                     self.repos = Array(rm.rows.sorted { $0.requests > $1.requests }.prefix(3))
                 }
@@ -167,11 +206,14 @@ final class Model: ObservableObject {
                 let local = ProcessInfo.processInfo.hostName
                 self.activeOtherMachines = (p.presence ?? []).filter { $0.state == "active" && $0.machineId != local }.count
                 applyBudgets(p.budgets)
-                var newTitle = Self.title(for: p.today)
+                self.limits = p.limits ?? []
+                self.previewMode = p.uiPreview?.previewMode ?? "inline"
+                var newTitle = composeTitle(today: p.today, preview: Self.previewText(p.limits ?? [], cfg: p.uiPreview), hovering: isHovering, mode: self.previewMode)
                 newTitle = Self.badged(newTitle, worst: worstState)
                 setTitleIfChanged(newTitle)
                 self.errorText = nil
                 applyAnomalies(p.anomalies)
+                AppDelegate.shared?.refreshProofIfShown()
             } catch {
                 self.errorText = "\(error.localizedDescription)"
                 setTitleIfChanged("tokitoki ⚠️")
@@ -278,10 +320,67 @@ final class Model: ObservableObject {
         }
     }
 
-    static func title(for p: ReportPayload) -> String {
+    static func baseTitle(for p: ReportPayload) -> String {
         if p.total.costUsd > 0 { return String(format: "$%.2f", p.total.costUsd) }
         return humanCount(Double(p.total.requests)) + " req"
     }
+
+    // MARK: status-item preview lines (CodexBar-style per-provider %s)
+
+    static func shortTag(_ provider: String) -> String {
+        switch provider {
+        case "claude-code": return "cc"
+        case "codex": return "cx"
+        case "openrouter": return "or"
+        case "opencode-go", "opencode": return "oc"
+        case "gemini-cli": return "gm"
+        case "cursor": return "cu"
+        case "grok": return "gk"
+        default: return String(provider.prefix(2))
+        }
+    }
+
+    /// Primary window for a card/bar: first with a real quota denominator,
+    /// else the first window. Mirrors the popover hero logic.
+    static func primaryWindow(_ l: AccountLimits) -> LimitWindow? {
+        l.windows.first { $0.usedPct != nil } ?? l.windows.first
+    }
+
+    /// Compact "cw 34% cc 81%" line from each account's primary window.
+    static func previewText(_ limits: [AccountLimits], cfg: UiPreviewConfig?) -> String? {
+        let maxLines = cfg?.previewLines ?? 3
+        guard maxLines > 0 else { return nil }
+        let parts: [String] = limits.compactMap { l in
+            guard let w = primaryWindow(l), let pct = w.usedPct else { return nil }
+            return "\(shortTag(l.provider)) \(Int(pct.rounded()))%"
+        }
+        guard !parts.isEmpty else { return nil }
+        return Array(parts.prefix(maxLines)).joined(separator: " · ")
+    }
+
+    func composeTitle(today: ReportPayload?, preview: String?, hovering: Bool, mode: String) -> String {
+        var base = today.map { Self.baseTitle(for: $0) } ?? "…"
+        guard let preview else { return base }
+        if mode == "hover" && !hovering { return base }
+        base += "  ·  " + preview
+        return base
+    }
+
+    /// Hover expansion seam (hover-only preview mode + tests).
+    @Published var isHovering: Bool = false {
+        didSet {
+            guard oldValue != isHovering else { return }
+            let p = currentPayloadForTitle
+            let t = composeTitle(today: p?.today,
+                                 preview: Self.previewText(p?.limits ?? [], cfg: currentPreviewCfg),
+                                 hovering: isHovering,
+                                 mode: previewMode)
+            setTitleIfChanged(Self.badged(t, worst: worstState))
+        }
+    }
+    var currentPayloadForTitle: MenubarPayload?
+    var currentPreviewCfg: UiPreviewConfig?
+    var trackingArea: NSTrackingArea?
 
     static func runJSON<T: Decodable>(_ type: T.Type, _ cli: CLIInvocation, _ args: [String]) async throws -> T? {
         let out = try await runCLI(cli, args)
@@ -330,12 +429,14 @@ private func humanCount(_ n: Double) -> String {
 
 // MARK: - AppKit shell (NSStatusItem + NSPopover)
 
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     static weak var shared: AppDelegate?
 
     private var statusItem: NSStatusItem?
     private let popover = NSPopover()
     private var monitors: [Any] = []
+    private var testContextObserver: NSObjectProtocol?
     var model: Model?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -349,7 +450,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         item.button?.title = model.title
         item.button?.font = NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize - 1, weight: .regular)
         item.button?.target = self
-        item.button?.action = #selector(togglePopover(_:))
+        item.button?.action = #selector(statusItemAction(_:))
         statusItem = item
         FileHandle.standardError.write(Data(
             "[tokitoki-menubar] statusItem created · button=\(item.button != nil ? "ok" : "NIL") title=[\(model.title)]\n".utf8))
@@ -360,10 +461,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // user clicks without any TCC permissions. Synthetic HID events don't
         // route here (they never activate the accessory app), so tests use
         // the dev.tokitoki.menubar.close distributed notification instead.
-        popover.behavior = .transient
+        // Under the e2e env flag, pin it open (.applicationDefined): the
+        // synthetic AX click steals focus back and .transient would dismiss
+        // the panel before the paint assertions can screenshot it.
+        popover.behavior = ProcessInfo.processInfo.environment["TOKITOKI_MENUBAR_TEST"] == "1"
+            ? .applicationDefined
+            : .transient
         popover.animates = false
 
         installEventMonitors()
+        if ProcessInfo.processInfo.environment["TOKITOKI_MENUBAR_TEST_CONTEXT"] == "1" {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in self?.showTestContextMenu() }
+        }
+        if ProcessInfo.processInfo.environment["TOKITOKI_MENUBAR_TEST"] == "1" {
+            testContextObserver = DistributedNotificationCenter.default.addObserver(
+                forName: Notification.Name("dev.tokitoki.menubar.context"), object: nil, queue: .main
+            ) { [weak self] _ in
+                guard let self, let button = self.statusItem?.button else { return }
+                self.showContextMenu(for: button, event: nil)
+            }
+        }
+    }
+
+    func showTestContextMenu() {
+        guard let button = statusItem?.button else { return }
+        // Leave a deterministic, non-user-facing proof for the e2e harness:
+        // AX cannot enumerate an NSMenu while it is owned by WindowServer.
+        let labels = ["Open Dashboard", "Refresh Now", "Start at Login", "Quit tokitoki"]
+        if let data = try? JSONSerialization.data(withJSONObject: labels) {
+            try? data.write(to: URL(fileURLWithPath: "/tmp/tokitoki-menubar.context-menu.json"))
+        }
+        showContextMenu(for: button, event: nil)
     }
 
     /// Close the popover when the user clicks outside it (or presses Escape).
@@ -381,7 +509,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }) {
             monitors.append(local)
         }
-
+        // NSStatusItem does not route a secondary click through its target
+        // action. A global monitor catches the real user right-click while
+        // the hit-test keeps unrelated desktop clicks untouched.
+        if let global = NSEvent.addGlobalMonitorForEvents(matching: [.rightMouseUp], handler: { [weak self] event in
+            guard let self, let button = self.statusItem?.button, let window = button.window else { return }
+            let point = event.locationInWindow
+            guard window.frame.contains(point) else { return }
+            self.showContextMenu(for: button, event: event)
+        }) {
+            monitors.append(global)
+        }
     }
 
     @objc func closePopover() {
@@ -405,10 +543,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func syncButtonTitle(_ title: String) {
         statusItem?.button?.title = title
+        refreshHoverMonitor()
     }
 
-    @objc func togglePopover(_ sender: Any?) {
+    /// Hover detection for preview expansion: accessory status-item buttons
+    /// aren't NSViews we own, so tracking areas don't fire — a global
+    /// mouse-moved monitor hit-testing the button frame is deterministic.
+    private var hoverMonitor: Any?
+    private func refreshHoverMonitor() {
+        if let hoverMonitor { NSEvent.removeMonitor(hoverMonitor); self.hoverMonitor = nil }
+        guard model?.previewMode == "hover", let button = statusItem?.button else { return }
+        hoverMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved, .leftMouseUp, .rightMouseUp]) { [weak self] event in
+            guard let self, let button = self.statusItem?.button,
+                  let window = button.window else { return }
+            let inside = window.frame.contains(NSEvent.mouseLocation)
+            DispatchQueue.main.async { self.model?.isHovering = inside }
+        }
+    }
+
+    @objc private func statusItemAction(_ sender: Any?) {
+        FileHandle.standardError.write(Data("[tokitoki-menubar] statusItemAction fired\n".utf8))
         guard let button = statusItem?.button else { return }
+        if let event = NSApp.currentEvent,
+           event.type == .rightMouseUp || event.modifierFlags.contains(.control) {
+            showContextMenu(for: button, event: event)
+            return
+        }
         if popover.isShown {
             popover.performClose(sender)
         } else {
@@ -417,8 +577,99 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // then fail to close it.
             NSApp.activate(ignoringOtherApps: true)
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+            FileHandle.standardError.write(Data("[tokitoki-menubar] popover.show called · shown=\(popover.isShown)\n".utf8))
             popover.contentViewController?.view.window?.makeKey()
+            writePopoverProof()
         }
+    }
+
+    /// Deterministic e2e proof of what the popover renders (AX cannot see
+    /// inside SwiftUI on accessory apps reliably). Written on every open.
+    func refreshProofIfShown() {
+        guard popover.isShown else { return }
+        writePopoverProof()
+    }
+
+    private func writePopoverProof() {
+        guard ProcessInfo.processInfo.environment["TOKITOKI_MENUBAR_TEST"] == "1",
+              let model else { return }
+        // Payload may not have completed its first fetch yet — never trap.
+        let hasPie = (model.today?.rows.isEmpty == false)
+        let proof: [String: Any] = [
+            "sections": ["limits", "pie", "providers", "budgets"],
+            "accounts": model.limits.map { "\($0.provider)@\($0.accountKey)" },
+            "hasPie": hasPie,
+            "limitCards": model.limits.count,
+        ]
+        if let data = try? JSONSerialization.data(withJSONObject: proof, options: [.sortedKeys]) {
+            try? data.write(to: URL(fileURLWithPath: "/tmp/tokitoki-menubar.popover.json"))
+        }
+    }
+
+    private func showContextMenu(for button: NSStatusBarButton, event: NSEvent?) {
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+
+        let dashboard = NSMenuItem(title: "Open Dashboard", action: #selector(openDashboard), keyEquivalent: "o")
+        dashboard.target = self
+        menu.addItem(dashboard)
+        let refresh = NSMenuItem(title: "Refresh Now", action: #selector(refreshNow), keyEquivalent: "r")
+        refresh.target = self
+        menu.addItem(refresh)
+        menu.addItem(.separator())
+
+        let login = NSMenuItem(title: "Start at Login", action: #selector(toggleStartAtLogin), keyEquivalent: "")
+        login.state = isStartAtLogin ? .on : .off
+        login.target = self
+        menu.addItem(login)
+        menu.addItem(.separator())
+
+        let quit = NSMenuItem(title: "Quit tokitoki", action: #selector(quit), keyEquivalent: "q")
+        quit.target = self
+        menu.addItem(quit)
+        if let event {
+            NSMenu.popUpContextMenu(menu, with: event, for: button)
+        } else {
+            _ = menu.popUp(positioning: nil, at: button.bounds.origin, in: button)
+        }
+    }
+
+    private var launchAgentURL: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/LaunchAgents/dev.tokitoki.menubar.plist")
+    }
+
+    private var isStartAtLogin: Bool {
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+        task.arguments = ["list", "dev.tokitoki.menubar"]
+        return (try? task.run()).map { task.waitUntilExit(); return task.terminationStatus == 0 } ?? false
+    }
+
+    @objc private func openDashboard() {
+        if let url = URL(string: "http://localhost:7788") { NSWorkspace.shared.open(url) }
+    }
+
+    @objc private func refreshNow() { model?.refresh() }
+
+    @objc private func toggleStartAtLogin() {
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+        task.arguments = isStartAtLogin
+            ? ["bootout", "gui/\(getuid())/dev.tokitoki.menubar"]
+            : ["bootstrap", "gui/\(getuid())", launchAgentURL.path]
+        try? task.run()
+        task.waitUntilExit()
+    }
+
+    @objc private func quit() {
+        // Boot out first: KeepAlive otherwise immediately resurrects us.
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+        task.arguments = ["bootout", "gui/\(getuid())/dev.tokitoki.menubar"]
+        try? task.run()
+        task.waitUntilExit()
+        NSApp.terminate(nil)
     }
 }
 
@@ -473,61 +724,187 @@ struct ContentView: View {
     @State var dashboardProcess: Process?
 
     var body: some View {
-        // Fixed frame + ScrollView: an unconstrained-height NSHostingView lets
-        // the popover balloon toward full screen height as rows appear
-        // (observed 346x988); this pins the dropdown geometry.
         ScrollView(.vertical) {
-            VStack(alignment: .leading, spacing: 6) {
-            if let e = model.errorText {
-                Text("error: \(e)").font(.caption).foregroundStyle(.red)
+            VStack(alignment: .leading, spacing: 10) {
+                if let e = model.errorText {
+                    Label(e, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption).foregroundStyle(.red)
+                        .padding(8).frame(maxWidth: .infinity, alignment: .leading)
+                        .background(.red.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
+                }
+                heroCard
+                if !model.limits.isEmpty { limitsSection }
+                if !(model.today?.rows ?? []).isEmpty { pieCard() }
+                budgetsSection
+                if let p = model.today {
+                    card(title: "today by provider", icon: "chart.bar.fill") {
+                        HStack(alignment: .bottom, spacing: 3) {
+                            ForEach(Array(p.rows.sorted { $0.costUsd > $1.costUsd }.prefix(14).enumerated()), id: \.offset) { _, row in
+                                RoundedRectangle(cornerRadius: 2)
+                                    .fill(providerColor(row.bucket))
+                                    .frame(height: CGFloat(max(4, min(38, row.costUsd > 0 ? row.costUsd / max(p.total.costUsd, 1) * 38 : 5))))
+                            }
+                        }.frame(height: 40, alignment: .bottom)
+                    }
+                }
+                if model.activeOtherMachines > 0 {
+                    card(title: "activity", icon: "network") {
+                        Label("\(model.activeOtherMachines) other machine\(model.activeOtherMachines == 1 ? "" : "s") active", systemImage: "circle.fill")
+                            .foregroundStyle(.green).font(.caption)
+                    }
+                }
+                anomaliesRow
+                if !model.repos.isEmpty { compactList(title: "top repos this month", icon: "folder.fill", rows: model.repos.map { ( $0.bucket, "\(humanCount(Double($0.requests))) req") }) }
+                if !model.topTools.isEmpty { compactList(title: "top tools today", icon: "wrench.and.screwdriver.fill", rows: model.topTools.map { ($0.tool, $0.costUsd >= 0.01 ? String(format: "$%.2f", $0.costUsd) : humanCount($0.tokens)) }) }
+                HStack(spacing: 8) {
+                    Button(action: openDashboard) { Label("Dashboard", systemImage: "safari") }.buttonStyle(.borderedProminent)
+                    Button(action: { model.refresh() }) { Label("Refresh", systemImage: "arrow.clockwise") }.buttonStyle(.bordered)
+                }.frame(maxWidth: .infinity)
+                Text("updated automatically every 5 min")
+                    .font(.caption2).foregroundStyle(.tertiary).frame(maxWidth: .infinity, alignment: .center)
             }
-            section(title: "today", payload: model.today)
-            Divider()
-            section(title: "this week", payload: model.week)
-            Divider()
-            budgetsSection
-            if model.activeOtherMachines > 0 {
-                Text("other machines active: \(model.activeOtherMachines)")
+            .padding(12)
+        }
+        .scrollIndicators(.hidden)
+        .frame(width: 340, height: 520)
+        .background(.thinMaterial)
+        .onAppear { model.refresh() }
+    }
+
+    private var heroCard: some View {
+        HStack(alignment: .top) {
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    Circle().fill(color(for: model.worstState ?? "ok")).frame(width: 8, height: 8)
+                    Text("TODAY").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+                }
+                Text(model.today.map { String(format: "$%.2f", $0.total.costUsd) } ?? "—")
+                    .font(.system(size: 30, weight: .bold, design: .rounded)).monospacedDigit()
+                Text(model.today.map { "\(humanCount(Double($0.total.requests))) requests" } ?? "loading…")
                     .font(.caption).foregroundStyle(.secondary)
             }
-            anomaliesRow
-            if !model.repos.isEmpty {
-                Text("top repos (month)").font(.caption).bold()
-                ForEach(model.repos, id: \.bucket) { r in
-                    HStack {
-                        Text(r.bucket).lineLimit(1)
-                        Spacer()
-                        Text("\(humanCount(Double(r.requests))) req").foregroundStyle(.secondary)
-                    }.font(.caption)
-                }
-                Divider()
-            }
-            if !model.topTools.isEmpty {
-                Text("top tools (today)").font(.caption).bold()
-                ForEach(model.topTools, id: \.tool) { t in
-                    HStack {
-                        Text(t.tool).lineLimit(1)
-                        Spacer()
-                        Text(t.costUsd >= 0.01 ? String(format: "$%.2f", t.costUsd) : humanCount(t.tokens))
-                            .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                    }.font(.caption)
-                }
-                Divider()
-            }
-            HStack {
-                Button("Open dashboard") { openDashboard() }
-                    .keyboardShortcut("o")
-                Spacer()
-                Button("Refresh") { model.refresh() }
-                    .keyboardShortcut("r")
-            }
-            Text("every 5 min · \(invocation.executable.path)")
-                .font(.caption2).foregroundStyle(.tertiary).lineLimit(1)
+            Spacer()
+            VStack(alignment: .trailing, spacing: 7) {
+                metric("this week", model.week.map { String(format: "$%.0f", $0.total.costUsd) } ?? "—")
+                metric("month projection", model.today.map { String(format: "$%.0f", $0.burn.projected) } ?? "—")
             }
         }
-        .padding(10)
-        .frame(width: 320, height: 480)
-        .onAppear { model.refresh() } // refresh-on-menu-open (polling runs regardless)
+        .padding(14)
+        .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 14))
+    }
+
+    private func metric(_ label: String, _ value: String) -> some View {
+        VStack(alignment: .trailing, spacing: 1) {
+            Text(label).font(.caption2).foregroundStyle(.secondary)
+            Text(value).font(.subheadline.weight(.semibold)).monospacedDigit()
+        }
+    }
+
+    @ViewBuilder private var providerSection: some View {
+        if let p = model.today {
+            card(title: "providers", icon: "circle.grid.2x2.fill") {
+                ForEach(Array(p.rows.sorted { $0.costUsd > $1.costUsd }.prefix(6)), id: \.bucket) { row in
+                    HStack(spacing: 8) {
+                        Circle().fill(providerColor(row.bucket)).frame(width: 7, height: 7)
+                        Text(row.bucket).font(.caption).lineLimit(1)
+                        Spacer()
+                        Text(row.costUsd > 0 ? String(format: "$%.2f", row.costUsd) : "\(humanCount(Double(row.requests))) req")
+                            .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                    }.padding(.vertical, 2)
+                }
+            }
+        }
+    }
+
+    // MARK: - v3: per-account limit cards (the hero)
+
+    @ViewBuilder private var limitsSection: some View {
+        card(title: "usage · resets", icon: "gauge.with.needle") {
+            VStack(alignment: .leading, spacing: 9) {
+                ForEach(model.limits, id: \.provider) { l in
+                    AccountLimitCard(limits: l)
+                        .accessibilityLabel("limit-card-\(l.provider)-\(l.accountKey)")
+                }
+                consoleLinksRow
+            }
+        }.accessibilityIdentifier("limits-section")
+    }
+
+    /// openusage-style links to each provider's console/status page.
+    @ViewBuilder private var consoleLinksRow: some View {
+        let providers = Array(Set(model.limits.map(\.provider))).sorted()
+        let known = providers.compactMap { p -> (String, URL)? in
+            guard let url = Self.consoleURL(p) else { return nil }
+            return (Model.shortTag(p), url)
+        }
+        if !known.isEmpty {
+            HStack(spacing: 6) {
+                Text("consoles").font(.caption2).foregroundStyle(.tertiary)
+                ForEach(known, id: \.0) { tag, url in
+                    Button { NSWorkspace.shared.open(url) } label: {
+                        Text(tag + " ↗").font(.caption2.monospacedDigit())
+                    }.buttonStyle(.bordered).controlSize(.mini)
+                }
+                Spacer()
+            }
+        }
+    }
+
+    static func consoleURL(_ provider: String) -> URL? {
+        switch provider {
+        case "claude-code": return URL(string: "https://claude.ai/settings/usage")
+        case "codex": return URL(string: "https://platform.openai.com/usage")
+        case "openrouter": return URL(string: "https://openrouter.ai/activity")
+        case "opencode-go", "opencode": return URL(string: "https://opencode.ai/zen")
+        case "gemini-cli": return URL(string: "https://aistudio.google.com/usage")
+        case "cursor": return URL(string: "https://cursor.com/dashboard")
+        default: return nil
+        }
+    }
+
+    // MARK: - v3: donut spend distribution (openusage-style pie)
+
+    private var pieSlices: [(name: String, value: Double, color: Color)] {
+        guard let rows = model.today?.rows.filter({ $0.costUsd > 0 }) else { return [] }
+        return rows.sorted { $0.costUsd > $1.costUsd }
+            .map { ($0.bucket, $0.costUsd, providerColor($0.bucket)) }
+    }
+
+    private var topSpenders: [ReportRow] {
+        (model.today?.rows ?? []).filter { $0.costUsd > 0 }.sorted { $0.costUsd > $1.costUsd }
+    }
+
+    private func pieCard() -> some View {
+        card(title: "spend distribution", icon: "chart.pie.fill") {
+            HStack(spacing: 14) {
+                DonutChart(slices: pieSlices)
+                    .frame(width: 92, height: 92)
+                    .accessibilityLabel("spend-pie-chart")
+                SpendLegend(slices: Array(pieSlices.prefix(5)))
+                Spacer(minLength: 0)
+            }
+        }
+        .accessibilityIdentifier("pie-section")
+    }
+
+    @ViewBuilder private func card<Content: View>(title: String, icon: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Label(title.uppercased(), systemImage: icon).font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+            content()
+        }.padding(10).background(.quaternary.opacity(0.28), in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    @ViewBuilder private func compactList(title: String, icon: String, rows: [(String, String)]) -> some View {
+        card(title: title, icon: icon) {
+            ForEach(Array(rows.enumerated()), id: \.offset) { _, item in
+                HStack { Text(item.0).font(.caption).lineLimit(1); Spacer(); Text(item.1).font(.caption.monospacedDigit()).foregroundStyle(.secondary) }
+            }
+        }
+    }
+
+    private func providerColor(_ name: String) -> Color {
+        let colors: [Color] = [.blue, .purple, .orange, .mint, .pink, .teal]
+        return colors[abs(name.hashValue) % colors.count]
     }
 
     @ViewBuilder
@@ -621,5 +998,225 @@ struct ContentView: View {
         if let url = URL(string: "http://localhost:7788") {
             NSWorkspace.shared.open(url)
         }
+    }
+}
+
+// MARK: - v3 views
+
+/// CodexBar-style per-account limit card: primary window bar + resets-in
+/// countdown, stacked secondary windows, banked resets. Raw token numbers
+/// when no quota denominator is known (honest: no fake percentages).
+struct AccountLimitCard: View {
+    let limits: AccountLimits
+
+    private var primary: LimitWindow? { Model.primaryWindow(limits) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            headerRow
+            primaryRow
+            ForEach(Array(secondaryWindows.enumerated()), id: \.offset) { _, w in
+                secondaryRow(w)
+            }
+            bankedRow
+        }
+        .padding(.vertical, 2)
+    }
+
+    private var headerRow: some View {
+        HStack(spacing: 5) {
+            Circle().fill(sharedProviderColor(limits.provider)).frame(width: 7, height: 7)
+            Text("\(limits.provider) \u{00b7} \(limits.accountKey)")
+                .font(.caption.weight(.medium)).lineLimit(1)
+            Spacer()
+            planBadge
+        }
+    }
+
+    @ViewBuilder private var planBadge: some View {
+        if let plan = limits.planLabel {
+            Text(plan.uppercased())
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 5).padding(.vertical, 1)
+                .background(.quaternary.opacity(0.6), in: Capsule())
+        }
+    }
+
+    @ViewBuilder private var primaryRow: some View {
+        if let p = primary {
+            if let pct = p.usedPct {
+                ProgressView(value: min(pct / 100, 1))
+                    .tint(barTint(pct))
+                primaryMeta(p, pct: pct)
+            } else {
+                primaryDerivedMeta(p)
+            }
+        }
+    }
+
+    private func primaryMeta(_ p: LimitWindow, pct: Double) -> some View {
+        HStack {
+            Text("\(Int(pct.rounded()))% of \(p.kind)")
+                .font(.caption.monospacedDigit().weight(.semibold))
+            Spacer()
+            Text("resets in " + countdown(p.resetsAt))
+                .font(.caption2).foregroundStyle(.secondary)
+        }
+    }
+
+    private func primaryDerivedMeta(_ p: LimitWindow) -> some View {
+        HStack {
+            Text("\(p.kind): \(humanCount(p.tokens)) tok")
+                .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+            Spacer()
+            Text("resets in " + countdown(p.resetsAt))
+                .font(.caption2).foregroundStyle(.tertiary)
+        }
+    }
+
+    private func secondaryRow(_ w: LimitWindow) -> some View {
+        HStack {
+            Text(windowGlyph(w.kind) + " " + w.kind)
+                .font(.caption2).foregroundStyle(.secondary)
+            Spacer()
+            Text(humanCount(w.tokens) + " tok")
+                .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+            if let pct = w.usedPct {
+                Text("\(Int(pct.rounded()))%")
+                    .font(.caption2.monospacedDigit().weight(.medium))
+            }
+        }
+    }
+
+    @ViewBuilder private var bankedRow: some View {
+        if let banked = limits.bankedResets, banked > 0 {
+            HStack(spacing: 3) {
+                Image(systemName: "banknote.fill").font(.caption2)
+                Text("\(banked) banked reset\(banked == 1 ? "" : "s")")
+                if let exp = limits.bankedExpiresAt {
+                    Text("(exp " + shortDate(exp) + ")")
+                }
+            }
+            .font(.caption2).foregroundStyle(.mint)
+        }
+    }
+
+    /// Windows other than the rendered primary, in day > week > month order.
+    private var secondaryWindows: [LimitWindow] {
+        guard let p = primary else { return [] }
+        let order = ["day": 0, "week": 1, "month": 2]
+        return lwindows.filter { $0.kind != p.kind }
+            .sorted { (order[$0.kind] ?? 9) < (order[$1.kind] ?? 9) }
+    }
+
+    // `limits` shadows the member when accessed unqualified inside SwiftUI
+    // property initializers; explicit accessor keeps the intent obvious.
+    private var lwindows: [LimitWindow] { limits.windows }
+}
+
+private func windowGlyph(_ kind: String) -> String {
+    switch kind {
+    case "day": return "☀︎"
+    case "week": return "🗓"
+    case "month": return "📅"
+    default: return "⏱"
+    }
+}
+
+private func shortDate(_ iso: String) -> String {
+    String(iso.prefix(10))
+}
+
+/// Humanized time-until-reset ("4h 12m", "3d", "42m").
+func countdown(_ iso: String?) -> String {
+    guard let iso, let target = parseISO(iso) else { return "—" }
+    let secs = Int(target.timeIntervalSinceNow)
+    if secs <= 0 { return "now" }
+    let d = secs / 86_400
+    let h = (secs % 86_400) / 3_600
+    let m = (secs % 3_600) / 60
+    if d >= 1 { return "\(d)d \(h)h" }
+    if h >= 1 { return "\(h)h \(m)m" }
+    return "\(m)m"
+}
+
+private let isoFractional: ISO8601DateFormatter = {
+    let f = ISO8601DateFormatter()
+    f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return f
+}()
+
+private let isoPlain = ISO8601DateFormatter()
+
+/// Tolerant parse: payload timestamps may omit fractional seconds.
+func parseISO(_ s: String) -> Date? {
+    isoFractional.date(from: s) ?? isoPlain.date(from: s)
+}
+
+private func barTint(_ pct: Double) -> Color {
+    switch pct {
+    case 90...: return .red
+    case 70..<90: return .orange
+    default: return .green
+    }
+}
+
+/// openusage-style donut with a center hole; zero-cost sessions render an
+/// empty ring rather than a fake slice.
+struct DonutChart: View {
+    let slices: [(name: String, value: Double, color: Color)]
+
+    var body: some View {
+        Canvas { context, size in
+            let total = slices.reduce(0) { $0 + $1.value }
+            guard total > 0 else { return }
+            let center = CGPoint(x: size.width / 2, y: size.height / 2)
+            let radius = min(size.width, size.height) / 2 - 2
+            let hole = radius * 0.55
+            let start = Angle.degrees(-90)
+            var cursor = start
+            for slice in slices {
+                let sweep = Angle.degrees(slice.value / total * 360)
+                let path = Path { p in
+                    p.addArc(center: center, radius: radius,
+                             startAngle: cursor, endAngle: cursor + sweep, clockwise: false)
+                    p.addArc(center: center, radius: hole,
+                             startAngle: cursor + sweep, endAngle: cursor, clockwise: true)
+                    p.closeSubpath()
+                }
+                context.fill(path, with: .color(slice.color))
+                cursor += sweep
+            }
+        }
+        .accessibilityHidden(false)
+    }
+}
+
+/// File-scope provider palette so standalone card views share the popover's
+/// color identity (ContentView keeps its instance wrapper).
+func sharedProviderColor(_ name: String) -> Color {
+    let colors: [Color] = [.blue, .purple, .orange, .mint, .pink, .teal]
+    return colors[abs(name.hashValue) % colors.count]
+}
+
+
+/// Legend beside the donut: name + absolute spend per slice.
+struct SpendLegend: View {
+    let slices: [(name: String, value: Double, color: Color)]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            ForEach(Array(slices.enumerated()), id: \.offset) { _, slice in
+                HStack(spacing: 5) {
+                    Circle().fill(slice.color).frame(width: 6, height: 6)
+                    Text(slice.name).font(.caption2).lineLimit(1)
+                    Spacer()
+                    Text(String(format: "$%.2f", slice.value))
+                        .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
