@@ -56,11 +56,19 @@ export function ToolsView({ win, providers }: {
       <Heading>spend mosaic · area = share of cost, click a provider to drill into its tools</Heading>
       <Treemap
         items={items}
-        formatValue={(i) =>
-          i.children !== undefined
-            ? `$${i.value.toFixed(2)}`
-            : `$${i.value.toFixed(2)} · ${Math.round(i.value * 100) / 100}`
-        }
+        formatValue={(i) => {
+          const total = items.find((p) => p.label === i.label)?.value ?? (i.children !== undefined ? i.value : 0);
+          const parentTotal =
+            i.children === undefined
+              ? // tool leaf: share of its provider's total
+                (items.find((p) => p.children?.some((c) => c.label === i.label))?.value ?? 0)
+              : total;
+          const pct =
+            parentTotal > 0 && i.children === undefined
+              ? ` · ${Math.round((i.value / parentTotal) * 100)}% of provider`
+              : "";
+          return `$${i.value.toFixed(2)}${pct}`;
+        }}
       />
     </Panel>
   );

@@ -44,6 +44,8 @@ export interface AccountLimits {
   /** Plan badge when derivable (account suffix after ':' or config match). */
   planLabel?: string;
   windows: LimitWindow[];
+  /** Redacted API-key / credential hint for key-based accounts (opencode…). */
+  credential?: string;
   /** Banked rate-limit resets (codex credits analog). */
   bankedResets?: number;
   bankedExpiresAt?: string;
@@ -242,4 +244,112 @@ export function computeLimits(
     });
   }
   return out;
+}
+
+/**
+ * Display-level alias merge. Same provider + same embedded-quota signature =
+ * the same real account seen through different extraction eras (e.g. codex
+ * rollouts before/after rate_limits.plan_type existed produce both "codex"
+ * and "openai:plus" keys for one login). The signature is the set of
+ * (windowMinutes, resetsAt) pairs from embedded windows — identical limits
+ * share identical resets.
+ *
+ * Accounts WITHOUT embedded windows are never merged: provider-level email
+ * attribution comes from the CURRENT auth store, so it cannot distinguish
+ * multiple logins on the same machine and must not drive grouping.
+ */
+export function mergeAliasLimits(limits: AccountLimits[]): AccountLimits[] {
+  const out: AccountLimits[] = [];
+  const bySignature = new Map<string, AccountLimits[]>();
+  for (const l of limits) {
+    const sig = quotaSignature(l);
+    if (sig === null) {
+      out.push(l);
+      continue;
+    }
+    const key = `${l.provider}|${sig}`;
+    const g = bySignature.get(key);
+    if (g === undefined) bySignature.set(key, [l]);
+    else g.push(l);
+  }
+
+  for (const group of bySignature.values()) {
+    if (group.length === 1) {
+      out.push(group[0]!);
+      continue;
+    }
+    // Identity prefers the entry whose accountKey carries plan info
+    // (e.g. "openai:plus" beats bare "codex").
+    const withPlan = group.find((l) => l.accountKey.includes(":")) ?? group[0]!;
+    const byKind = new Map<string, LimitWindow>();
+    const ordered = [...group].sort(
+      (a, b) =>
+        Number(a.windows.some((w) => w.source === "embedded")) -
+        Number(b.windows.some((w) => w.source === "embedded")),
+    );
+    for (const l of ordered) {
+      for (const w of l.windows) {
+        const existing = byKind.get(w.kind);
+        if (existing === undefined || (existing.source !== "embedded" && w.source === "embedded")) {
+          byKind.set(w.kind, w);
+        }
+      }
+    }
+    out.push({
+      ...withPlan,
+      windows: [...byKind.values()],
+      bankedResets: group.map((l) => l.bankedResets).find((b) => b !== undefined),
+      bankedExpiresAt: group.map((l) => l.bankedExpiresAt).find((b) => b !== undefined),
+    });
+  }
+  // Provider-level emails come from the CURRENT auth store, so they are only
+  // trustworthy for accounts that carry embedded quota data (their sessions
+  // provably belong to the logged-in user). For sibling accounts without
+  // embedded data the email may belong to a different login — drop it rather
+  // than show a wrong attribution.
+  const providersWithEmbedded = new Set(
+    out.filter((l) => l.windows.some((w) => w.source === "embedded")).map((l) => l.provider),
+  );
+  for (const l of out) {
+    if (!providersWithEmbedded.has(l.provider)) continue;
+    if (!l.windows.some((w) => w.source === "embedded")) l.email = undefined;
+  }
+  return out;
+}
+
+/**
+ * Quota identity signature from EMBEDDED windows only: sorted
+ * "minutes@resetsAt" pairs, null when the account has none (estimates /
+ * derived gauges carry no provider-reported resets).
+ */
+function quotaSignature(l: AccountLimits): string | null {
+  const parts = l.windows
+    .filter((w) => w.source === "embedded")
+    .map((w) => {
+      const minutes = windowMinutesOf(w);
+      return minutes === null ? null : `${minutes}@${w.resetsAt ?? "?"}`;
+    })
+    .filter((x): x is string => x !== null);
+  if (parts.length === 0) return null;
+  return [...new Set(parts)].sort().join("|");
+}
+
+function windowMinutesOf(w: LimitWindow): number | null {
+  if (w.windowStart === undefined || w.windowEnd === undefined) return kindToMinutes(w.kind);
+  const ms = Date.parse(w.windowEnd) - Date.parse(w.windowStart);
+  return Number.isFinite(ms) && ms > 0 ? Math.round(ms / 60_000) : kindToMinutes(w.kind);
+}
+
+function kindToMinutes(kind: string): number | null {
+  switch (kind) {
+    case "session":
+    case "day": return 300;
+    case "week": return 10_080;
+    case "month": return 43_200;
+    default: return null;
+  }
+}
+
+function bankedOf(l: AccountLimits): number | undefined {
+  return l.bankedResets;
 }

@@ -6,12 +6,19 @@ import { fetchAnomalies } from "../lib/api";
 import { formatCost, humanCount } from "../lib/fmt";
 import { useAsyncStaleWhileRevalidate } from "../lib/useAsync";
 import type { WindowSelection } from "../lib/api";
-import { EmptyState, Heading, SkeletonBlock } from "../ui";
+import { EmptyState, Heading, Pill, SkeletonBlock } from "../ui";
 
 const METRICS = ["tokens", "cost", "requests"] as const;
 export type AnomalyMetric = (typeof METRICS)[number];
 
-export function AnomaliesView({ win }: { win: WindowSelection }) {
+export function AnomaliesView({
+  win,
+  onOpenDay,
+}: {
+  win: WindowSelection;
+  /** Drill into the sessions view pinned to this day. */
+  onOpenDay?: (day: string) => void;
+}) {
   const [metric, setMetric] = useState<AnomalyMetric>("tokens");
   const anomalies = useAsyncStaleWhileRevalidate(
     () => fetchAnomalies(win, metric),
@@ -24,17 +31,9 @@ export function AnomaliesView({ win }: { win: WindowSelection }) {
         <Heading>anomalies · days above 3× rolling 14-day average</Heading>
         <div className="flex gap-1.5">
           {METRICS.map((m) => (
-            <button
-              key={m}
-              onClick={() => setMetric(m)}
-              className={`rounded-full px-2.5 py-0.5 text-[11px] transition-colors ${
-                metric === m
-                  ? "bg-kumo-info text-white"
-                  : "border border-kumo-line text-kumo-subtle hover:text-kumo-default"
-              }`}
-            >
+            <Pill key={m} active={metric === m} onClick={() => setMetric(m)}>
               {m}
-            </button>
+            </Pill>
           ))}
         </div>
       </div>
@@ -62,7 +61,12 @@ export function AnomaliesView({ win }: { win: WindowSelection }) {
           </Table.Header>
           <Table.Body>
             {anomalies.data.anomalies.map((a) => (
-              <Table.Row key={`${a.day}-${a.metric}`}>
+              <Table.Row
+                key={`${a.day}-${a.metric}`}
+                className={onOpenDay !== undefined ? "cursor-pointer hover:bg-kumo-recessed/40" : ""}
+                onClick={() => metric === "cost" || metric === "tokens" ? onOpenDay?.(a.day) : undefined}
+                title={onOpenDay !== undefined ? `open sessions for ${a.day}` : undefined}
+              >
                 <Table.Cell className="whitespace-nowrap">{a.day}</Table.Cell>
                 <Table.Cell>{a.metric}</Table.Cell>
                 <Table.Cell className="text-right">{humanCount(a.value)}</Table.Cell>

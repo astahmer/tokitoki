@@ -33,10 +33,16 @@ function defaultStaticRoot(): string {
     path.join(import.meta.dir, "..", "..", "dist", "web"),
     path.join(import.meta.dir, "web"),
   ];
-  for (const dir of candidates) {
+  return pickStaticRoot(candidates, stable);
+}
+
+/** First candidate containing index.html, else the fallback if valid, else
+ *  the first candidate so error paths report the canonical location. */
+export function pickStaticRoot(candidateDirs: string[], fallbackDir: string): string {
+  for (const dir of candidateDirs) {
     if (fs.existsSync(path.join(dir, "index.html"))) return dir;
   }
-  return fs.existsSync(path.join(stable, "index.html")) ? stable : candidates[0]!;
+  return fs.existsSync(path.join(fallbackDir, "index.html")) ? fallbackDir : candidateDirs[0]!;
 }
 
 /** True when running from a source checkout that can rebuild the SPA. */
@@ -117,7 +123,7 @@ export function startWebServer(options: WebServerOptions = {}): Bun.Server<undef
       case "/api/timeseries": {
         const by = url.searchParams.get("by") ?? "provider";
         const days = Number(url.searchParams.get("days") ?? "30");
-        return json(apiTimeseries(by, { ...win(), days: Number.isFinite(days) ? days : 30 }));
+        return json(apiTimeseries(by, { ...win(), days: Number.isFinite(days) ? days : 30, metric: url.searchParams.get("metric") === "cost" ? "cost" : "tokens" }));
       }
       case "/api/table": {
         const by = url.searchParams.get("by") ?? "model";

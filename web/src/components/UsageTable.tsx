@@ -136,7 +136,9 @@ export function UsageTable({
             <Table.Head
               key={c.key}
               onClick={() => clickColumn(c.key)}
-              className={`cursor-pointer text-[10px] tracking-wider whitespace-nowrap uppercase select-none hover:text-kumo-default ${
+              className={`cursor-pointer px-3 py-2 text-[10px] tracking-wider whitespace-nowrap uppercase select-none hover:text-kumo-default ${
+                c.key === "sessions" || c.key === "avg" ? "hidden lg:table-cell" : ""
+              } ${c.key === "inputTokens" || c.key === "outputTokens" || c.key === "cacheReadTokens" ? "hidden xl:table-cell" : ""} ${
                 c.numeric ? "text-right" : "text-left"
               }`}
               aria-sort={sortKey === c.key ? (asc ? "ascending" : "descending") : "none"}
@@ -149,19 +151,19 @@ export function UsageTable({
       </Table.Header>
       <Table.Body>
         {rows.map((r) => (
-          <Table.Row key={r.bucket}>
+          <Table.Row key={r.bucket} className="[&>td]:border-b [&>td]:border-edge/40 hover:bg-kumo-recessed/40">
             {/* min-w reserves the space emails will occupy, so toggling
                 show-email swaps text in place instead of shifting columns */}
             <Table.Cell className="min-w-44 whitespace-nowrap lg:min-w-64">{renderName(r)}</Table.Cell>
-            <Table.Cell className="text-right">{cellFor(r, "requests")}</Table.Cell>
-            <Table.Cell className="text-right">{cellFor(r, "sessions")}</Table.Cell>
-            <Table.Cell className="text-right">{cellFor(r, "avg")}</Table.Cell>
-            <Table.Cell className="text-right">{cellFor(r, "inputTokens")}</Table.Cell>
-            <Table.Cell className="text-right">{cellFor(r, "outputTokens")}</Table.Cell>
-            <Table.Cell className="text-right">{cellFor(r, "cacheReadTokens")}</Table.Cell>
-            <Table.Cell className="whitespace-nowrap text-right">{cellFor(r, "cachePct")}</Table.Cell>
-            <Table.Cell className="text-right">{r.sharePct}%</Table.Cell>
-            <Table.Cell className="whitespace-nowrap text-right">{gaugeCell(r)}</Table.Cell>
+            <Table.Cell className="text-right tabular-nums opacity-80">{cellFor(r, "requests")}</Table.Cell>
+            <Table.Cell className="hidden text-right tabular-nums opacity-80 lg:table-cell">{cellFor(r, "sessions")}</Table.Cell>
+            <Table.Cell className="hidden text-right tabular-nums opacity-80 lg:table-cell">{cellFor(r, "avg")}</Table.Cell>
+            <Table.Cell className="hidden text-right tabular-nums opacity-60 xl:table-cell">{cellFor(r, "inputTokens")}</Table.Cell>
+            <Table.Cell className="hidden text-right tabular-nums opacity-60 xl:table-cell">{cellFor(r, "outputTokens")}</Table.Cell>
+            <Table.Cell className="hidden text-right tabular-nums opacity-60 xl:table-cell">{cellFor(r, "cacheReadTokens")}</Table.Cell>
+            <Table.Cell className="whitespace-nowrap text-right font-medium tabular-nums">{cellFor(r, "cachePct")}</Table.Cell>
+            <Table.Cell className="text-right tabular-nums opacity-80">{r.sharePct}%</Table.Cell>
+            <Table.Cell className="whitespace-nowrap text-right font-medium tabular-nums">{gaugeCell(r)}</Table.Cell>
           </Table.Row>
         ))}
         <Table.Row className="font-semibold">
@@ -169,15 +171,15 @@ export function UsageTable({
           <Table.Cell className="text-right">
             {data.total.requests.toLocaleString("en-US")}
           </Table.Cell>
-          <Table.Cell className="text-right">
+          <Table.Cell className="hidden text-right">
             {data.total.sessions.toLocaleString("en-US")}
           </Table.Cell>
-          <Table.Cell className="text-right">
+          <Table.Cell className="hidden text-right">
             {humanCount(data.total.requests > 0 ? totalTokens(data.total) / data.total.requests : 0)}
           </Table.Cell>
-          <Table.Cell className="text-right">{humanCount(data.total.inputTokens)}</Table.Cell>
-          <Table.Cell className="text-right">{humanCount(data.total.outputTokens)}</Table.Cell>
-          <Table.Cell className="text-right">
+          <Table.Cell className="hidden text-right">{humanCount(data.total.inputTokens)}</Table.Cell>
+          <Table.Cell className="hidden text-right">{humanCount(data.total.outputTokens)}</Table.Cell>
+          <Table.Cell className="hidden text-right">
             {humanCount(data.total.cacheReadTokens)}
           </Table.Cell>
           <Table.Cell className="text-right">

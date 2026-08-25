@@ -14,6 +14,16 @@ struct ReportRow: Codable {
     let requests: Int
     let sessions: Int
     let costUsd: Double
+    // Token fields ride along in the report JSON; optional so an older
+    // payload (pre-tokens) still decodes.
+    let inputTokens: Double?
+    let outputTokens: Double?
+    let cacheReadTokens: Double?
+    let cacheWriteTokens: Double?
+
+    var totalTokens: Double {
+        (inputTokens ?? 0) + (outputTokens ?? 0) + (cacheReadTokens ?? 0) + (cacheWriteTokens ?? 0)
+    }
 }
 
 struct TotalsRow: Codable {
@@ -108,6 +118,8 @@ struct AccountLimits: Codable, Identifiable {
     let provider: String
     let accountKey: String
     let email: String?
+    /** Redacted api-key/credential hint ("sk-x…12ab") when key-based. */
+    let credential: String?
     let planLabel: String?
     let windows: [LimitWindow]
     let bankedResets: Int?
@@ -119,10 +131,20 @@ struct AccountLimits: Codable, Identifiable {
 struct UiPreviewConfig: Codable {
     let previewLines: Int?
     let previewMode: String? // "inline" | "hover"
+    // Provider visibility (context-menu Settings ▸ toggles).
+    let providers: [String]?
+    let menubarHidden: [String]?
 }
 
 // Combined snapshot from `tokitoki menubar-payload --json` (single CLI
 // process instead of seven parallel ones that thrashed memory).
+/// Provider cost rows for one selectable period (today|yesterday|week|month).
+/// Backed by `tokitoki report --by provider --sort cost --json` per period.
+struct SpendPeriod: Codable {
+    let key: String
+    let rows: [ReportRow]
+}
+
 struct MenubarPayload: Codable {
     let today: ReportPayload
     let week: ReportPayload
@@ -133,6 +155,7 @@ struct MenubarPayload: Codable {
     let presence: [MachineHeartbeat]?
     let limits: [AccountLimits]?
     let uiPreview: UiPreviewConfig?
+    let spendPeriods: [SpendPeriod]?
 }
 
 @MainActor
@@ -147,6 +170,12 @@ final class Model: ObservableObject {
     @Published var anomalyLine: String?
     @Published var limits: [AccountLimits] = []
     @Published var previewMode: String = "inline"
+    /// (provider, % remaining) pairs behind the status-item preview — drives
+    /// the attributed title with inline brand logos.
+    @Published var previewEntries: [(provider: String, remaining: Int)] = []
+    @Published var knownProviders: [String] = []
+    @Published var menubarHidden: Set<String> = []
+    @Published var spendPeriods: [SpendPeriod] = []
     /// nil = no budgets configured; "ok" | "warn" | "exceeded"
     @Published var worstState: String?
     @Published var errorText: String?
@@ -162,6 +191,9 @@ final class Model: ObservableObject {
     fileprivate func dbg(_ msg: @autoclosure () -> String) {
         if Self.debug { FileHandle.standardError.write(Data(("[tokitoki-menubar] " + msg() + "\n").utf8)) }
     }
+
+    /// Accessor for AppDelegate context-menu actions.
+    func currentInvocation() -> CLIInvocation { invocation }
 
     func start(invocation: CLIInvocation) {
         self.invocation = invocation
@@ -198,6 +230,12 @@ final class Model: ObservableObject {
             do {
                 let p = try await Self.runJSON(MenubarPayload.self, invocation, ["menubar-payload", "--json"])!
                 dbg("fetched · budgets=\(p.budgets.count) anomalies=\(p.anomalies?.anomalies.count ?? -1) limits=\(p.limits?.count ?? -1)")
+                if let ui = p.uiPreview {
+                    self.previewMode = ui.previewMode ?? "inline"
+                    self.knownProviders = ui.providers ?? []
+                    self.menubarHidden = Set(ui.menubarHidden ?? [])
+                }
+                self.spendPeriods = p.spendPeriods ?? []
                 self.today = p.today
                 self.week = p.week
                 self.currentPayloadForTitle = p
@@ -211,11 +249,20 @@ final class Model: ObservableObject {
                 applyBudgets(p.budgets)
                 self.limits = p.limits ?? []
                 self.previewMode = p.uiPreview?.previewMode ?? "inline"
+                let maxLines = p.uiPreview?.previewLines ?? 3
+                previewEntries = (p.limits ?? []).compactMap { l in
+                    guard let w = Model.primaryWindow(l), let pct = w.usedPct else { return nil }
+                    return (l.provider, Int(max(0, min(100, 100 - pct)).rounded()))
+                }.prefix(maxLines).map { $0 }
                 let newTitle = composeTitle(today: p.today, preview: Self.previewText(p.limits ?? [], cfg: p.uiPreview), hovering: isHovering, mode: self.previewMode)
                 setTitleIfChanged(newTitle)
                 self.errorText = nil
                 applyAnomalies(p.anomalies)
                 AppDelegate.shared?.refreshProofIfShown()
+                // Test-mode diagnostics don't require the popover to be open.
+                if ProcessInfo.processInfo.environment["TOKITOKI_MENUBAR_TEST"] == "1" {
+                    AppDelegate.shared?.writeTestProof()
+                }
             } catch {
                 self.errorText = "\(error.localizedDescription)"
                 setTitleIfChanged("tokitoki ⚠️")
@@ -342,18 +389,6 @@ final class Model: ObservableObject {
         }
     }
 
-    static func providerGlyph(_ provider: String) -> String {
-        switch provider {
-        case "claude-code": return "◈"
-        case "codex": return "⬡"
-        case "opencode-go", "opencode": return "✦"
-        case "openrouter": return "◉"
-        case "gemini-cli": return "✧"
-        case "cursor": return "⌁"
-        case "grok": return "✳"
-        default: return "●"
-        }
-    }
 
     /// Primary window for a card/bar: first with a real quota denominator,
     /// else the first window. Mirrors the popover hero logic.
@@ -361,16 +396,24 @@ final class Model: ObservableObject {
         l.windows.first { $0.usedPct != nil } ?? l.windows.first
     }
 
-    /// Compact icon + remaining percentage line from each account's primary window.
+    /// Status-item preview: per account, EVERY quota-bearing window's remaining
+    /// % space-separated (openusage kqvu style — e.g. Claude shows "44% 99%"),
+    /// accounts joined by " · ". No icons/tags; the status bar is text-only.
     static func previewText(_ limits: [AccountLimits], cfg: UiPreviewConfig?) -> String? {
         let maxLines = cfg?.previewLines ?? 3
         guard maxLines > 0 else { return nil }
-        let parts: [String] = limits.compactMap { l in
-            guard let w = primaryWindow(l), let pct = w.usedPct else { return nil }
-            return "\(Self.providerGlyph(l.provider)) \(Int(max(0, 100 - pct).rounded()))%"
+        var groups: [String] = []
+        for l in limits {
+            let pcts = l.windows.compactMap { w -> String? in
+                guard let pct = w.usedPct else { return nil }
+                let remaining = Int(max(0, min(100, 100 - pct)).rounded())
+                return "\(remaining)%"
+            }
+            if !pcts.isEmpty { groups.append(pcts.joined(separator: " ")) }
+            if groups.count >= maxLines { break }
         }
-        guard !parts.isEmpty else { return nil }
-        return Array(parts.prefix(maxLines)).joined(separator: " · ")
+        guard !groups.isEmpty else { return nil }
+        return groups.prefix(maxLines).joined(separator: " · ")
     }
 
     func composeTitle(today: ReportPayload?, preview: String?, hovering: Bool, mode: String) -> String {
@@ -463,6 +506,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         item.button?.font = NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize - 1, weight: .regular)
         item.button?.target = self
         item.button?.action = #selector(statusItemAction(_:))
+        // NSStatusBarButton swallows right-clicks by default; without this
+        // the currentEvent routing in statusItemAction never sees them and
+        // the context menu is unreachable.
+        item.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
         statusItem = item
         FileHandle.standardError.write(Data(
             "[tokitoki-menubar] statusItem created · button=\(item.button != nil ? "ok" : "NIL") title=[\(model.title)]\n".utf8))
@@ -553,8 +600,118 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    private static var logoImageCache: [String: NSImage] = [:]
+
+    /// Render a ProviderLogo into a small NSImage for inline use.
+    private func logoImage(_ provider: String) -> NSImage? {
+        if let cached = Self.logoImageCache[provider] { return cached }
+        let renderer = ImageRenderer(content: ProviderLogo(provider: provider))
+        renderer.scale = 2
+        guard let img = renderer.nsImage else { return nil }
+        Self.logoImageCache[provider] = img
+        return img
+    }
+
+    /// Last rendered strip image; identical content skips the button set (an
+    /// unconditional set still costs a WindowServer redraw).
+    private static var lastStrip: (fingerprint: String, image: NSImage?)?
+
+    /// openusage-style status item: provider marks + bare percentages rendered
+    /// as a MONOCHROME template image (black on clear, isTemplate=true) so macOS
+    /// tints it correctly for light/dark and it never reads as colored. Falls
+    /// back to the plain text title when no preview data is available.
+    private func applyTemplateStrip(fallback: String) {
+        guard let button = statusItem?.button else { return }
+        guard let model else { return }
+        let showPreview = model.previewMode != "hover" || model.isHovering
+        let entries = showPreview ? model.previewEntries : []
+
+        // Fingerprint of everything the strip renders, for memoization.
+        let fingerprint = entries.map { "\($0.provider):\($0.remaining)" }.joined(separator: ",")
+            + "|\(fallback.hasPrefix("🔴") ? "x" : fallback.hasPrefix("🟠") ? "w" : "-")"
+
+        if let last = Self.lastStrip, last.fingerprint == fingerprint {
+            if let img = last.image { button.image = img; button.title = "" } else { button.image = nil; button.title = fallback }
+            refreshHoverMonitor()
+            return
+        }
+
+        var badgeKind: String? = nil
+        if fallback.hasPrefix("🔴") { badgeKind = "exceeded" }
+        else if fallback.hasPrefix("🟠") { badgeKind = "warn" }
+
+        var content: NSImage? = nil
+        if !entries.isEmpty {
+            content = Self.renderStrip(entries: entries, badge: badgeKind)
+        }
+
+        Self.lastStrip = (fingerprint, content)
+        if let img = content {
+            button.image = img
+            button.title = ""
+        } else {
+            button.image = nil
+            button.title = fallback
+        }
+        refreshHoverMonitor()
+    }
+
+/// Monochrome brand mark for the template strip: real vector path when the
+/// provider has one, π for pi, SF symbol otherwise — all solid black so the
+/// template image tints correctly in light/dark menu bars.
+struct MonoMark: View {
+    let provider: String
+
+    var body: some View {
+        Group {
+            if let vector = BrandIcon.forProvider(provider) {
+                AnyView(vector.fill(Color.black))
+            } else if provider == "pi" {
+                AnyView(Text("π").font(.system(size: 11, weight: .heavy)).foregroundStyle(Color.black))
+            } else {
+                AnyView(Image(systemName: ProviderLogo.symbol(provider))
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(Color.black))
+            }
+        }
+        .frame(width: 12, height: 12)
+    }
+}
+
+    /// Render [mark] 94% · [mark] 44% … as black-on-clear SwiftUI, then rasterize
+    /// via ImageRenderer, trim transparent margins, and wrap in a template NSImage
+    /// (openusage MenuBarStripRenderer pattern).
+    static func renderStrip(entries: [(provider: String, remaining: Int)], badge: String?) -> NSImage? {
+        struct Strip: View {
+            let entries: [(provider: String, remaining: Int)]
+            let badge: String?
+            var body: some View {
+                HStack(spacing: 6) {
+                    if let badge {
+                        Image(systemName: badge == "exceeded" ? "exclamationmark.circle.fill" : "exclamationmark.circle")
+                    }
+                    ForEach(Array(entries.enumerated()), id: \.offset) { i, e in
+                        if i > 0 { Text("·") }
+                        HStack(spacing: 2) {
+                            MonoMark(provider: e.provider)
+                                .frame(width: 10, height: 10)
+                            Text("\(e.remaining)%").font(.system(size: 11, weight: .semibold)).monospacedDigit()
+                        }
+                    }
+                }
+                .foregroundStyle(Color.black)
+            }
+        }
+        let renderer = ImageRenderer(content: Strip(entries: entries, badge: badge))
+        renderer.scale = 2
+        guard let cg = renderer.cgImage else { return nil }
+        let image = NSImage(cgImage: cg, size: NSSize(width: CGFloat(cg.width) / 2, height: CGFloat(cg.height) / 2))
+        image.isTemplate = true
+        return image
+    }
+
     func syncButtonTitle(_ title: String) {
-        statusItem?.button?.title = title
+        applyTemplateStrip(fallback: title)
         refreshHoverMonitor()
     }
 
@@ -602,6 +759,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         writePopoverProof()
     }
 
+    func writeTestProof() { writePopoverProof() }
+
     private func writePopoverProof() {
         guard ProcessInfo.processInfo.environment["TOKITOKI_MENUBAR_TEST"] == "1",
               let model else { return }
@@ -609,9 +768,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let hasPie = (model.today?.rows.isEmpty == false)
         let proof: [String: Any] = [
             "sections": ["limits", "pie", "providers", "budgets"],
+
             "accounts": model.limits.map { "\($0.provider)@\($0.accountKey)" },
             "hasPie": hasPie,
             "limitCards": model.limits.count,
+            // Diagnostics: what each card actually renders for its primary window.
+            "countdowns": model.limits.reduce(into: [:]) { acc, l in
+                let p = Model.primaryWindow(l)
+                acc["\(l.provider)@\(l.accountKey)"] = [
+                    "resetsAt": p?.resetsAt ?? "nil",
+                    "countdown": countdown(p?.resetsAt),
+                    "usedPct": p?.usedPct as Any,
+                ]
+            },
         ]
         if let data = try? JSONSerialization.data(withJSONObject: proof, options: [.sortedKeys]) {
             try? data.write(to: URL(fileURLWithPath: "/tmp/tokitoki-menubar.popover.json"))
@@ -629,6 +798,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         refresh.target = self
         menu.addItem(refresh)
         menu.addItem(.separator())
+
+        // Settings ▸ per-provider menubar visibility (backs onto `tokitoki ui`).
+        let providers = model?.knownProviders ?? []
+        if !providers.isEmpty {
+            let settings = NSMenuItem(title: "Menubar Providers", action: nil, keyEquivalent: "")
+            let sub = NSMenu()
+            sub.autoenablesItems = false
+            for id in providers {
+                let toggle = NSMenuItem(title: id, action: #selector(toggleProviderVisibility(_:)), keyEquivalent: "")
+                toggle.representedObject = id
+                toggle.state = (model?.menubarHidden.contains(id) ?? false) ? .off : .on
+                toggle.target = self
+                sub.addItem(toggle)
+            }
+            settings.submenu = sub
+            menu.addItem(settings)
+            menu.addItem(.separator())
+        }
 
         let login = NSMenuItem(title: "Start at Login", action: #selector(toggleStartAtLogin), keyEquivalent: "")
         login.state = isStartAtLogin ? .on : .off
@@ -663,6 +850,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func refreshNow() { model?.refresh() }
+
+    /// Toggle one provider's menubar visibility via `tokitoki ui`, then
+    /// refresh so the change shows up immediately.
+    @objc private func toggleProviderVisibility(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String,
+              let cli = model?.currentInvocation() else { return }
+        let hide = sender.state == .on // checked = visible → clicking hides
+        let task = Process()
+        task.executableURL = cli.executable
+        task.arguments = cli.prefixArgs + ["ui", hide ? "--hide" : "--show", id]
+        try? task.run()
+        task.waitUntilExit()
+        model?.refresh()
+    }
 
     @objc private func toggleStartAtLogin() {
         let task = Process()
@@ -701,19 +902,51 @@ func resolveInvocation() -> CLIInvocation {
     if let override = ProcessInfo.processInfo.environment["TOKITOKI_BIN"], !override.isEmpty {
         return CLIInvocation(executable: URL(fileURLWithPath: override), prefixArgs: [])
     }
+    // bun candidates cover brew + the official installer + nix profile links.
+    var bunURL: URL?
+    for candidate in ["~/.bun/bin/bun", "~/.nix-profile/bin/bun", "/opt/homebrew/bin/bun", "/usr/local/bin/bun"] {
+        let u = cliURL(candidate)
+        if FileManager.default.fileExists(atPath: u.path) { bunURL = u; break }
+    }
+    if bunURL == nil {
+        // Last resort: whatever `bun` is on PATH (launchd contexts often have
+        // no PATH, hence the fixed candidates above).
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        task.arguments = ["which", "bun"]
+        let pipe = Pipe()
+        task.standardOutput = pipe
+        if (try? task.run()) != nil {
+            task.waitUntilExit()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            let path = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if task.terminationStatus == 0, !path.isEmpty { bunURL = URL(fileURLWithPath: path) }
+        }
+    }
     var url = Bundle.main.executableURL ?? URL(fileURLWithPath: CommandLine.arguments[0])
     for _ in 0..<6 {
         url.deleteLastPathComponent()
         let repoRoot = url
+        // Portable JS build first (current packaging strategy): needs bun.
+        let cliJs = repoRoot.appendingPathComponent("dist/cli.js")
+        if FileManager.default.fileExists(atPath: cliJs.path), let bun = bunURL {
+            return CLIInvocation(executable: bun, prefixArgs: [cliJs.path])
+        }
         let cliTs = repoRoot.appendingPathComponent("src/cli.ts")
-        if FileManager.default.fileExists(atPath: cliTs.path) {
-            let bunCandidates = ["~/.bun/bin/bun", "/opt/homebrew/bin/bun", "/usr/local/bin/bun"]
-            for candidate in bunCandidates where FileManager.default.fileExists(atPath: cliURL(candidate).path) {
-                return CLIInvocation(executable: cliURL(candidate), prefixArgs: [cliTs.path])
-            }
+        if FileManager.default.fileExists(atPath: cliTs.path), let bun = bunURL {
+            return CLIInvocation(executable: bun, prefixArgs: [cliTs.path])
         }
         if FileManager.default.fileExists(atPath: repoRoot.appendingPathComponent("dist/tokitoki").path) {
             return CLIInvocation(executable: repoRoot.appendingPathComponent("dist/tokitoki"), prefixArgs: [])
+        }
+    }
+    // Repo not found relative to the binary — try the canonical checkout.
+    if let bun = bunURL {
+        for rel in ["dist/cli.js", "src/cli.ts"] {
+            let u = cliURL("~/dev/tokitoki/" + rel)
+            if FileManager.default.fileExists(atPath: u.path) {
+                return CLIInvocation(executable: bun, prefixArgs: [u.path])
+            }
         }
     }
     return CLIInvocation(executable: cliURL("~/dev/tokitoki/dist/tokitoki"), prefixArgs: [])
@@ -745,17 +978,23 @@ struct ContentView: View {
                         .background(.red.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
                 }
                 if !model.limits.isEmpty { limitsSection }
-                heroCard
                 if !(model.today?.rows ?? []).isEmpty { pieCard() }
+                heroCard
                 if let p = model.today {
                     card(title: "today by provider", icon: "chart.bar.fill") {
-                        HStack(alignment: .bottom, spacing: 3) {
-                            ForEach(Array(p.rows.sorted { $0.costUsd > $1.costUsd }.prefix(14).enumerated()), id: \.offset) { _, row in
-                                RoundedRectangle(cornerRadius: 2)
-                                    .fill(providerColor(row.bucket))
-                                    .frame(height: CGFloat(max(4, min(38, row.costUsd > 0 ? row.costUsd / max(p.total.costUsd, 1) * 38 : 5))))
+                        ForEach(Array(p.rows.sorted { $0.costUsd > $1.costUsd || ($0.costUsd == $1.costUsd && $0.requests > $1.requests) }.prefix(7).enumerated()), id: \.offset) { _, row in
+                            HStack(spacing: 6) {
+                                ProviderLogo(provider: row.bucket)
+                                Text(row.bucket).font(.caption).lineLimit(1)
+                                Spacer()
+                                Text("\(humanCount(Double(row.requests))) req")
+                                    .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                                Text(row.costUsd > 0 ? String(format: "$%.2f", row.costUsd) : "$0")
+                                    .font(.caption.monospacedDigit())
+                                    .foregroundStyle(row.costUsd > 0 ? AnyShapeStyle(.primary) : AnyShapeStyle(.tertiary))
                             }
-                        }.frame(height: 40, alignment: .bottom)
+                            .padding(.vertical, 2)
+                        }
                     }
                 }
                 if model.activeOtherMachines > 0 {
@@ -767,7 +1006,6 @@ struct ContentView: View {
                 anomaliesRow
                 if !model.repos.isEmpty { compactList(title: "top repos this month", icon: "folder.fill", rows: model.repos.map { ( $0.bucket, "\(humanCount(Double($0.requests))) req") }) }
                 if !model.topTools.isEmpty { compactList(title: "top tools today", icon: "wrench.and.screwdriver.fill", rows: model.topTools.map { ($0.tool, $0.costUsd >= 0.01 ? String(format: "$%.2f", $0.costUsd) : humanCount($0.tokens)) }) }
-                budgetsSection
                 HStack(spacing: 8) {
                     Button(action: openDashboard) { Label("Dashboard", systemImage: "safari") }.buttonStyle(.borderedProminent)
                     Button(action: { model.refresh() }) { Label("Refresh", systemImage: "arrow.clockwise") }.buttonStyle(.bordered)
@@ -812,34 +1050,55 @@ struct ContentView: View {
         }
     }
 
-    @ViewBuilder private var providerSection: some View {
-        if let p = model.today {
-            card(title: "providers", icon: "circle.grid.2x2.fill") {
-                ForEach(Array(p.rows.sorted { $0.costUsd > $1.costUsd }.prefix(6)), id: \.bucket) { row in
-                    HStack(spacing: 8) {
-                        Circle().fill(providerColor(row.bucket)).frame(width: 7, height: 7)
-                        Text(row.bucket).font(.caption).lineLimit(1)
-                        Spacer()
-                        Text(row.costUsd > 0 ? String(format: "$%.2f", row.costUsd) : "\(humanCount(Double(row.requests))) req")
-                            .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                    }.padding(.vertical, 2)
-                }
-            }
-        }
-    }
-
     // MARK: - v3: per-account limit cards (the hero)
 
     @ViewBuilder private var limitsSection: some View {
-        card(title: "remaining · resets", icon: "gauge.with.needle") {
-            VStack(alignment: .leading, spacing: 9) {
-                ForEach(model.limits) { l in
-                    AccountLimitCard(limits: l)
-                        .accessibilityLabel("limit-card-\(l.provider)-\(l.accountKey)")
+        // Cards render directly on the popover surface — each account card is
+        // its own container; no extra wrapping card.
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(Array(model.limits.enumerated()), id: \.element.id) { idx, l in
+                if idx > 0, model.limits[idx - 1].provider == l.provider {
+                    Divider()
                 }
-                consoleLinksRow
+                AccountLimitCard(limits: l, budgets: matchingBudgets(for: l), tokenScale: tokenMaxima(model.limits))
+                    .padding(8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 10))
+                    .accessibilityLabel("limit-card-\(l.provider)-\(l.accountKey)")
             }
-        }.accessibilityIdentifier("limits-section")
+            consoleLinksRow
+            unmatchedBudgetsRow
+        }
+        .accessibilityIdentifier("limits-section")
+    }
+
+    /// Budgets whose pattern targets this specific account.
+    func matchingBudgets(for l: AccountLimits) -> [BudgetRow] {
+        model.budgets.filter { b in
+            guard let pattern = budgetPatternLabel(of: b) else { return false }
+            return budgetMatchesPattern(pattern, l.accountKey)
+        }
+    }
+
+    /// Global / unmatched budgets collapse into one slim row-group.
+    @ViewBuilder private var unmatchedBudgetsRow: some View {
+        let unmatched = model.budgets.filter { b in
+            guard let pattern = budgetPatternLabel(of: b) else { return true }
+            return !model.limits.contains { budgetMatchesPattern(pattern, $0.accountKey) }
+        }
+        if !unmatched.isEmpty {
+            VStack(alignment: .leading, spacing: 2) {
+                ForEach(unmatched, id: \.label) { b in
+                    HStack(spacing: 4) {
+                        Circle().fill(color(for: b.state)).frame(width: 5, height: 5)
+                        Text(b.label).font(.caption2).lineLimit(1)
+                        Spacer()
+                        Text(String(format: "$%.2f / $%.0f", b.used, b.cap))
+                            .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
     }
 
     /// openusage-style links to each provider's console/status page.
@@ -876,27 +1135,101 @@ struct ContentView: View {
 
     // MARK: - v3: donut spend distribution (openusage-style pie)
 
-    private var pieSlices: [(name: String, value: Double, color: Color)] {
-        guard let rows = model.today?.rows.filter({ $0.costUsd > 0 }) else { return [] }
-        return rows.sorted { $0.costUsd > $1.costUsd }
-            .map { ($0.bucket, $0.costUsd, providerColor($0.bucket)) }
+    @State private var spendPeriodKey = "today"
+    /// Donut sizing metric: USD cost or total tokens.
+    @State private var spendMetric: SpendMetric = .cost
+
+    private static let spendPeriodOrder = ["today", "yesterday", "week", "month"]
+    private static let spendPeriodLabels = ["today": "Today", "yesterday": "Yest", "week": "Week", "month": "Month"]
+
+    /// Slices for the selected spend period + metric. Falls back to today's
+    /// report when the payload predates the spendPeriods field.
+    private func pieSlices(metric: SpendMetric) -> [(name: String, value: Double, color: Color)] {
+        let rows: [ReportRow]
+        if let period = model.spendPeriods.first(where: { $0.key == spendPeriodKey }) {
+            rows = period.rows
+        } else if spendPeriodKey == "today", let today = model.today {
+            rows = today.rows
+        } else {
+            rows = []
+        }
+        var out: [(name: String, value: Double, color: Color)] = []
+        for row in rows {
+            let value = metric == .cost ? row.costUsd : row.totalTokens
+            if value > 0 { out.append((row.bucket, value, bucketColor(row.bucket))) }
+        }
+        return out.sorted { $0.value > $1.value }
+    }
+
+    private func sliceValue(_ value: Double, metric: SpendMetric) -> String {
+        metric == .cost ? String(format: "$%.2f", value) : humanCount(value)
     }
 
     private var topSpenders: [ReportRow] {
         (model.today?.rows ?? []).filter { $0.costUsd > 0 }.sorted { $0.costUsd > $1.costUsd }
     }
 
+    private var spendPeriodPicker: some View {
+        HStack(spacing: 0) {
+            ForEach(Self.spendPeriodOrder, id: \.self) { key in
+                Text(Self.spendPeriodLabels[key] ?? key)
+                    .font(.caption2.weight(spendPeriodKey == key ? .semibold : .regular))
+                    .monospacedDigit()
+                    .padding(.horizontal, 8).padding(.vertical, 2)
+                    .background(
+                        spendPeriodKey == key
+                            ? AnyShapeStyle(.quaternary.opacity(0.9))
+                            : AnyShapeStyle(.clear)
+                    )
+                    .contentShape(Rectangle())
+                    .onTapGesture { spendPeriodKey = key }
+            }
+        }
+        .background(.quaternary.opacity(0.35), in: Capsule())
+        .accessibilityIdentifier("spend-period-picker")
+    }
+
     private func pieCard() -> some View {
-        card(title: "spend distribution", icon: "chart.pie.fill") {
-            HStack(spacing: 14) {
-                DonutChart(slices: pieSlices)
-                    .frame(width: 92, height: 92)
-                    .accessibilityLabel("spend-pie-chart")
-                SpendLegend(slices: Array(pieSlices.prefix(5)))
-                Spacer(minLength: 0)
+        let slices = pieSlices(metric: spendMetric)
+        let total = slices.reduce(0) { $0 + $1.value }
+        return card(title: "usage distribution", icon: "chart.pie.fill") {
+            VStack(alignment: .leading, spacing: 7) {
+                HStack {
+                    spendPeriodPicker
+                    metricPicker
+                }
+                HStack(spacing: 14) {
+                    DonutChart(slices: slices, centerLabel: sliceValue(total, metric: spendMetric))
+                        .frame(width: 92, height: 92)
+                        .accessibilityLabel("spend-pie-chart")
+                    SpendLegend(slices: Array(slices.prefix(5)), metric: spendMetric)
+                    Spacer(minLength: 0)
+                }
             }
         }
         .accessibilityIdentifier("pie-section")
+    }
+
+    /// cost ⇄ tokens toggle for the donut (openusage-style).
+    private var metricPicker: some View {
+        let options: [SpendMetric] = [.cost, .tokens]
+        return HStack(spacing: 0) {
+            ForEach(options, id: \.self) { m in
+                metricOption(m)
+            }
+        }
+        .background(.quaternary.opacity(0.35), in: Capsule())
+        .accessibilityIdentifier("spend-metric-picker")
+    }
+
+    private func metricOption(_ m: SpendMetric) -> some View {
+        let selected = spendMetric == m
+        return Text(m.rawValue)
+            .font(.caption2.weight(selected ? .semibold : .regular))
+            .padding(.horizontal, 8).padding(.vertical, 2)
+            .background(selected ? AnyShapeStyle(.quaternary.opacity(0.9)) : AnyShapeStyle(.clear))
+            .contentShape(Rectangle())
+            .onTapGesture { spendMetric = m }
     }
 
     @ViewBuilder private func card<Content: View>(title: String, icon: String, @ViewBuilder content: () -> Content) -> some View {
@@ -912,11 +1245,6 @@ struct ContentView: View {
                 HStack { Text(item.0).font(.caption).lineLimit(1); Spacer(); Text(item.1).font(.caption.monospacedDigit()).foregroundStyle(.secondary) }
             }
         }
-    }
-
-    private func providerColor(_ name: String) -> Color {
-        let colors: [Color] = [.blue, .purple, .orange, .mint, .pink, .teal]
-        return colors[abs(name.hashValue) % colors.count]
     }
 
     @ViewBuilder
@@ -958,33 +1286,6 @@ struct ContentView: View {
     }
 
     @ViewBuilder
-    private var budgetsSection: some View {
-        if !model.budgets.isEmpty {
-            Text("budgets").font(.caption).bold()
-            ForEach(model.budgets, id: \.label) { b in
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack {
-                        Text(b.label).font(.caption).lineLimit(1)
-                        Spacer()
-                        Text(String(format: "$%.2f / $%.0f", b.used, b.cap))
-                            .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                    }
-                    ProgressView(value: min(b.ratio, 1))
-                        .tint(color(for: b.state))
-                    HStack {
-                        Text("\(Int(round(b.ratio * 100)))% used").font(.caption2).foregroundStyle(.secondary)
-                        Spacer()
-                        if let d = b.daysLeft { Text("\(String(format: "%.0f", d))d left")
-                            .font(.caption2).foregroundStyle(.secondary) }
-                    }
-                }
-                .padding(.vertical, 1)
-            }
-            Divider()
-        }
-    }
-
-    @ViewBuilder
     private var anomaliesRow: some View {
         if let line = model.anomalyLine {
             Text(line).font(.caption).foregroundStyle(.orange).lineLimit(1)
@@ -1023,36 +1324,481 @@ struct ContentView: View {
 
 // MARK: - v3 views
 
+
+/// Budget labels look like "<pattern> <scope>"; no pattern → global budget.
+func budgetPatternLabel(of b: BudgetRow) -> String? {
+    let parts = b.label.split(separator: " ").map(String.init)
+    guard let last = parts.last, ["daily", "weekly", "monthly"].contains(last), parts.count > 1 else {
+        return nil
+    }
+    return parts.dropLast().joined(separator: " ")
+}
+
+/// Exact match, or trailing `*` prefix match (same as budgets config).
+func budgetMatchesPattern(_ pattern: String, _ key: String) -> Bool {
+    pattern.hasSuffix("*") ? key.hasPrefix(pattern.dropLast()) : pattern == key
+}
+
+// MARK: - provider identity (SF-Symbol marks tinted with official brand colors)
+
+/// Recognizable per-provider mark. No bundled trademark assets: SF-Symbol
+/// approximations tinted with each vendor's brand color, consistent size.
+/// Minimal SVG path-data parser covering the command subset used by
+/// simple-icons glyphs (M L H V C S Q T A Z and relatives). Arcs are converted
+/// to cubic Béziers via the standard kappa endpoint-parameterization.
+private enum SvgPath {
+    static func path(_ d: String) -> Path {
+        var p = Path()
+        var i = d.startIndex
+        var cmd: Character = " "
+        var cur = CGPoint.zero
+        var start = CGPoint.zero
+        var lastCtrl: CGPoint? = nil // implicit control for S/T
+
+        func number() -> CGFloat {
+            skipSeparators(&i, d)
+            var neg = false
+            if i < d.endIndex, d[i] == "-" { neg = true; i = d.index(after: i) }
+            else if i < d.endIndex, d[i] == "+" { i = d.index(after: i) }
+            var v = 0.0 as CGFloat
+            while i < d.endIndex, d[i].isNumber || d[i] == "." {
+                if d[i] == "." {
+                    i = d.index(after: i)
+                    var frac = CGFloat(0.1)
+                    while i < d.endIndex, d[i].isNumber {
+                        v += frac * CGFloat(d[i].wholeNumberValue ?? 0)
+                        frac *= 0.1
+                        i = d.index(after: i)
+                    }
+                    break
+                }
+                v = v * 10 + CGFloat(d[i].wholeNumberValue ?? 0)
+                i = d.index(after: i)
+            }
+            // exponent support (rare in icon sets)
+            if i < d.endIndex, d[i] == "e" || d[i] == "E" {
+                let next = d.index(after: i)
+                if next < d.endIndex, d[next].isNumber || d[next] == "-" || d[next] == "+" {
+                    let exp = number()
+                    v *= pow(10, exp)
+                }
+            }
+            return neg ? -v : v
+        }
+        func skipSeparators(_ i: inout String.Index, _ s: String) {
+            while i < s.endIndex, s[i] == " " || s[i] == "," { i = s.index(after: i) }
+        }
+        func point(_ x: CGFloat, _ y: CGFloat) -> CGPoint { CGPoint(x: x, y: y) }
+        func curveTo(_ c1: CGPoint, _ c2: CGPoint, _ to: CGPoint) {
+            p.addCurve(to: to, control1: c1, control2: c2)
+            cur = to
+            lastCtrl = c2
+        }
+        func arc(_ r1: CGFloat, _ r2: CGFloat, _ phiDeg: CGFloat, _ large: Bool, _ sweep: Bool, _ to: CGPoint) {
+            // Endpoint → center parameterization (W3C SVG spec F.6.5).
+            if r1 == 0 || r2 == 0 {
+                p.addLine(to: to); cur = to; return
+            }
+            let phi = phiDeg * .pi / 180
+            let cosP = cos(phi), sinP = sin(phi)
+            let dx = (cur.x - to.x) / 2, dy = (cur.y - to.y) / 2
+            let x1 = cosP * dx + sinP * dy
+            let y1 = -sinP * dx + cosP * dy
+            var rx = abs(r1), ry = abs(r2)
+            let lambda = (x1 * x1) / (rx * rx) + (y1 * y1) / (ry * ry)
+            if lambda > 1 {
+                let s = sqrt(lambda)
+                rx *= s; ry *= s
+            }
+            let sign: CGFloat = large != sweep ? 1 : -1
+            let num = rx * rx * ry * ry - rx * rx * y1 * y1 - ry * ry * x1 * x1
+            let den = rx * rx * y1 * y1 + ry * ry * x1 * x1
+            let co = sign * sqrt(max(0, num / den))
+            let cxp = co * rx * y1 / ry
+            let cyp = -co * ry * x1 / rx
+            let cx = cosP * cxp - sinP * cyp + (cur.x + to.x) / 2
+            let cy = sinP * cxp + cosP * cyp + (cur.y + to.y) / 2
+            func angle(_ ux: CGFloat, _ uy: CGFloat, _ vx: CGFloat, _ vy: CGFloat) -> CGFloat {
+                let dot = ux * vx + uy * vy
+                let len = sqrt((ux * ux + uy * uy) * (vx * vx + vy * vy))
+                var a = acos(min(1, max(-1, dot / len)))
+                if ux * vy - uy * vx < 0 { a = -a }
+                return a
+            }
+            let th1 = angle(1, 0, (x1 - cxp) / rx, (y1 - cyp) / ry)
+            var dth = angle((x1 - cxp) / rx, (y1 - cyp) / ry, (-x1 - cxp) / rx, (-y1 - cyp) / ry)
+            if !sweep && dth > 0 { dth -= 2 * .pi }
+            if sweep && dth < 0 { dth += 2 * .pi }
+            let segments = Int(ceil(abs(dth) / (.pi / 2)))
+            let delta = dth / CGFloat(segments)
+            let k = 4.0 / 3.0 * tan(delta / 4)
+            var t = th1
+            for _ in 0..<segments {
+                let cosT = cos(t), sinT = sin(t)
+                let t2 = t + delta
+                // pt's parameters are (cos θ, sin θ, ellipse x-rotation φ):
+                // the sweep angle feeds the trig pair; the third parameter is
+                // the SVG x-axis rotation. Calling pt(1, 1, t) evaluated every
+                // point at radius r·√2 around a phantom rotation — garbling
+                // all arcs.
+                func pt(_ a: CGFloat, _ b: CGFloat, _ rot: CGFloat) -> CGPoint {
+                    point(cx + rx * a * cos(rot) - ry * b * sin(rot),
+                          cy + rx * a * sin(rot) + ry * b * cos(rot))
+                }
+                let e1 = pt(cosT, sinT, phi)
+                let e2 = pt(cos(t2), sin(t2), phi)
+                // Derivative of the parametric ellipse point w.r.t. the angle:
+                // d/dt P(t) = (-rx·sin t·cosφ − ry·cos t·sinφ, −rx·sin t·sinφ + ry·cos t·cosφ).
+                // The previous version had cos/sin swapped here, corrupting
+                // every arc (circles rendered as bow-ties).
+                func deriv(_ ang: CGFloat) -> CGPoint {
+                    point(-rx * sin(ang) * cosP - ry * cos(ang) * sinP,
+                          -rx * sin(ang) * sinP + ry * cos(ang) * cosP)
+                }
+                let d1 = point(k * deriv(t).x, k * deriv(t).y)
+                let d2 = point(k * deriv(t2).x, k * deriv(t2).y)
+                let c1 = point(e1.x + d1.x, e1.y + d1.y)
+                let c2 = point(e2.x - d2.x, e2.y - d2.y)
+                curveTo(c1, c2, e2)
+                t = t2
+            }
+        }
+
+        while i < d.endIndex {
+            skipSeparators(&i, d)
+            guard i < d.endIndex else { break }
+            if d[i].isLetter {
+                cmd = d[i]
+                i = d.index(after: i)
+            }
+            switch cmd {
+            case "M", "m":
+                let x = number(), y = number()
+                let pt = cmd == "m" ? point(cur.x + x, cur.y + y) : point(x, y)
+                p.move(to: pt)
+                cur = pt; start = pt; lastCtrl = nil
+                cmd = cmd == "m" ? "l" : "L" // subsequent pairs are lineto
+            case "L", "l":
+                let x = number(), y = number()
+                let to = cmd == "l" ? point(cur.x + x, cur.y + y) : point(x, y)
+                p.addLine(to: to); cur = to; lastCtrl = nil
+            case "H", "h":
+                let x = number()
+                let to = point(cmd == "h" ? cur.x + x : x, cur.y)
+                p.addLine(to: to); cur = to; lastCtrl = nil
+            case "V", "v":
+                let y = number()
+                let to = point(cur.x, cmd == "v" ? cur.y + y : y)
+                p.addLine(to: to); cur = to; lastCtrl = nil
+            case "C", "c":
+                let a1 = number(), a2 = number(), a3 = number(), a4 = number(), a5 = number(), a6 = number()
+                let rel = cmd == "c"
+                let c1 = rel ? point(cur.x + a1, cur.y + a2) : point(a1, a2)
+                let c2 = rel ? point(cur.x + a3, cur.y + a4) : point(a3, a4)
+                let to = rel ? point(cur.x + a5, cur.y + a6) : point(a5, a6)
+                curveTo(c1, c2, to)
+            case "S", "s":
+                let a1 = number(), a2 = number(), a3 = number(), a4 = number()
+                let rel = cmd == "s"
+                let c1: CGPoint
+                if let lc = lastCtrl { c1 = point(2 * cur.x - lc.x, 2 * cur.y - lc.y) } else { c1 = cur }
+                let c2 = rel ? point(cur.x + a1, cur.y + a2) : point(a1, a2)
+                let to = rel ? point(cur.x + a3, cur.y + a4) : point(a3, a4)
+                curveTo(c1, c2, to)
+            case "Q", "q":
+                let a1 = number(), a2 = number(), a3 = number(), a4 = number()
+                let rel = cmd == "q"
+                let qc = rel ? point(cur.x + a1, cur.y + a2) : point(a1, a2)
+                let to = rel ? point(cur.x + a3, cur.y + a4) : point(a3, a4)
+                let c1 = point(cur.x + 2 / 3 * (qc.x - cur.x), cur.y + 2 / 3 * (qc.y - cur.y))
+                let c2 = point(to.x + 2 / 3 * (qc.x - to.x), to.y + 2 / 3 * (qc.y - to.y))
+                curveTo(c1, c2, to)
+            case "T", "t":
+                let a1 = number(), a2 = number()
+                let rel = cmd == "t"
+                let qc: CGPoint
+                if let lc = lastCtrl { qc = point(2 * cur.x - lc.x, 2 * cur.y - lc.y) } else { qc = cur }
+                let to = rel ? point(cur.x + a1, cur.y + a2) : point(a1, a2)
+                let c1 = point(cur.x + 2 / 3 * (qc.x - cur.x), cur.y + 2 / 3 * (qc.y - cur.y))
+                let c2 = point(to.x + 2 / 3 * (qc.x - to.x), to.y + 2 / 3 * (qc.y - to.y))
+                curveTo(c1, c2, to)
+            case "A", "a":
+                let r1 = number(), r2 = number(), rot = number()
+                let laf = number() != 0
+                let sf = number() != 0
+                let x = number(), y = number()
+                let to = cmd == "a" ? point(cur.x + x, cur.y + y) : point(x, y)
+                arc(r1, r2, rot, laf, sf, to)
+            case "Z", "z":
+                if cur != start { p.addLine(to: start) }
+                p.closeSubpath()
+                cur = start; lastCtrl = nil
+            default:
+                // Unknown command — abort parsing rather than corrupt the glyph.
+                i = d.endIndex
+            }
+        }
+        return p
+    }
+}
+
+/// Official brand marks (CC0 path data from the simple-icons project, 24×24
+/// viewBox) rendered as vectors — recognizable logos instead of SF-symbol
+/// approximations. Providers without an available mark fall back to their
+/// previous glyph.
+enum BrandIcon {
+    static let openai = "M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9A6.0651 6.0651 0 0 0 4.9807 4.1818a5.9847 5.9847 0 0 0-3.9977 2.9 6.0462 6.0462 0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2058 5.9894 5.9894 0 0 0 3.9977-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.4945 4.4944zm-9.6607-4.1254a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 .7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 0 0 1-6.1408-1.6464zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V11.6a.7664.7664 0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0l-4.8303-2.7865A4.504 4.504 0 0 1 2.3408 7.872zm16.5963 3.8558L13.1038 8.364 15.1192 7.2a.0757.0757 0 0 1 .071 0l4.8303 2.7913a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-.407-.667zm2.0107-3.0231l-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7866a4.4992 4.4992 0 0 1 6.6802 4.66zM8.3065 12.863l-2.02-1.1638a.0804.0804 0 0 1-.038-.0567V6.0742a4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805L8.704 5.459a.7948.7948 0 0 0-.3927.6813zm1.0976-2.3654l2.602-1.4998 2.6069 1.4998v2.9994l-2.5974 1.4997-2.6067-1.4997Z"
+    static let anthropic = "M17.3041 3.541h-3.6718l6.696 16.918H24Zm-10.6082 0L0 20.459h3.7442l1.3693-3.5527h7.0052l1.3693 3.5528h3.7442L10.5363 3.5409Zm-.3712 10.2232 2.2914-5.9456 2.2914 5.9456Z"
+    static let cursor = "M11.503.131 1.891 5.678a.84.84 0 0 0-.42.726v11.188c0 .3.162.575.42.724l9.609 5.55a1 1 0 0 0 .998 0l9.61-5.55a.84.84 0 0 0 .42-.724V6.404a.84.84 0 0 0-.42-.726L12.497.131a1.01 1.01 0 0 0-.996 0M2.657 6.338h18.55c.263 0 .43.287.297.515L12.23 22.918c-.062.107-.229.064-.229-.06V12.335a.59.59 0 0 0-.295-.51l-9.11-5.257c-.109-.063-.064-.23.061-.23"
+    static let googlegemini = "M11.04 19.32Q12 21.51 12 24q0-2.49.93-4.68.96-2.19 2.58-3.81t3.81-2.55Q21.51 12 24 12q-2.49 0-4.68-.93a12.3 12.3 0 0 1-3.81-2.58 12.3 12.3 0 0 1-2.58-3.81Q12 2.49 12 0q0 2.49-.96 4.68-.93 2.19-2.55 3.81a12.3 12.3 0 0 1-3.81 2.58Q2.49 12 0 12q2.49 0 4.68.96 2.19.93 3.81 2.55t2.55 3.81"
+    static let x = "M14.234 10.162 22.977 0h-2.072l-7.591 8.824L7.251 0H.258l9.168 13.343L.258 24H2.33l8.016-9.318L16.749 24h6.993zm-2.837 3.299-.929-1.329L3.076 1.56h3.182l5.965 8.532.929 1.329 7.754 11.09h-3.182z"
+    static let opencode = "M22 24H2V0h20zM17 4.8H7v14.4h10z"
+
+    /// Provider id → mark, nil = no official vector available (caller falls
+    /// back to its own glyph).
+    static func forProvider(_ provider: String) -> Path? {
+        let d: String?
+        switch provider {
+        case "codex", "openai": d = openai
+        case "claude-code": d = anthropic
+        case "cursor": d = cursor
+        case "gemini-cli": d = googlegemini
+        case "grok": d = x
+        case "opencode", "opencode-go": d = opencode
+        default: d = nil
+        }
+        guard let d else { return nil }
+        let s: CGFloat = 14.0 / 24.0
+        return SvgPath.path(d).applying(CGAffineTransform(scaleX: s, y: s))
+    }
+}
+
+struct ProviderLogo: View {
+    let provider: String
+
+    var body: some View {
+        Group {
+            if let vector = BrandIcon.forProvider(provider) {
+                AnyView(vector.fill(Self.brandColor(provider)))
+            } else if provider == "pi" {
+                // The agent's own glyph: bold π reads instantly at caption size.
+                AnyView(Text("π")
+                    .font(.system(size: 13, weight: .heavy))
+                    .foregroundStyle(Self.brandColor(provider)))
+            } else {
+                AnyView(Image(systemName: Self.symbol(provider))
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(Self.brandColor(provider)))
+            }
+        }
+        .frame(width: 14, height: 14)
+        .accessibilityLabel(provider)
+    }
+
+    static func symbol(_ p: String) -> String {
+        switch p {
+        case "claude-code": return "asterisk"
+        case "codex": return "hexagon.fill"
+        case "cursor": return "cursorarrow.rays"
+        case "gemini-cli": return "sparkle"
+        case "grok": return "xmark"
+        case "openrouter": return "arrow.triangle.branch"
+        case "pi", "opencode-go", "opencode": return "diamond.fill"
+        case "t3code", "antigravity-cli": return "triangle.fill"
+        default: return "circle.fill"
+        }
+    }
+
+    static func brandColor(_ p: String) -> Color {
+        switch p {
+        case "claude-code": return Color(red: 0.851, green: 0.467, blue: 0.341) // #D97757 Anthropic clay
+        case "codex": return Color(red: 0.063, green: 0.639, blue: 0.498)       // #10A37F OpenAI
+        case "cursor": return Color(red: 0.400, green: 0.400, blue: 0.440)
+        case "gemini-cli": return Color(red: 0.259, green: 0.522, blue: 0.957)  // #4285F4
+        case "grok": return .primary
+        case "openrouter": return Color(red: 0.545, green: 0.361, blue: 0.965)  // #8B5CF6
+        case "pi", "opencode-go", "opencode": return Color(red: 0.655, green: 0.545, blue: 0.980) // #A78BFA violet
+        default: return .accentColor
+        }
+    }
+}
+
+/// Bucket color for charts: brand color when known, stable hash palette otherwise.
+func bucketColor(_ name: String) -> Color {
+    if ProviderLogo.symbol(name) != "circle.fill" { return ProviderLogo.brandColor(name) }
+    let colors: [Color] = [.blue, .purple, .orange, .mint, .pink, .teal]
+    return colors[abs(name.hashValue) % colors.count]
+}
+
 /// CodexBar-style per-account limit card: primary window bar + resets-in
 /// countdown, stacked secondary windows, banked resets. Raw token numbers
 /// when no quota denominator is known (honest: no fake percentages).
+/// Per-kind max token totals across all accounts (bar normalization).
+private func tokenMaxima(_ limits: [AccountLimits]) -> [String: Double] {
+    var maxima: [String: Double] = [:]
+    for l in limits {
+        for w in l.windows { maxima[w.kind] = max(maxima[w.kind] ?? 0, w.tokens) }
+    }
+    return maxima
+}
+
 struct AccountLimitCard: View {
     let limits: AccountLimits
+    /// Budget rows whose pattern matches this account — rendered as a slim footer.
+    var budgets: [BudgetRow] = []
+    /// Per-kind max token totals across ALL accounts — used to normalize
+    /// progress bars for windows without a real quota denominator so every
+    /// card renders bars consistently (fill = tokens / kind-max, clamped).
+    var tokenScale: [String: Double] = [:]
+    /// openusage-style collapsible "details" disclosure.
+    @State private var showDetails = false
 
-    private var primary: LimitWindow? { Model.primaryWindow(limits) }
+    private var orderedWindows: [LimitWindow] {
+        let order = ["day": 0, "week": 1, "month": 2]
+        return lwindows.sorted { (order[$0.kind] ?? 9) < (order[$1.kind] ?? 9) }
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 6) {
             headerRow
-            primaryRow
-            if !secondaryWindows.isEmpty {
-                HStack(spacing: 8) {
-                    ForEach(Array(secondaryWindows.enumerated()), id: \.offset) { _, w in
-                        secondaryRow(w)
-                    }
-                    Spacer(minLength: 0)
-                }
+            ForEach(Array(orderedWindows.enumerated()), id: \.offset) { _, w in
+                windowBarRow(w)
+            }
+            if orderedWindows.isEmpty {
+                Text("no usage recorded").font(.caption2).foregroundStyle(.tertiary)
             }
             bankedRow
+            if !budgets.isEmpty { budgetFooter }
+            if let cred = limits.credential, !cred.isEmpty {
+                Text(cred)
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+                    .help("key-based account (redacted)")
+            }
+            detailsDisclosure
         }
         .padding(.vertical, 2)
     }
 
+    /// Collapsible per-window detail rows: source, window length, exact reset.
+    @ViewBuilder private var detailsDisclosure: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Button { withAnimation(.easeInOut(duration: 0.15)) { showDetails.toggle() } } label: {
+                HStack(spacing: 3) {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 8, weight: .bold))
+                        .rotationEffect(.degrees(showDetails ? 90 : 0))
+                    Text("details")
+                        .font(.caption2)
+                    Spacer()
+                }
+                .foregroundStyle(.tertiary)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("limit-details-toggle")
+            if showDetails {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(Array(orderedWindows.enumerated()), id: \.offset) { _, w in
+                        HStack(spacing: 6) {
+                            Text(windowDisplayName(w.kind))
+                                .font(.caption2).foregroundStyle(.secondary)
+                            Text(w.source)
+                                .font(.caption2.weight(.medium))
+                                .padding(.horizontal, 4).padding(.vertical, 0.5)
+                                .background(.quaternary.opacity(0.6), in: Capsule())
+                            Spacer()
+                            if let mins = windowMinutes(w) {
+                                Text("\(mins)min")
+                                    .font(.caption2.monospacedDigit()).foregroundStyle(.tertiary)
+                            }
+                            if let r = w.resetsAt, let target = parseISO(r) {
+                                Text("resets " + target.formatted(date: .abbreviated, time: .shortened))
+                                    .font(.caption2.monospacedDigit()).foregroundStyle(.tertiary)
+                            }
+                        }
+                    }
+                }
+                .padding(.top, 2)
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+    }
+
+    /// Window length in minutes derived from start/end ISO stamps.
+    private func windowMinutes(_ w: LimitWindow) -> Int? {
+        guard let s = w.windowStart.flatMap(parseISO),
+              let e = w.windowEnd.flatMap(parseISO) else { return nil }
+        let mins = Int(e.timeIntervalSince(s) / 60)
+        return mins > 0 ? mins : nil
+    }
+
+    /// openusage-style labeled bar per window: name · bar · % left / resets-in.
+    private func windowBarRow(_ w: LimitWindow) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 6) {
+                Text(windowDisplayName(w.kind))
+                    .font(.caption2.weight(.medium)).foregroundStyle(.secondary)
+                Spacer()
+                if let pct = w.usedPct {
+                    let remaining = max(0, min(100, 100 - pct))
+                    Text("\(Int(remaining.rounded()))% left")
+                        .font(.caption2.monospacedDigit().weight(.semibold))
+                        .foregroundStyle(barTint(remaining))
+                } else {
+                    Text("\(humanCount(w.tokens)) tokens")
+                        .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                }
+            }
+            if let pct = w.usedPct {
+                let remaining = max(0, min(100, 100 - pct))
+                ProgressView(value: remaining / 100)
+                    .tint(barTint(remaining))
+                    .frame(height: 6)
+            } else if w.tokens > 0, let scale = tokenScale[w.kind], scale > 0 {
+                // No real quota denominator (derived/estimate window): render a
+                // RELATIVE bar normalized against the largest same-kind window
+                // across accounts — visual comparison only, never a fake %.
+                let frac = min(1.0, max(0.05, w.tokens / scale))
+                ProgressView(value: frac)
+                    .tint(Color.secondary.opacity(0.45))
+                    .frame(height: 6)
+            }
+            HStack {
+                Spacer()
+                if let r = w.resetsAt {
+                    Text("Resets in " + countdown(r))
+                        .font(.caption2).foregroundStyle(.tertiary)
+                }
+            }
+        }
+    }
+
+    private var budgetFooter: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            ForEach(budgets, id: \.label) { b in
+                HStack(spacing: 4) {
+                    Image(systemName: b.state == "exceeded" ? "exclamationmark.circle.fill" : "chart.bar.fill")
+                        .font(.system(size: 9))
+                        .foregroundStyle(color(for: b.state))
+                    Text(b.label).font(.caption2).lineLimit(1)
+                    Spacer()
+                    Text(String(format: "$%.2f / $%.0f", b.used, b.cap))
+                        .font(.caption2.monospacedDigit()).foregroundStyle(color(for: b.state))
+                    if let d = b.daysLeft {
+                        Text(String(format: "%.0fd left", d))
+                            .font(.caption2).foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+        .padding(.top, 3)
+    }
+
     private var headerRow: some View {
         HStack(spacing: 5) {
-            Text(Model.providerGlyph(limits.provider))
-                .font(.caption.weight(.bold))
-                .foregroundStyle(sharedProviderColor(limits.provider))
+            ProviderLogo(provider: limits.provider)
             Text(accountLabel)
                 .font(.caption.weight(.medium)).lineLimit(1)
             Spacer()
@@ -1085,55 +1831,6 @@ struct AccountLimitCard: View {
         }
     }
 
-    @ViewBuilder private var primaryRow: some View {
-        if let p = primary {
-            if let pct = p.usedPct {
-                let remaining = max(0, min(100, 100 - pct))
-                Button {
-                    if let url = providerConsoleURL(limits.provider) { NSWorkspace.shared.open(url) }
-                } label: {
-                    ProgressView(value: remaining / 100)
-                        .tint(barTint(remaining))
-                }
-                .buttonStyle(.plain)
-                .help("Open \(limits.provider) usage dashboard")
-                primaryMeta(p, remaining: remaining)
-            } else {
-                primaryDerivedMeta(p)
-            }
-        }
-    }
-
-    private func primaryMeta(_ p: LimitWindow, remaining: Double) -> some View {
-        HStack {
-            Text("\(Int(remaining.rounded()))% remaining")
-                .font(.caption.monospacedDigit().weight(.semibold))
-                .foregroundStyle(barTint(remaining))
-            Spacer()
-            Text("resets in " + countdown(p.resetsAt))
-                .font(.caption2).foregroundStyle(.secondary)
-        }
-    }
-
-    private func primaryDerivedMeta(_ p: LimitWindow) -> some View {
-        HStack {
-            Text("\(humanCount(p.tokens)) tokens")
-                .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-            Spacer()
-            Text("resets in " + countdown(p.resetsAt))
-                .font(.caption2).foregroundStyle(.tertiary)
-        }
-    }
-
-    private func secondaryRow(_ w: LimitWindow) -> some View {
-        let label = w.usedPct.map { "\(windowGlyph(w.kind)) \(Int(max(0, 100 - $0).rounded()))%" }
-            ?? "\(windowGlyph(w.kind)) \(humanCount(w.tokens))"
-        return Text(label)
-            .font(.caption2.monospacedDigit().weight(.medium))
-            .foregroundStyle(w.usedPct.map { barTint(max(0, 100 - $0)) } ?? .secondary)
-            .help("\(w.kind): \(w.usedPct.map { "\(Int(max(0, 100 - $0).rounded()))% remaining" } ?? "rolling") · resets in \(countdown(w.resetsAt)) · \(humanCount(w.tokens)) tokens")
-    }
-
     @ViewBuilder private var bankedRow: some View {
         if let banked = limits.bankedResets, banked > 0 {
             HStack(spacing: 3) {
@@ -1147,27 +1844,26 @@ struct AccountLimitCard: View {
         }
     }
 
-    /// Windows other than the rendered primary, in day > week > month order.
-    private var secondaryWindows: [LimitWindow] {
-        guard let p = primary else { return [] }
-        let order = ["day": 0, "week": 1, "month": 2]
-        return lwindows.filter { $0.kind != p.kind }
-            .sorted { (order[$0.kind] ?? 9) < (order[$1.kind] ?? 9) }
-    }
-
     // `limits` shadows the member when accessed unqualified inside SwiftUI
     // property initializers; explicit accessor keeps the intent obvious.
     private var lwindows: [LimitWindow] { limits.windows }
 }
 
-private func windowGlyph(_ kind: String) -> String {
+/// Donut metric selector.
+enum SpendMetric: String {
+    case cost
+    case tokens
+}
+
+private func windowDisplayName(_ kind: String) -> String {
     switch kind {
-    case "day": return "☀︎"
-    case "week": return "🗓"
-    case "month": return "📅"
-    default: return "⏱"
+    case "day": return "Session"
+    case "week": return "Weekly"
+    case "month": return "Monthly"
+    default: return kind.capitalized
     }
 }
+
 
 private func shortDate(_ iso: String) -> String {
     String(iso.prefix(10))
@@ -1186,17 +1882,22 @@ func countdown(_ iso: String?) -> String {
     return "\(m)m"
 }
 
-private let isoFractional: ISO8601DateFormatter = {
-    let f = ISO8601DateFormatter()
-    f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-    return f
-}()
-
-private let isoPlain = ISO8601DateFormatter()
+/// Parsers live behind type-level statics: file-scope `let`s declared after
+/// the top-level app.run() are NOT reliably initialized when first touched
+/// from inside the run loop (observed: formatOptions came back 0 → every
+/// countdown rendered "—"). Statics on a type get guaranteed lazy init.
+private enum IsoParsers {
+    static let fractional: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
+    static let plain = ISO8601DateFormatter()
+}
 
 /// Tolerant parse: payload timestamps may omit fractional seconds.
 func parseISO(_ s: String) -> Date? {
-    isoFractional.date(from: s) ?? isoPlain.date(from: s)
+    IsoParsers.fractional.date(from: s) ?? IsoParsers.plain.date(from: s)
 }
 
 private func providerConsoleURL(_ provider: String) -> URL? {
@@ -1211,66 +1912,90 @@ private func providerConsoleURL(_ provider: String) -> URL? {
     }
 }
 
-private func barTint(_ remaining: Double) -> Color {
-    switch remaining {
-    case ..<5: return .red
-    case ..<20: return .orange
-    case ..<50: return .cyan
-    default: return .blue
+private func color(for state: String) -> Color {
+    switch state {
+    case "exceeded": return .red
+    case "warn": return .orange
+    default: return .green
     }
 }
 
-/// openusage-style donut with a center hole; zero-cost sessions render an
+/// openusage-style traffic colors (softer emerald/amber/rose per user pref).
+private func barTint(_ remaining: Double) -> Color {
+    switch remaining {
+    case ..<20: return Color(red: 0.94, green: 0.26, blue: 0.35)   // rose
+    case ..<50: return Color(red: 1.0, green: 0.62, blue: 0.04)    // amber
+    default: return Color(red: 0.16, green: 0.78, blue: 0.47)      // emerald
+    }
+}
+
+/// openusage-style donut: center hole carries the period total, slices get a
+/// small angular gap so segments read separately; zero-value input renders an
 /// empty ring rather than a fake slice.
 struct DonutChart: View {
     let slices: [(name: String, value: Double, color: Color)]
+    var centerLabel: String? = nil
+
+    /// Angular gap between adjacent slices (degrees). Only applied when there
+    /// is more than one slice — a single full-circle slice stays seamless.
+    private static let gapDegrees = 2.5
 
     var body: some View {
         Canvas { context, size in
             let total = slices.reduce(0) { $0 + $1.value }
-            guard total > 0 else { return }
             let center = CGPoint(x: size.width / 2, y: size.height / 2)
             let radius = min(size.width, size.height) / 2 - 2
             let hole = radius * 0.55
+            guard total > 0 else {
+                if let centerLabel {
+                    context.draw(Text(centerLabel).font(.system(size: 9, weight: .semibold)).foregroundColor(.secondary), at: center)
+                }
+                return
+            }
+            let gap = slices.count > 1 ? Angle.degrees(Self.gapDegrees) : .zero
             let start = Angle.degrees(-90)
             var cursor = start
             for slice in slices {
                 let sweep = Angle.degrees(slice.value / total * 360)
-                let path = Path { p in
-                    p.addArc(center: center, radius: radius,
-                             startAngle: cursor, endAngle: cursor + sweep, clockwise: false)
-                    p.addArc(center: center, radius: hole,
-                             startAngle: cursor + sweep, endAngle: cursor, clockwise: true)
-                    p.closeSubpath()
+                // Shrink each slice by half the gap on both ends so outer
+                // edges line up but visible spacing separates the slices.
+                let a0 = cursor + gap / 2
+                let a1 = cursor + sweep - gap / 2
+                if a1 > a0 {
+                    let path = Path { p in
+                        p.addArc(center: center, radius: radius,
+                                 startAngle: a0, endAngle: a1, clockwise: false)
+                        p.addArc(center: center, radius: hole,
+                                 startAngle: a1, endAngle: a0, clockwise: true)
+                        p.closeSubpath()
+                    }
+                    context.fill(path, with: .color(slice.color))
                 }
-                context.fill(path, with: .color(slice.color))
                 cursor += sweep
+            }
+            if let centerLabel {
+                context.draw(Text(centerLabel).font(.system(size: 9, weight: .semibold)).foregroundColor(.primary), at: center)
             }
         }
         .accessibilityHidden(false)
     }
 }
 
-/// File-scope provider palette so standalone card views share the popover's
-/// color identity (ContentView keeps its instance wrapper).
-func sharedProviderColor(_ name: String) -> Color {
-    let colors: [Color] = [.blue, .purple, .orange, .mint, .pink, .teal]
-    return colors[abs(name.hashValue) % colors.count]
-}
 
 
-/// Legend beside the donut: name + absolute spend per slice.
+/// Legend beside the donut: name + absolute value per slice ($ or tokens).
 struct SpendLegend: View {
     let slices: [(name: String, value: Double, color: Color)]
+    var metric: SpendMetric = .cost
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
             ForEach(Array(slices.enumerated()), id: \.offset) { _, slice in
                 HStack(spacing: 5) {
-                    Circle().fill(slice.color).frame(width: 6, height: 6)
+                    ProviderLogo(provider: slice.name)
                     Text(slice.name).font(.caption2).lineLimit(1)
                     Spacer()
-                    Text(String(format: "$%.2f", slice.value))
+                    Text(metric == .cost ? String(format: "$%.2f", slice.value) : humanCount(slice.value))
                         .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
                 }
             }
@@ -1278,3 +2003,7 @@ struct SpendLegend: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
+
+
+
+

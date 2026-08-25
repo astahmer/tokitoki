@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { Button, Surface, Tabs } from "@cloudflare/kumo";
 
@@ -20,14 +20,16 @@ import { UsageTable } from "./components/UsageTable";
 import { ToolsView } from "./components/ToolsView";
 import { TimeseriesChart } from "./components/TimeseriesChart";
 import { DonutShare } from "./components/DonutShare";
+import { SpendDistribution } from "./components/SpendDistribution";
 import { CalendarGrid, type GridMetric } from "./components/CalendarGrid";
 import { SessionsView } from "./components/SessionsView";
+import { MultiSelect } from "./components/MultiSelect";
 import { SourcesView } from "./components/SourcesView";
 import { AnomaliesView } from "./components/AnomaliesView";
 import { BudgetsView } from "./components/BudgetsView";
 import { ShareButton } from "./components/ShareButton";
 import { EmptyState, Panel, Pill, SkeletonBlock, SummaryCardsSkeleton, TableSkeleton, Toggle } from "./ui";
-import { applyMode, persistMode, resolveInitialMode, type ThemeMode } from "./theme";
+import { applyMode, effectiveMode, persistMode, resolveInitialMode, watchSystemMode, type ThemeMode } from "./theme";
 
 const DIMENSIONS = ["model", "provider", "account", "machine", "project", "repo"] as const;
 const GRID_METRICS: GridMetric[] = ["tokens", "cost", "requests"];
@@ -41,31 +43,100 @@ const RANGE_PRESETS: Array<{ label: string; value: string }> = [
   { label: "30d", value: "30d" },
   { label: "90d", value: "90d" },
 ];
+const VIEWS = ["dashboard", "tools", "sessions", "anomalies", "budgets", "sources"] as const;
+type View = (typeof VIEWS)[number];
 
-type View = "dashboard" | "tools" | "sessions" | "sources" | "anomalies" | "budgets";
+// ---------------------------------------------------------------- url state
+
+/** The app's filter state, mirrored into the URL query so views are
+ * deep-linkable and the back button works. */
+interface AppState {
+  view: View;
+  range: WindowSelection;
+  dimension: string;
+  account?: string;
+  providers: string[];
+  showEmail: boolean;
+}
+
+function readStateFromUrl(): AppState {
+  const p = new URLSearchParams(window.location.search);
+  const viewRaw = p.get("view");
+  const view: View = VIEWS.includes(viewRaw as View) ? (viewRaw as View) : "sessions";
+  let range: WindowSelection = { last: "week" };
+  if (p.get("from") !== null) {
+    range = { from: p.get("from") ?? "", to: p.get("to") ?? undefined };
+  } else if (p.get("last") !== null) {
+    const last = p.get("last") ?? "";
+    if (RANGE_PRESETS.some((r) => r.value === last)) range = { last };
+  }
+  const by = p.get("by") ?? "model";
+  return {
+    view,
+    range,
+    dimension: DIMENSIONS.includes(by as (typeof DIMENSIONS)[number]) ? by : "model",
+    account: p.get("account") ?? undefined,
+    providers: p.getAll("provider").filter((x) => x.length > 0),
+    showEmail: p.get("emails") === "1",
+  };
+}
+
+function writeStateToUrl(s: AppState): void {
+  const p = new URLSearchParams(window.location.search);
+  const setOrDel = (key: string, value: string | undefined, fallback: string): void => {
+    if (value === undefined || value === "" || value === fallback) p.delete(key);
+    else p.set(key, value);
+  };
+  // spend= is owned by SpendDistribution; leave it untouched here.
+  setOrDel("view", s.view, "sessions");
+  if ("from" in s.range && s.range.from !== undefined && s.range.from.length > 0) {
+    p.set("from", s.range.from);
+    if (s.range.to !== undefined && s.range.to.length > 0) p.set("to", s.range.to);
+    else p.delete("to");
+    p.delete("last");
+  } else {
+    setOrDel("last", "last" in s.range ? s.range.last : undefined, "week");
+    p.delete("from");
+    p.delete("to");
+  }
+  setOrDel("by", s.dimension, "model");
+  setOrDel("account", s.account ?? "", "");
+  const existingProviders = p.getAll("provider");
+  for (const e of existingProviders) p.delete("provider");
+  for (const prov of s.providers) p.append("provider", prov);
+  if (s.showEmail) p.set("emails", "1");
+  else p.delete("emails");
+  window.history.pushState(null, "", `${window.location.pathname}?${p.toString()}${window.location.hash}`);
+}
 
 export function App() {
-  const [range, setRange] = useState<WindowSelection>({ last: "week" });
-  const [dimension, setDimension] = useState<(typeof DIMENSIONS)[number]>("model");
-  const [account, setAccount] = useState<string | undefined>(undefined);
-  const [providers, setProviders] = useState<string[]>([]);
-  const [showEmail, setShowEmail] = useState(
-    () => localStorage.getItem("tokitoki.showEmail") === "1",
-  );
-  const [mode, setMode] = useState<ThemeMode>(() => resolveInitialMode());
-  // Sessions is the landing view: search-first across every harness.
-  const [view, setView] = useState<View>(
-    () => (localStorage.getItem("tokitoki.view") as View | null) ?? "sessions",
-  );
+  const [state, setState] = useState<AppState>(readStateFromUrl);
+  const { view, range, dimension, account, providers, showEmail } = state;
 
+  const patch = useCallback((partial: Partial<AppState>): void => {
+    setState((prev) => {
+      const next = { ...prev, ...partial };
+      writeStateToUrl(next); // pushState → back button walks filter history
+      return next;
+    });
+  }, []);
+
+  // Back/forward restores the mirrored state.
+  useEffect(() => {
+    const onPop = (): void => setState(readStateFromUrl());
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
+
+  // Manual refresh: bumps a tick that every data hook depends on.
+  const [refreshTick, setRefreshTick] = useState(0);
+
+  const [mode, setMode] = useState<ThemeMode>(() => resolveInitialMode());
   useEffect(() => {
     applyMode(mode);
     persistMode(mode);
   }, [mode]);
-
-  useEffect(() => {
-    localStorage.setItem("tokitoki.showEmail", showEmail ? "1" : "0");
-  }, [showEmail]);
+  useEffect(() => (mode === "system" ? watchSystemMode(() => applyMode(mode)) : undefined), [mode]);
 
   // Stable dependency key for the current window selection.
   const rangeKey = useMemo(
@@ -76,11 +147,12 @@ export function App() {
 
   // Stale-while-revalidate everywhere: toggling a filter keeps the previous
   // data on screen (dimmed) instead of collapsing to skeletons.
-  const summary = useAsyncStaleWhileRevalidate<SummaryPayload>(() => fetchSummary(), []);
+  const summary = useAsyncStaleWhileRevalidate<SummaryPayload>(() => fetchSummary(win), [rangeKey, refreshTick]);
   const table = useAsyncStaleWhileRevalidate<TablePayload>(
     () => fetchTable({ by: dimension, account, providers, showEmail, ...win }),
-    [dimension, rangeKey, account, providers.join("|"), showEmail],
+    [dimension, rangeKey, account, providers.join("|"), showEmail, refreshTick],
   );
+  const [tsMetric, setTsMetric] = useState<"tokens" | "cost">("cost");
   const timeseries = useAsyncStaleWhileRevalidate<TimeseriesPayload>(
     () =>
       fetchTimeseries(
@@ -91,12 +163,13 @@ export function App() {
             : dimension,
         30,
         win,
+        tsMetric,
       ),
-    [dimension, rangeKey],
+    [dimension, rangeKey, tsMetric, refreshTick],
   );
   const grid = useAsyncStaleWhileRevalidate<{ metric: string; cells: GridCell[] }>(
     () => fetchGrid(365, "tokens"),
-    [],
+    [refreshTick],
   );
   const [gridMetric, setGridMetric] = useState<GridMetric>("tokens");
 
@@ -108,71 +181,86 @@ export function App() {
       : [];
   }, [table, dimension]);
 
-  const visibleSeries = useMemo(
-    () =>
-      new Set(timeseries.state === "ok" ? timeseries.data.series.slice(0, 5).map((s) => s.bucket) : []),
-    [timeseries],
-  );
+  // Clickable timeseries legend: which series are drawn.
+  const [visibleSeries, setVisibleSeries] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    if (timeseries.state === "ok") setVisibleSeries(new Set(timeseries.data.series.slice(0, 5).map((s) => s.bucket)));
+  }, [timeseries]);
+  const toggleSeries = useCallback((bucket: string): void => {
+    setVisibleSeries((prev) => {
+      const next = new Set(prev);
+      if (next.has(bucket)) next.delete(bucket);
+      else next.add(bucket);
+      return next;
+    });
+  }, []);
 
   const refreshingClass =
     (table.state === "ok" && table.refreshing) || (summary.state === "ok" && summary.refreshing)
       ? "opacity-70 transition-opacity"
       : "";
 
+  const openDay = useCallback(
+    (day: string): void => {
+      patch({ view: "sessions", range: { from: day, to: day } });
+    },
+    [patch],
+  );
+
   return (
-    <main className="min-h-screen p-6 text-sm">
-      <header className="mb-4 flex items-start justify-between">
-        <div>
-          <h1 className="mb-0.5 text-lg tracking-widest">⏱ tokitoki</h1>
-          <p className="text-xs text-muted">unified coding-agent usage analytics · local only</p>
-        </div>
-        <div className="flex items-center gap-1">
+    <main className="min-h-screen p-4 text-sm">
+      {/* Compact header: brand, nav, share + theme all on one line. */}
+      <header className="mb-3 flex items-center gap-3">
+        <h1 className="text-sm font-semibold tracking-tight">tokitoki</h1>
+        <Tabs
+          variant="segmented"
+          value={view}
+          onValueChange={(v) => patch({ view: v as View })}
+          tabs={VIEWS.map((v) => ({ value: v, label: v }))}
+        />
+        <span className="text-[10px] text-muted">local only</span>
+        <div className="ml-auto flex items-center gap-1">
+          <Button
+            variant="ghost"
+            size="sm"
+            aria-label="refresh data"
+            title="refetch all data"
+            onClick={() => setRefreshTick((t) => t + 1)}
+          >
+            ⟳
+          </Button>
           <ShareButton />
           <Button
             variant="ghost"
             size="sm"
             shape="square"
-            aria-label={`switch to ${mode === "dark" ? "light" : "dark"} mode`}
-            title={`switch to ${mode === "dark" ? "light" : "dark"} mode`}
-            onClick={() => setMode(mode === "dark" ? "light" : "dark")}
+            aria-label={`theme: ${mode} — click to cycle`}
+            title={`theme: ${mode} — click to cycle light → dark → system`}
+            onClick={() => {
+              const next: ThemeMode =
+                mode === "light" ? "dark" : mode === "dark" ? "system" : "light";
+              setMode(next);
+              applyMode(next);
+            }}
           >
-            {mode === "dark" ? "☀" : "☾"}
+            {mode === "system" ? "◐" : effectiveMode(mode) === "dark" ? "☀" : "☾"}
           </Button>
         </div>
       </header>
-
-      <Tabs
-        variant="segmented"
-        className="mb-4 w-fit"
-        value={view}
-        onValueChange={(v) => {
-          setView(v as View);
-          localStorage.setItem("tokitoki.view", v);
-        }}
-        tabs={[
-          { value: "dashboard", label: "dashboard" },
-          { value: "tools", label: "tools" },
-          { value: "sessions", label: "sessions" },
-          { value: "anomalies", label: "anomalies" },
-          { value: "budgets", label: "budgets" },
-          { value: "sources", label: "sources" },
-        ]}
-      />
 
       {view === "sessions" ? (
         <>
           <FilterBar
             range={range}
-            setRange={setRange}
-            dimension={dimension}
-            setDimension={setDimension}
+            setRange={(r) => patch({ range: r })}
             providers={providers}
-            setProviders={setProviders}
+            setProviders={(p) => patch({ providers: p })}
             providerChips={providerChips}
             showEmail={showEmail}
-            setShowEmail={setShowEmail}
-            exportBy={dimension}
+            setShowEmail={(v) => patch({ showEmail: v })}
             account={account}
+            accounts={table.state === "ok" ? table.data.accounts.map((a) => a.key) : []}
+            setAccount={(a) => patch({ account: a })}
           />
           <SessionsView win={win} providers={providers} account={account} />
         </>
@@ -181,7 +269,7 @@ export function App() {
       ) : view === "sources" ? (
         <SourcesView />
       ) : view === "anomalies" ? (
-        <AnomaliesView win={win} />
+        <AnomaliesView win={win} onOpenDay={openDay} />
       ) : view === "budgets" ? (
         <BudgetsView />
       ) : (
@@ -198,44 +286,69 @@ export function App() {
 
           <FilterBar
             range={range}
-            setRange={setRange}
+            setRange={(r) => patch({ range: r })}
             dimension={dimension}
-            setDimension={setDimension}
+            setDimension={(d) => patch({ dimension: d })}
             providers={providers}
-            setProviders={setProviders}
+            setProviders={(p) => patch({ providers: p })}
             providerChips={providerChips}
             showEmail={showEmail}
-            setShowEmail={setShowEmail}
+            setShowEmail={(v) => patch({ showEmail: v })}
             exportBy={dimension}
             account={account}
+            accounts={table.state === "ok" ? table.data.accounts.map((a) => a.key) : []}
+            setAccount={(a) => patch({ account: a })}
           />
 
-          {/* Account tabs */}
-          {table.state === "ok" && (
-            <Panel className="mb-4">
-              <div className="flex flex-wrap items-center gap-1.5">
-                <span className="mr-1 text-[10px] tracking-wider text-muted uppercase">account</span>
-                <Pill active={account === undefined} onClick={() => setAccount(undefined)}>
-                  all
-                </Pill>
-                {table.data.accounts.map((a) => (
-                  <Pill
-                    key={a.key}
-                    active={account === a.key}
-                    title={a.email ?? undefined}
-                    onClick={() => setAccount(account === a.key ? undefined : a.key)}
-                  >
-                    {a.key}
-                    {showEmail && a.email !== null ? ` · ${a.email}` : ""}
-                  </Pill>
-                ))}
+          {/* Hero charts side by side, directly under filters. */}
+          <div className="mb-4 grid gap-4 lg:grid-cols-2">
+            <Panel>
+              <div className="mb-3 flex items-center justify-between">
+                <Heading>evolution</Heading>
+                <div className="flex gap-1.5">
+                  {(["cost", "tokens"] as const).map((m) => (
+                    <Pill key={m} active={tsMetric === m} onClick={() => setTsMetric(m)}>
+                      {m}
+                    </Pill>
+                  ))}
+                </div>
               </div>
-              {/* Effective window straight from the aggregation layer */}
-              <p className="mt-2 text-[11px] text-kumo-subtle">
-                period: {formatWindow(table.data.window)}
-              </p>
+              {timeseries.state === "loading" ? (
+                <SkeletonBlock className="h-56" />
+              ) : timeseries.state === "error" ? (
+                <ErrorNote error={timeseries.error} />
+              ) : timeseries.data.series.every((s) => s.values.every((v) => v === 0)) ? (
+                <EmptyState message={`no data in this window (${timeseries.data.window.label})`} />
+              ) : (
+                <>
+                  <TimeseriesChart data={timeseries.data} metric={tsMetric} visible={visibleSeries} />
+                  {/* Clickable legend: toggle series visibility. */}
+                  <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1">
+                    {timeseries.data.series.slice(0, 5).map((s, i) => (
+                      <button
+                        key={s.bucket}
+                        onClick={() => toggleSeries(s.bucket)}
+                        className={`flex items-center gap-1.5 text-[11px] ${
+                          visibleSeries.has(s.bucket) ? "text-kumo-default" : "text-kumo-subtle line-through opacity-60"
+                        }`}
+                      >
+                        <span
+                          aria-hidden="true"
+                          className="inline-block size-2 rounded-sm"
+                          style={{ background: visibleSeries.has(s.bucket) ? SERIES_COLORS[i % SERIES_COLORS.length]! : "currentColor" }}
+                        />
+                        {s.bucket}
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
             </Panel>
-          )}
+            <Panel>
+              <Heading>usage distribution</Heading>
+              <SpendDistribution />
+            </Panel>
+          </div>
 
           {table.state === "error" && <ErrorNote error={table.error} />}
           {table.state === "loading" ? (
@@ -248,49 +361,35 @@ export function App() {
                 <EmptyState message={`no usage recorded ${windowHint(range)} — try widening the range or clearing filters`} />
               </Panel>
             ) : (
-              <Panel className={`mb-4 overflow-x-auto ${refreshingClass}`}>
-                {/* min-w reserves the email space so toggling swaps text in place */}
-                <UsageTable data={table.data} showEmail={showEmail} />
-              </Panel>
+              <>
+                {/* Account tabs after the table they scope, per ui-review §b10. */}
+                <AccountTabs
+                  accounts={table.data.accounts}
+                  account={account}
+                  setAccount={(a) => patch({ account: a })}
+                  showEmail={showEmail}
+                  windowLabel={formatWindow(table.data.window)}
+                />
+                <Panel className={`mb-4 overflow-x-auto ${refreshingClass}`}>
+                  {/* min-w reserves the email space so toggling swaps text in place */}
+                  <UsageTable data={table.data} showEmail={showEmail} />
+                </Panel>
+              </>
             )
           ) : null}
-
-          <div className="grid gap-4 lg:grid-cols-2">
-            <Panel>
-              <Heading>evolution</Heading>
-              {timeseries.state === "loading" ? (
-                <SkeletonBlock className="h-56" />
-              ) : timeseries.state === "error" ? (
-                <ErrorNote error={timeseries.error} />
-              ) : timeseries.data.series.every((s) => s.values.every((v) => v === 0)) ? (
-                <EmptyState message={`no data in this window (${timeseries.data.window.label})`} />
-              ) : (
-                <TimeseriesChart data={timeseries.data} metric="tokens" visible={visibleSeries} />
-              )}
-            </Panel>
-            <Panel>
-              <Heading>share</Heading>
-              {table.state === "ok" ? (
-                table.data.rows.length === 0 ? (
-                  <EmptyState message="nothing to share yet in this window" />
-                ) : (
-                  <DonutShare rows={table.data.rows} />
-                )
-              ) : table.state === "loading" ? (
-                <SkeletonBlock className="mx-auto h-48 w-48 rounded-full" />
-              ) : null}
-            </Panel>
-          </div>
 
           <Panel className="mt-4">
             <div className="flex items-center justify-between">
               <Heading>activity</Heading>
-              <div className="flex gap-1.5">
-                {GRID_METRICS.map((m) => (
-                  <Pill key={m} active={gridMetric === m} onClick={() => setGridMetric(m)}>
-                    {m}
-                  </Pill>
-                ))}
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] text-kumo-subtle">last 365 days</span>
+                <div className="flex gap-1.5">
+                  {GRID_METRICS.map((m) => (
+                    <Pill key={m} active={gridMetric === m} onClick={() => setGridMetric(m)}>
+                      {m}
+                    </Pill>
+                  ))}
+                </div>
               </div>
             </div>
             {grid.state === "loading" ? (
@@ -307,6 +406,8 @@ export function App() {
   );
 }
 
+const SERIES_COLORS = ["#3b82f6", "#10b981", "#f59e0b", "#f43f5e", "#06b6d4", "#8b5cf6", "#84cc16"];
+
 function formatWindow(w: { since: string; until: string | null; label: string }): string {
   const fmt: Intl.DateTimeFormatOptions = { dateStyle: "short", timeStyle: "short" };
   const since = new Date(w.since).toLocaleString([], fmt);
@@ -322,18 +423,21 @@ function windowHint(range: WindowSelection): string {
 interface FilterBarProps {
   range: WindowSelection;
   setRange: (r: WindowSelection) => void;
-  dimension: string;
-  setDimension: (d: (typeof DIMENSIONS)[number]) => void;
+  dimension?: string;
+  setDimension?: (d: (typeof DIMENSIONS)[number]) => void;
   providers: string[];
   setProviders: (p: string[]) => void;
   providerChips: string[];
   showEmail: boolean;
   setShowEmail: (v: boolean) => void;
-  exportBy: string;
+  exportBy?: string;
   account?: string;
+  accounts?: string[];
+  setAccount?: (a: string | undefined) => void;
 }
 
-/** Shared filter toolbar: range presets, custom dates, dimensions, exports. */
+/** Compact filter toolbar: period presets always visible; the rest collapses
+ * behind a Filters toggle. Dimension + export only apply to dashboard views. */
 function FilterBar(props: FilterBarProps) {
   const {
     range,
@@ -347,91 +451,193 @@ function FilterBar(props: FilterBarProps) {
     setShowEmail,
     exportBy,
     account,
+    accounts = [],
+    setAccount,
   } = props;
   const activeLast = "from" in range ? undefined : (range.last ?? undefined);
+  const [expanded, setExpanded] = useState(false);
+  const hasAdvanced =
+    dimension !== undefined || setAccount !== undefined || providerChips.length > 0;
 
   return (
-    <Panel className="mb-4">
-      <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
-        <div className="flex items-center gap-1.5">
-          <span className="mr-1 text-[10px] tracking-wider text-muted uppercase">period</span>
-          {RANGE_PRESETS.map((p) => (
-            <Pill key={p.value} active={activeLast === p.value} onClick={() => setRange({ last: p.value })}>
-              {p.label}
-            </Pill>
-          ))}
-          <input
-            type="date"
-            aria-label="from date"
-            className="rounded-md border border-edge bg-transparent px-1.5 py-0.5 text-[11px]"
-            value={"from" in range ? (range.from ?? "") : ""}
-            onChange={(e) => {
-              const v = e.currentTarget.value;
-              if (v.length > 0) setRange({ from: v, to: "from" in range ? range.to : undefined });
-            }}
-          />
-          <span className="text-[10px] text-muted">→</span>
-          <input
-            type="date"
-            aria-label="to date"
-            className="rounded-md border border-edge bg-transparent px-1.5 py-0.5 text-[11px]"
-            value={"from" in range ? (range.to ?? "") : ""}
-            onChange={(e) => setRange({ from: "from" in range ? (range.from ?? "") : "", to: e.currentTarget.value })}
-          />
-          {"from" in range && (
-            <Button size="xs" variant="ghost" onClick={() => setRange({ last: "week" })}>
-              clear
-            </Button>
-          )}
-        </div>
-        <div className="flex items-center gap-1.5">
-          <span className="mr-1 text-[10px] tracking-wider text-muted uppercase">by</span>
-          {DIMENSIONS.map((d) => (
-            <Pill key={d} active={dimension === d} onClick={() => setDimension(d)}>
-              {d}
-            </Pill>
-          ))}
-        </div>
-        {providerChips.length > 0 && (
-          <div className="flex flex-wrap items-center gap-1.5">
-            <span className="mr-1 text-[10px] tracking-wider text-muted uppercase">provider</span>
-            <Pill active={providers.length === 0} onClick={() => setProviders([])}>
-              all
-            </Pill>
-            {providerChips.map((p) => (
-              <Pill
-                key={p}
-                active={providers.includes(p)}
-                onClick={() =>
-                  setProviders(providers.includes(p) ? providers.filter((x) => x !== p) : [...providers, p])
-                }
-              >
-                {p}
-              </Pill>
-            ))}
-          </div>
+    <div className="mb-3 flex flex-wrap items-center gap-2">
+      <div className="flex items-center gap-1">
+        <span className="mr-1 text-[10px] tracking-wider text-muted uppercase">period</span>
+        {RANGE_PRESETS.map((p) => (
+          <button
+            key={p.value}
+            onClick={() => setRange({ last: p.value })}
+            aria-pressed={activeLast === p.value}
+            className={`rounded-full px-2 py-0.5 font-mono text-[10px] transition-colors duration-150 ${
+              activeLast === p.value
+                ? "bg-kumo-primary/15 text-kumo-default ring-1 ring-kumo-primary/40"
+                : "text-kumo-subtle hover:text-kumo-default"
+            }`}
+          >
+            {p.label}
+          </button>
+        ))}
+        <input
+          type="date"
+          aria-label="from date"
+          title="from date"
+          className="rounded-md border border-edge bg-transparent px-1.5 py-0.5 text-[11px]"
+          value={"from" in range ? (range.from ?? "") : ""}
+          onChange={(e) => {
+            const v = e.currentTarget.value;
+            if (v.length > 0) setRange({ from: v, to: "from" in range ? range.to : undefined });
+          }}
+        />
+        <span className="text-[10px] text-muted">→</span>
+        <input
+          type="date"
+          aria-label="to date"
+          title="to date"
+          className="rounded-md border border-edge bg-transparent px-1.5 py-0.5 text-[11px]"
+          value={"from" in range ? (range.to ?? "") : ""}
+          onChange={(e) => setRange({ from: "from" in range ? (range.from ?? "") : "", to: e.currentTarget.value })}
+        />
+        {"from" in range && (
+          <Button size="xs" variant="ghost" onClick={() => setRange({ last: "week" })}>
+            clear
+          </Button>
         )}
-        <Toggle label="show emails" checked={showEmail} onChange={setShowEmail} />
-        <div className="flex items-center gap-1.5">
-          <span className="mr-1 text-[10px] tracking-wider text-muted uppercase">export</span>
-          {(["json", "md", "csv"] as const).map((f) => (
-            <a
-              key={f}
-              href={exportUrl({ format: f, by: exportBy, account, providers, ...(activeLast !== undefined ? { last: activeLast } : range) })}
-              download
-              className="rounded-full border border-edge px-2.5 py-0.5 font-mono text-[11px] hover:bg-kumo-recessed"
-            >
-              ↓{f}
-            </a>
-          ))}
-        </div>
       </div>
-    </Panel>
+
+      {hasAdvanced && (
+        <>
+          {providers.length > 0 && (
+            <Pill active onClick={() => setProviders([])} title={`providers: ${providers.join(", ")}`}>
+              {providers.length} provider{providers.length === 1 ? "" : "s"} ×
+            </Pill>
+          )}
+          {account !== undefined && setAccount !== undefined && (
+            <Pill active onClick={() => setAccount(undefined)} title={`account: ${account}`}>
+              {account} ×
+            </Pill>
+          )}
+          {showEmail && <Pill active onClick={() => setShowEmail(false)}>emails on ×</Pill>}
+          <Button
+            size="xs"
+            variant={expanded ? "secondary" : "outline"}
+            onClick={() => setExpanded((v) => !v)}
+            aria-expanded={expanded}
+          >
+            filters {expanded ? "▴" : "▾"}
+          </Button>
+
+          {expanded && (
+            <Panel className="w-full">
+              <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
+                {dimension !== undefined && setDimension !== undefined && (
+                  <div className="flex items-center gap-1.5">
+                    <span className="mr-1 text-[10px] tracking-wider text-muted uppercase">by</span>
+                    {DIMENSIONS.map((d) => (
+                      <Pill key={d} active={dimension === d} onClick={() => setDimension(d)}>
+                        {d}
+                      </Pill>
+                    ))}
+                  </div>
+                )}
+                {providerChips.length > 0 && (
+                  <MultiSelect
+                    label="provider"
+                    options={providerChips}
+                    selected={providers}
+                    onChange={(next) =>
+                      // Single-click convenience: picking one fresh provider
+                      // replaces the selection; toggling behaves as expected.
+                      setProviders(next)
+                    }
+                  />
+                )}
+                {setAccount !== undefined && accounts.length > 0 && (
+                  <MultiSelect
+                    label="account"
+                    options={accounts}
+                    selected={account !== undefined ? [account] : []}
+                    onChange={(next) => {
+                      const added = next.find((n) => n !== account);
+                      setAccount(added); // undefined when cleared
+                    }}
+                    width="w-64"
+                  />
+                )}
+                <Toggle label="show emails" checked={showEmail} onChange={setShowEmail} />
+                {exportBy !== undefined && (
+                  <div className="flex items-center gap-1.5">
+                    <span className="mr-1 text-[10px] tracking-wider text-muted uppercase">export</span>
+                    {(["json", "md", "csv"] as const).map((f) => (
+                      <a
+                        key={f}
+                        href={exportUrl({
+                          format: f,
+                          by: exportBy,
+                          account,
+                          providers,
+                          ...(activeLast !== undefined ? { last: activeLast } : range),
+                        })}
+                        download
+                        title={`exports current window × ${exportBy} × filters as ${f.toUpperCase()}`}
+                        className="rounded-full border border-edge px-2.5 py-0.5 font-mono text-[11px] hover:bg-kumo-recessed"
+                      >
+                        ↓{f}
+                      </a>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </Panel>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+/** Account pills, collapsed behind a toggle when there are many. */
+function AccountTabs({
+  accounts,
+  account,
+  setAccount,
+  showEmail,
+  windowLabel,
+}: {
+  accounts: Array<{ key: string; email: string | null }>;
+  account?: string;
+  setAccount: (a: string | undefined) => void;
+  showEmail: boolean;
+  windowLabel?: string;
+}) {
+  const [open, setOpen] = useState(accounts.length <= 6);
+  return (
+    <div className="mb-2 flex flex-wrap items-center gap-1.5">
+      <button
+        className="text-[10px] tracking-wider text-muted uppercase hover:text-kumo-default"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+      >
+        accounts ({accounts.length}) {open ? "▴" : "▾"}
+      </button>
+      {open &&
+        accounts.map((a) => (
+          <Pill
+            key={a.key}
+            active={account === a.key}
+            title={a.email ?? undefined}
+            onClick={() => setAccount(account === a.key ? undefined : a.key)}
+          >
+            {a.key}
+            {showEmail && a.email !== null ? ` · ${a.email}` : ""}
+          </Pill>
+        ))}
+      <span className="ml-auto text-[11px] text-kumo-subtle">{windowLabel}</span>
+    </div>
   );
 }
 
 function Heading({ children }: { children: React.ReactNode }) {
-  return <span className="mb-3 block text-[10px] tracking-wider text-muted uppercase">{children}</span>;
+  return <span className="block text-[10px] tracking-wider text-muted uppercase">{children}</span>;
 }
 
 function ErrorNote({ error }: { error: string }) {

@@ -105,10 +105,14 @@ export interface TimeseriesPayload {
   series: Array<{ bucket: string; values: number[] }>;
 }
 
-export function apiTimeseries(by: string, wp: WindowParams & { days?: number } = {}): TimeseriesPayload {
+export function apiTimeseries(
+  by: string,
+  wp: WindowParams & { days?: number; metric?: "tokens" | "cost" } = {},
+): TimeseriesPayload {
   if (!SERIES_DIMS.includes(by as (typeof SERIES_DIMS)[number])) {
     throw new Error(`invalid --by for timeseries: ${by} (valid: ${SERIES_DIMS.join(", ")})`);
   }
+  const metric = wp.metric === "cost" ? "cost" : "tokens";
   let w: TimeWindow;
   if (wp.last !== undefined || wp.from !== undefined || wp.to !== undefined) {
     w = resolveTimeWindow({ ...wp, fallbackPeriod: "month" });
@@ -120,6 +124,8 @@ export function apiTimeseries(by: string, wp: WindowParams & { days?: number } =
     const buckets = cache.seriesDaily(
       w.sinceIso,
       by as Exclude<(typeof SERIES_DIMS)[number], never>,
+      5,
+      metric,
     );
     // Union of all bucket days so every series shares one x-axis.
     const daySet = new Set<string>();
@@ -449,6 +455,7 @@ export function apiSessionSearch(
       searchMs: res.searchMs,
       indexedFiles: stats.filesIndexed,
       indexMs: stats.durationMs,
+      skippedLargeFiles: stats.skippedLargeFiles,
       rows: res.rows,
     };
   });

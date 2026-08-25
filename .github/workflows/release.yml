@@ -1,0 +1,92 @@
+# Release workflow — PREPARED, NOT PUBLISHED.
+# Triggered only by pushing a v* tag; the GitHub Release is created as a
+# DRAFT so nothing is visible until a human publishes it.
+#
+# Artifacts:
+#   tokitoki-portable.tar.gz   bin/ + dist/{cli.js,web} + package.json + README
+#                              → consumed by Formula/tokitoki.rb and identical
+#                                to the npm tarball contents
+#   tokitoki-<os>-<arch>.tar.gz  self-contained `bun build --compile` binaries
+#                              → convenience downloads; NOT used by Homebrew
+#                                (compiled binaries can't resolve sibling web
+#                                assets — see docs/packaging.md)
+#   SHA256SUMS                 digests for filling Formula/tokitoki.rb
+
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  portable:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      - run: bun test
+      - run: bun run web:build
+      - run: bun build --target=bun src/cli.ts --outfile dist/cli.js
+      - name: Pack portable tarball
+        run: |
+          mkdir -p staging/bin staging/dist
+          cp bin/tokitoki.js staging/bin/
+          cp -r dist/cli.js dist/web staging/dist/
+          cp package.json README.md staging/
+          tar -czf tokitoki-portable.tar.gz -C staging bin dist package.json README.md
+          shasum -a 256 tokitoki-portable.tar.gz | tee /tmp/SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: portable
+          path: |
+            tokitoki-portable.tar.gz
+            /tmp/SHA256SUMS
+
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [darwin-arm64, darwin-x64, linux-x64, linux-arm64]
+    runs-on: ${{ startsWith(matrix.target, 'darwin') && 'macos-latest' || 'ubuntu-latest' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      - run: bun run web:build
+      - run: bun build --compile --target=bun-${{ matrix.target }} src/cli.ts --outfile dist/tokitoki-${{ matrix.target }}
+      - name: Tar native binary
+        run: |
+          tar -czf tokitoki-${{ matrix.target }}.tar.gz -C dist tokitoki-${{ matrix.target }}
+          shasum -a 256 tokitoki-${{ matrix.target }}.tar.gz >> /tmp/SHA256SUMS || sha256sum tokitoki-${{ matrix.target }}.tar.gz >> /tmp/SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-${{ matrix.target }}
+          path: tokitoki-${{ matrix.target }}.tar.gz
+
+  release:
+    needs: [portable, native]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+          path: artifacts
+      - name: Merge checksums
+        run: find artifacts -name 'SHA256SUMS*' -exec cat {} \; | sort > artifacts/SHA256SUMS
+      # draft:true → nothing public until manually published on github.com
+      - uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          generate_release_notes: true
+          files: |
+            artifacts/tokitoki-portable.tar.gz
+            artifacts/tokitoki-*-*.tar.gz
+            artifacts/SHA256SUMS

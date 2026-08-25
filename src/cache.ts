@@ -4,7 +4,8 @@ import fs from "node:fs";
 import { Database, type SQLQueryBindings } from "bun:sqlite";
 
 import type { QuotaWindow, UsageEvent } from "./types.ts";
-import { dataDir, eventsFile, readEventsFile, readEventsTail } from "./store.ts";import { resolveRepo } from "./repos.ts";
+import { dataDir, eventsFile, readEventsFile, readEventsTail } from "./store.ts";
+import { partitionBlocks, type BlockRow } from "./blocks.ts";import { resolveRepo } from "./repos.ts";
 import { ensureSessionFts } from "./sessionIndex.ts";
 import { EXTRACTION_VERSION } from "./scan.ts";
 
@@ -31,6 +32,7 @@ export interface QuotaSnapshotRow {
 export class EventCache {
   private db: Database;
   private repoStmtInsert: ReturnType<Database["prepare"]>;
+  private rollupStmtUpsert: ReturnType<Database["prepare"]>;
   /** Injectable for tests; defaults to real filesystem resolution. */
   private repoNameFor: (dir: string) => string;
 
@@ -46,6 +48,21 @@ export class EventCache {
     this.repoStmtInsert = this.db.prepare(
       "INSERT OR REPLACE INTO repo_dirs (dir, name) VALUES (?, ?)",
     );
+    // One row per event added to events, upserting its daily aggregate.
+    this.rollupStmtUpsert = this.db.prepare(`
+      INSERT INTO daily_rollups (
+        day, provider, account_key, model, machine_id, repo,
+        input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+        cost_usd, requests
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+      ON CONFLICT (day, provider, account_key, model, machine_id, repo) DO UPDATE SET
+        input_tokens = input_tokens + excluded.input_tokens,
+        output_tokens = output_tokens + excluded.output_tokens,
+        cache_read_tokens = cache_read_tokens + excluded.cache_read_tokens,
+        cache_write_tokens = cache_write_tokens + excluded.cache_write_tokens,
+        cost_usd = cost_usd + excluded.cost_usd,
+        requests = requests + 1
+    `);
   }
 
   private migrate(): void {
@@ -97,6 +114,21 @@ export class EventCache {
       );
       CREATE INDEX IF NOT EXISTS idx_quota_lookup
         ON quota_snapshots(provider, account_key, captured_at);
+      CREATE TABLE IF NOT EXISTS daily_rollups (
+        day TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        account_key TEXT NOT NULL,
+        model TEXT NOT NULL,
+        machine_id TEXT NOT NULL,
+        repo TEXT,
+        input_tokens INTEGER NOT NULL DEFAULT 0,
+        output_tokens INTEGER NOT NULL DEFAULT 0,
+        cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+        cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+        cost_usd REAL NOT NULL DEFAULT 0,
+        requests INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (day, provider, account_key, model, machine_id, repo)
+      );
     `);
     try {
       ensureSessionFts(this.db);
@@ -140,8 +172,9 @@ export class EventCache {
     `);
     const tx = this.db.transaction((rows: UsageEvent[]) => {
       let inserted = 0;
+      const newRows: UsageEvent[] = [];
       for (const e of rows) {
-        inserted += stmt.run(
+        const changes = stmt.run(
           e.id,
           e.ts,
           e.machineId,
@@ -157,7 +190,12 @@ export class EventCache {
           e.sessionId ?? null,
           e.tool ?? null,
         ).changes;
+        inserted += changes;
+        if (changes > 0) newRows.push(e);
       }
+      // Same transaction as the event inserts so daily_rollups can never
+      // drift from events mid-batch.
+      if (newRows.length > 0) this.applyRollups(newRows);
       return inserted;
     });
     const n = tx(events) as number;
@@ -170,6 +208,41 @@ export class EventCache {
    * per window per event; latest captured_at per (provider, account, window)
    * wins in queries.
    */
+  /**
+   * Direct quota-snapshot insert for polled data (tokitoki poll): same table
+   * and PK semantics as insertQuotaSnapshots but without requiring synthetic
+   * UsageEvent shells. event_id distinguishes the origin ("poll:<iso>").
+   */
+  insertPolledSnapshots(input: {
+    provider: string;
+    accountKey: string;
+    windows: Array<{ windowMinutes: number; usedPct: number; resetsAtEpoch: number }>;
+    capturedAtIso: string;
+    eventId: string;
+  }): number {
+    const stmt = this.db.prepare(`
+      INSERT OR REPLACE INTO quota_snapshots (
+        provider, account_key, window_minutes, used_pct, resets_at,
+        captured_at, event_id, credits_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL)
+    `);
+    const tx = this.db.transaction(() => {
+      for (const w of input.windows) {
+        stmt.run(
+          input.provider,
+          input.accountKey,
+          Math.round(w.windowMinutes),
+          w.usedPct,
+          Math.round(w.resetsAtEpoch),
+          input.capturedAtIso,
+          `${input.eventId}:${w.windowMinutes}`,
+        );
+      }
+    });
+    tx();
+    return input.windows.length;
+  }
+
   private insertQuotaSnapshots(events: UsageEvent[]): void {
     const rows: Array<{ e: UsageEvent; w: QuotaWindow }> = [];
     for (const e of events) {
@@ -202,6 +275,79 @@ export class EventCache {
     tx();
   }
 
+  // -- daily rollups -------------------------------------------------------
+
+  /**
+   * Fold newly inserted events into daily_rollups. MUST run inside the same
+   * transaction as the event inserts (insert() guarantees this). Repo names
+   * are resolved once per batch via repo_dirs; NULL only when project_dir is
+   * null.
+   */
+  private applyRollups(events: UsageEvent[]): void {
+    const dirs = new Set<string>();
+    for (const e of events) {
+      if (e.projectDir !== undefined && e.projectDir.length > 0) dirs.add(e.projectDir);
+    }
+    let repoNames: Map<string, string | null> | undefined;
+    if (dirs.size > 0) {
+      this.ensureRepoMap();
+      repoNames = new Map();
+      const rows = this.db.query("SELECT dir, name FROM repo_dirs").all() as Array<{ dir: string; name: string }>;
+      for (const r of rows) repoNames.set(r.dir, r.name);
+    }
+    for (const e of events) {
+      this.rollupStmtUpsert.run(
+        rollupDay(e.ts),
+        e.provider,
+        e.accountKey,
+        e.model,
+        e.machineId,
+        e.projectDir !== undefined && e.projectDir.length > 0 ? (repoNames!.get(e.projectDir) ?? null) : null,
+        Math.round(e.inputTokens),
+        Math.round(e.outputTokens),
+        Math.round(e.cacheReadTokens ?? 0),
+        Math.round(e.cacheWriteTokens ?? 0),
+        e.costUsd ?? 0,
+      );
+    }
+  }
+
+  /** Recompute daily_rollups from the events table in one GROUP BY pass. */
+  private rebuildRollups(): void {
+    this.ensureRepoMap();
+    this.db.exec(`
+      DELETE FROM daily_rollups;
+      INSERT INTO daily_rollups (
+        day, provider, account_key, model, machine_id, repo,
+        input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+        cost_usd, requests
+      )
+      SELECT substr(e.ts, 1, 10) AS day,
+             e.provider, e.account_key, e.model, e.machine_id, r.name AS repo,
+             SUM(e.input_tokens), SUM(e.output_tokens),
+             SUM(e.cache_read_tokens), SUM(e.cache_write_tokens),
+             SUM(e.cost_usd), COUNT(*)
+      FROM events e
+      LEFT JOIN repo_dirs r ON e.project_dir = r.dir
+      GROUP BY day, e.provider, e.account_key, e.model, e.machine_id, r.name;
+    `);
+  }
+
+  /**
+   * Cheap invariant check: every events row is reflected in exactly one
+   * rollup request. On drift, heals daily_rollups from events — never from
+   * the JSONL logs.
+   */
+  private checkRollups(): void {
+    const row = this.db
+      .query(
+        `SELECT (SELECT COUNT(*) FROM events) AS n,
+                (SELECT COALESCE(SUM(requests), 0) FROM daily_rollups) AS rolled`,
+      )
+      .get() as { n: number; rolled: number };
+    if (row.n !== row.rolled) this.rebuildRollups();
+  }
+
   /** Full rebuild from all known event log files. */
   rebuild(extraFiles: string[]): void {
     this.db.exec("DELETE FROM events");
@@ -219,6 +365,9 @@ export class EventCache {
       }
     }
     this.insert(Array.from(byId.values()));
+    // insert() maintains rollups incrementally; the explicit pass is a cheap
+    // belt-and-suspenders reset for the full-projection path.
+    this.rebuildRollups();
     this.recordLogOffsets(files);
   }
 
@@ -315,7 +464,10 @@ export class EventCache {
       this.rebuild(extraFiles);
       return;
     }
-    if (tails.length === 0) return;
+    if (tails.length === 0) {
+      this.checkRollups();
+      return;
+    }
 
     // Local log first so first-occurrence-wins matches rebuild semantics,
     // then upgrade enriched duplicates from later logs.
@@ -327,6 +479,7 @@ export class EventCache {
       offsetsChanged = true;
     }
     if (offsetsChanged) this.saveLogOffsets(offsets);
+    this.checkRollups();
   }
 
   count(): number {
@@ -542,20 +695,25 @@ export class EventCache {
     totals: { day: number; week: number; month: number };
     accounts: Array<{ key: string; day: number; week: number; month: number }>;
   } {
-    const cond = (col: string, a: string, b: string, c: string): string =>
-      `SUM(CASE WHEN ts >= ? THEN ${col} ELSE 0 END) AS ${a},` +
-      `SUM(CASE WHEN ts >= ? THEN ${col} ELSE 0 END) AS ${b},` +
-      `SUM(CASE WHEN ts >= ? THEN ${col} ELSE 0 END) AS ${c}`;
-    const params = [dayIso, weekIso, monthIso];
+    // Reads daily_rollups (maintained transactionally by insert()) so budget
+    // banners stay O(rollup rows) regardless of archive size. Windows are
+    // day-granular: an ISO boundary maps to its UTC calendar day, inclusive.
+    // Self-heal first: pre-upgrade caches have an empty rollup table.
+    this.checkRollups();
+    const cond = (a: string, b: string, c: string): string =>
+      `SUM(CASE WHEN day >= ? THEN cost_usd ELSE 0 END) AS ${a},` +
+      `SUM(CASE WHEN day >= ? THEN cost_usd ELSE 0 END) AS ${b},` +
+      `SUM(CASE WHEN day >= ? THEN cost_usd ELSE 0 END) AS ${c}`;
+    const params = [rollupDay(dayIso), rollupDay(weekIso), rollupDay(monthIso)];
     const totalRow = this.db
       .query(
-        `SELECT ${cond("cost_usd", "d", "w", "m")} FROM events`,
+        `SELECT ${cond("d", "w", "m")} FROM daily_rollups`,
       )
       .get(...params) as { d: number; w: number; m: number };
     const accountRows = this.db
       .query(
-        `SELECT account_key AS key, ${cond("cost_usd", "d", "w", "m")}
-         FROM events WHERE account_key IS NOT NULL AND account_key != ''
+        `SELECT account_key AS key, ${cond("d", "w", "m")}
+         FROM daily_rollups WHERE account_key != ''
          GROUP BY account_key`,
       )
       .all(...params) as Array<{ key: string; d: number; w: number; m: number }>;
@@ -598,12 +756,67 @@ export class EventCache {
   }
 
   /**
+   * Events folded into Claude-style 5-hour billing blocks (ccusage
+   * semantics), partitioned per account_key. Needs event-level ts, so this
+   * reads `events` directly — daily_rollups are too coarse for block
+   * boundaries. isActive = still-open block (end is in the future relative
+   * to `opts.now`, injectable for tests).
+   */
+  blockWindows(
+    sinceIso: string,
+    untilIso?: string,
+    accountKey?: string,
+    opts?: { now?: number },
+  ): BlockRow[] {
+    const conds = ["ts >= ?"];
+    const params: SQLQueryBindings[] = [sinceIso];
+    if (untilIso !== undefined) {
+      conds.push("ts < ?");
+      params.push(untilIso);
+    }
+    if (accountKey !== undefined) {
+      conds.push("account_key = ?");
+      params.push(accountKey);
+    }
+    const rows = this.db
+      .query(
+        `SELECT account_key, ts, input_tokens, output_tokens,
+                cache_read_tokens, cost_usd
+         FROM events WHERE ${conds.join(" AND ")}`,
+      )
+      .all(...params) as Array<{
+        account_key: string;
+        ts: string;
+        input_tokens: number;
+        output_tokens: number;
+        cache_read_tokens: number | null;
+        cost_usd: number | null;
+      }>;
+    return partitionBlocks(
+      rows.map((r) => ({
+        ts: Date.parse(r.ts),
+        accountKey: r.account_key,
+        inputTokens: r.input_tokens,
+        outputTokens: r.output_tokens,
+        cacheReadTokens: r.cache_read_tokens ?? 0,
+        costUsd: r.cost_usd ?? 0,
+      })),
+      opts?.now ?? Date.now(),
+    );
+  }
+
+  /**
    * Per-day token series for each of the top `topN` buckets of a dimension.
    * Days are the union across buckets; missing days are 0. Flat GROUP BY
    * query + JS-side top-N selection (a JOIN/CTE form of this was pathologically
    * slow on ~100k rows).
    */
-  seriesDaily(sinceIso: string, groupBy: Exclude<Dimension, "project" | "repo">, topN = 5): SeriesBucket[] {
+  seriesDaily(
+    sinceIso: string,
+    groupBy: Exclude<Dimension, "project" | "repo">,
+    topN = 5,
+    metric: "tokens" | "cost" = "tokens",
+  ): SeriesBucket[] {
     const column =
       groupBy === "account"
         ? "account_key"
@@ -612,12 +825,16 @@ export class EventCache {
           : groupBy === "provider"
             ? "provider"
             : "model";
+    const valueExpr =
+      metric === "cost"
+        ? "SUM(cost_usd)"
+        : "SUM(input_tokens + output_tokens + cache_read_tokens + cache_write_tokens)";
     const rows = this.db
       .query(
         `
         SELECT ${column} AS bucket,
                date(ts, 'localtime') AS day,
-               SUM(input_tokens + output_tokens + cache_read_tokens + cache_write_tokens) AS tokens
+               ${valueExpr} AS tokens
         FROM events
         WHERE ts >= ?
         GROUP BY bucket, day
@@ -652,6 +869,256 @@ export class EventCache {
     });
   }
 
+  /**
+   * Totals over `[sinceIso, untilIso)` from daily_rollups. Day-granular:
+   * ISO boundaries map to their UTC calendar day (`until` inclusive of its
+   * whole day). Sessions are not derivable from rollups — always 0 here.
+   */
+  rollupTotals(sinceIso: string, untilIso?: string): AggRow {
+    return this.rollupTotalRow(sinceIso, untilIso);
+  }
+
+  private rollupTotalRow(sinceIso: string, untilIso?: string): AggRow {
+    const { sql, params } = this.rollupWindowSql(sinceIso, untilIso);
+    const row = this.db
+      .query(
+        `
+        SELECT COALESCE(SUM(requests), 0) AS requests,
+               SUM(input_tokens) AS input_tokens,
+               SUM(output_tokens) AS output_tokens,
+               SUM(cache_read_tokens) AS cache_read_tokens,
+               SUM(cache_write_tokens) AS cache_write_tokens,
+               SUM(cost_usd) AS cost_usd
+        FROM daily_rollups WHERE ${sql}
+        `,
+      )
+      .get(...params) as RawAggRow;
+    return fromRawRow({ ...row, bucket: "TOTAL", sessions: 0 });
+  }
+
+  /**
+   * Aggregate daily_rollups in `[sinceIso, untilIso)` grouped by a rollup
+   * dimension ('provider' | 'account' | 'model' | 'machine' | 'repo' | 'day').
+   * Day-granular boundaries (see rollupTotals); sessions always 0.
+   */
+  rollupAggregate(sinceIso: string, untilIso: string | undefined, dimension: RollupDimension): AggRow[] {
+    const column =
+      dimension === "account"
+        ? "account_key"
+        : dimension === "machine"
+          ? "machine_id"
+          : dimension === "repo"
+            ? "COALESCE(repo, '(no repo)')"
+            : dimension === "provider"
+              ? "provider"
+              : dimension === "day"
+                ? "day"
+                : "model";
+    const { sql, params } = this.rollupWindowSql(sinceIso, untilIso);
+    const rows = this.db
+      .query(
+        `
+        SELECT ${column} AS bucket,
+               SUM(requests) AS requests,
+               SUM(input_tokens) AS input_tokens,
+               SUM(output_tokens) AS output_tokens,
+               SUM(cache_read_tokens) AS cache_read_tokens,
+               SUM(cache_write_tokens) AS cache_write_tokens,
+               SUM(cost_usd) AS cost_usd
+        FROM daily_rollups
+        WHERE ${sql}
+        GROUP BY bucket
+        `,
+      )
+      .all(...params) as Array<RawAggRow>;
+    return rows.map((r) => fromRawRow({ ...r, sessions: 0 }));
+  }
+
+  /** Rollup windows compare UTC calendar days: since-day inclusive, until-day inclusive. */
+  private rollupWindowSql(sinceIso: string, untilIso?: string): {
+    sql: string;
+    params: SQLQueryBindings[];
+  } {
+    if (untilIso === undefined) return { sql: "day >= ?", params: [rollupDay(sinceIso)] };
+    return {
+      sql: "day >= ? AND day <= ?",
+      params: [rollupDay(sinceIso), rollupDay(untilIso)],
+    };
+  }
+
+  // -- hybrid rollup + events reads ---------------------------------------
+
+  /** Exact request/token/cost sums without session counts. */
+  // -- hybrid rollup + events reads ---------------------------------------
+
+  /** Exact request/token/cost sums without session counts. */
+  hybridUsage(
+    sinceIso: string,
+    providers?: string[],
+    untilIso?: string,
+    accountKey?: string,
+  ): UsageTotals {
+    const parts = this.hybridParts(sinceIso, untilIso, providers, accountKey);
+    return sumUsage(parts);
+  }
+
+  /**
+   * Exact per-bucket totals over [since, until) for a rollup dimension.
+   * Same split as hybridUsage; sessions are ALWAYS 0 (not derivable from
+   * day-grain data) — only use where consumers ignore sessions.
+   */
+  hybridAggregate(
+    sinceIso: string,
+    dimension: RollupDimension,
+    providers?: string[],
+    untilIso?: string,
+    accountKey?: string,
+  ): AggRow[] {
+    const parts = this.hybridParts(sinceIso, untilIso, providers, accountKey, dimension);
+    const byBucket = new Map<string, AggRow>();
+    for (const part of parts) {
+      for (const row of part) {
+        const acc = byBucket.get(row.bucket);
+        if (acc === undefined) byBucket.set(row.bucket, { ...row });
+        else {
+          acc.requests += row.requests;
+          acc.inputTokens += row.inputTokens;
+          acc.outputTokens += row.outputTokens;
+          acc.cacheReadTokens += row.cacheReadTokens;
+          acc.cacheWriteTokens += row.cacheWriteTokens;
+          acc.costUsd += row.costUsd;
+        }
+      }
+    }
+    return Array.from(byBucket.values());
+  }
+
+  /**
+   * Split [since, until) into rollup-served interior whole UTC days plus
+   * events-served partial edge slices. Every returned list covers a disjoint
+   * sub-range; together they reproduce exact ts-range semantics of the
+   * events-backed queries while touching O(days×keys) rows for the bulk.
+   */
+  private hybridParts(
+    sinceIso: string,
+    untilIso: string | undefined,
+    providers?: string[],
+    accountKey?: string,
+    dimension?: RollupDimension,
+  ): Array<AggRow[]> {
+    const DAY = 86_400_000;
+    const startMs = Date.parse(sinceIso);
+    const endMs = untilIso !== undefined ? Date.parse(untilIso) : Date.now();
+    if (Number.isNaN(startMs) || Number.isNaN(endMs) || endMs <= startMs) return [[]];
+
+    const firstFullStart = Math.ceil(startMs / DAY) * DAY;
+    const lastFullEnd = Math.floor(endMs / DAY) * DAY;
+    const parts: Array<AggRow[]> = [];
+
+    if (lastFullEnd > firstFullStart && lastFullEnd - firstFullStart >= DAY) {
+      const firstKey = new Date(firstFullStart).toISOString().slice(0, 10);
+      const endKey = new Date(lastFullEnd).toISOString().slice(0, 10); // exclusive
+      const conds = ["day >= ?", "day < ?"];
+      const params: SQLQueryBindings[] = [firstKey, endKey];
+      if (providers !== undefined && providers.length > 0) {
+        conds.push(`provider IN (${providers.map(() => "?").join(",")})`);
+        params.push(...providers);
+      }
+      if (accountKey !== undefined) {
+        conds.push("account_key = ?");
+        params.push(accountKey);
+      }
+      const column = rollupColumn(dimension ?? "day");
+      const rows = this.db
+        .query(
+          `SELECT ${column} AS bucket,
+                  SUM(requests) AS requests,
+                  SUM(input_tokens) AS input_tokens,
+                  SUM(output_tokens) AS output_tokens,
+                  SUM(cache_read_tokens) AS cache_read_tokens,
+                  SUM(cache_write_tokens) AS cache_write_tokens,
+                  SUM(cost_usd) AS cost_usd
+           FROM daily_rollups WHERE ${conds.join(" AND ")}
+           GROUP BY bucket`,
+        )
+        .all(...params) as Array<RawAggRow>;
+      parts.push(rows.map((r) => fromRawRow({ ...r, sessions: 0 })));
+    } else {
+      parts.push([]);
+    }
+
+    // Partial edge slices straight from events (exact ISO bounds).
+    const edges: Array<[number, number]> = [];
+    if (startMs < firstFullStart) edges.push([startMs, Math.min(firstFullStart, endMs)]);
+    if (lastFullEnd < endMs) edges.push([Math.max(startMs, lastFullEnd), endMs]);
+    for (const [from, to] of edges) {
+      parts.push(this.edgeRows(new Date(from).toISOString(), new Date(to).toISOString(), providers, accountKey, dimension));
+    }
+    return parts;
+  }
+
+  /** Events-backed rows over an exact ISO range; no sessions computed. */
+  private edgeRows(
+    sinceIso: string,
+    untilIso: string,
+    providers?: string[],
+    accountKey?: string,
+    dimension?: RollupDimension,
+  ): AggRow[] {
+    if (dimension === undefined) {
+      const conds = ["ts >= ?", "ts < ?"];
+      const params: SQLQueryBindings[] = [sinceIso, untilIso];
+      if (providers !== undefined && providers.length > 0) {
+        conds.push(`provider IN (${providers.map(() => "?").join(",")})`);
+        params.push(...providers);
+      }
+      if (accountKey !== undefined) {
+        conds.push("account_key = ?");
+        params.push(accountKey);
+      }
+      const row = this.db
+        .query(
+          `SELECT COUNT(*) AS requests,
+                  SUM(input_tokens) AS input_tokens,
+                  SUM(output_tokens) AS output_tokens,
+                  SUM(cache_read_tokens) AS cache_read_tokens,
+                  SUM(cache_write_tokens) AS cache_write_tokens,
+                  SUM(cost_usd) AS cost_usd
+           FROM events WHERE ${conds.join(" AND ")}`,
+        )
+        .get(...params) as RawAggRow;
+      return [fromRawRow({ ...row, bucket: "TOTAL", sessions: 0 })];
+    }
+    const column = rollupColumn(dimension);
+    const join =
+      dimension === "repo" ? "FROM events LEFT JOIN repo_dirs ON events.project_dir = repo_dirs.dir" : "FROM events";
+    if (dimension === "repo") this.ensureRepoMap();
+    const conds = ["events.ts >= ?", "events.ts < ?"];
+    const params: SQLQueryBindings[] = [sinceIso, untilIso];
+    if (providers !== undefined && providers.length > 0) {
+      conds.push(`events.provider IN (${providers.map(() => "?").join(",")})`);
+      params.push(...providers);
+    }
+    if (accountKey !== undefined) {
+      conds.push("events.account_key = ?");
+      params.push(accountKey);
+    }
+    const rows = this.db
+      .query(
+        `SELECT ${column} AS bucket,
+                COUNT(*) AS requests,
+                SUM(input_tokens) AS input_tokens,
+                SUM(output_tokens) AS output_tokens,
+                SUM(cache_read_tokens) AS cache_read_tokens,
+                SUM(cache_write_tokens) AS cache_write_tokens,
+                SUM(cost_usd) AS cost_usd
+         ${join} WHERE ${conds.join(" AND ")}
+         GROUP BY bucket`,
+      )
+      .all(...params) as Array<RawAggRow>;
+    return rows.map((r) => fromRawRow({ ...r, sessions: 0 }));
+  }
+
   close(): void {
     this.db.close();
   }
@@ -667,6 +1134,9 @@ export class EventCache {
     providers?: string[];
     accountKey?: string;
     limit?: number;
+    /** "recent" (default) = last_ts DESC so free/unbilled sessions stay
+     * visible; "cost" = legacy cost-ordered leaderboard. */
+    sort?: "cost" | "recent";
   }): SessionSummary[] {
     this.ensureRepoMap();
     const where = this.whereClause(opts.providers, opts.untilIso, opts.accountKey);
@@ -690,7 +1160,7 @@ export class EventCache {
         LEFT JOIN repo_dirs r ON e.project_dir = r.dir
         WHERE e.session_id IS NOT NULL AND ${where.sql}
         GROUP BY e.provider, e.session_id
-        ORDER BY cost_usd DESC, input_tokens + output_tokens + cache_read_tokens + cache_write_tokens DESC
+        ORDER BY ${opts.sort === "cost" ? "cost_usd DESC," : "last_ts DESC,"} input_tokens + output_tokens + cache_read_tokens + cache_write_tokens DESC
         LIMIT ?
         `,
       )
@@ -741,6 +1211,63 @@ export type Dimension =
   | "machine"
   | "provider"
   | "tool";
+
+/** Dimensions answerable from the daily_rollups table alone (no sessions). */
+export type RollupDimension = "model" | "repo" | "account" | "machine" | "provider" | "day";
+
+/** UTC calendar day of an ISO timestamp — the daily_rollups grouping key. */
+function rollupDay(isoTs: string): string {
+  return isoTs.slice(0, 10);
+}
+
+function rollupColumn(dimension: RollupDimension): string {
+  switch (dimension) {
+    case "account":
+      return "account_key";
+    case "machine":
+      return "machine_id";
+    case "repo":
+      return "COALESCE(repo, '(no repo)')";
+    case "day":
+      return "day";
+    case "provider":
+      return "provider";
+    default:
+      return "model";
+  }
+}
+
+/** Exact sums without session counts (sessions are not in daily_rollups). */
+export interface UsageTotals {
+  requests: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  costUsd: number;
+}
+
+function sumUsage(parts: AggRow[][]): UsageTotals {
+  const out: UsageTotals = {
+    requests: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    costUsd: 0,
+  };
+  for (const part of parts) {
+    for (const row of part) {
+      out.requests += row.requests;
+      out.inputTokens += row.inputTokens;
+      out.outputTokens += row.outputTokens;
+      out.cacheReadTokens += row.cacheReadTokens;
+      out.cacheWriteTokens += row.cacheWriteTokens;
+      out.costUsd += row.costUsd;
+    }
+  }
+  return out;
+}
 
 export const DIMENSIONS: Dimension[] = [
   "model",

@@ -1,4 +1,4 @@
-import { Surface } from "@cloudflare/kumo";
+import { Banner, Surface } from "@cloudflare/kumo";
 
 import { fetchBudgets } from "../lib/api";
 import { formatCost } from "../lib/fmt";
@@ -25,12 +25,12 @@ export function BudgetsView() {
       ) : (
         <>
           {budgets.data.alerts.length > 0 && (
-            <div className="mb-3 rounded-md border border-kumo-warning/40 bg-kumo-warning/10 px-3 py-2 text-xs">
+            <div className="mb-3 space-y-2">
               {budgets.data.alerts.map((a, i) => (
-                <div key={i} className="whitespace-nowrap">
-                  ⚠ {Math.round(a.pct * 100)}% of {a.scope} budget used · {a.pattern}:{" "}
-                  {formatCost(a.spend)} / {formatCost(a.cap)}
-                </div>
+                <Banner key={i} variant={a.level >= 100 ? "error" : "alert"}>
+                  {Math.round(a.pct * 100)}% of {a.scope} budget used · {a.pattern}: {formatCost(a.spend)} /{" "}
+                  {formatCost(a.cap)}
+                </Banner>
               ))}
             </div>
           )}

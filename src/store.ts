@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { gunzipSync } from "node:zlib";
 
 import type { UsageEvent } from "./types.ts";
 import { isValidUsageEvent } from "./types.ts";
@@ -152,17 +153,25 @@ export function readEventsTail(
   return { events, newSize };
 }
 
+/** Read a log file's full text; .jsonl.gz archives are gunzipped first. */
+function readLogText(file: string): string | null {
+  try {
+    if (file.endsWith(".gz")) {
+      return gunzipSync(fs.readFileSync(file)).toString("utf8");
+    }
+    return fs.readFileSync(file, "utf8");
+  } catch {
+    return null;
+  }
+}
+
 /**
- * Read all usage events from a JSONL log file. Tolerates trailing partial
- * lines and corrupt lines (skipped).
+ * Read all usage events from a JSONL log file (.jsonl or .jsonl.gz).
+ * Tolerates trailing partial lines and corrupt lines (skipped).
  */
 export function readEventsFile(file: string): UsageEvent[] {
-  let raw: string;
-  try {
-    raw = fs.readFileSync(file, "utf8");
-  } catch {
-    return [];
-  }
+  const raw = readLogText(file);
+  if (raw === null) return [];
   const events: UsageEvent[] = [];
   for (const line of raw.split("\n")) {
     const trimmed = line.trim();

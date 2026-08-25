@@ -90,6 +90,14 @@ tokitoki report --last week --show-email --by account  # name <email> rows
 tokitoki report --last month --json # machine-readable
 tokitoki grid --last year [--metric tokens|cost|requests]  # calendar heatmap
 
+# Claude 5-hour billing blocks (ccusage semantics) + active-block gauge
+# ▸ marks the active block; gauge = elapsed fraction, countdown to reset
+tokitoki blocks [--last day] [--account <key>]
+
+# One-line statusline for editor hooks (reads Claude Code stdin JSON):
+#   <model> · $<sess> sess · $<today> today · $<MTD> MTD · block <n>% (<m> left)
+# register: {"statusLine":{"command":"bun /path/to/tokitoki/src/cli.ts statusline"}}
+
 # sort by any column, filter by provider (repeatable), toggle Δ vs previous period
 tokitoki report --last week --by model --sort cost        # default order: cost desc
 tokitoki report --last week --sort %cache --asc
@@ -245,6 +253,43 @@ src/web/api.ts ◀── same aggregation as the CLI (EventCache) ── /api/* 
   historical cross-compile/release notes, nix packaging recipe
 - [Menu-bar app](menubar/tokitoki-menubar/) — native SwiftUI MenuBarExtra
   (macOS 13+), `swift build`, refreshes every 5 min from the compiled CLI
+
+## MCP server
+
+`tokitoki mcp` (stdio, local-only — no port, no daemon) exposes the CLI's
+reporting surface as MCP tools: `usage_report`, `usage_totals`,
+`sessions_top`, `session_detail`, `tool_spend`, `repo_efficiency`,
+`budgets_status`, `quota_snapshot`, `anomalies`, `sources`, `scan_now`,
+`export_report`. Window flags map 1:1 to CLI semantics (`last`: day|week|month
+or durations like `24h`). Register it in your client:
+
+```jsonc
+// claude / codex / generic mcp config
+{
+  "mcpServers": {
+    "tokitoki": {
+      "command": "bun",
+      "args": ["/path/to/tokitoki/src/cli.ts", "mcp"]
+      // or the compiled binary: { "command": "/path/to/dist/tokitoki", "args": ["mcp"] }
+    }
+  }
+}
+```
+
+## Menu-bar app
+
+Start/stop the native app from the CLI (macOS Swift app today; Electrobun
+port tracked in plans/linux-menubar.md):
+
+```sh
+tokitoki menubar            # start (idempotent; launchctl-aware on macOS)
+tokitoki menubar --status   # pid + running state
+tokitoki menubar --stop     # stop (launchctl bootout when plist present)
+tokitoki menubar --foreground   # attached, logs to stdout
+```
+
+Binary resolution mirrors the app's own CLI lookup in reverse:
+`$TOKITOKI_MENUBAR_BIN` → repo build → `~/bin/tokitoki-menubar`.
 
 ## Backfill imports
 

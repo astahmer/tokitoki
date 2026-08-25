@@ -1,7 +1,6 @@
 # Plan: `tokitoki menubar` — start the menubar app from the CLI
 
-Status: planned, small. Depends on plans/linux-menubar.md for the Linux
-target (command ships first with macOS-only support + clear error elsewhere).
+Status: SHIPPED 2026-08-25 (`tokitoki menubar` + --stop/--status/--foreground/--rebuild; macOS only — Linux target still depends on plans/linux-menubar.md).
 
 ## UX
 

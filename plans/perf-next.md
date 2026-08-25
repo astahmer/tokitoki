@@ -1,6 +1,6 @@
 # Plan: perf next — daily rollups + event-log retention
 
-Status: planned. Builds on the 2026-08-25 scan overhaul (sharded cursors,
+Status: PARTIAL. Rollups SHIPPED 2026-08-25 (daily_rollups maintained transactionally in insert(), consistency-heal guard, spendSnapshot() reads rollups; report-path consumer flips beyond spendSnapshot still open). Retention: see archive work. the 2026-08-25 scan overhaul (sharded cursors,
 worker scan, incremental sync, spendSnapshot).
 
 ## 1. Daily rollup table (the "i dont get it" one, explained)
@@ -64,8 +64,14 @@ disk growth bounded to recent months uncompressed.
 
 ## Order
 
-1. Rollups first (unlocks flat-cost reports for menubar + MCP).
-2. Retention second (independent; touches reader paths).
+1. Rollups first (unlocks flat-cost reports for menubar + MCP). — **done**
+   (transactional `daily_rollups` in `cache.ts`, self-healing consistency
+   check, `spendSnapshot()` reads rollups)
+2. Retention second (independent; touches reader paths). — **done**
+   (`src/archive.ts`: `rotateEventsLog({keepMonths?, now?})` →
+   `<dataDir>/events-archive/<yyyy-mm>.jsonl.gz`, id-deduped merge;
+   `readEventsFile` reads `.gz`; not yet wired to run after scan — call it
+   opportunistically from the scan path when wiring)
 
 ## Non-goals here
 

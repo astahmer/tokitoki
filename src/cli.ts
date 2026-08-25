@@ -10,7 +10,8 @@ import type { UsageEvent } from "./types.ts";
 import { DIMENSIONS, EventCache, type AggRow, type Dimension, type SeriesBucket, type SessionSummary } from "./cache.ts";
 import { renderTable, renderMiniProjects, renderMarkdownTable, resolveExtraFiles, resolveSortColumn, sinceIsoFor, sinceIsoForDays, previousWindow, monthStartIso, sortRows, formatDelta, deltaInfo, totalRow, totalTokens, planGaugeFn, renderBurnLine, burnProjection, type TableContext } from "./report.ts";
 import { accountEmailMap } from "./accounts.ts";
-import { computeLimits } from "./limits.ts";
+import { computeLimits, mergeAliasLimits, type AccountLimits } from "./limits.ts";
+import { opencodeCredentials, pollQuotas } from "./poll.ts";
 import {
   assertValidSurface,
   isVisibleOn,
@@ -18,6 +19,10 @@ import {
   setSurfaceVisibility,
 } from "./uiToggles.ts";
 import { renderGrid } from "./grid.ts";
+import { renderBlocks } from "./blocks.ts";
+import { parseStatuslineStdin, renderStatusline } from "./statusline.ts";
+import { resolveMenubarBin, startMenubar, stopMenubar, menubarStatus } from "./menubar-launch.ts";
+import { runMcpStdio } from "./mcp-server.ts";
 import { detectAnomalies, ANOMALY_METRICS, anomalyFooter } from "./anomalies.ts";
 import { processBudgetAlerts, seedBudgetsConfig } from "./budgets.ts";
 import { collectMachines } from "./presence.ts";
@@ -250,6 +255,50 @@ Rows always show every configured scope×pattern; state is ok | warn (≥80%)
     flags: "  local dashboard, default port 7788",
     example: "tokitoki web",
   },
+  blocks: {
+    usage: "tokitoki blocks [--last <window>] [--account <key>]",
+    flags: `  events partitioned into 5h billing blocks per account (ccusage
+                            semantics); ▸ marks the active block, gauge shows
+                            remaining minutes
+  --last/--from/--to        window selectors (default --last day)
+  --account <key>           only this account's blocks`,
+    example: "tokitoki blocks",
+  },
+  statusline: {
+    usage: "tokitoki statusline",
+    flags: `  reads Claude Code statusline-hook stdin JSON ({session_id,
+  model:{display_name}}) and prints ONE line: session cost, today, MTD and
+  the active billing block. Register in Claude Code settings:
+  {"statusLine":{"command":"bun /path/to/tokitoki/src/cli.ts statusline","padding":0}}`,
+    example: "tokitoki statusline",
+  },
+  poll: {
+    usage: "tokitoki poll [--json]",
+    flags: `  opt-in: fetch provider-reported rate-limit windows by reusing the
+                            OAuth login stored by the codex CLI (~/.codex/auth.json).
+                            Results land in quota_snapshots and surface in limits,
+                            budgets and the menubar like embedded data.
+  --json                    machine-readable result`,
+    example: "tokitoki poll",
+  },
+  mcp: {
+    usage: "tokitoki mcp",
+    flags: `  local MCP server over stdio exposing every report surface as tools
+  (usage_report, sessions_top, session_detail, tool_spend, budgets_status,
+  quota_snapshot, scan_now, export_report, …). Register with your agent:
+  claude mcp add tokitoki -- bun /path/to/tokitoki/src/cli.ts mcp`,
+    example: "tokitoki mcp",
+  },
+  menubar: {
+    usage: "tokitoki menubar [--stop | --status | --foreground | --rebuild]",
+    flags: `  starts the native menu-bar app for this OS (macOS Swift app today,
+  Electrobun on Linux later). Idempotent: no-op when already running.
+  --status                  pid + running state
+  --stop                    stop a running instance (launchctl-aware)
+  --foreground              run attached instead of detached
+  --rebuild                 rebuild from source first (swift build -c release)`,
+    example: "tokitoki menubar",
+  },
 };
 
 export function commandHelpText(id: string): string {
@@ -302,6 +351,11 @@ Commands:
   reindex    force-rebuild the session search index (full-text)
   sync       push/pull events across machines (dir | git | atproto backends)
   web        local dashboard (default :7788)
+  blocks     Claude 5-hour billing blocks (+ active block gauge)
+  statusline one-line usage summary for editor statusline hooks (reads stdin JSON)
+  mcp        local MCP server over stdio (register with your coding agent)
+  menubar    start/stop the native menu-bar app (--stop/--status/--foreground)
+  poll       fetch real provider quotas via stored logins (opt-in)
 
 Run 'tokitoki help <command>' or 'tokitoki <command> --help' for details.
 
@@ -352,6 +406,11 @@ export async function main(argv: string[]): Promise<void> {
       case "sync": runSyncCommand(parsed); break;
       case "share": await runShare(parsed); break;
       case "web": runWeb(parsed); break;
+      case "blocks": await runBlocks(parsed); break;
+      case "statusline": await runStatusline(parsed); break;
+      case "mcp": await runMcpStdio(); break;
+      case "menubar": await runMenubar(parsed); break;
+      case "poll": await runPoll(parsed); break;
       default: {
         const close = closestMatch(parsed.command, Object.keys(COMMAND_HELP));
         console.error(
@@ -387,6 +446,11 @@ const KNOWN_FLAGS: Record<string, string[]> = {
   repos: ["last", "worst", "provider", "from", "to"],
   import: ["source", "dry-run"],
   sync: ["backend", "push", "pull", "both", "sync-atproto"],
+  blocks: ["last", "since", "until", "from", "to", "account", "json"],
+  statusline: [],
+  mcp: [],
+  menubar: ["stop", "status", "foreground", "rebuild"],
+  poll: ["json"],
   share: ["enable", "disable", "status", "publish", "scope", "include-repos"],
   export: ["last", "by", "format", "out", "sort", "asc", "provider", "since", "until", "show-email", "show-emails"],
   web: ["port"],
@@ -689,9 +753,9 @@ function runReport(parsed: ParsedInvocation): void {
         let prevTotalCost: number | undefined;
         if (opts.delta && w.period !== undefined) {
           const prev = previousWindow(w.period);
-          prevTotalCost = cache.totals(prev.sinceIso, opts.providers, prev.untilIso).costUsd;
+          prevTotalCost = cache.hybridUsage(prev.sinceIso, opts.providers, prev.untilIso).costUsd;
         }
-        const mtd = cache.totals(monthStartIso(), opts.providers);
+        const mtd = cache.hybridUsage(monthStartIso(), opts.providers);
         return JSON.stringify(
           {
             window: { since: sinceIso, until: untilIso ?? null, label: w.label },
@@ -713,12 +777,13 @@ function runReport(parsed: ParsedInvocation): void {
         const prev = previousWindow(w.period);
         const prevRows = cache.aggregate(prev.sinceIso, opts.groupBy, opts.providers, prev.untilIso);
         ctx.prevCostById = new Map(prevRows.map((r) => [r.bucket, r.costUsd]));
-        ctx.totalPrevCost = cache.totals(prev.sinceIso, opts.providers, prev.untilIso).costUsd;
+        ctx.totalPrevCost = cache.hybridUsage(prev.sinceIso, opts.providers, prev.untilIso).costUsd;
       }
       const cfg = loadConfig();
       if (cfg.plans !== undefined && Object.keys(cfg.plans).length > 0) {
+        // Plan gauges read requests/cost only — rollup-safe.
         const mtdByAccount = new Map(
-          cache.aggregate(monthStartIso(), "account", opts.providers).map((r) => [r.bucket, r]),
+          cache.hybridAggregate(monthStartIso(), "account", opts.providers).map((r) => [r.bucket, r]),
         );
         ctx.gaugeFor = planGaugeFn(cfg.plans, mtdByAccount);
       }
@@ -752,7 +817,9 @@ function runReport(parsed: ParsedInvocation): void {
       if (opts.groupBy === "repo") {
         const prevMap = new Map<string, AggRow>();
         const prev = previousWindow(w.period!);
-        for (const r of cache.aggregate(prev.sinceIso, "repo", opts.providers, prev.untilIso)) {
+        // prev feeds only the cache-trend column (requests + cache sums) —
+        // sessions never read → rollup-safe.
+        for (const r of cache.hybridAggregate(prev.sinceIso, "repo", opts.providers, prev.untilIso)) {
           prevMap.set(r.bucket, r);
         }
         ctx.extraColumns = buildRepoExtras(rows, prevMap);
@@ -882,7 +949,7 @@ function runToday(parsed: ParsedInvocation): void {
       const total = cache.totals(sinceIso, flagStrings(parsed, "provider"));
       let text = renderTable(sortRows(rows), { total });
       // Burn projection + top-3 projects this month
-      const mtd = cache.totals(monthStartIso(), flagStrings(parsed, "provider"));
+      const mtd = cache.hybridUsage(monthStartIso(), flagStrings(parsed, "provider"));
       text += `\n${renderBurnLine(mtd.costUsd, mtd.requests)}`;
       const projects = cache
         .aggregate(monthStartIso(), "project")
@@ -933,11 +1000,12 @@ function runChart(parsed: ParsedInvocation): void {
       // named rolling periods, where a predecessor exists.
       let deltaLine: string | null = null;
       if (w.period !== undefined) {
-        const prev = previousWindow(w.period);
-        const curTotal = totalTokens(cache.totals(sinceIso));
-        const prevTotal = cache.totals(prev.sinceIso, undefined, prev.untilIso);
-        const prevTokens = prevTotal.inputTokens + prevTotal.outputTokens + prevTotal.cacheReadTokens + prevTotal.cacheWriteTokens;
-        const d = deltaInfo(curTotal, prevTokens);
+        const prevWin = previousWindow(w.period);
+        const cur = cache.hybridUsage(sinceIso);
+        const prevTotals = cache.hybridUsage(prevWin.sinceIso, undefined, prevWin.untilIso);
+        const curTokens = cur.inputTokens + cur.outputTokens + cur.cacheReadTokens + cur.cacheWriteTokens;
+        const prevTokens = prevTotals.inputTokens + prevTotals.outputTokens + prevTotals.cacheReadTokens + prevTotals.cacheWriteTokens;
+        const d = deltaInfo(curTokens, prevTokens);
         deltaLine = d.kind === "" ? null : `Δ vs previous period: ${formatDelta(d)} (tokens)`;
       }
       return `${windowLine(w)}\n${deltaLine === null ? bars : `${bars}\n${deltaLine}`}`;
@@ -1638,7 +1706,116 @@ function handleErrorAsync(err: unknown): void {
   handleError(err);
 }
 
-// ---------------------------------------------------------------- web
+// ---------------------------------------------------------------- blocks / statusline / mcp / menubar
+
+async function runPoll(parsed: ParsedInvocation): Promise<void> {
+  const jsonOut = flagBool(parsed, "json");
+  const cache = new EventCache();
+  try {
+    const result = await pollQuotas({ cache });
+    if (jsonOut) {
+      console.log(JSON.stringify(result));
+      return;
+    }
+    if (!result.ok) {
+      console.log(`poll failed: ${result.reason ?? "unknown reason"}`);
+      return;
+    }
+    for (const acc of result.accounts) {
+      console.log(`${acc.accountKey}${acc.email !== undefined ? ` (${acc.email})` : ""}:`);
+      for (const w of acc.windows) {
+        console.log(`  ${w.windowMinutes}min window · ${w.usedPct}% used · resets ${new Date(w.resetsAtEpoch * 1000).toLocaleString()}`);
+      }
+      console.log(`  → ${acc.inserted} snapshot(s) stored${acc.error !== undefined ? ` · ${acc.error}` : ""}`);
+    }
+  } finally {
+    cache.close();
+  }
+}
+
+async function runBlocks(parsed: ParsedInvocation): Promise<void> {
+  const w = resolveCalendarWindow(
+    {
+      last: flagString(parsed, "last"),
+      from: flagString(parsed, "from") ?? flagString(parsed, "since"),
+      to: flagString(parsed, "to") ?? flagString(parsed, "until"),
+    },
+    "day",
+  );
+  const account = flagString(parsed, "account");
+  const out = withCache((cache) => {
+    cache.sync(resolveExtraFiles(loadConfig()));
+    return renderBlocks(cache.blockWindows(w.sinceIso, w.untilIso, account));
+  });
+  console.log(`${windowLine(w)}\n${out}`);
+}
+
+async function runStatusline(_parsed: ParsedInvocation): Promise<void> {
+  let raw = "";
+  try {
+    if (!process.stdin.isTTY) raw = fs.readFileSync(0, "utf8");
+  } catch {
+    // no stdin provided — degrade to totals-only line
+  }
+  const input = parseStatuslineStdin(raw);
+  const cache = new EventCache();
+  try {
+    cache.sync(resolveExtraFiles(loadConfig()));
+    const line = await renderStatusline(input, cache);
+    if (line.length > 0) console.log(line);
+  } finally {
+    cache.close();
+  }
+}
+
+async function runMenubar(parsed: ParsedInvocation): Promise<void> {
+  const stop = flagBool(parsed, "stop");
+  const status = flagBool(parsed, "status");
+  const rebuild = flagBool(parsed, "rebuild");
+  const foreground = flagBool(parsed, "foreground");
+
+  if (status) {
+    const s = await menubarStatus();
+    console.log(s.status === "running" ? `menubar running (pid ${s.pid})` : "menubar not running");
+    return;
+  }
+  if (stop) {
+    const s = await stopMenubar();
+    console.log(s.status === "stopped" ? "menubar stopped" : "menubar not running");
+    return;
+  }
+
+  let bin = resolveMenubarBin();
+  if (bin === null && rebuild) throw new UserError("menubar app not found and --rebuild requested", "tokitoki menubar");
+  if (bin === null) {
+    if (rebuild) throw new UserError("cannot rebuild: app not found", "tokitoki menubar");
+    if (process.platform === "darwin") {
+      throw new UserError(
+        "tokitoki-menubar binary not found",
+        "build it: cd menubar/tokitoki-menubar && swift build -c release && cp .build/release/tokitoki-menubar ~/bin/",
+      );
+    }
+    throw new UserError(`no menubar app for ${process.platform} yet`, "see plans/linux-menubar.md for status");
+  }
+
+  if (rebuild && bin !== null && bin.source === "repo-build") {
+    const proc = Bun.spawnSync(["swift", "build", "-c", "release"], { cwd: "menubar/tokitoki-menubar", stdout: "inherit", stderr: "inherit" });
+    if (!proc.success) throw new UserError("swift build failed", "tokitoki menubar --rebuild");
+  }
+
+  if (foreground) {
+    if (bin === null) throw new UserError("tokitoki-menubar binary not found", "tokitoki menubar");
+    console.log(`${bin.path} (foreground, ctrl-c to quit)`);
+    const proc = Bun.spawn([bin.path], { stdio: ["ignore", "inherit", "inherit"] });
+    await proc.exited;
+    return;
+  }
+
+  // startMenubar re-resolves internally and is idempotent.
+  const result = await startMenubar({ envBin: process.env.TOKITOKI_MENUBAR_BIN });
+  if (result.status === "running") console.log(`menubar already running (pid ${result.pid})`);
+  else console.log(`menubar started (pid ${result.pid}, ${result.mode})`);
+}
 
 function runWeb(parsed: ParsedInvocation): void {
   try {
@@ -1799,12 +1976,16 @@ function runMenubarPayload(parsed: ParsedInvocation): void {
   capture("presence", () => runPresence(inv("presence", { json: true })));
   capture("uiPreview", () => {
     const config = loadConfig();
-    console.log(
-      JSON.stringify({
-        previewLines: config.ui?.menubarPreviewLines ?? 3,
-        previewMode: config.ui?.menubarPreviewMode ?? "inline",
-      }),
-    );
+    withCache((cache) => {
+      console.log(
+        JSON.stringify({
+          previewLines: config.ui?.menubarPreviewLines ?? 3,
+          previewMode: config.ui?.menubarPreviewMode ?? "inline",
+          providers: [...cache.providerStats().keys()].sort(),
+          menubarHidden: config.ui?.hidden?.menubar ?? [],
+        }),
+      );
+    });
   });
   capture("limits", () => {
     const config = loadConfig();
@@ -1813,8 +1994,37 @@ function runMenubarPayload(parsed: ParsedInvocation): void {
       const limits = computeLimits(cache, config).filter((l) =>
         isVisibleOn(config, "menubar", l.provider, l.accountKey),
       );
-      console.log(JSON.stringify(limits));
+      // Same provider + same embedded-quota signature = same underlying
+      // account seen through different extraction eras. One card per account.
+      const merged = mergeAliasLimits(limits);
+      // Key-based harnesses: attach a redacted credential so accounts are
+      // distinguishable without emails (pi / opencode auth is API-key only).
+      const creds = opencodeCredentials();
+      const withCreds: Array<AccountLimits & { credential?: string }> = merged.map((l) => {
+        const cred = creds[l.accountKey];
+        return cred !== undefined ? { ...l, credential: cred } : l;
+      });
+      console.log(JSON.stringify(withCreds));
     });
+  });
+  capture("spendPeriods", () => {
+    const yFrom = new Date(Date.now() - 86_400_000);
+    const yKey = `${yFrom.getFullYear()}-${String(yFrom.getMonth() + 1).padStart(2, "0")}-${String(yFrom.getDate()).padStart(2, "0")}`;
+    const periods: Array<Record<string, unknown>> = [];
+    const grab = (key: string, flags: Record<string, FlagValue>): void => {
+      try {
+        capture("rows", () => runReport(inv("report", { by: "provider", sort: "cost", json: true, ...flags })));
+        const report = parts["rows"] as { rows?: unknown } | undefined;
+        periods.push({ key, rows: report?.rows ?? [] });
+      } catch {
+        periods.push({ key, rows: [] });
+      }
+    };
+    grab("today", { last: "day" });
+    grab("yesterday", { from: yKey, to: yKey });
+    grab("week", { last: "week" });
+    grab("month", { last: "month" });
+    console.log(JSON.stringify(periods));
   });
   console.log(JSON.stringify(parts));
 }

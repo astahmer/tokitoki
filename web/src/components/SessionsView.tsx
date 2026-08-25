@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { Badge, Button, Input, Surface, Table } from "@cloudflare/kumo";
 
@@ -12,7 +12,8 @@ import {
 } from "../lib/api";
 import { cachePct, formatCost, humanCount } from "../lib/fmt";
 import type { WindowSelection } from "../lib/api";
-import { EmptyState, Heading, SkeletonBlock } from "../ui";
+import { EmptyState, Heading, SkeletonBlock, TableSkeleton } from "../ui";
+import { sortIndicator, useSort } from "../lib/useSort";
 import { useAsyncStaleWhileRevalidate } from "../lib/useAsync";
 
 const PAGE_SIZE = 50;
@@ -31,10 +32,36 @@ export function SessionsView({
   providers: string[];
   account?: string;
 }) {
-  const [query, setQuery] = useState("");
-  const [submitted, setSubmitted] = useState("");
-  const [page, setPage] = useState(1);
+  // Search text + page live in the URL (?q=, ?page=) so searched views are
+  // shareable and pagination survives a tab switch.
+  const initialQ = new URLSearchParams(window.location.search).get("q") ?? "";
+  const initialPage = Math.max(1, Number(new URLSearchParams(window.location.search).get("page") ?? "1") || 1);
+  const [query, setQuery] = useState(initialQ);
+  const [submitted, setSubmitted] = useState(initialQ);
+  const [page, setPage] = useState(initialPage);
   const [selected, setSelected] = useState<SessionRow | undefined>(undefined);
+  const searchRef = useRef<HTMLInputElement>(null);
+
+  const syncUrl = useCallback((q: string, pg: number): void => {
+    const url = new URL(window.location.href);
+    if (q.length > 0) url.searchParams.set("q", q);
+    else url.searchParams.delete("q");
+    if (pg > 1) url.searchParams.set("page", String(pg));
+    else url.searchParams.delete("page");
+    window.history.replaceState(null, "", url);
+  }, []);
+
+  // "/" focuses the search box from anywhere on the page.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === "/" && !(e.target instanceof HTMLInputElement) && !(e.target instanceof HTMLTextAreaElement)) {
+        e.preventDefault();
+        searchRef.current?.focus();
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, []);
 
   // Debounce: index updates are incremental but still touch disk on edit.
   const [debounced, setDebounced] = useState("");
@@ -42,7 +69,9 @@ export function SessionsView({
     if (query === debounced) return;
     const t = setTimeout(() => {
       setDebounced(query);
+      setSubmitted(query);
       setPage(1);
+      syncUrl(query, 1);
     }, 350);
     return () => clearTimeout(t);
   }, [query, debounced]);
@@ -64,17 +93,27 @@ export function SessionsView({
           <Heading>sessions · click a row for its request timeline</Heading>
         </div>
         <div className="mb-3 flex items-center gap-2">
-          <Input
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") setSubmitted(query);
-            }}
-            placeholder='search all conversations — try "kumo treemap" or "migrate pds"'
-            className="max-w-md"
-          />
+          <div className="relative w-full max-w-md">
+            <span aria-hidden="true" className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-[11px] text-muted">
+              ⌕
+            </span>
+            <Input
+              ref={searchRef}
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") setSubmitted(query);
+                if (e.key === "Escape") {
+                  setQuery("");
+                  setSubmitted("");
+                }
+              }}
+              placeholder='search all conversations — press / to focus'
+              className="max-w-md pl-6"
+            />
+          </div>
           {searching && (
-            <Button variant="secondary" onClick={() => { setSubmitted(""); setQuery(""); }}>
+            <Button variant="secondary" onClick={() => { setSubmitted(""); setQuery(""); syncUrl("", 1); }}>
               clear
             </Button>
           )}
@@ -82,7 +121,7 @@ export function SessionsView({
         {searching ? (
           <SearchResults query={submitted} page={page} setPage={setPage} providers={providers} win={win} onSelect={setSelected} selectedId={selected?.sessionId} />
         ) : sessions.state === "loading" ? (
-          <SkeletonBlock className="h-72" />
+          <TableSkeleton rows={8} cols={7} />
         ) : sessions.state === "error" ? (
           <p className="text-xs text-kumo-danger">{sessions.error}</p>
         ) : sessions.data.rows.length === 0 ? (
@@ -122,7 +161,7 @@ function SearchResults({
     [query, String(page), win.from ?? "", win.to ?? "", win.last ?? "", providers.join("|")],
   );
 
-  if (res.state === "loading") return <SkeletonBlock className="h-72" />;
+  if (res.state === "loading") return <TableSkeleton rows={8} cols={5} />;
   if (res.state === "error") return <p className="text-xs text-kumo-danger">{res.error}</p>;
   const data = res.data;
   if (data.rows.length === 0) {
@@ -132,6 +171,7 @@ function SearchResults({
     <div>
       <p className="mb-2 text-[11px] text-kumo-subtle">
         {res.refreshing ? "searching…" : `${data.rows.length} match${data.rows.length === 1 ? "" : "es"}`} · search {data.searchMs}ms · indexed {data.indexedFiles} changed file(s)
+        {(data.skippedLargeFiles ?? 0) > 0 && ` · ${data.skippedLargeFiles} large file(s) not indexed`}
         {data.hasMore && ` · page ${data.page}`}
       </p>
       <div className="space-y-2">
@@ -215,6 +255,19 @@ function toRow(r: SessionSearchRow): SessionRow {
   };
 }
 
+const SESSION_COLUMNS: Array<{ key: string; label: string; numeric?: boolean }> = [
+  { key: "startedAt", label: "started" },
+  { key: "lastRequestAt", label: "last active" },
+  { key: "provider", label: "provider" },
+  { key: "accountKey", label: "account" },
+  { key: "models", label: "model(s)" },
+  { key: "repo", label: "repo" },
+  { key: "requests", label: "req", numeric: true },
+  { key: "totalTokens", label: "tokens", numeric: true },
+  { key: "cachePct", label: "%cache", numeric: true },
+  { key: "costUsd", label: "cost", numeric: true },
+];
+
 function SessionTable({
   rows,
   onSelect,
@@ -224,27 +277,43 @@ function SessionTable({
   onSelect: (row: SessionRow) => void;
   selected?: string;
 }) {
+  const { sort, toggle, sorted } = useSort("lastRequestAt", "desc");
+  const value = (r: SessionRow, key: string): number | string => {
+    switch (key) {
+      case "lastRequestAt": return r.lastRequestAt ?? r.startedAt;
+      case "requests": return r.requests;
+      case "totalTokens": return r.totalTokens;
+      case "cachePct": return r.cachePct;
+      case "costUsd": return r.costUsd;
+      case "models": return r.models.join(", ");
+      case "repo": return r.repos[0] ?? "";
+      default: return String((r as unknown as Record<string, unknown>)[key] ?? "");
+    }
+  };
+  const view = sorted(rows, value);
   return (
     <div className="overflow-x-auto">
       <Table className="w-full text-xs">
         <Table.Header>
           <Table.Row>
-            {["date", "provider", "account", "model(s)", "repo", "req", "tokens", "%cache", "cost"].map(
-              (h, i) => (
-                <Table.Head
-                  key={h}
-                  className={`text-[10px] tracking-wider whitespace-nowrap uppercase select-none ${
-                    i >= 5 ? "text-right" : "text-left"
-                  }`}
-                >
-                  {h}
-                </Table.Head>
-              ),
-            )}
+            {SESSION_COLUMNS.map((c) => (
+              <Table.Head
+                key={c.key}
+                aria-sort={sort.key === c.key ? (sort.dir === "asc" ? "ascending" : "descending") : "none"}
+                onClick={() => toggle(c.key as never)}
+                title={`sort by ${c.label}`}
+                className={`cursor-pointer text-[10px] tracking-wider whitespace-nowrap uppercase select-none hover:text-kumo-default ${
+                  c.numeric === true ? "text-right" : "text-left"
+                } ${sort.key === c.key ? "text-kumo-default" : ""}`}
+              >
+                {c.label}{" "}
+                <span aria-hidden="true">{sortIndicator(c.key, sort.key, sort.dir)}</span>
+              </Table.Head>
+            ))}
           </Table.Row>
         </Table.Header>
         <Table.Body>
-          {rows.map((r) => (
+          {view.map((r) => (
             <Table.Row
               key={`${r.provider}/${r.sessionId}`}
               className={`cursor-pointer ${selected === r.sessionId ? "bg-kumo-recessed" : ""}`}
@@ -254,9 +323,22 @@ function SessionTable({
               <Table.Cell className="whitespace-nowrap">
                 {r.startedAt.slice(5, 16).replace("T", " ")}
               </Table.Cell>
+              <Table.Cell className="whitespace-nowrap text-kumo-subtle">
+                {(r.lastRequestAt ?? r.startedAt).slice(5, 16).replace("T", " ")}
+              </Table.Cell>
               <Table.Cell className="whitespace-nowrap">{r.provider}</Table.Cell>
               <Table.Cell className="max-w-40 truncate">{r.accountKey}</Table.Cell>
-              <Table.Cell className="max-w-52 truncate">{r.models.join(", ")}</Table.Cell>
+              <Table.Cell className="max-w-52 truncate">
+                {r.models
+                  .map((m) =>
+                    // Single-model sessions whose model name embeds the
+                    // provider prefix read as duplication — strip it.
+                    r.models.length === 1 && m.toLowerCase().startsWith(`${r.provider}-`)
+                      ? m.slice(r.provider.length + 1)
+                      : m,
+                  )
+                  .join(", ")}
+              </Table.Cell>
               <Table.Cell className="max-w-40 truncate">{r.repos[0] ?? "(no repo)"}</Table.Cell>
               <Table.Cell className="text-right">{r.requests.toLocaleString("en-US")}</Table.Cell>
               <Table.Cell className="text-right">{humanCount(r.totalTokens)}</Table.Cell>

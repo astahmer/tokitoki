@@ -31,7 +31,7 @@ export function Pill({
     <Button
       size="xs"
       variant={active ? "primary" : "outline"}
-      className="rounded-full font-mono"
+      className="rounded-full font-mono transition-colors duration-150"
       title={title}
       onClick={onClick}
     >
@@ -60,13 +60,14 @@ export function DeltaBadge({ current, previous }: { current: number; previous?: 
   }
   const pct = Math.round(((current - previous) / previous) * 100);
   if (pct === 0) return null;
-  return pct > 0 ? (
-    <Badge variant="error" className="ml-1.5">
-      ▲{pct}%
-    </Badge>
-  ) : (
-    <Badge variant="success" className="ml-1.5">
-      ▼{Math.abs(pct)}%
+  // Neutral arrow for small moves; semantic color only past ±10% so a normal
+  // week-over-week wobble doesn't read as an alarm (ui-review item 31).
+  const significant = Math.abs(pct) >= 10;
+  const variant = !significant ? "neutral" : pct > 0 ? "error" : "success";
+  return (
+    <Badge variant={variant} className="ml-1.5">
+      {pct > 0 ? "▲" : "▼"}
+      {Math.abs(pct)}%
     </Badge>
   );
 }

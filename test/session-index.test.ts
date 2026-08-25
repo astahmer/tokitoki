@@ -82,7 +82,7 @@ describe("session index", () => {
     fs.writeFileSync(path.join(dir, "b.jsonl"), `${CLAUDE_LINE("unrelated chat about weather")}\n`);
 
     const db = tmpDb();
-    let stats = updateSessionIndex(db, [fakeProvider(dir)]);
+    let stats = updateSessionIndex(db, [fakeProvider(dir)], { force: true });
     expect(stats.filesIndexed).toBe(2);
     expect(stats.docsIndexed).toBe(2);
 
@@ -93,14 +93,14 @@ describe("session index", () => {
     expect(hit.rows[0]!.snippet).toContain("[[cirrus]]");
 
     // Unchanged files are skipped on the next incremental pass.
-    stats = updateSessionIndex(db, [fakeProvider(dir)]);
+    stats = updateSessionIndex(db, [fakeProvider(dir)], { force: true });
     expect(stats.filesIndexed).toBe(0);
 
     // Modified file gets reindexed.
     await new Promise((r) => setTimeout(r, 20));
     fs.appendFileSync(file, `${CLAUDE_LINE("follow-up question")}\n`);
     fs.utimesSync(file, new Date(), new Date(Date.now() + 100));
-    stats = updateSessionIndex(db, [fakeProvider(dir)]);
+    stats = updateSessionIndex(db, [fakeProvider(dir)], { force: true });
     expect(stats.filesIndexed).toBe(1);
     expect(searchSessions(db, { query: "follow-up" }).rows.length).toBe(1);
     db.close();
@@ -111,7 +111,7 @@ describe("session index", () => {
     fs.writeFileSync(path.join(dir, "only.jsonl"), `${CLAUDE_LINE("hello world")}\n`);
     const provider = fakeProvider(dir);
     const db = tmpDb();
-    updateSessionIndex(db, [provider]);
+    updateSessionIndex(db, [provider], { force: true });
     const first = rebuildSessionIndex(db, [provider]);
     expect(first.docsIndexed).toBe(1);
     // No duplicates after rebuild.
@@ -130,5 +130,68 @@ describe("session index", () => {
     expect(searchSessions(db, { query: "kumo treemap" }).rows.length).toBe(1);
     expect(searchSessions(db, { query: "kumo missingterm" }).rows.length).toBe(0);
     db.close();
+  });
+});
+
+describe("session index perf guards", () => {
+  /** Same fake provider shape as the suite above (scoped there). */
+  function fakeProvider(dir: string): Provider {
+    return {
+      id: "fake",
+      label: "Fake",
+      discoverRoots: () => [dir],
+      listFiles: (root) =>
+        fs
+          .readdirSync(root)
+          .filter((f) => f.endsWith(".jsonl"))
+          .map((f) => path.join(root, f)),
+      parseLine: () => [],
+      extractSessionDocs: (file) => {
+        const lines = fs.readFileSync(file, "utf8").split("\n").filter((l) => l.trim().length > 0);
+        return lines.map((_, i) => ({
+          sessionId: `sess-${path.basename(file)}-${i}`,
+          title: lines[i]!.slice(0, 40),
+          body: lines[i]!,
+        }));
+      },
+    } satisfies Provider;
+  }
+
+  it("throttles rapid successive updates unless forced", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tk-fts-throttle-"));
+    const db = tmpDb();
+    try {
+      const file = path.join(dir, "a.jsonl");
+      fs.writeFileSync(file, `${CLAUDE_LINE("throttle probe")}\n`);
+      const provider = fakeProvider(dir);
+      expect(updateSessionIndex(db, [provider]).filesIndexed).toBe(1);
+      // Within the throttle window: no-op even though mtime changed.
+      fs.utimesSync(file, new Date(), new Date(Date.now() + 100));
+      expect(updateSessionIndex(db, [provider]).throttled).toBe(true);
+      // Force bypasses.
+      expect(updateSessionIndex(db, [provider], { force: true }).filesIndexed).toBe(1);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("skips oversized files and reports them", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tk-fts-big-"));
+    const db = tmpDb();
+    try {
+      const small = path.join(dir, "s.jsonl");
+      fs.writeFileSync(small, `${CLAUDE_LINE("small file")}\n`);
+      const big = path.join(dir, "big.jsonl");
+      const handle = fs.openSync(big, "w");
+      fs.writeSync(handle, Buffer.alloc(5 * 1024 * 1024, 0x20)); // 5MB filler
+      fs.writeSync(handle, `${CLAUDE_LINE("inside giant")}\n`);
+      fs.closeSync(handle);
+      const stats = updateSessionIndex(db, [fakeProvider(dir)], { maxFileBytes: 1024 });
+      expect(stats.filesIndexed).toBe(1); // only the small one
+      expect(stats.skippedLargeFiles).toBe(1);
+      expect(searchSessions(db, { query: "small" }).rows.length).toBe(1);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

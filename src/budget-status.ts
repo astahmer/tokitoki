@@ -45,11 +45,14 @@ export function computeBudgetStatus(
   midnight.setHours(0, 0, 0, 0);
   const weekAgo = new Date(Date.now() - 7 * 86_400_000);
   const monthStart = monthStartIso();
-  const dayTotals = cache.totals(midnight.toISOString());
-  const weekTotals = cache.totals(weekAgo.toISOString());
-  const monthTotals = cache.totals(monthStart);
+  // hybridUsage/hybridAggregate: exact same numbers as totals()/aggregate()
+  // (interior days from daily_rollups, partial edge slices from events) but
+  // O(days×accounts) — this runs on every menubar poll.
+  const dayTotals = cache.hybridUsage(midnight.toISOString());
+  const weekTotals = cache.hybridUsage(weekAgo.toISOString());
+  const monthTotals = cache.hybridUsage(monthStart);
   const byAccount = (sinceIso: string): Array<{ key: string; daily: number; weekly: number; monthly: number }> =>
-    cache.aggregate(sinceIso, "account").map((r) => ({
+    cache.hybridAggregate(sinceIso, "account").map((r) => ({
       key: r.bucket,
       daily: r.costUsd,
       weekly: r.costUsd,
@@ -58,7 +61,7 @@ export function computeBudgetStatus(
   const accountSpends = byAccount(midnight.toISOString());
   const weeklyByAccount = new Map(byAccount(weekAgo.toISOString()).map((a) => [a.key, a.weekly]));
   const monthlyByAccount = new Map(
-    cache.aggregate(monthStart, "account").map((r) => [r.bucket, r.costUsd]),
+    cache.hybridAggregate(monthStart, "account").map((r) => [r.bucket, r.costUsd]),
   );
   for (const a of accountSpends) {
     a.weekly = weeklyByAccount.get(a.key) ?? 0;

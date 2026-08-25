@@ -40,14 +40,24 @@ describe("topSessions", () => {
       // null session excluded
       ev({ ts: "2026-08-20T13:00:00Z", inputTokens: 9_999_999 }),
     ]);
-    const rows = cache.topSessions({ sinceIso: "2026-08-01T00:00:00Z" });
+    // Explicit cost leaderboard (legacy ordering).
+    const rows = cache.topSessions({ sinceIso: "2026-08-01T00:00:00Z", sort: "cost" });
     // Cost desc first; token volume only breaks ties between equal costs.
     expect(rows.map((r) => `${r.provider}/${r.sessionId}`)).toEqual([
       "p1/s-costly",
       "p2/s-costly",
       "p1/s-heavy",
     ]);
-    // Token tiebreak: two zero-cost sessions order by total tokens.
+    // Default is RECENT first (last_ts DESC): free/unbilled sessions must not
+    // be buried under paid ones.
+    const recent = cache.topSessions({ sinceIso: "2026-08-01T00:00:00Z" });
+    expect(recent.map((r) => `${r.provider}/${r.sessionId}`)).toEqual([
+      "p2/s-costly", // last event 12:00
+      "p1/s-heavy", // 11:00
+      "p1/s-costly", // 10:01
+    ]);
+    // Token tiebreak: two zero-cost sessions at the same instant order by
+    // total tokens even in recency mode.
     cache.insert([
       ev({ ts: "2026-08-20T14:00:00Z", sessionId: "s-small", inputTokens: 10 }),
       ev({ ts: "2026-08-20T14:00:00Z", sessionId: "s-big", inputTokens: 20 }),
@@ -57,7 +67,7 @@ describe("topSessions", () => {
         .topSessions({ sinceIso: "2026-08-01T00:00:00Z" })
         .filter((r) => r.costUsd === 0)
         .map((r) => r.sessionId),
-    ).toEqual(["s-heavy", "s-big", "s-small"]);
+    ).toEqual(["s-big", "s-small", "s-heavy"]);
     const costly = rows[0]!;
     expect(costly.requests).toBe(2);
     expect(costly.models.sort()).toEqual(["m-a", "m-b"]);
@@ -82,7 +92,7 @@ describe("topSessions", () => {
     ]);
     const filtered = cache.topSessions({ sinceIso: "2026-08-01T00:00:00Z", providers: ["p1"] });
     expect(filtered).toHaveLength(2);
-    const limited = cache.topSessions({ sinceIso: "2026-08-01T00:00:00Z", limit: 1 });
+    const limited = cache.topSessions({ sinceIso: "2026-08-01T00:00:00Z", limit: 1, sort: "cost" });
     expect(limited.map((r) => r.sessionId)).toEqual(["a"]);
     cache.close();
   });

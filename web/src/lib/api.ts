@@ -99,8 +99,9 @@ async function get<T>(path: string): Promise<T> {
   return (await res.json()) as T;
 }
 
-export function fetchSummary(): Promise<SummaryPayload> {
-  return get<SummaryPayload>("/api/summary");
+export function fetchSummary(win?: WindowSelection): Promise<SummaryPayload> {
+  const q = win !== undefined ? windowQuery(win).toString() : "";
+  return get<SummaryPayload>(`/api/summary${q.length > 0 ? `?${q}` : ""}`);
 }
 
 export function fetchTable(params: {
@@ -121,9 +122,15 @@ export function fetchTable(params: {
   return get<TablePayload>(`/api/table?${q.toString()}`);
 }
 
-export function fetchTimeseries(by: string, days: number, win?: WindowSelection): Promise<TimeseriesPayload> {
+export function fetchTimeseries(
+  by: string,
+  days: number,
+  win?: WindowSelection,
+  metric: "tokens" | "cost" = "tokens",
+): Promise<TimeseriesPayload> {
   const q = win !== undefined ? windowQuery(win) : new URLSearchParams({ days: String(days) });
   q.set("by", by);
+  q.set("metric", metric);
   return get<TimeseriesPayload>(`/api/timeseries?${q.toString()}`);
 }
 
@@ -138,6 +145,8 @@ export type SessionRow = {
   provider: string;
   accountKey: string;
   startedAt: string;
+  /** Last request timestamp — recency sort key for the leaderboard. */
+  lastRequestAt?: string;
   requests: number;
   models: string[];
   repos: string[];
@@ -211,6 +220,8 @@ export interface SessionSearchPayload {
   searchMs: number;
   indexedFiles: number;
   indexMs: number;
+  /** Store files too large to index (perf guard). */
+  skippedLargeFiles?: number;
   rows: SessionSearchRow[];
 }
 

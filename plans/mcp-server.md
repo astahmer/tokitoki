@@ -1,6 +1,6 @@
 # Plan: local MCP server (`tokitoki mcp`)
 
-Status: planned. Goal: any coding agent (pi, claude, codex, cursor…) can query
+Status: SHIPPED 2026-08-25 (`tokitoki mcp`, stdio via @modelcontextprotocol/sdk; 12 tools — usage_chart folded into usage_report rather than a separate tool). Goal: any coding agent (pi, claude, codex, cursor…) can query
 tokitopi's full surface as MCP tools instead of shelling out.
 
 ## Shape

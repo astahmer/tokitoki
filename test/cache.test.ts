@@ -172,3 +172,231 @@ describe("EventCache.sync (incremental)", () => {
     }
   });
 });
+
+describe("daily_rollups", () => {
+  function rollupRows(cache: EventCache): Array<{
+    day: string; provider: string; account_key: string; model: string;
+    machine_id: string; repo: string | null;
+    input_tokens: number; output_tokens: number; cost_usd: number; requests: number;
+  }> {
+    return cache.database.query("SELECT * FROM daily_rollups ORDER BY day, provider, model").all() as never;
+  }
+
+  it("insert() maintains rollups transactionally and is idempotent on re-insert", () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "tk-rollup-1-"));
+    const cache = new EventCache(path.join(dir, "cache.db"));
+    try {
+      const e1 = makeEvent({ id: "r1", ts: "2026-08-20T10:00:00.000Z", inputTokens: 100, outputTokens: 50, costUsd: 0.5 });
+      const e2 = makeEvent({ id: "r2", ts: "2026-08-21T11:00:00.000Z", model: "m-b", inputTokens: 10, outputTokens: 5, costUsd: 0.05 });
+      expect(cache.insert([e1, e2])).toBe(2);
+
+      const rows = rollupRows(cache);
+      expect(rows).toHaveLength(2); // different days → two rows
+      const day1 = rows.find((r) => r.day === "2026-08-20")!;
+      expect(day1.requests).toBe(1);
+      expect(day1.input_tokens).toBe(100);
+      expect(day1.cost_usd).toBeCloseTo(0.5);
+      expect(day1.provider).toBe("pi");
+      expect(day1.machine_id).toBe("mac-one");
+
+      // idempotent re-insert: INSERT OR IGNORE must not bump rollups
+      expect(cache.insert([e1])).toBe(0);
+      expect(rollupRows(cache).find((r) => r.day === "2026-08-20")!.requests).toBe(1);
+
+      // same-day second event folds into the same row
+      cache.insert([makeEvent({ id: "r3", ts: "2026-08-20T18:00:00.000Z", inputTokens: 7 })]);
+      const day1b = rollupRows(cache).find((r) => r.day === "2026-08-20")!;
+      expect(day1b.requests).toBe(2);
+      expect(day1b.input_tokens).toBe(107);
+    } finally {
+      cache.close();
+    }
+  });
+
+  it("rebuild() recomputes identical rollups from the logs", () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "tk-rollup-2-"));
+    process.env.TOKITOKI_DATA_DIR = dir;
+    const log = path.join(dir, "events.jsonl");
+    writeFileSync(
+      log,
+      JSON.stringify(makeEvent({ id: "a", ts: "2026-08-20T09:00:00.000Z" })) + "\n" +
+      JSON.stringify(makeEvent({ id: "b", ts: "2026-08-21T09:00:00.000Z", costUsd: 0.02 })) + "\n",
+    );
+    const cache = new EventCache(path.join(dir, "cache.db"));
+    try {
+      cache.rebuild([]);
+      const afterRebuild = JSON.stringify(rollupRows(cache));
+      expect(cache.database.query("SELECT COALESCE(SUM(requests),0) AS n FROM daily_rollups").get() as { n: number }).toEqual({ n: 2 });
+      // rebuild again — same projection
+      cache.rebuild([]);
+      expect(JSON.stringify(rollupRows(cache))).toBe(afterRebuild);
+    } finally {
+      cache.close();
+      delete process.env.TOKITOKI_DATA_DIR;
+    }
+  });
+
+  it("sync() tail-appends update rollups incrementally", () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "tk-rollup-3-"));
+    process.env.TOKITOKI_DATA_DIR = dir;
+    const log = path.join(dir, "events.jsonl");
+    writeFileSync(log, JSON.stringify(makeEvent({ id: "t1", ts: "2026-08-22T09:00:00.000Z" })) + "\n");
+    const cache = new EventCache(path.join(dir, "cache.db"));
+    try {
+      cache.sync([]);
+      expect(rollupRows(cache)).toHaveLength(1);
+
+      appendFileSync(log, JSON.stringify(makeEvent({ id: "t2", ts: "2026-08-22T10:00:00.000Z", inputTokens: 42 })) + "\n");
+      cache.sync([]);
+      const row = rollupRows(cache)[0]!;
+      // rollups must mirror the events table exactly
+      const ev = cache.database
+        .query("SELECT SUM(input_tokens) AS s, COUNT(*) AS n FROM events")
+        .get() as { s: number; n: number };
+      expect(row.input_tokens).toBe(ev.s);
+      expect(row.requests).toBe(ev.n);
+    } finally {
+      cache.close();
+      delete process.env.TOKITOKI_DATA_DIR;
+    }
+  });
+
+  it("consistency guard heals a corrupted rollup row on sync()", () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "tk-rollup-4-"));
+    process.env.TOKITOKI_DATA_DIR = dir;
+    const log = path.join(dir, "events.jsonl");
+    writeFileSync(log, JSON.stringify(makeEvent({ id: "h1", ts: "2026-08-22T09:00:00.000Z" })) + "\n");
+    const cache = new EventCache(path.join(dir, "cache.db"));
+    try {
+      cache.sync([]);
+      cache.database.exec("UPDATE daily_rollups SET requests = requests + 7, cost_usd = cost_usd + 99");
+      cache.sync([]); // no new tails — guard still runs and heals
+      const row = rollupRows(cache)[0]!;
+      expect(row.requests).toBe(1);
+      expect(row.cost_usd).toBeCloseTo(makeEvent({ id: "h1" }).costUsd ?? 0.01);
+    } finally {
+      cache.close();
+      delete process.env.TOKITOKI_DATA_DIR;
+    }
+  });
+
+  it("spendSnapshot reads rollups with old semantics at day granularity", () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "tk-rollup-5-"));
+    const cache = new EventCache(path.join(dir, "cache.db"));
+    try {
+      cache.insert([
+        makeEvent({ id: "s1", ts: "2026-08-25T08:00:00.000Z", accountKey: "acct-a", costUsd: 1 }),
+        makeEvent({ id: "s2", ts: "2026-08-25T12:00:00.000Z", accountKey: "acct-a", costUsd: 2 }),
+        makeEvent({ id: "s3", ts: "2026-08-19T09:00:00.000Z", accountKey: "acct-b", costUsd: 4 }),
+      ]);
+      // boundaries inside the same UTC days as the fixtures → parity holds
+      const snap = cache.spendSnapshot(
+        "2026-08-25T00:00:00.000Z",
+        "2026-08-23T00:00:00.000Z",
+        "2026-08-01T00:00:00.000Z",
+      );
+      expect(snap.totals.day).toBeCloseTo(3);
+      expect(snap.totals.week).toBeCloseTo(3); // week starts the 23rd → both events on the 25th count
+      expect(snap.totals.month).toBeCloseTo(7);
+      const acctA = snap.accounts.find((a) => a.key === "acct-a")!;
+      expect(acctA.month).toBeCloseTo(3);
+      const acctB = snap.accounts.find((a) => a.key === "acct-b")!;
+      expect(acctB.month).toBeCloseTo(4);
+    } finally {
+      cache.close();
+    }
+  });
+
+  it("rollupAggregate groups by provider and day buckets", () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "tk-rollup-6-"));
+    const cache = new EventCache(path.join(dir, "cache.db"));
+    try {
+      cache.insert([
+        makeEvent({ id: "g1", ts: "2026-08-20T09:00:00.000Z", provider: "pi" }),
+        makeEvent({ id: "g2", ts: "2026-08-20T15:00:00.000Z", provider: "codex", model: "m-x" }),
+        makeEvent({ id: "g3", ts: "2026-08-21T15:00:00.000Z", provider: "codex", model: "m-x" }),
+      ]);
+      const byProvider = cache.rollupAggregate("2026-08-01T00:00:00.000Z", undefined, "provider");
+      const buckets = Object.fromEntries(byProvider.map((r) => [r.bucket, r]));
+      expect(buckets["pi"]!.requests).toBe(1);
+      expect(buckets["codex"]!.requests).toBe(2);
+      for (const r of byProvider) expect(r.sessions).toBe(0); // not derivable
+
+      const byDay = cache.rollupAggregate("2026-08-20T00:00:00.000Z", "2026-08-20T23:59:59.999Z", "day");
+      expect(byDay).toHaveLength(1); // until-day inclusive, only the 20th
+      expect(byDay[0]!.bucket).toBe("2026-08-20");
+      expect(byDay[0]!.requests).toBe(2);
+    } finally {
+      cache.close();
+    }
+  });
+});
+
+describe("hybrid rollup reads", () => {
+  // Events land inside a single UTC day but at times that make windows cut
+  // through the day — exercising both partial edge slices + the interior.
+  const T0 = "2026-08-20T10:30:00.000Z";
+  const mk = (id: string, ts: string, cost: number) =>
+    makeEvent({ id, ts, costUsd: cost, inputTokens: 100, outputTokens: 50 });
+
+  function seed(cache: InstanceType<typeof EventCache>): void {
+    cache.insert([
+      mk("h1", "2026-08-19T23:59:59.000Z", 1), // day before the window's first full day
+      mk("a1", T0, 2),
+      mk("a2", "2026-08-21T00:00:01.000Z", 3),
+      mk("a3", "2026-08-22T12:00:00.000Z", 4),
+      mk("t1", "2026-08-24T07:15:00.000Z", 5), // after the window's last full day
+    ]);
+  }
+
+  it("hybridUsage matches totals() exactly across partial edges", () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "tk-hybrid-"));
+    process.env.TOKITOKI_DATA_DIR = dir;
+    const cache = new EventCache(path.join(dir, "cache.db"));
+    try {
+      seed(cache);
+      // Window cutting mid-day on BOTH edges:
+      const since = "2026-08-20T10:30:00.000Z";
+      const until = "2026-08-24T07:15:00.000Z";
+      const expected = cache.totals(since, undefined, until);
+      const got = cache.hybridUsage(since, undefined, until);
+      expect(got.requests).toBe(expected.requests);
+      expect(got.inputTokens).toBe(expected.inputTokens);
+      expect(got.outputTokens).toBe(expected.outputTokens);
+      expect(got.cacheReadTokens).toBe(expected.cacheReadTokens);
+      expect(got.cacheWriteTokens).toBe(expected.cacheWriteTokens);
+      expect(got.costUsd).toBeCloseTo(expected.costUsd, 10);
+      // open-ended (until = now) agrees with totals() too
+      const openExpected = cache.totals(since);
+      const openGot = cache.hybridUsage(since);
+      expect(openGot.requests).toBe(openExpected.requests);
+      expect(openGot.costUsd).toBeCloseTo(openExpected.costUsd, 10);
+    } finally {
+      cache.close();
+      delete process.env.TOKITOKI_DATA_DIR;
+    }
+  });
+
+  it("hybridAggregate matches aggregate() per bucket for rollup dimensions", () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "tk-hybrid-agg-"));
+    process.env.TOKITOKI_DATA_DIR = dir;
+    const cache = new EventCache(path.join(dir, "cache.db"));
+    try {
+      seed(cache);
+      const since = "2026-08-20T10:30:00.000Z";
+      const until = "2026-08-24T07:15:00.000Z";
+      for (const dim of ["account", "provider", "model", "machine"] as const) {
+        const eventsRows = cache.aggregate(since, dim, undefined, until);
+        const hybridRows = cache.hybridAggregate(since, dim, undefined, until);
+        const norm = (rows: typeof eventsRows) =>
+          rows
+            .map((r) => ({ bucket: r.bucket, requests: r.requests, costUsd: r.costUsd }))
+            .sort((a, b) => a.bucket.localeCompare(b.bucket));
+        expect(norm(hybridRows)).toEqual(norm(eventsRows));
+      }
+    } finally {
+      cache.close();
+      delete process.env.TOKITOKI_DATA_DIR;
+    }
+  });
+});

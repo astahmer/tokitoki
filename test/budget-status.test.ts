@@ -4,13 +4,13 @@ import type { EventCache } from "../src/cache.ts";
 import { computeBudgetStatus, daysLeftForScope, gaugesForMenubar } from "../src/budget-status.ts";
 import type { BudgetsConfig } from "../src/budgets.ts";
 
-// Minimal EventCache stand-in: computeBudgetStatus only calls totals() and
-// aggregate() with cost-shaped rows.
+// Minimal EventCache stand-in: computeBudgetStatus only calls hybridUsage() /
+// hybridAggregate() with cost-shaped rows.
 function fakeCache(spends: { day: number; week: number; month: number }, accounts: Array<{ key: string; usd: number }> = []): EventCache {
   const agg = (_since: string, dim: string) =>
     dim === "account" ? accounts.map((a) => ({ bucket: a.key, costUsd: a.usd })) : [];
   return {
-    totals: (sinceIso: string) => {
+    hybridUsage: (sinceIso: string) => {
       const now = Date.now();
       const t = new Date(sinceIso).getTime();
       const spanDays = Math.max(1, (now - t) / 86_400_000);
@@ -18,7 +18,7 @@ function fakeCache(spends: { day: number; week: number; month: number }, account
       if (spanDays <= 8) return { costUsd: spends.week };
       return { costUsd: spends.month };
     },
-    aggregate: agg,
+    hybridAggregate: agg,
   } as unknown as EventCache;
 }
 

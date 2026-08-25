@@ -38,14 +38,46 @@ export interface SessionIndexStats {
   filesIndexed: number;
   docsIndexed: number;
   durationMs: number;
+  /** True when a recent index run made this call a no-op (throttle). */
+  throttled?: boolean;
+  /** Files exceeding MAX_INDEX_FILE_BYTES, not indexed. */
+  skippedLargeFiles?: number;
 }
 
-/** Drop and rebuild the whole index from every provider's stores. */
+/** Store files larger than this are not FTS-indexed: re-extracting multi-GB
+ * codex rollouts on mtime change dominated search latency (measured 55s). */
+const MAX_INDEX_FILE_BYTES = 64 * 1024 * 1024;
+/** Minimum interval between full incremental index runs (search-call path). */
+const UPDATE_THROTTLE_MS = 120_000;
+
+function lastIndexRunMs(db: Database): number {
+  try {
+    const row = db
+      .query("SELECT value FROM meta WHERE key = 'fts_last_update_ms'")
+      .get() as { value?: string } | undefined;
+    return row?.value !== undefined ? Number(row.value) : 0;
+  } catch {
+    return 0; // meta table absent (bare test dbs)
+  }
+}
+
+function markIndexRun(db: Database, t0Ms: number): void {
+  try {
+    db.exec("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);");
+    db.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES ('fts_last_update_ms', ?)").run(String(t0Ms));
+  } catch {
+    // best-effort
+  }
+}
+
+/** Drop and rebuild the whole index from every provider's stores. Always
+ * bypasses the update throttle — explicit user action. */
 export function rebuildSessionIndex(db: Database, providers: Provider[] = PROVIDERS): SessionIndexStats {
   const t0 = performance.now();
   ensureSessionFts(db);
   db.exec("DELETE FROM sessions_fts; DELETE FROM fts_files;");
-  const stats = updateSessionIndex(db, providers);
+  const stats = updateSessionIndex(db, providers, { force: true });
+  markIndexRun(db, Date.now());
   return { ...stats, durationMs: Math.round(performance.now() - t0) };
 }
 
@@ -53,9 +85,20 @@ export function rebuildSessionIndex(db: Database, providers: Provider[] = PROVID
  * Index only store files whose (mtimeMs, size) changed since the last run.
  * Providers without extractSessionDocs are skipped.
  */
-export function updateSessionIndex(db: Database, providers: Provider[] = PROVIDERS): SessionIndexStats {
+export function updateSessionIndex(
+  db: Database,
+  providers: Provider[] = PROVIDERS,
+  opts: { force?: boolean; throttleMs?: number; maxFileBytes?: number } = {},
+): SessionIndexStats {
   const t0 = performance.now();
   ensureSessionFts(db);
+  // Throttle: searches must stay fast; a fresh incremental pass is only
+  // needed when store files actually changed since the last pass.
+  const throttleMs = opts.throttleMs ?? UPDATE_THROTTLE_MS;
+  if (opts.force !== true && Date.now() - lastIndexRunMs(db) < throttleMs) {
+    return { filesIndexed: 0, docsIndexed: 0, durationMs: Math.round(performance.now() - t0), throttled: true };
+  }
+  let skippedLargeFiles = 0;
   const fileRows = db.query("SELECT file, mtime_ms, size FROM fts_files").all() as Array<{
     file: string;
     mtime_ms: number;
@@ -98,6 +141,10 @@ export function updateSessionIndex(db: Database, providers: Provider[] = PROVIDE
         const mtimeMs = Math.round(st.mtimeMs);
         const prev = known.get(file);
         if (prev !== undefined && prev.mtime_ms === mtimeMs && prev.size === st.size) continue;
+        if (st.size > (opts.maxFileBytes ?? MAX_INDEX_FILE_BYTES)) {
+          skippedLargeFiles += 1;
+          continue;
+        }
         let docs: SessionDoc[];
         try {
           docs = provider.extractSessionDocs!(file);
@@ -111,7 +158,8 @@ export function updateSessionIndex(db: Database, providers: Provider[] = PROVIDE
     }
   }
 
-  return { filesIndexed, docsIndexed, durationMs: Math.round(performance.now() - t0) };
+  markIndexRun(db, Date.now());
+  return { filesIndexed, docsIndexed, durationMs: Math.round(performance.now() - t0), skippedLargeFiles };
 }
 
 export interface SessionSearchRow {

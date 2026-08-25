@@ -33,6 +33,20 @@ export function SourcesView() {
               {p.roots.length > 0 && (
                 <div className="mb-1 font-mono text-[11px] text-kumo-subtle">{p.roots.join(" · ")}</div>
               )}
+              {p.trackedFiles > 0 && (
+                <div className="mb-2 flex items-center gap-2">
+                  {/* Up-to-date fraction: green fill = files fully consumed. */}
+                  <div className="h-1.5 w-28 overflow-hidden rounded-full bg-kumo-recessed" title={`${p.upToDateFiles}/${p.trackedFiles} tracked files up to date`}>
+                    <div
+                      className="h-full rounded-full bg-kumo-success"
+                      style={{ width: `${Math.round((p.upToDateFiles / Math.max(1, p.trackedFiles)) * 100)}%` }}
+                    />
+                  </div>
+                  <span className="text-[10px] text-kumo-subtle tabular-nums">
+                    {p.upToDateFiles}/{p.trackedFiles} up to date
+                  </span>
+                </div>
+              )}
               {p.accounts.length > 0 ? (
                 <div className="text-xs">
                   accounts:{" "}

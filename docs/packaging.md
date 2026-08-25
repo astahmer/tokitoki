@@ -33,6 +33,56 @@ Release flow suggestion:
 3. Attach to a git tag / GitHub release; note Bun version in release notes
    (`bun --version`) since compiled output is tied to it
 
+## Distribution (PREPARED, NOT PUBLISHED — 2026-08-25)
+
+Nothing below has been executed against the outside world; artifacts are
+prepared so publishing is a checklist, not a project.
+
+### npm strategy (decided)
+
+npm ships **JS + web assets executed by Bun** — not a compiled binary:
+
+- `bin/tokitoki.js` prefers `dist/cli.js`, falls back to `src/cli.ts` (source checkouts)
+- `prepack` runs tests + typecheck + `bun run build` → `dist/cli.js` + `dist/web`
+- `files: ["bin", "dist"]` keeps the tarball to exactly those trees
+- `engines.bun >=1.2` — Bun is the runtime requirement, same as source installs
+- Compiled binaries are NOT shipped via npm for the same reason Homebrew skips
+  them (web assets can't be resolved from bun's embedded filesystem)
+
+`bun pm pack --dry-run` verified 2026-08-25: tarball = bin/ + dist/{cli.js, web/}
+only.
+
+Pre-publish checklist (in order):
+
+1. Add a LICENSE file + matching `package.json` `license` field (deliberately
+   absent today — do not publish without it; npm will warn/fail audits)
+2. `npm whoami` under the right account; decide scope (`tokitoki` unscoped vs
+   `@astahmer/tokitoki` — unscoped name was available as of writing, re-check)
+3. `bun pm pack` → inspect tarball → `npm publish --dry-run` once more
+4. Tag `v<version>` and push AFTER npm publish so release assets exist for brew
+5. First release: fill `Formula/tokitoki.rb` sha256 from SHA256SUMS
+
+### Homebrew tap layout
+
+- Formula lives at `Formula/tokitoki.rb` in-repo (single-source of truth)
+- To serve it: create GitHub repo `<user>/homebrew-tap`, copy the formula in,
+  then `brew install <user>/tap/tokitoki`
+- Depends on `oven-sh/bun/bun` (official Bun tap) — bun is not in core
+- Audit before pushing the tap: `brew audit --strict --new-formula <user>/tap/tokitoki`
+- The formula downloads `tokitoki-portable.tar.gz` from the GitHub Release;
+  update url+sha256 per version (livecheck regex already matches v-tags)
+
+### Release flow (tag → assets → formulas)
+
+1. Bump `version` in package.json, commit
+2. `git tag vX.Y.Z && git push origin vX.Y.Z`
+3. `.github/workflows/release.yml` builds + uploads **draft** release with:
+   `tokitoki-portable.tar.gz`, per-platform compiled tarballs, `SHA256SUMS`
+4. Review draft on github.com → publish when ready (nothing is public before)
+5. Fill formula sha256 from SHA256SUMS, bump formula `version` if needed,
+   push tap
+6. npm: run prepack checklist above, `npm publish`
+
 ## Menu-bar app (macOS)
 
 ```sh
