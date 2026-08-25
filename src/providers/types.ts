@@ -21,6 +21,16 @@ export interface EntryContext {
   machineId: string;
 }
 
+/** Context handed to DB-backed providers (see Provider.scanDb). */
+export interface DbScanContext {
+  /** Mutable state bag persisted between scans (JSON-serializable) */
+  state: FileScanState;
+  /** True on first sight of this store (or after an extraction-version bump) */
+  freshFile: boolean;
+  /** Machine attribution for locally produced events */
+  machineId: string;
+}
+
 /**
  * A harness adapter. Adding support for a new coding agent means dropping one
  * file in src/providers/ exporting this interface and registering it in
@@ -39,7 +49,11 @@ export interface Provider {
    */
   discoverRoots(): string[];
 
-  /** Return candidate JSONL files under the given roots (recursive). */
+  /**
+   * Return candidate store files under the given roots (recursive). For
+   * JSONL providers these are line-scanned; for DB providers (scanDb set)
+   * each file is handed to scanDb as a whole.
+   */
   listFiles(root: string): string[];
 
   /**
@@ -47,6 +61,16 @@ export interface Provider {
    * skip unrelated entry types. State persists between scans via ctx.state.
    */
   parseLine(line: string, ctx: EntryContext): UsageEvent[];
+
+  /**
+   * Scan one SQLite-backed store file instead of walking JSONL lines.
+   * Implementations manage their own incremental cursor inside ctx.state
+   * (e.g. a row watermark) and return all newly-usable events; re-emitting
+   * an event with an already-known id is safe (cache/log dedupe).
+   * When set, scanProviderCore calls this per listed file and skips the
+   * byte-offset JSONL machinery entirely.
+   */
+  scanDb?(storePath: string, ctx: DbScanContext): UsageEvent[];
 
   /** Session text extraction for the search index (absent = not searchable). */
   extractSessionDocs?: ExtractSessionDocs;

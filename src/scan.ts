@@ -95,6 +95,29 @@ export function scanProviderCore(provider: Provider, machineId: string, hooks: S
     }
     if (size === 0) continue;
 
+    // DB-backed providers: hand over the whole store, cursor state lives in
+    // ctx.state (row watermark); offset is pinned to file size so the JSONL
+    // skip logic below never applies.
+    if (provider.scanDb !== undefined) {
+      const entry = cursors[file];
+      const fresh = entry === undefined || entry.state?.extractionVersion !== EXTRACTION_VERSION;
+      const state: FileScanState = fresh ? {} : { ...(entry.state ?? {}) };
+      state.extractionVersion = EXTRACTION_VERSION;
+      try {
+        const events = provider.scanDb(file, { state, freshFile: fresh, machineId });
+        if (events.length > 0) {
+          pendingBatch.push(...events);
+          totalEvents += events.length;
+          flushBatch();
+        }
+        filesTouched += 1;
+        cursors[file] = { offset: size, state };
+      } catch (error) {
+        console.error(`scan: ${provider.id} db ${file}: ${String(error)}`);
+      }
+      continue;
+    }
+
     const entry = cursors[file];
     const fresh = entry === undefined;
     let offset = fresh ? 0 : entry.offset;

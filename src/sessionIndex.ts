@@ -141,7 +141,13 @@ export function updateSessionIndex(
         const mtimeMs = Math.round(st.mtimeMs);
         const prev = known.get(file);
         if (prev !== undefined && prev.mtime_ms === mtimeMs && prev.size === st.size) continue;
-        if (st.size > (opts.maxFileBytes ?? MAX_INDEX_FILE_BYTES)) {
+        // DB-backed stores (scanDb providers) extract via bounded SQL queries,
+        // not whole-file reads — the byte cap exists to protect against
+        // reading giant JSONL/JSON files and must not exclude them.
+        if (
+          provider.scanDb === undefined &&
+          st.size > (opts.maxFileBytes ?? MAX_INDEX_FILE_BYTES)
+        ) {
           skippedLargeFiles += 1;
           continue;
         }
