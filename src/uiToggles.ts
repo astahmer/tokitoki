@@ -116,6 +116,14 @@ export function setMenubarCards(spec: string): void {
   });
 }
 
+/** Persist the account-card display order (menubar popover drag & drop). */
+export function setMenubarAccountOrder(ids: string[]): void {
+  saveUiMutator((cfg) => {
+    cfg.ui ??= {};
+    cfg.ui.menubarAccountOrder = ids;
+  });
+}
+
 /** Effective card layout: every known id in display order with hidden flags. */
 export function menubarCardLayout(config: TokitokiConfig): Array<{ id: string; hidden: boolean }> {
   const saved = config.ui?.menubarCards ?? [];

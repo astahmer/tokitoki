@@ -48,6 +48,8 @@ export interface AccountLimits {
   windows: LimitWindow[];
   /** Redacted API-key / credential hint for key-based accounts (opencode…). */
   credential?: string;
+  /** Other harnesses sharing this exact credential (credential-grouped cards). */
+  alsoOn?: string[];
   /** Banked rate-limit resets (codex credits analog). */
   bankedResets?: number;
   bankedExpiresAt?: string;
@@ -370,6 +372,72 @@ function quotaSignature(l: AccountLimits): string | null {
     .filter((x): x is string => x !== null);
   if (parts.length === 0) return null;
   return [...new Set(parts)].sort().join("|");
+}
+
+/**
+ * Group accounts that share the SAME redacted credential (e.g. pi and
+ * opencode both reading the opencode-go gateway key): one card per real
+ * account instead of N near-identical ones. The primary entry is the one
+ * with the most recorded tokens; other harnesses ride along in `alsoOn`.
+ *
+ * Window merge per kind: embedded/polled data beats derived; two derived
+ * windows SUM (the harnesses index disjoint session stores, so no double
+ * counting) with resets taken from the later side.
+ */
+export function groupBySharedCredential(limits: AccountLimits[]): AccountLimits[] {
+  const groups = new Map<string, AccountLimits[]>();
+  const unkeyed: AccountLimits[] = [];
+  for (const l of limits) {
+    if (l.credential === undefined || l.credential.length === 0) {
+      unkeyed.push(l);
+      continue;
+    }
+    const g = groups.get(l.credential);
+    if (g === undefined) groups.set(l.credential, [l]);
+    else g.push(l);
+  }
+
+  const totalTokens = (l: AccountLimits) => l.windows.reduce((s, w) => s + w.tokens, 0);
+  const out: AccountLimits[] = [...unkeyed];
+  for (const group of groups.values()) {
+    if (group.length === 1) {
+      out.push(group[0]!);
+      continue;
+    }
+    const sorted = [...group].sort((a, b) => totalTokens(b) - totalTokens(a));
+    const primary = sorted[0]!;
+    const byKind = new Map<string, LimitWindow>();
+    for (const l of sorted) {
+      for (const w of l.windows) {
+        const existing = byKind.get(w.kind);
+        if (existing === undefined) {
+          byKind.set(w.kind, { ...w });
+          continue;
+        }
+        const rank = (src: string) => (src === "embedded" || src === "polled" ? 1 : 0);
+        if (rank(w.source) > rank(existing.source)) {
+          byKind.set(w.kind, { ...w });
+        } else if (rank(w.source) === rank(existing.source) && existing.source === "derived") {
+          byKind.set(w.kind, {
+            ...existing,
+            tokens: existing.tokens + w.tokens,
+            cost: existing.cost + w.cost,
+            requests: existing.requests + w.requests,
+            resetsAt: [existing.resetsAt, w.resetsAt].sort().at(-1) ?? existing.resetsAt,
+            windowStart: [existing.windowStart, w.windowStart].sort()[0],
+            windowEnd: [existing.windowEnd, w.windowEnd].sort().at(-1),
+          });
+        }
+      }
+    }
+    out.push({
+      ...primary,
+      windows: [...byKind.values()],
+      alsoOn: sorted.slice(1).map((l) => l.provider),
+      email: undefined,
+    });
+  }
+  return out.sort((a, b) => totalTokens(b) - totalTokens(a));
 }
 
 function windowMinutesOf(w: LimitWindow): number | null {

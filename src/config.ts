@@ -75,6 +75,8 @@ export interface TokitokiConfig {
      * their default position/visibility.
      */
     menubarCards?: string[];
+    /** Account-card display order ("provider@accountKey" ids), menubar popover. */
+    menubarAccountOrder?: string[];
   };
 }
 

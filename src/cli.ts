@@ -10,13 +10,14 @@ import type { UsageEvent } from "./types.ts";
 import { DIMENSIONS, EventCache, type AggRow, type Dimension, type SeriesBucket, type SessionSummary } from "./cache.ts";
 import { renderTable, renderMiniProjects, renderMarkdownTable, resolveExtraFiles, resolveSortColumn, sinceIsoFor, sinceIsoForDays, previousWindow, monthStartIso, sortRows, formatDelta, deltaInfo, totalRow, totalTokens, planGaugeFn, renderBurnLine, burnProjection, type TableContext } from "./report.ts";
 import { accountEmailMap } from "./accounts.ts";
-import { computeLimits, mergeAliasLimits, type AccountLimits } from "./limits.ts";
+import { computeLimits, groupBySharedCredential, mergeAliasLimits, type AccountLimits } from "./limits.ts";
 import { opencodeCredentials, pollQuotas } from "./poll.ts";
 import {
   assertValidSurface,
   isVisibleOn,
   setMenubarProviders,
   setMenubarCards,
+  setMenubarAccountOrder,
   setSurfaceVisibility,
   menubarCardLayout,
 } from "./uiToggles.ts";
@@ -431,7 +432,7 @@ export async function main(argv: string[]): Promise<void> {
 /** Flags each command accepts — anything else is a typo we can suggest around. */
 const KNOWN_FLAGS: Record<string, string[]> = {
   "menubar-payload": ["json"],
-  ui: ["list", "hide", "show", "surface", "menubar-only", "card-set"],
+  ui: ["list", "hide", "show", "surface", "menubar-only", "card-set", "account-order"],
   scan: ["provider"],
   sources: [],
   report: ["last", "by", "json", "sort", "asc", "provider", "delta", "no-delta", "show-email", "show-emails", "since", "until", "from", "to"],
@@ -2048,11 +2049,21 @@ function runMenubarPayload(parsed: ParsedInvocation): void {
       // Key-based harnesses: attach a redacted credential so accounts are
       // distinguishable without emails (pi / opencode auth is API-key only).
       const creds = opencodeCredentials();
-      const withCreds: Array<AccountLimits & { credential?: string }> = merged.map((l) => {
+      const withCreds = merged.map((l) => {
         const cred = creds[l.accountKey];
         return cred !== undefined ? { ...l, credential: cred } : l;
       });
-      console.log(JSON.stringify(withCreds));
+      // Accounts sharing one credential (pi + opencode on the same gateway
+      // key) are ONE real account — collapse to a single card.
+      const grouped = groupBySharedCredential(withCreds);
+      // Drag-saved display order first, then the default (token-heavy) order.
+      const savedOrder = config.ui?.menubarAccountOrder ?? [];
+      const rank = (l: AccountLimits): number => {
+        const i = savedOrder.indexOf(`${l.provider}@${l.accountKey}`);
+        return i === -1 ? savedOrder.length : i;
+      };
+      grouped.sort((a, b) => rank(a) - rank(b));
+      console.log(JSON.stringify(grouped));
     });
   });
   capture("spendPeriods", () => {
@@ -2084,10 +2095,15 @@ function runUi(parsed: ParsedInvocation): void {
   const show = flagString(parsed, "show");
   const menubarOnly = parsed.flags["menubar-only"];
   const cardSet = flagString(parsed, "card-set");
-
   if (cardSet !== undefined) {
     setMenubarCards(cardSet);
     console.log("card layout saved");
+    return;
+  }
+  const accountOrder = flagString(parsed, "account-order");
+  if (accountOrder !== undefined) {
+    setMenubarAccountOrder(accountOrder.split(",").map((s) => s.trim()).filter(Boolean));
+    console.log("account order saved");
     return;
   }
 

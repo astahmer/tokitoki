@@ -54,7 +54,7 @@ export async function renderStatusline(
 
   const monthStart = monthStartIso();
   // spendSnapshot(dayIso, weekIso, monthIso) — we only surface day + MTD.
-  const snap = cache.spendSnapshot(sinceIsoFor("day"), monthStart, monthStart);
+  const snap = cache.spendSnapshot(sinceIsoFor("day", new Date(now)), monthStart, monthStart);
   if (snap.totals.day > 0) segments.push(`$${snap.totals.day.toFixed(2)} today`);
   if (snap.totals.month > 0) segments.push(`$${snap.totals.month.toFixed(2)} MTD`);
 

@@ -121,6 +121,8 @@ struct AccountLimits: Codable, Identifiable {
     let email: String?
     /** Redacted api-key/credential hint ("sk-x…12ab") when key-based. */
     let credential: String?
+    /** Other harnesses sharing this exact credential (grouped card). */
+    let alsoOn: [String]?
     let planLabel: String?
     let windows: [LimitWindow]
     let bankedResets: Int?
@@ -178,10 +180,10 @@ final class Model: ObservableObject {
     @Published var anomalyLine: String?
     @Published var limits: [AccountLimits] = []
     @Published var previewMode: String = "inline"
-    /// (provider, remaining%) pairs behind the status-item preview — drives
-    /// the attributed title with inline brand logos. Multiple accounts of the
-    /// same provider are STACKED in one group (openusage-style).
-    @Published var previewGroups: [(provider: String, remainings: [Int])] = []
+    /// Status-item strip groups: UPSTREAM providers (openai, claude,
+    /// opencode, openrouter… — not harnesses), each with stacked "NN%" lines
+    /// for real quotas or a single "~NN%" usage-relative estimate.
+    @Published var previewGroups: [(provider: String, lines: [String])] = []
     @Published var knownProviders: [String] = []
     @Published var menubarHidden: Set<String> = []
     /// Popover card layout from the payload: ordered ids + hidden flags.
@@ -261,23 +263,10 @@ final class Model: ObservableObject {
                 applyBudgets(p.budgets)
                 self.limits = p.limits ?? []
                 self.previewMode = p.uiPreview?.previewMode ?? "inline"
-                let maxLines = p.uiPreview?.previewLines ?? 3
-                // Group per provider; every embedded window renders as one
-                // stacked percentage line (openusage-style vertical stack).
-                var grouped: [(provider: String, remainings: [Int])] = []
-                for l in p.limits ?? [] {
-                    let pcts: [Int] = l.windows.compactMap { w in
-                        guard let pct = w.usedPct else { return nil }
-                        return Int(max(0, min(100, 100 - pct)).rounded())
-                    }
-                    guard !pcts.isEmpty else { continue }
-                    if let idx = grouped.firstIndex(where: { $0.provider == l.provider }) {
-                        grouped[idx].remainings.append(contentsOf: pcts)
-                    } else {
-                        grouped.append((l.provider, pcts))
-                    }
-                }
-                previewGroups = grouped.prefix(maxLines).map { ($0.provider, Array($0.remainings.prefix(3))) }
+                // Upstream-provider groups with stacked quota percentages;
+                // providers without a real denominator get ONE usage-relative
+                // estimate line (~NN%) instead of nothing.
+                previewGroups = Self.stripGroups(from: p.limits ?? [])
                 let newTitle = composeTitle(today: p.today, preview: Self.previewText(p.limits ?? [], cfg: p.uiPreview), hovering: isHovering, mode: self.previewMode)
                 setTitleIfChanged(newTitle)
                 self.errorText = nil
@@ -416,6 +405,76 @@ final class Model: ObservableObject {
 
     /// Primary window for a card/bar: first with a real quota denominator,
     /// else the first window. Mirrors the popover hero logic.
+    /// Upstream provider (openai/claude/opencode/openrouter/…) for strip
+    /// grouping — harnesses (pi, codex, claude-code) are just clients.
+    private static func upstreamProvider(_ l: AccountLimits) -> String? {
+        switch l.provider {
+        case "codex": return "openai"
+        case "claude-code": return "claude"
+        case "gemini-cli": return "gemini"
+        case "grok": return "grok"
+        case "cursor": return "cursor"
+        case "pi", "opencode", "opencode-go":
+            let key = l.accountKey.lowercased()
+            if key.contains("openrouter") { return "openrouter" }
+            if key.contains("opencode") { return "opencode" }
+            return nil
+        default: return nil
+        }
+    }
+
+    /// Build strip groups: stacked real percentages when any account in the
+    /// group reports a quota; otherwise one "~NN%" estimate from the group's
+    /// usage relative to the busiest same-kind window across all accounts
+    /// (same normalization as the card bars — an ESTIMATE, tilde-marked).
+    static func stripGroups(from limits: [AccountLimits]) -> [(provider: String, lines: [String])] {
+        var maxima: [String: Double] = [:]
+        for l in limits {
+            for w in l.windows { maxima[w.kind] = max(maxima[w.kind] ?? 0, w.tokens) }
+        }
+
+        struct Group {
+            var pcts: [Int] = []
+            var estByKind: [String: Double] = [:]
+        }
+        var order: [String] = []
+        var groups: [String: Group] = [:]
+        for l in limits {
+            guard let up = upstreamProvider(l) else { continue }
+            if groups[up] == nil {
+                groups[up] = Group()
+                order.append(up)
+            }
+            for w in l.windows {
+                if let pct = w.usedPct {
+                    groups[up]!.pcts.append(Int(max(0, min(100, 100 - pct)).rounded()))
+                } else {
+                    groups[up]!.estByKind[w.kind, default: 0] += w.tokens
+                }
+            }
+        }
+
+        let kindPriority = ["week", "month", "day"]
+        return order.map { up in
+            let g = groups[up]!
+            if !g.pcts.isEmpty {
+                return (up, g.pcts.prefix(3).map { "\($0)%" })
+            }
+            // Estimate: first priority kind that has both usage and a peer max.
+            for kind in kindPriority {
+                let tokens = g.estByKind[kind] ?? 0
+                let scale = maxima[kind] ?? 0
+                if tokens > 0, scale > 0 {
+                    let usedShare = min(1.0, tokens / scale)
+                    let remaining = max(1, min(99, Int((100 - usedShare * 100).rounded())))
+                    return (up, ["~\(remaining)%"])
+                }
+            }
+            // No usage recorded at all → everything left.
+            return (up, ["~100%"])
+        }
+    }
+
     static func primaryWindow(_ l: AccountLimits) -> LimitWindow? {
         l.windows.first { $0.usedPct != nil } ?? l.windows.first
     }
@@ -651,7 +710,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let entries = showPreview ? model.previewGroups : []
 
         // Fingerprint of everything the strip renders, for memoization.
-        let fingerprint = entries.map { "\($0.provider):\($0.remainings.map(String.init).joined(separator: "+"))" }.joined(separator: ",")
+        let fingerprint = entries.map { "\($0.provider):\($0.lines.joined(separator: "+"))" }.joined(separator: ",")
             + "|\(fallback.hasPrefix("🔴") ? "x" : fallback.hasPrefix("🟠") ? "w" : "-")"
 
         if let last = Self.lastStrip, last.fingerprint == fingerprint {
@@ -706,9 +765,9 @@ struct MonoMark: View {
     /// mark per provider, that provider's percentages STACKED vertically at a
     /// slightly smaller size — openusage pattern), rasterize via ImageRenderer,
     /// trim transparent margins, and wrap in a template NSImage.
-    static func renderStrip(groups: [(provider: String, remainings: [Int])], badge: String?) -> NSImage? {
+    static func renderStrip(groups: [(provider: String, lines: [String])], badge: String?) -> NSImage? {
         struct Strip: View {
-            let groups: [(provider: String, remainings: [Int])]
+            let groups: [(provider: String, lines: [String])]
             let badge: String?
             var body: some View {
                 HStack(spacing: 7) {
@@ -721,8 +780,8 @@ struct MonoMark: View {
                             MonoMark(provider: g.provider)
                                 .frame(width: 10, height: 10)
                             VStack(alignment: .leading, spacing: -1) {
-                                ForEach(Array(g.remainings.enumerated()), id: \.offset) { _, r in
-                                    Text("\(r)%")
+                                ForEach(Array(g.lines.enumerated()), id: \.offset) { _, line in
+                                    Text(line)
                                         .font(.system(size: 9.5, weight: .semibold))
                                         .monospacedDigit()
                                         .lineLimit(1)
@@ -998,6 +1057,57 @@ MainActor.assumeIsolated {
 /// openusage-style "Customize" sheet: every popover card with a drag handle
 /// (reorder) and a native Toggle (visibility). Saved via `tokitoki ui
 /// --card-set id:1,id:0,...` then the model refreshes.
+/// Reorder-on-drop for popover cards: moves `dragging` before/after `target`
+/// inside the full layout (hidden entries ride along), then commits.
+struct PopoverCardDrop: DropDelegate {
+    let target: String
+    let getLayout: () -> [(id: String, hidden: Bool)]
+    let setLayout: ([(id: String, hidden: Bool)]) -> Void
+    @Binding var dragging: String?
+    let onCommit: ([(id: String, hidden: Bool)]) -> Void
+
+    func dropEntered(info: DropInfo) {
+        guard let dragging, dragging != target else { return }
+        var layout = getLayout()
+        guard let from = layout.firstIndex(where: { $0.id == dragging }),
+              let to = layout.firstIndex(where: { $0.id == target }) else { return }
+        withAnimation(.easeInOut(duration: 0.15)) {
+            layout.move(fromOffsets: IndexSet(integer: from), toOffset: to > from ? to + 1 : to)
+        }
+        setLayout(layout)
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        defer { dragging = nil }
+        onCommit(getLayout())
+        return true
+    }
+
+    func validateDrop(info: DropInfo) -> Bool { true }
+    func dropUpdated(info: DropInfo) -> DropProposal? { DropProposal(operation: .move) }
+}
+
+/// Generic move-on-hover drop delegate for id-list reordering.
+struct ReorderDropDelegate: DropDelegate {
+    let target: String
+    @Binding var dragging: String?
+    /// Called with the dragged id when it enters `target`'s bounds.
+    let onMove: (String) -> Void
+
+    func dropEntered(info: DropInfo) {
+        guard let dragging, dragging != target else { return }
+        onMove(dragging)
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        dragging = nil
+        return true
+    }
+
+    func validateDrop(info: DropInfo) -> Bool { true }
+    func dropUpdated(info: DropInfo) -> DropProposal? { DropProposal(operation: .move) }
+}
+
 struct CustomizeSheet: View {
     @ObservedObject var model: Model
     @Binding var isPresented: Bool
@@ -1105,13 +1215,18 @@ struct CustomizeSheet: View {
 
     private func save() {
         let cli = model.currentInvocation()
+        let layout = cards.map { (id: $0.id, hidden: !$0.visible) }
+        // Optimistic: reflect immediately, then confirm on disk + refresh.
+        model.cardLayout = layout
         let spec = cards.map { "\($0.id):\($0.visible ? "1" : "0")" }.joined(separator: ",")
-        let task = Process()
-        task.executableURL = cli.executable
-        task.arguments = cli.prefixArgs + ["ui", "--card-set", spec]
-        try? task.run()
-        task.waitUntilExit()
-        model.refresh()
+        Task {
+            do {
+                _ = try await Model.runCLI(cli, ["ui", "--card-set", spec])
+            } catch {
+                FileHandle.standardError.write(Data("[tokitoki] card save failed: \(error)\n".utf8))
+            }
+            await MainActor.run { model.refresh() }
+        }
     }
 }
 
@@ -1125,6 +1240,14 @@ struct ContentView: View {
     @State private var showCustomize = false
     /// Repo row currently expanded in the repos card.
     @State private var expandedRepo: String?
+    /// Card order override while a drag session is in flight.
+    @State private var localLayout: [(id: String, hidden: Bool)]?
+    /// Id currently being dragged (popover card reorder).
+    @State private var draggingCard: String?
+    /// Account-card order override while a drag session is in flight.
+    @State private var localAccountOrder: [String]?
+    /// Account id currently being dragged (limits section reorder).
+    @State private var draggingAccount: String?
 
     /// Default card order when the payload carries no layout yet.
     static let defaultCardOrder = ["limits", "usage", "spend", "harness", "activity", "anomalies", "repos", "tools"]
@@ -1183,18 +1306,33 @@ struct ContentView: View {
                 }
                 searchBar
                 ForEach(orderedVisibleCards(), id: \.self) { id in
-                    if cardSurvives(id) {
-                        cardBody(id)
+                    Group {
+                        if cardSurvives(id) {
+                            cardBody(id)
+                        }
                     }
+                    .onDrag {
+                        draggingCard = id
+                        return NSItemProvider(object: id as NSString)
+                    }
+                    .onDrop(of: [UTType.plainText], delegate: PopoverCardDrop(
+                        target: id,
+                        getLayout: { effectiveLayout() },
+                        setLayout: { localLayout = $0 },
+                        dragging: $draggingCard,
+                        onCommit: { persistCardLayout($0) }
+                    ))
                 }
                 HStack(spacing: 8) {
                     Button(action: openDashboard) { Label("Dashboard", systemImage: "safari") }.buttonStyle(.borderedProminent)
                     Button(action: { model.refresh() }) { Label("Refresh", systemImage: "arrow.clockwise") }.buttonStyle(.bordered)
                     Spacer()
-                    Button(action: shareScreenshot) {
+                    Menu {
+                        Button("Save Screenshot to Desktop") { saveScreenshot() }
+                        Button("Copy Summary as Markdown") { copyMarkdownSummary() }
+                    } label: {
                         Image(systemName: "square.and.arrow.up")
-                    }.buttonStyle(.bordered)
-                        .help("Share a screenshot of this popover")
+                    }.help("Share: save a screenshot or copy a markdown summary")
                     Button(action: { showCustomize = true }) {
                         Image(systemName: "slider.horizontal.3")
                     }.buttonStyle(.bordered)
@@ -1215,12 +1353,34 @@ struct ContentView: View {
     }
 
     /// Effective card order: payload layout first, defaults appended.
-    private func orderedVisibleCards() -> [String] {
-        var ids = model.cardLayout.filter { !$0.hidden }.map { $0.id }
-        for id in Self.defaultCardOrder where !ids.contains(id) {
-            ids.append(id)
+    /// A local drag session overrides the payload until persistence confirms.
+    private func effectiveLayout() -> [(id: String, hidden: Bool)] {
+        var ids = localLayout ?? model.cardLayout
+        for id in Self.defaultCardOrder where !ids.contains(where: { $0.id == id }) {
+            ids.append((id, false))
         }
-        return ids.filter { Self.cardTitles[$0] != nil }
+        return ids.filter { Self.cardTitles[$0.id] != nil }
+    }
+
+    private func orderedVisibleCards() -> [String] {
+        effectiveLayout().filter { !$0.hidden }.map { $0.id }
+    }
+
+    /// Persist a full card layout (order + visibility) via the CLI, updating
+    /// the UI optimistically so the change shows immediately.
+    private func persistCardLayout(_ layout: [(id: String, hidden: Bool)]) {
+        localLayout = layout
+        model.cardLayout = layout
+        let cli = model.currentInvocation()
+        let spec = layout.map { "\($0.id):\($0.hidden ? "0" : "1")" }.joined(separator: ",")
+        Task {
+            do {
+                _ = try await Model.runCLI(cli, ["ui", "--card-set", spec])
+            } catch {
+                FileHandle.standardError.write(Data("[tokitoki] card save failed: \(error)\n".utf8))
+            }
+            await MainActor.run { model.refresh() }
+        }
     }
 
     @ViewBuilder private func cardBody(_ id: String) -> some View {
@@ -1267,15 +1427,53 @@ struct ContentView: View {
         .accessibilityIdentifier("popover-search")
     }
 
-    /// Share the popover content as an image via the native sharing picker.
-    private func shareScreenshot() {
+    /// Capture the popover content and write it as a PNG on the Desktop,
+    /// then reveal it in Finder.
+    private func saveScreenshot() {
         guard let view = popoverContentAnchorView() else { return }
         guard let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
         view.cacheDisplay(in: view.bounds, to: rep)
-        let image = NSImage(size: view.bounds.size)
-        image.addRepresentation(rep)
-        let picker = NSSharingServicePicker(items: [image])
-        picker.show(relativeTo: view.bounds, of: view, preferredEdge: .minY)
+        guard let data = rep.representation(using: .png, properties: [:]) else { return }
+        let stamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
+        let desktop = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Desktop")
+        let url = desktop.appendingPathComponent("tokitoki-popover-\(stamp).png")
+        do {
+            try data.write(to: url)
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+        } catch {
+            FileHandle.standardError.write(Data("[tokitoki] screenshot write failed: \(error)\n".utf8))
+        }
+    }
+
+    /// Plain-text markdown digest of the current payload → clipboard.
+    private func copyMarkdownSummary() {
+        var md = "# tokitoki summary\n\n_\(DateFormatter.localizedString(from: Date(), dateStyle: .long, timeStyle: .short))_\n\n"
+        if let today = model.today {
+            md += "**Today**: \(String(format: "$%.2f", today.total.costUsd)) · \(humanCount(Double(today.total.requests))) requests · \(today.total.sessions) sessions\n"
+        }
+        if let week = model.week {
+            md += "**This week**: \(String(format: "$%.2f", week.total.costUsd))\n"
+        }
+        if !model.limits.isEmpty {
+            md += "\n## Accounts\n\n| harness | account | windows |\n|---|---|---|\n"
+            for l in model.limits {
+                let wins = l.windows.map { w -> String in
+                    let pct = w.usedPct.map { " \(Int(max(0, min(100, 100 - $0))))% left" } ?? " \(humanCount(w.tokens))"
+                    return "\(windowDisplayName(w.kind)):\(pct)"
+                }.joined(separator: " · ")
+                let who = l.email ?? l.credential ?? l.accountKey
+                md += "| \(l.provider) | \(who) | \(wins) |\n"
+            }
+        }
+        if !model.repos.isEmpty {
+            md += "\n## Top repos (month)\n\n"
+            for r in model.repos.sorted(by: { $0.costUsd > $1.costUsd }).prefix(5) {
+                md += "- **\(repoName(r.bucket))** — \(repoUsage(r))\n"
+            }
+        }
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(md, forType: .string)
     }
 
     /// The popover's key-window content view (anchor for the sharing picker).
@@ -1370,12 +1568,37 @@ struct ContentView: View {
 
     // MARK: - v3: per-account limit cards (the hero)
 
+    /// Account cards in drag-saved order (payload order as fallback).
+    private func orderedAccounts() -> [AccountLimits] {
+        let all = model.limits
+        if let local = localAccountOrder {
+            let rank = { (l: AccountLimits) in local.firstIndex(of: "\(l.provider)@\(l.accountKey)") ?? local.count }
+            return all.sorted { rank($0) < rank($1) }
+        }
+        return all
+    }
+
+    /// Persist a new account-card order via the CLI, optimistically.
+    private func persistAccountOrder(_ ids: [String]) {
+        localAccountOrder = ids
+        let cli = model.currentInvocation()
+        Task {
+            do {
+                _ = try await Model.runCLI(cli, ["ui", "--account-order", ids.joined(separator: ",")])
+            } catch {
+                FileHandle.standardError.write(Data("[tokitoki] account order save failed: \(error)\n".utf8))
+            }
+            await MainActor.run { model.refresh() }
+        }
+    }
+
     @ViewBuilder private var limitsSection: some View {
         // Cards render directly on the popover surface — each account card is
         // its own container; no extra wrapping card.
-        let visible = model.limits.filter { accountMatches($0) }
+        let visible = orderedAccounts().filter { accountMatches($0) }
         VStack(alignment: .leading, spacing: 8) {
             ForEach(Array(visible.enumerated()), id: \.element.id) { idx, l in
+                let accountId = "\(l.provider)@\(l.accountKey)"
                 if idx > 0, visible[idx - 1].provider == l.provider {
                     Divider()
                 }
@@ -1384,6 +1607,23 @@ struct ContentView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 10))
                     .accessibilityLabel("limit-card-\(l.provider)-\(l.accountKey)")
+                    .onDrag {
+                        draggingAccount = accountId
+                        return NSItemProvider(object: accountId as NSString)
+                    }
+                    .onDrop(of: [UTType.plainText], delegate: ReorderDropDelegate(
+                        target: accountId,
+                        dragging: $draggingAccount,
+                        onMove: { dragged in
+                            var ids = orderedAccounts().map { "\($0.provider)@\($0.accountKey)" }
+                            guard let from = ids.firstIndex(of: dragged),
+                                  let to = ids.firstIndex(of: accountId) else { return }
+                            withAnimation(.easeInOut(duration: 0.15)) {
+                                ids.move(fromOffsets: IndexSet(integer: from), toOffset: to > from ? to + 1 : to)
+                            }
+                            persistAccountOrder(ids)
+                        }
+                    ))
             }
             consoleLinksRow
             unmatchedBudgetsRow
@@ -1932,7 +2172,7 @@ enum BrandIcon {
         let d: String?
         switch provider {
         case "codex", "openai": d = openai
-        case "claude-code": d = anthropic
+        case "claude-code", "claude": d = anthropic
         case "cursor": d = cursor
         case "gemini-cli": d = googlegemini
         case "grok": d = x
@@ -1983,8 +2223,8 @@ struct ProviderLogo: View {
 
     static func brandColor(_ p: String) -> Color {
         switch p {
-        case "claude-code": return Color(red: 0.851, green: 0.467, blue: 0.341) // #D97757 Anthropic clay
-        case "codex": return Color(red: 0.063, green: 0.639, blue: 0.498)       // #10A37F OpenAI
+        case "claude-code", "claude": return Color(red: 0.851, green: 0.467, blue: 0.341) // #D97757 Anthropic clay
+        case "codex", "openai": return Color(red: 0.063, green: 0.639, blue: 0.498)  // #10A37F OpenAI
         case "cursor": return Color(red: 0.400, green: 0.400, blue: 0.440)
         case "gemini-cli": return Color(red: 0.259, green: 0.522, blue: 0.957)  // #4285F4
         case "grok": return .primary
@@ -2186,15 +2426,20 @@ struct AccountLimitCard: View {
     }
 
     private var accountLabel: String {
+        var label: String
         if let email = limits.email, !email.isEmpty {
-            return "\(email) · \(limits.accountKey)"
-        }
-        if let cred = limits.credential, !cred.isEmpty {
+            label = "\(email) · \(limits.accountKey)"
+        } else if let cred = limits.credential, !cred.isEmpty {
             // Key-based accounts (opencode/pi): the redacted key sits where an
             // email would — same position, same treatment.
-            return "\(limits.provider) \(cred)"
+            label = "\(limits.provider) \(cred)"
+        } else {
+            label = "\(limits.provider) · \(limits.accountKey)"
         }
-        return "\(limits.provider) · \(limits.accountKey)"
+        if let also = limits.alsoOn, !also.isEmpty {
+            label += " · via " + also.joined(separator: ", ")
+        }
+        return label
     }
 
     @ViewBuilder private var planBadge: some View {

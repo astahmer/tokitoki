@@ -5,8 +5,7 @@ import type { AggRow } from "./cache.ts";
 import { syncedExtraFiles } from "./sync/index.ts";
 
 /** Rolling window boundaries in ISO-8601 UTC. */
-export function sinceIsoFor(period: "day" | "week" | "month"): string {
-  const now = new Date();
+export function sinceIsoFor(period: "day" | "week" | "month", now: Date = new Date()): string {
   if (period === "day") {
     // Local calendar day start
     const d = new Date(now.getFullYear(), now.getMonth(), now.getDate());
