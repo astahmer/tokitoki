@@ -533,6 +533,26 @@ export class EventCache {
    * Latest embedded quota snapshot per window length for one provider+account.
    * Real provider-reported data (currently codex rate_limits only).
    */
+  /**
+   * Quota fingerprints of the CURRENTLY-AUTHENTICATED login(s): window pairs
+   * from POLLED snapshots (event_id "poll:*"). Scan-embedded windows whose
+   * (windowMinutes, resetsAt) match one of these provably belong to the
+   * local login; everything else may be a different account.
+   */
+  ownLoginFingerprints(provider: string): Set<string> {
+    try {
+      const rows = this.db
+        .query(
+          `SELECT DISTINCT window_minutes AS wm, resets_at AS resets
+           FROM quota_snapshots WHERE provider = ? AND event_id LIKE 'poll:%'`,
+        )
+        .all(provider) as Array<{ wm: number; resets: number }>;
+      return new Set(rows.map((r) => `${r.wm}:${r.resets}`));
+    } catch {
+      return new Set();
+    }
+  }
+
   latestQuotaSnapshots(provider: string, accountKey: string): QuotaSnapshotRow[] {
     try {
       return this.db

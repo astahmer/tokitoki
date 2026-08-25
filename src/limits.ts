@@ -1,3 +1,5 @@
+import fs from "node:fs";
+
 import type { TokitokiConfig } from "./config.ts";
 import type { EventCache } from "./cache.ts";
 import { accountEmailFor } from "./accounts.ts";
@@ -91,6 +93,29 @@ function embeddedKind(windowMinutes: number): string {
   if (windowMinutes === 10080) return "week";
   if (windowMinutes === 43200) return "month";
   return `${windowMinutes}min`;
+}
+
+/**
+ * Foreign quota fingerprints: window resets reported by the opencodex
+ * account pool (~/.opencodex/codex-quota-cache.json), i.e. OTHER ChatGPT
+ * logins that ran through the proxy on this machine. An account whose
+ * embedded weekly window matches one of these is provably NOT the locally
+ * authenticated codex login — never stamp our email on it.
+ */
+export function foreignQuotaFingerprints(provider: string): Set<string> {
+  const out = new Set<string>();
+  if (provider !== "codex") return out;
+  try {
+    const raw = JSON.parse(
+      fs.readFileSync(`${process.env.HOME ?? "~"}/.opencodex/codex-quota-cache.json`, "utf8"),
+    ) as { quotas?: Record<string, { weeklyResetAt?: number }> };
+    for (const q of Object.values(raw.quotas ?? {})) {
+      if (typeof q.weeklyResetAt === "number") out.add(`10080:${q.weeklyResetAt}`);
+    }
+  } catch {
+    // no opencodex pool on this machine — nothing foreign known
+  }
+  return out;
 }
 
 /**
@@ -233,10 +258,23 @@ export function computeLimits(
     const order: Record<string, number> = { day: 0, week: 1, month: 2 };
     windows.sort((a, b) => (order[a.kind] ?? 99) - (order[b.kind] ?? 99));
 
+    // Email attribution (the CodexBar trick): the provider-level email comes
+    // from the CURRENT auth store, so it may not belong to every account
+    // sharing this machine. Keep it only when the account is provably the
+    // local login — its embedded windows match polled quota fingerprints —
+    // or when nothing contradicts it (never polled + no foreign pool data).
+    const pairs = snaps.map((s) => `${Math.round(s.windowMinutes)}:${Math.round(s.resetsAt)}`);
+    const own = cache.ownLoginFingerprints(provider);
+    const foreign = foreignQuotaFingerprints(provider);
+    let email = accountEmailFor(provider) ?? undefined;
+    if (!pairs.some((p) => own.has(p)) && !(own.size === 0 && !pairs.some((p) => foreign.has(p)))) {
+      email = undefined;
+    }
+
     out.push({
       provider,
       accountKey,
-      email: accountEmailFor(provider) ?? undefined,
+      email,
       planLabel,
       windows,
       bankedResets,

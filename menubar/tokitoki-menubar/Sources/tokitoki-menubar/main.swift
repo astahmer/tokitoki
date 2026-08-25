@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 import AppKit
 import UserNotifications
 
@@ -128,12 +129,19 @@ struct AccountLimits: Codable, Identifiable {
     var id: String { "\(provider)@\(accountKey)" }
 }
 
+struct MenubarCardConfig: Codable {
+    let id: String
+    let hidden: Bool
+}
+
 struct UiPreviewConfig: Codable {
     let previewLines: Int?
     let previewMode: String? // "inline" | "hover"
     // Provider visibility (context-menu Settings ▸ toggles).
     let providers: [String]?
     let menubarHidden: [String]?
+    // Card layout (Customize sheet): ordered ids + hidden flags.
+    let cards: [MenubarCardConfig]?
 }
 
 // Combined snapshot from `tokitoki menubar-payload --json` (single CLI
@@ -170,11 +178,14 @@ final class Model: ObservableObject {
     @Published var anomalyLine: String?
     @Published var limits: [AccountLimits] = []
     @Published var previewMode: String = "inline"
-    /// (provider, % remaining) pairs behind the status-item preview — drives
-    /// the attributed title with inline brand logos.
-    @Published var previewEntries: [(provider: String, remaining: Int)] = []
+    /// (provider, remaining%) pairs behind the status-item preview — drives
+    /// the attributed title with inline brand logos. Multiple accounts of the
+    /// same provider are STACKED in one group (openusage-style).
+    @Published var previewGroups: [(provider: String, remainings: [Int])] = []
     @Published var knownProviders: [String] = []
     @Published var menubarHidden: Set<String> = []
+    /// Popover card layout from the payload: ordered ids + hidden flags.
+    @Published var cardLayout: [(id: String, hidden: Bool)] = []
     @Published var spendPeriods: [SpendPeriod] = []
     /// nil = no budgets configured; "ok" | "warn" | "exceeded"
     @Published var worstState: String?
@@ -234,6 +245,7 @@ final class Model: ObservableObject {
                     self.previewMode = ui.previewMode ?? "inline"
                     self.knownProviders = ui.providers ?? []
                     self.menubarHidden = Set(ui.menubarHidden ?? [])
+                    self.cardLayout = (ui.cards ?? []).map { ($0.id, $0.hidden) }
                 }
                 self.spendPeriods = p.spendPeriods ?? []
                 self.today = p.today
@@ -250,10 +262,22 @@ final class Model: ObservableObject {
                 self.limits = p.limits ?? []
                 self.previewMode = p.uiPreview?.previewMode ?? "inline"
                 let maxLines = p.uiPreview?.previewLines ?? 3
-                previewEntries = (p.limits ?? []).compactMap { l in
-                    guard let w = Model.primaryWindow(l), let pct = w.usedPct else { return nil }
-                    return (l.provider, Int(max(0, min(100, 100 - pct)).rounded()))
-                }.prefix(maxLines).map { $0 }
+                // Group per provider; every embedded window renders as one
+                // stacked percentage line (openusage-style vertical stack).
+                var grouped: [(provider: String, remainings: [Int])] = []
+                for l in p.limits ?? [] {
+                    let pcts: [Int] = l.windows.compactMap { w in
+                        guard let pct = w.usedPct else { return nil }
+                        return Int(max(0, min(100, 100 - pct)).rounded())
+                    }
+                    guard !pcts.isEmpty else { continue }
+                    if let idx = grouped.firstIndex(where: { $0.provider == l.provider }) {
+                        grouped[idx].remainings.append(contentsOf: pcts)
+                    } else {
+                        grouped.append((l.provider, pcts))
+                    }
+                }
+                previewGroups = grouped.prefix(maxLines).map { ($0.provider, Array($0.remainings.prefix(3))) }
                 let newTitle = composeTitle(today: p.today, preview: Self.previewText(p.limits ?? [], cfg: p.uiPreview), hovering: isHovering, mode: self.previewMode)
                 setTitleIfChanged(newTitle)
                 self.errorText = nil
@@ -624,10 +648,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let button = statusItem?.button else { return }
         guard let model else { return }
         let showPreview = model.previewMode != "hover" || model.isHovering
-        let entries = showPreview ? model.previewEntries : []
+        let entries = showPreview ? model.previewGroups : []
 
         // Fingerprint of everything the strip renders, for memoization.
-        let fingerprint = entries.map { "\($0.provider):\($0.remaining)" }.joined(separator: ",")
+        let fingerprint = entries.map { "\($0.provider):\($0.remainings.map(String.init).joined(separator: "+"))" }.joined(separator: ",")
             + "|\(fallback.hasPrefix("🔴") ? "x" : fallback.hasPrefix("🟠") ? "w" : "-")"
 
         if let last = Self.lastStrip, last.fingerprint == fingerprint {
@@ -642,7 +666,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         var content: NSImage? = nil
         if !entries.isEmpty {
-            content = Self.renderStrip(entries: entries, badge: badgeKind)
+            content = Self.renderStrip(groups: entries, badge: badgeKind)
         }
 
         Self.lastStrip = (fingerprint, content)
@@ -678,31 +702,39 @@ struct MonoMark: View {
     }
 }
 
-    /// Render [mark] 94% · [mark] 44% … as black-on-clear SwiftUI, then rasterize
-    /// via ImageRenderer, trim transparent margins, and wrap in a template NSImage
-    /// (openusage MenuBarStripRenderer pattern).
-    static func renderStrip(entries: [(provider: String, remaining: Int)], badge: String?) -> NSImage? {
+    /// Render [mark] 94%\n43%  [mark] 44% … as black-on-clear SwiftUI (one
+    /// mark per provider, that provider's percentages STACKED vertically at a
+    /// slightly smaller size — openusage pattern), rasterize via ImageRenderer,
+    /// trim transparent margins, and wrap in a template NSImage.
+    static func renderStrip(groups: [(provider: String, remainings: [Int])], badge: String?) -> NSImage? {
         struct Strip: View {
-            let entries: [(provider: String, remaining: Int)]
+            let groups: [(provider: String, remainings: [Int])]
             let badge: String?
             var body: some View {
-                HStack(spacing: 6) {
+                HStack(spacing: 7) {
                     if let badge {
                         Image(systemName: badge == "exceeded" ? "exclamationmark.circle.fill" : "exclamationmark.circle")
                     }
-                    ForEach(Array(entries.enumerated()), id: \.offset) { i, e in
+                    ForEach(Array(groups.enumerated()), id: \.offset) { i, g in
                         if i > 0 { Text("·") }
-                        HStack(spacing: 2) {
-                            MonoMark(provider: e.provider)
+                        HStack(spacing: 4) {
+                            MonoMark(provider: g.provider)
                                 .frame(width: 10, height: 10)
-                            Text("\(e.remaining)%").font(.system(size: 11, weight: .semibold)).monospacedDigit()
+                            VStack(alignment: .leading, spacing: -1) {
+                                ForEach(Array(g.remainings.enumerated()), id: \.offset) { _, r in
+                                    Text("\(r)%")
+                                        .font(.system(size: 9.5, weight: .semibold))
+                                        .monospacedDigit()
+                                        .lineLimit(1)
+                                }
+                            }
                         }
                     }
                 }
                 .foregroundStyle(Color.black)
             }
         }
-        let renderer = ImageRenderer(content: Strip(entries: entries, badge: badge))
+        let renderer = ImageRenderer(content: Strip(groups: groups, badge: badge))
         renderer.scale = 2
         guard let cg = renderer.cgImage else { return nil }
         let image = NSImage(cgImage: cg, size: NSSize(width: CGFloat(cg.width) / 2, height: CGFloat(cg.height) / 2))
@@ -963,10 +995,182 @@ MainActor.assumeIsolated {
     app.run()
 }
 
+/// openusage-style "Customize" sheet: every popover card with a drag handle
+/// (reorder) and a native Toggle (visibility). Saved via `tokitoki ui
+/// --card-set id:1,id:0,...` then the model refreshes.
+struct CustomizeSheet: View {
+    @ObservedObject var model: Model
+    @Binding var isPresented: Bool
+    /// Draft state edited in the sheet; committed on Done.
+    @State private var cards: [CardState] = []
+
+    struct CardState: Identifiable, Equatable {
+        let id: String
+        var visible: Bool
+        var ident: String { id }
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // Header bar (macOS has no navigation chrome in popovers).
+            HStack {
+                Button("Cancel") { isPresented = false }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text("Customize").font(.system(size: 13, weight: .semibold))
+                Spacer()
+                Button("Done") { save(); isPresented = false }
+                    .buttonStyle(.plain).fontWeight(.semibold)
+            }
+            .padding(.horizontal, 12).padding(.vertical, 8)
+            Divider()
+            List {
+                ForEach($cards) { $card in
+                    CardRow(card: $card)
+                        .onDrag {
+                            dragging = card.id
+                            return NSItemProvider(object: card.id as NSString)
+                        }
+                        .onDrop(of: [UTType.plainText], delegate: CardDropDelegate(target: card.id, cards: $cards, dragging: $dragging))
+                }
+            }
+            .listStyle(.inset)
+        }
+        .frame(width: 320, height: 420)
+        .onAppear(perform: load)
+    }
+
+    @State private var dragging: String?
+
+    /// One customize row: drag handle + title/id + native switch.
+    private struct CardRow: View {
+        @Binding var card: CardState
+
+        var body: some View {
+            HStack(spacing: 10) {
+                Image(systemName: "line.3.horizontal")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(ContentView.cardTitles[card.id] ?? card.id)
+                        .font(.system(size: 13, weight: .medium))
+                    Text(card.id)
+                        .font(.caption2).foregroundStyle(.tertiary)
+                }
+                Spacer()
+                Toggle("", isOn: $card.visible)
+                    .toggleStyle(.switch)
+                    .labelsHidden()
+                    .controlSize(.small)
+            }
+        }
+    }
+
+    /// Reorder-on-drop for the customize list.
+    private struct CardDropDelegate: DropDelegate {
+        let target: String
+        @Binding var cards: [CardState]
+        @Binding var dragging: String?
+
+        func performDrop(info: DropInfo) -> Bool {
+            dragging = nil
+            return true
+        }
+
+        func dropEntered(info: DropInfo) {
+            guard let dragging, dragging != target else { return }
+            guard let from = cards.firstIndex(where: { $0.id == dragging }),
+                  let to = cards.firstIndex(where: { $0.id == target }) else { return }
+            withAnimation(.easeInOut(duration: 0.15)) {
+                cards.move(fromOffsets: IndexSet(integer: from), toOffset: to > from ? to + 1 : to)
+            }
+        }
+
+        func validateDrop(info: DropInfo) -> Bool { true }
+        func dropUpdated(info: DropInfo) -> DropProposal? { DropProposal(operation: .move) }
+    }
+
+    private func load() {
+        var saved = model.cardLayout.map { CardState(id: $0.id, visible: !$0.hidden) }
+        for id in ContentView.defaultCardOrder where !saved.contains(where: { $0.id == id }) {
+            saved.append(CardState(id: id, visible: true))
+        }
+        cards = saved.filter { ContentView.cardTitles[$0.id] != nil }
+    }
+
+    private func move(from source: IndexSet, to destination: Int) {
+        cards.move(fromOffsets: source, toOffset: destination)
+    }
+
+    private func save() {
+        let cli = model.currentInvocation()
+        let spec = cards.map { "\($0.id):\($0.visible ? "1" : "0")" }.joined(separator: ",")
+        let task = Process()
+        task.executableURL = cli.executable
+        task.arguments = cli.prefixArgs + ["ui", "--card-set", spec]
+        try? task.run()
+        task.waitUntilExit()
+        model.refresh()
+    }
+}
+
 struct ContentView: View {
     @ObservedObject var model: Model
     let invocation = resolveInvocation()
     @State var dashboardProcess: Process?
+    /// Card filter — matches harness/account names, repo paths, tools.
+    @State private var searchText = ""
+    /// Customize sheet (card toggles + drag reorder).
+    @State private var showCustomize = false
+    /// Repo row currently expanded in the repos card.
+    @State private var expandedRepo: String?
+
+    /// Default card order when the payload carries no layout yet.
+    static let defaultCardOrder = ["limits", "usage", "spend", "harness", "activity", "anomalies", "repos", "tools"]
+    static let cardTitles: [String: String] = [
+        "limits": "usage limits",
+        "usage": "usage distribution",
+        "spend": "activity today",
+        "harness": "today by harness",
+        "activity": "other machines",
+        "anomalies": "anomalies",
+        "repos": "top repos",
+        "tools": "top tools",
+    ]
+
+    private var searchActive: Bool { !trimmedQuery.lowercased().isEmpty }
+    private var query: String { trimmedQuery.lowercased() }
+
+    private func matches(_ text: String) -> Bool {
+        !searchActive || text.lowercased().contains(query)
+    }
+
+    private func accountMatches(_ l: AccountLimits) -> Bool {
+        !searchActive
+            || [l.provider, l.accountKey, l.email ?? "", l.credential ?? ""]
+                .contains(where: { $0.lowercased().contains(query) })
+    }
+
+    /// Whether a card survives the current search filter (row-level match).
+    private func cardSurvives(_ id: String) -> Bool {
+        guard searchActive else { return true }
+        switch id {
+        case "limits":
+            return model.limits.contains(where: accountMatches)
+        case "harness":
+            return (model.today?.rows ?? []).contains { matches($0.bucket) }
+        case "repos":
+            return model.repos.contains { matches($0.bucket) }
+        case "usage":
+            let rows = spendPeriodRows()
+            return rows.contains { matches($0.bucket) } || query == "cost" || query == "tokens"
+        case "tools":
+            return model.topTools.contains { matches($0.tool) }
+        default:
+            return false
+        }
+    }
 
     var body: some View {
         ScrollView(.vertical) {
@@ -977,38 +1181,24 @@ struct ContentView: View {
                         .padding(8).frame(maxWidth: .infinity, alignment: .leading)
                         .background(.red.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
                 }
-                if !model.limits.isEmpty { limitsSection }
-                if !(model.today?.rows ?? []).isEmpty { pieCard() }
-                heroCard
-                if let p = model.today {
-                    card(title: "today by provider", icon: "chart.bar.fill") {
-                        ForEach(Array(p.rows.sorted { $0.costUsd > $1.costUsd || ($0.costUsd == $1.costUsd && $0.requests > $1.requests) }.prefix(7).enumerated()), id: \.offset) { _, row in
-                            HStack(spacing: 6) {
-                                ProviderLogo(provider: row.bucket)
-                                Text(row.bucket).font(.caption).lineLimit(1)
-                                Spacer()
-                                Text("\(humanCount(Double(row.requests))) req")
-                                    .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
-                                Text(row.costUsd > 0 ? String(format: "$%.2f", row.costUsd) : "$0")
-                                    .font(.caption.monospacedDigit())
-                                    .foregroundStyle(row.costUsd > 0 ? AnyShapeStyle(.primary) : AnyShapeStyle(.tertiary))
-                            }
-                            .padding(.vertical, 2)
-                        }
+                searchBar
+                ForEach(orderedVisibleCards(), id: \.self) { id in
+                    if cardSurvives(id) {
+                        cardBody(id)
                     }
                 }
-                if model.activeOtherMachines > 0 {
-                    card(title: "activity", icon: "network") {
-                        Label("\(model.activeOtherMachines) other machine\(model.activeOtherMachines == 1 ? "" : "s") active", systemImage: "circle.fill")
-                            .foregroundStyle(.green).font(.caption)
-                    }
-                }
-                anomaliesRow
-                if !model.repos.isEmpty { compactList(title: "top repos this month", icon: "folder.fill", rows: model.repos.map { ( $0.bucket, "\(humanCount(Double($0.requests))) req") }) }
-                if !model.topTools.isEmpty { compactList(title: "top tools today", icon: "wrench.and.screwdriver.fill", rows: model.topTools.map { ($0.tool, $0.costUsd >= 0.01 ? String(format: "$%.2f", $0.costUsd) : humanCount($0.tokens)) }) }
                 HStack(spacing: 8) {
                     Button(action: openDashboard) { Label("Dashboard", systemImage: "safari") }.buttonStyle(.borderedProminent)
                     Button(action: { model.refresh() }) { Label("Refresh", systemImage: "arrow.clockwise") }.buttonStyle(.bordered)
+                    Spacer()
+                    Button(action: shareScreenshot) {
+                        Image(systemName: "square.and.arrow.up")
+                    }.buttonStyle(.bordered)
+                        .help("Share a screenshot of this popover")
+                    Button(action: { showCustomize = true }) {
+                        Image(systemName: "slider.horizontal.3")
+                    }.buttonStyle(.bordered)
+                        .help("Customize cards")
                 }.frame(maxWidth: .infinity)
                 Text("updated automatically every 5 min")
                     .font(.caption2).foregroundStyle(.tertiary).frame(maxWidth: .infinity, alignment: .center)
@@ -1019,6 +1209,134 @@ struct ContentView: View {
         .frame(width: 340, height: 520)
         .background(.thinMaterial)
         .onAppear { model.refresh() }
+        .sheet(isPresented: $showCustomize) {
+            CustomizeSheet(model: model, isPresented: $showCustomize)
+        }
+    }
+
+    /// Effective card order: payload layout first, defaults appended.
+    private func orderedVisibleCards() -> [String] {
+        var ids = model.cardLayout.filter { !$0.hidden }.map { $0.id }
+        for id in Self.defaultCardOrder where !ids.contains(id) {
+            ids.append(id)
+        }
+        return ids.filter { Self.cardTitles[$0] != nil }
+    }
+
+    @ViewBuilder private func cardBody(_ id: String) -> some View {
+        switch id {
+        case "limits":
+            if !model.limits.isEmpty { limitsSection }
+        case "usage":
+            if !(model.today?.rows ?? []).isEmpty { pieCard() }
+        case "spend":
+            heroCard
+        case "harness":
+            harnessCard
+        case "activity":
+            if model.activeOtherMachines > 0 { activityCard }
+        case "anomalies":
+            anomaliesRow
+        case "repos":
+            if !model.repos.isEmpty { reposCard }
+        case "tools":
+            if !model.topTools.isEmpty { toolsCard }
+        default:
+            EmptyView()
+        }
+    }
+
+    /// Search field styled like the system: magnifier + rounded inset field.
+    private var searchBar: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass")
+                .font(.caption).foregroundStyle(.secondary)
+            TextField("search harness, account, repo…", text: $searchText)
+                .textFieldStyle(.plain)
+                .font(.caption)
+                .autocorrectionDisabled()
+            if searchActive {
+                Button { searchText = "" } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.caption).foregroundStyle(.secondary)
+                }.buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 8).padding(.vertical, 5)
+        .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 8))
+        .accessibilityIdentifier("popover-search")
+    }
+
+    /// Share the popover content as an image via the native sharing picker.
+    private func shareScreenshot() {
+        guard let view = popoverContentAnchorView() else { return }
+        guard let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
+        view.cacheDisplay(in: view.bounds, to: rep)
+        let image = NSImage(size: view.bounds.size)
+        image.addRepresentation(rep)
+        let picker = NSSharingServicePicker(items: [image])
+        picker.show(relativeTo: view.bounds, of: view, preferredEdge: .minY)
+    }
+
+    /// The popover's key-window content view (anchor for the sharing picker).
+    private func popoverContentAnchorView() -> NSView? {
+        NSApp.keyWindow?.contentView ?? NSApp.windows.first { $0.isVisible }?.contentView
+    }
+
+    private var trimmedQuery: String {
+        searchText.trimmingCharacters(in: .whitespaces)
+    }
+
+    /// Today-by-harness rows (search-filtered).
+    private var harnessCard: some View {
+        let rows = (model.today?.rows ?? [])
+            .filter { matches($0.bucket) }
+            .sorted { $0.costUsd > $1.costUsd || ($0.costUsd == $1.costUsd && $0.requests > $1.requests) }
+        return card(title: "today by harness", icon: "chart.bar.fill") {
+            ForEach(Array(rows.prefix(7).enumerated()), id: \.offset) { _, row in
+                HStack(spacing: 6) {
+                    ProviderLogo(provider: row.bucket)
+                    Text(row.bucket).font(.caption).lineLimit(1)
+                    Spacer()
+                    Text("\(humanCount(Double(row.requests))) req")
+                        .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                    Text(row.costUsd > 0 ? String(format: "$%.2f", row.costUsd) : "$0")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(row.costUsd > 0 ? AnyShapeStyle(.primary) : AnyShapeStyle(.tertiary))
+                }
+                .padding(.vertical, 2)
+            }
+        }
+    }
+
+    private var activityCard: some View {
+        card(title: "other machines", icon: "network") {
+            Label("\(model.activeOtherMachines) other machine\(model.activeOtherMachines == 1 ? "" : "s") active", systemImage: "circle.fill")
+                .foregroundStyle(.green).font(.caption)
+        }
+    }
+
+    private var toolsCard: some View {
+        compactList(
+            title: "top tools today",
+            icon: "wrench.and.screwdriver.fill",
+            rows: model.topTools
+                .filter { matches($0.tool) }
+                .map { ($0.tool, $0.costUsd >= 0.01 ? String(format: "$%.2f", $0.costUsd) : humanCount($0.tokens)) }
+        )
+    }
+
+    /// Legend rows for the usage donut, honoring the search filter.
+    private func spendPeriodRows() -> [ReportRow] {
+        let rows: [ReportRow]
+        if let period = model.spendPeriods.first(where: { $0.key == spendPeriodKey }) {
+            rows = period.rows
+        } else if spendPeriodKey == "today", let today = model.today {
+            rows = today.rows
+        } else {
+            rows = []
+        }
+        return rows.filter { matches($0.bucket) }
     }
 
     private var heroCard: some View {
@@ -1055,9 +1373,10 @@ struct ContentView: View {
     @ViewBuilder private var limitsSection: some View {
         // Cards render directly on the popover surface — each account card is
         // its own container; no extra wrapping card.
+        let visible = model.limits.filter { accountMatches($0) }
         VStack(alignment: .leading, spacing: 8) {
-            ForEach(Array(model.limits.enumerated()), id: \.element.id) { idx, l in
-                if idx > 0, model.limits[idx - 1].provider == l.provider {
+            ForEach(Array(visible.enumerated()), id: \.element.id) { idx, l in
+                if idx > 0, visible[idx - 1].provider == l.provider {
                     Divider()
                 }
                 AccountLimitCard(limits: l, budgets: matchingBudgets(for: l), tokenScale: tokenMaxima(model.limits))
@@ -1145,14 +1464,8 @@ struct ContentView: View {
     /// Slices for the selected spend period + metric. Falls back to today's
     /// report when the payload predates the spendPeriods field.
     private func pieSlices(metric: SpendMetric) -> [(name: String, value: Double, color: Color)] {
-        let rows: [ReportRow]
-        if let period = model.spendPeriods.first(where: { $0.key == spendPeriodKey }) {
-            rows = period.rows
-        } else if spendPeriodKey == "today", let today = model.today {
-            rows = today.rows
-        } else {
-            rows = []
-        }
+        // spendPeriodRows() honors the popover search filter.
+        let rows = spendPeriodRows()
         var out: [(name: String, value: Double, color: Color)] = []
         for row in rows {
             let value = metric == .cost ? row.costUsd : row.totalTokens
@@ -1199,8 +1512,8 @@ struct ContentView: View {
                     metricPicker
                 }
                 HStack(spacing: 14) {
-                    DonutChart(slices: slices, centerLabel: sliceValue(total, metric: spendMetric))
-                        .frame(width: 92, height: 92)
+                    DonutChart(slices: slices, centerLabel: sliceValue(total, metric: spendMetric), centerUnit: spendMetric.rawValue)
+                        .frame(width: 100, height: 100)
                         .accessibilityLabel("spend-pie-chart")
                     SpendLegend(slices: Array(slices.prefix(5)), metric: spendMetric)
                     Spacer(minLength: 0)
@@ -1237,6 +1550,65 @@ struct ContentView: View {
             Label(title.uppercased(), systemImage: icon).font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
             content()
         }.padding(10).background(.quaternary.opacity(0.28), in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    /// CodexBar-style per-repo usage: name + $cost · tokens on one line,
+    /// full path underneath; tap a row to expand the request/session/cache
+    /// breakdown.
+    @ViewBuilder private var reposCard: some View {
+        card(title: "top repos this month", icon: "folder.fill") {
+            ForEach(Array(model.repos.filter { matches($0.bucket) }.sorted { $0.costUsd > $1.costUsd || ($0.costUsd == $1.costUsd && $0.totalTokens > $1.totalTokens) }.prefix(6).enumerated()), id: \.offset) { i, r in
+                VStack(alignment: .leading, spacing: 1) {
+                    Button { expandedRepo = expandedRepo == repoName(r.bucket) ? nil : repoName(r.bucket) } label: {
+                        HStack(spacing: 6) {
+                            Text(repoName(r.bucket))
+                                .font(.caption).lineLimit(1)
+                            Spacer()
+                            Text(repoUsage(r))
+                                .font(.caption.monospacedDigit())
+                                .foregroundStyle(r.costUsd > 0 ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 7, weight: .bold))
+                                .rotationEffect(.degrees(expandedRepo == repoName(r.bucket) ? 90 : 0))
+                                .foregroundStyle(.tertiary)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    if r.bucket.contains("/") {
+                        Text(r.bucket)
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                            .truncationMode(.head)
+                    }
+                    if expandedRepo == repoName(r.bucket) {
+                        Text("\(humanCount(Double(r.requests))) requests · \(r.sessions) sessions · cache \(cacheShare(r))%")
+                            .font(.caption2.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                            .padding(.top, 1)
+                    }
+                }
+                .padding(.vertical, i == 0 ? 0 : 1)
+            }
+        }
+    }
+
+    /// Share of tokens served from cache (0 when nothing recorded).
+    private func cacheShare(_ r: ReportRow) -> Int {
+        let total = r.totalTokens
+        guard total > 0 else { return 0 }
+        return Int(((r.cacheReadTokens ?? 0) + (r.cacheWriteTokens ?? 0)) / total * 100)
+    }
+
+    private func repoName(_ path: String) -> String {
+        path.split(separator: "/").last.map(String.init) ?? path
+    }
+
+    private func repoUsage(_ r: ReportRow) -> String {
+        let tok = humanCount(r.totalTokens)
+        if r.costUsd >= 0.01 { return String(format: "$%.2f", r.costUsd) + " · " + tok }
+        return tok + " tokens"
     }
 
     @ViewBuilder private func compactList(title: String, icon: String, rows: [(String, String)]) -> some View {
@@ -1669,19 +2041,13 @@ struct AccountLimitCard: View {
             }
             bankedRow
             if !budgets.isEmpty { budgetFooter }
-            if let cred = limits.credential, !cred.isEmpty {
-                Text(cred)
-                    .font(.caption2.monospacedDigit())
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(1)
-                    .help("key-based account (redacted)")
-            }
             detailsDisclosure
         }
         .padding(.vertical, 2)
     }
 
-    /// Collapsible per-window detail rows: source, window length, exact reset.
+    /// Collapsible per-window detail rows — compact: window name + reset date
+    /// (no source jargon, no durations). Data provenance lives in a tooltip.
     @ViewBuilder private var detailsDisclosure: some View {
         VStack(alignment: .leading, spacing: 2) {
             Button { withAnimation(.easeInOut(duration: 0.15)) { showDetails.toggle() } } label: {
@@ -1704,20 +2070,13 @@ struct AccountLimitCard: View {
                         HStack(spacing: 6) {
                             Text(windowDisplayName(w.kind))
                                 .font(.caption2).foregroundStyle(.secondary)
-                            Text(w.source)
-                                .font(.caption2.weight(.medium))
-                                .padding(.horizontal, 4).padding(.vertical, 0.5)
-                                .background(.quaternary.opacity(0.6), in: Capsule())
                             Spacer()
-                            if let mins = windowMinutes(w) {
-                                Text("\(mins)min")
-                                    .font(.caption2.monospacedDigit()).foregroundStyle(.tertiary)
-                            }
                             if let r = w.resetsAt, let target = parseISO(r) {
-                                Text("resets " + target.formatted(date: .abbreviated, time: .shortened))
+                                Text("resets " + target.formatted(date: .abbreviated, time: .omitted))
                                     .font(.caption2.monospacedDigit()).foregroundStyle(.tertiary)
                             }
                         }
+                        .help(sourceExplanation(w.source))
                     }
                 }
                 .padding(.top, 2)
@@ -1726,15 +2085,18 @@ struct AccountLimitCard: View {
         }
     }
 
-    /// Window length in minutes derived from start/end ISO stamps.
-    private func windowMinutes(_ w: LimitWindow) -> Int? {
-        guard let s = w.windowStart.flatMap(parseISO),
-              let e = w.windowEnd.flatMap(parseISO) else { return nil }
-        let mins = Int(e.timeIntervalSince(s) / 60)
-        return mins > 0 ? mins : nil
+    /// Plain-language explanation of where a window's numbers come from.
+    private func sourceExplanation(_ source: String) -> String {
+        switch source {
+        case "embedded": return "reported directly by the provider"
+        case "polled": return "fetched live from the provider API (tokitoki poll)"
+        default: return "estimated from recorded usage — the provider does not report this limit locally"
+        }
     }
 
     /// openusage-style labeled bar per window: name · bar · % left / resets-in.
+    /// The track ALWAYS renders (empty fill at zero usage); fill tint follows
+    /// the traffic palette when a real % exists, emerald otherwise.
     private func windowBarRow(_ w: LimitWindow) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 6) {
@@ -1746,25 +2108,12 @@ struct AccountLimitCard: View {
                     Text("\(Int(remaining.rounded()))% left")
                         .font(.caption2.monospacedDigit().weight(.semibold))
                         .foregroundStyle(barTint(remaining))
-                } else {
+                } else if w.tokens > 0 {
                     Text("\(humanCount(w.tokens)) tokens")
                         .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
                 }
             }
-            if let pct = w.usedPct {
-                let remaining = max(0, min(100, 100 - pct))
-                ProgressView(value: remaining / 100)
-                    .tint(barTint(remaining))
-                    .frame(height: 6)
-            } else if w.tokens > 0, let scale = tokenScale[w.kind], scale > 0 {
-                // No real quota denominator (derived/estimate window): render a
-                // RELATIVE bar normalized against the largest same-kind window
-                // across accounts — visual comparison only, never a fake %.
-                let frac = min(1.0, max(0.05, w.tokens / scale))
-                ProgressView(value: frac)
-                    .tint(Color.secondary.opacity(0.45))
-                    .frame(height: 6)
-            }
+            progressBarRow(w)
             HStack {
                 Spacer()
                 if let r = w.resetsAt {
@@ -1772,6 +2121,28 @@ struct AccountLimitCard: View {
                         .font(.caption2).foregroundStyle(.tertiary)
                 }
             }
+        }
+    }
+
+    @ViewBuilder private func progressBarRow(_ w: LimitWindow) -> some View {
+        if let pct = w.usedPct {
+            let remaining = max(0, min(100, 100 - pct))
+            ProgressView(value: remaining / 100)
+                .tint(barTint(remaining))
+                .frame(height: 4)
+        } else if w.tokens > 0, let scale = tokenScale[w.kind], scale > 0 {
+            // No real quota denominator (estimate window): RELATIVE bar vs the
+            // largest same-kind window — informational only. Emerald (traffic-
+            // palette default) since there is no % to be low on.
+            let frac = min(1.0, max(0.05, w.tokens / scale))
+            ProgressView(value: frac)
+                .tint(Color(red: 0.16, green: 0.78, blue: 0.47).opacity(0.8))
+                .frame(height: 4)
+        } else {
+            // Zero usage: empty track so every window keeps its row rhythm.
+            Capsule()
+                .fill(Color.primary.opacity(0.08))
+                .frame(height: 4)
         }
     }
 
@@ -1817,6 +2188,11 @@ struct AccountLimitCard: View {
     private var accountLabel: String {
         if let email = limits.email, !email.isEmpty {
             return "\(email) · \(limits.accountKey)"
+        }
+        if let cred = limits.credential, !cred.isEmpty {
+            // Key-based accounts (opencode/pi): the redacted key sits where an
+            // email would — same position, same treatment.
+            return "\(limits.provider) \(cred)"
         }
         return "\(limits.provider) · \(limits.accountKey)"
     }
@@ -1929,55 +2305,138 @@ private func barTint(_ remaining: Double) -> Color {
     }
 }
 
-/// openusage-style donut: center hole carries the period total, slices get a
-/// small angular gap so segments read separately; zero-value input renders an
-/// empty ring rather than a fake slice.
+/// openusage-style ring: hairline angular gaps between sectors, rounded
+/// sector corners, golden-ratio hole, minimum sliver share so tiny providers
+/// stay visible; center carries the period total. Ported from openusage's
+/// RingSectorShape.
 struct DonutChart: View {
     let slices: [(name: String, value: Double, color: Color)]
     var centerLabel: String? = nil
+    var centerUnit: String? = nil
 
-    /// Angular gap between adjacent slices (degrees). Only applied when there
-    /// is more than one slice — a single full-circle slice stays seamless.
-    private static let gapDegrees = 2.5
+    private static let innerRadiusRatio: CGFloat = 0.618
+    private static let gapWidth: CGFloat = 1.6
+    private static let cornerRadius: CGFloat = 3
+    private static let minimumSliceShare = 0.025
 
     var body: some View {
-        Canvas { context, size in
-            let total = slices.reduce(0) { $0 + $1.value }
-            let center = CGPoint(x: size.width / 2, y: size.height / 2)
-            let radius = min(size.width, size.height) / 2 - 2
-            let hole = radius * 0.55
-            guard total > 0 else {
-                if let centerLabel {
-                    context.draw(Text(centerLabel).font(.system(size: 9, weight: .semibold)).foregroundColor(.secondary), at: center)
+        let total = slices.reduce(0) { $0 + $1.value }
+        return ZStack {
+            if total > 0 {
+                ForEach(Array(arcs(total: total).enumerated()), id: \.offset) { _, arc in
+                    RingSectorShape(startFraction: arc.start, endFraction: arc.end)
+                        .fill(arc.color)
                 }
-                return
-            }
-            let gap = slices.count > 1 ? Angle.degrees(Self.gapDegrees) : .zero
-            let start = Angle.degrees(-90)
-            var cursor = start
-            for slice in slices {
-                let sweep = Angle.degrees(slice.value / total * 360)
-                // Shrink each slice by half the gap on both ends so outer
-                // edges line up but visible spacing separates the slices.
-                let a0 = cursor + gap / 2
-                let a1 = cursor + sweep - gap / 2
-                if a1 > a0 {
-                    let path = Path { p in
-                        p.addArc(center: center, radius: radius,
-                                 startAngle: a0, endAngle: a1, clockwise: false)
-                        p.addArc(center: center, radius: hole,
-                                 startAngle: a1, endAngle: a0, clockwise: true)
-                        p.closeSubpath()
-                    }
-                    context.fill(path, with: .color(slice.color))
-                }
-                cursor += sweep
             }
             if let centerLabel {
-                context.draw(Text(centerLabel).font(.system(size: 9, weight: .semibold)).foregroundColor(.primary), at: center)
+                VStack(spacing: 1) {
+                    Text(centerLabel)
+                        .font(.system(size: 11, weight: .semibold, design: .rounded))
+                        .monospacedDigit()
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.6)
+                        .foregroundStyle(.primary)
+                    if let centerUnit {
+                        Text(centerUnit)
+                            .font(.system(size: 8, weight: .medium))
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                    }
+                }
+                .padding(.horizontal, 8)
             }
         }
         .accessibilityHidden(false)
+    }
+
+    /// Ranked slices as cumulative ring fractions with the min-sliver floor
+    /// applied and renormalized so the ring closes exactly.
+    private func arcs(total: Double) -> [(start: Double, end: Double, color: Color)] {
+        let floored = slices.map { max($0.value / total, Self.minimumSliceShare) }
+        let sum = floored.reduce(0, +)
+        var out: [(start: Double, end: Double, color: Color)] = []
+        var cursor = 0.0
+        for (i, slice) in slices.enumerated() {
+            let width = floored[i] / sum
+            out.append((cursor, cursor + width, slice.color))
+            cursor += width
+        }
+        return out
+    }
+}
+
+/// One donut sector with hairline angular gaps and rounded corners (openusage
+/// RingSectorShape). Fractions run clockwise from 12 o'clock, 0...1.
+struct RingSectorShape: Shape {
+    var startFraction: Double
+    var endFraction: Double
+    var innerRadiusRatio: CGFloat = 0.618
+    var gapWidth: CGFloat = 1.6
+    var cornerRadius: CGFloat = 3
+
+    func path(in rect: CGRect) -> Path {
+        let outer = Double(min(rect.width, rect.height) / 2)
+        let inner = outer * Double(innerRadiusRatio)
+        let center = CGPoint(x: rect.midX, y: rect.midY)
+
+        // Angles in radians; screen y grows downward → increasing angles read
+        // clockwise from noon.
+        let top = -Double.pi / 2
+        let halfGap = Double(gapWidth) / outer / 2
+        let a0 = top + startFraction * 2 * .pi + halfGap
+        let a1 = top + endFraction * 2 * .pi - halfGap
+        let width = a1 - a0
+        guard width > 0.001 else { return Path() }
+
+        // Corners shrink on narrow slices so the two corner arcs of one edge
+        // never cross.
+        let s = sin(min(width / 2, .pi / 2))
+        var corner = min(Double(cornerRadius), (outer - inner) / 2)
+        corner = min(corner, outer * s / (1 + s))
+        if s < 1 {
+            corner = min(corner, inner * s / (1 - s))
+        }
+
+        if corner < 0.25 {
+            return plainWedge(center: center, inner: inner, outer: outer, a0: a0, a1: a1)
+        }
+        return roundedWedge(center: center, inner: inner, outer: outer, a0: a0, a1: a1, corner: corner)
+    }
+
+    private func plainWedge(center: CGPoint, inner: Double, outer: Double, a0: Double, a1: Double) -> Path {
+        var path = Path()
+        path.addArc(center: center, radius: outer, startAngle: .radians(a0), endAngle: .radians(a1), clockwise: false)
+        path.addArc(center: center, radius: inner, startAngle: .radians(a1), endAngle: .radians(a0), clockwise: true)
+        path.closeSubpath()
+        return path
+    }
+
+    private func roundedWedge(center: CGPoint, inner: Double, outer: Double, a0: Double, a1: Double, corner: Double) -> Path {
+        let betaOuter = asin(min(1, corner / (outer - corner)))
+        let betaInner = asin(min(1, corner / (inner + corner)))
+
+        func polar(_ radius: Double, _ angle: Double) -> CGPoint {
+            CGPoint(x: center.x + radius * cos(angle), y: center.y + radius * sin(angle))
+        }
+        func around(_ point: CGPoint, _ radius: Double, _ angle: Double) -> CGPoint {
+            CGPoint(x: point.x + radius * cos(angle), y: point.y + radius * sin(angle))
+        }
+
+        var path = Path()
+        path.addArc(center: center, radius: outer, startAngle: .radians(a0 + betaOuter), endAngle: .radians(a1 - betaOuter), clockwise: false)
+        let trailingOuter = polar(outer - corner, a1 - betaOuter)
+        path.addArc(center: trailingOuter, radius: corner, startAngle: .radians(a1 - betaOuter), endAngle: .radians(a1 + .pi / 2), clockwise: false)
+        let trailingInner = polar(inner + corner, a1 - betaInner)
+        path.addLine(to: around(trailingInner, corner, a1 + .pi / 2))
+        path.addArc(center: trailingInner, radius: corner, startAngle: .radians(a1 + .pi / 2), endAngle: .radians(a1 - betaInner + .pi), clockwise: false)
+        path.addArc(center: center, radius: inner, startAngle: .radians(a1 - betaInner), endAngle: .radians(a0 + betaInner), clockwise: true)
+        let leadingInner = polar(inner + corner, a0 + betaInner)
+        path.addArc(center: leadingInner, radius: corner, startAngle: .radians(a0 + betaInner + .pi), endAngle: .radians(a0 + 3 * .pi / 2), clockwise: false)
+        let leadingOuter = polar(outer - corner, a0 + betaOuter)
+        path.addLine(to: around(leadingOuter, corner, a0 - .pi / 2))
+        path.addArc(center: leadingOuter, radius: corner, startAngle: .radians(a0 + 3 * .pi / 2), endAngle: .radians(a0 + betaOuter), clockwise: false)
+        path.closeSubpath()
+        return path
     }
 }
 

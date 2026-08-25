@@ -76,6 +76,9 @@ export function startWebServer(options: WebServerOptions = {}): Bun.Server<undef
       const url = new URL(request.url);
       const { pathname } = url;
       try {
+        if (pathname === "/api/healthz") {
+          return json({ ok: true, app: "tokitoki" });
+        }
         if (pathname.startsWith("/api/")) {
           // await (not return) so rejections hit the catch below → 400s stay 400s
           return await api(request, pathname, url);

@@ -69,6 +69,12 @@ export interface TokitokiConfig {
     menubarPreviewLines?: number;
     /** "inline" (default): preview always in the status item. "hover": only while pointing at it. */
     menubarPreviewMode?: "inline" | "hover";
+    /**
+     * Menubar popover card layout: ordered ids; an id prefixed "!" is hidden
+     * (e.g. ["limits", "!tools", "hero"]). Ids missing from the list keep
+     * their default position/visibility.
+     */
+    menubarCards?: string[];
   };
 }
 

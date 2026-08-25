@@ -81,6 +81,61 @@ export function setMenubarProviders(providers: string[]): void {
   });
 }
 
+/** Well-known menubar popover cards, in default display order. */
+export const MENUBAR_CARDS = [
+  "limits",
+  "usage",
+  "spend",
+  "harness",
+  "activity",
+  "anomalies",
+  "repos",
+  "tools",
+] as const;
+
+/**
+ * Persist the popover card layout from a Customize-sheet save:
+ * "limits:1,tools:0,..." — argument order = display order, value = visible.
+ * Unknown ids are ignored; known ids missing from the input keep defaults
+ * appended at the end (visible).
+ */
+export function setMenubarCards(spec: string): void {
+  const parsed: Array<{ id: string; hidden: boolean }> = [];
+  for (const part of spec.split(",")) {
+    const [id, flag] = part.split(":");
+    if (id === undefined || !(MENUBAR_CARDS as readonly string[]).includes(id)) continue;
+    parsed.push({ id, hidden: flag !== "1" });
+  }
+  const seen = new Set(parsed.map((p) => p.id));
+  for (const id of MENUBAR_CARDS) {
+    if (!seen.has(id)) parsed.push({ id, hidden: false });
+  }
+  saveUiMutator((cfg) => {
+    cfg.ui ??= {};
+    cfg.ui.menubarCards = parsed.map((p) => (p.hidden ? `!${p.id}` : p.id));
+  });
+}
+
+/** Effective card layout: every known id in display order with hidden flags. */
+export function menubarCardLayout(config: TokitokiConfig): Array<{ id: string; hidden: boolean }> {
+  const saved = config.ui?.menubarCards ?? [];
+  const byId = new Map<string, boolean>();
+  const order: string[] = [];
+  for (const raw of saved) {
+    const id = raw.startsWith("!") ? raw.slice(1) : raw;
+    if (!(MENUBAR_CARDS as readonly string[]).includes(id) || order.includes(id)) continue;
+    order.push(id);
+    byId.set(id, !raw.startsWith("!"));
+  }
+  for (const id of MENUBAR_CARDS) {
+    if (!order.includes(id)) {
+      order.push(id);
+      byId.set(id, true);
+    }
+  }
+  return order.map((id) => ({ id, hidden: !(byId.get(id) ?? true) }));
+}
+
 export function assertValidSurface(surface: string | undefined): asserts surface is "menubar" | "dashboard" {
   if (surface !== "menubar" && surface !== "dashboard") {
     throw new UserError(`invalid --surface '${surface}'`, "tokitoki ui --hide codex --surface menubar");

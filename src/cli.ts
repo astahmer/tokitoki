@@ -16,7 +16,9 @@ import {
   assertValidSurface,
   isVisibleOn,
   setMenubarProviders,
+  setMenubarCards,
   setSurfaceVisibility,
+  menubarCardLayout,
 } from "./uiToggles.ts";
 import { renderGrid } from "./grid.ts";
 import { renderBlocks } from "./blocks.ts";
@@ -429,7 +431,7 @@ export async function main(argv: string[]): Promise<void> {
 /** Flags each command accepts — anything else is a typo we can suggest around. */
 const KNOWN_FLAGS: Record<string, string[]> = {
   "menubar-payload": ["json"],
-  ui: ["list", "hide", "show", "surface", "menubar-only"],
+  ui: ["list", "hide", "show", "surface", "menubar-only", "card-set"],
   scan: ["provider"],
   sources: [],
   report: ["last", "by", "json", "sort", "asc", "provider", "delta", "no-delta", "show-email", "show-emails", "since", "until", "from", "to"],
@@ -1828,19 +1830,54 @@ function runWeb(parsed: ParsedInvocation): void {
       server = startWebServer({ port });
     } catch (err) {
       if ((err as { code?: string }).code === "EADDRINUSE") {
-        const alt = nextFreePort(port + 1);
-        console.error(`error: port ${port} is already in use`);
-        console.error(`\x1b[2mtry: tokitoki web --port ${alt}\x1b[0m`);
-        console.error(`\x1b[2m     lsof -i :${port}   # see what holds the port\x1b[0m`);
-        process.exitCode = 1;
+        handlePortInUse(port);
         return;
       }
       throw err;
     }
     console.log(`tokitoki dashboard → http://localhost:${server.port}`);
+
+    // Graceful shutdown: without explicit handlers a stray keepalive/socket
+    // can leave the process squatting on the port after Ctrl-C, forcing a
+    // kill-port. stop(true) also drops live connections.
+    const shutdown = (signal: string) => {
+      console.log(`\n${signal} — closing dashboard`);
+      try {
+        server.stop(true);
+      } catch {
+        // already gone
+      }
+      process.exit(0);
+    };
+    process.on("SIGINT", () => shutdown("SIGINT"));
+    process.on("SIGTERM", () => shutdown("SIGTERM"));
   } catch (err) {
     handleError(err);
   }
+}
+
+/** Port already bound: if it is another tokitoki dashboard, just open it;
+ *  otherwise point at the culprit and suggest a free port. */
+function handlePortInUse(port: number): void {
+  const url = `http://localhost:${port}`;
+  const probe = Bun.spawnSync(["curl", "-sfm", "2", `${url}/api/healthz`], { stdout: "pipe", stderr: "ignore" });
+  const body = probe.stdout ? new TextDecoder().decode(probe.stdout) : "";
+  let isTokitoki = false;
+  try {
+    isTokitoki = (JSON.parse(body) as { app?: string }).app === "tokitoki";
+  } catch {
+    isTokitoki = false;
+  }
+  if (isTokitoki) {
+    console.log(`dashboard already running at ${url} — opening it`);
+    Bun.spawnSync(["open", url]);
+    return;
+  }
+  const alt = nextFreePort(port + 1);
+  console.error(`error: port ${port} is already in use (not a tokitoki dashboard)`);
+  console.error(`\x1b[2mtry: tokitoki web --port ${alt}\x1b[0m`);
+  console.error(`\x1b[2m     lsof -i :${port}   # see what holds the port\x1b[0m`);
+  process.exitCode = 1;
 }
 
 /** First free port >= from (probes by binding localhost). */
@@ -1954,6 +1991,12 @@ function inv(command: string, flags: Record<string, FlagValue | string[]> = {}):
   return { command, flags, rest: [] };
 }
 
+/** Local calendar date key (YYYY-MM-DD) offset by whole days. */
+function localDateKey(offsetDays = 0): string {
+  const d = new Date(Date.now() - offsetDays * 86_400_000);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
 function runMenubarPayload(parsed: ParsedInvocation): void {
   // Sequential single-process composition: the menu bar previously spawned
   // 7 CLIs at once (~1GB RSS each) and thrashed memory.
@@ -1967,8 +2010,12 @@ function runMenubarPayload(parsed: ParsedInvocation): void {
       console.log = orig;
     }
   };
-  capture("today", () => runReport(inv("report", { last: "day", by: "provider", json: true })));
+  // "today" = local CALENDAR day, not a rolling 24h window — a rolling
+  // window makes the hero number drift DOWN as yesterday's hours fall out.
+  const todayKey = localDateKey(0);
+  capture("today", () => runReport(inv("report", { by: "provider", json: true, from: todayKey, to: todayKey })));
   capture("week", () => runReport(inv("report", { last: "week", by: "provider", json: true })));
+  capture("reposMonth", () => runReport(inv("report", { last: "month", by: "repo", json: true })));
   capture("reposMonth", () => runReport(inv("report", { last: "month", by: "repo", json: true })));
   capture("budgets", () => runBudgets(inv("budgets", { json: true })));
   capture("anomalies", () => runAnomalies(inv("anomalies", { json: true })));
@@ -1983,6 +2030,7 @@ function runMenubarPayload(parsed: ParsedInvocation): void {
           previewMode: config.ui?.menubarPreviewMode ?? "inline",
           providers: [...cache.providerStats().keys()].sort(),
           menubarHidden: config.ui?.hidden?.menubar ?? [],
+          cards: menubarCardLayout(config),
         }),
       );
     });
@@ -2020,7 +2068,7 @@ function runMenubarPayload(parsed: ParsedInvocation): void {
         periods.push({ key, rows: [] });
       }
     };
-    grab("today", { last: "day" });
+    grab("today", { from: todayKey, to: todayKey });
     grab("yesterday", { from: yKey, to: yKey });
     grab("week", { last: "week" });
     grab("month", { last: "month" });
@@ -2035,6 +2083,13 @@ function runUi(parsed: ParsedInvocation): void {
   const hide = flagString(parsed, "hide");
   const show = flagString(parsed, "show");
   const menubarOnly = parsed.flags["menubar-only"];
+  const cardSet = flagString(parsed, "card-set");
+
+  if (cardSet !== undefined) {
+    setMenubarCards(cardSet);
+    console.log("card layout saved");
+    return;
+  }
 
   if (parsed.flags.list !== undefined || (hide === undefined && show === undefined && menubarOnly === undefined)) {
     const cfg = loadConfig();
