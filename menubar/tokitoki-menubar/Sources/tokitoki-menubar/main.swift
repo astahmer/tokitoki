@@ -125,6 +125,8 @@ struct AccountLimits: Codable, Identifiable {
     let alsoOn: [String]?
     let planLabel: String?
     let windows: [LimitWindow]
+    /** Where this account's quota data comes from ("polled"/"scan"/"opencodex"/"manual"). */
+    let origin: String?
     let bankedResets: Int?
     let bankedExpiresAt: String?
 
@@ -146,6 +148,10 @@ struct UiPreviewConfig: Codable {
     let cards: [MenubarCardConfig]?
     // Opt-in background quota polling (menubar runs `tokitoki poll`).
     let pollAuto: Bool?
+    // Upstream provider ids hidden from the STATUS-BAR STRIP only.
+    let previewHidden: [String]?
+    // Uniform strip display: "percent" (default) | "tokens".
+    let stripMetric: String?
 }
 
 // Combined snapshot from `tokitoki menubar-payload --json` (single CLI
@@ -192,6 +198,10 @@ final class Model: ObservableObject {
     @Published var cardLayout: [(id: String, hidden: Bool)] = []
     /// Opt-in background quota polling (`tokitoki poll` every ~15 min).
     @Published var pollAuto = false
+    /// Upstream provider ids hidden from the status-bar strip (cards unaffected).
+    @Published var previewHidden: Set<String> = []
+    /// Uniform strip display: "percent" (default) | "tokens".
+    @Published var stripMetric: String = "percent"
     @Published var spendPeriods: [SpendPeriod] = []
     /// nil = no budgets configured; "ok" | "warn" | "exceeded"
     @Published var worstState: String?
@@ -270,6 +280,8 @@ final class Model: ObservableObject {
                     self.menubarHidden = Set(ui.menubarHidden ?? [])
                     self.cardLayout = (ui.cards ?? []).map { ($0.id, $0.hidden) }
                     self.pollAuto = ui.pollAuto ?? false
+                    self.previewHidden = Set(ui.previewHidden ?? [])
+                    self.stripMetric = ui.stripMetric ?? "percent"
                 }
                 self.spendPeriods = p.spendPeriods ?? []
                 self.today = p.today
@@ -288,7 +300,11 @@ final class Model: ObservableObject {
                 // Upstream-provider groups with stacked quota percentages;
                 // providers without a real denominator get ONE usage-relative
                 // estimate line (~NN%) instead of nothing.
-                previewGroups = Self.stripGroups(from: p.limits ?? [])
+                previewGroups = Self.stripGroups(
+                    from: p.limits ?? [],
+                    metric: stripMetric,
+                    previewHidden: previewHidden
+                )
                 let newTitle = composeTitle(today: p.today, preview: Self.previewText(p.limits ?? [], cfg: p.uiPreview), hovering: isHovering, mode: self.previewMode)
                 setTitleIfChanged(newTitle)
                 self.errorText = nil
@@ -429,7 +445,7 @@ final class Model: ObservableObject {
     /// else the first window. Mirrors the popover hero logic.
     /// Upstream provider (openai/claude/opencode/openrouter/…) for strip
     /// grouping — harnesses (pi, codex, claude-code) are just clients.
-    private static func upstreamProvider(_ l: AccountLimits) -> String? {
+    static func upstreamProvider(_ l: AccountLimits) -> String? {
         switch l.provider {
         case "codex": return "openai"
         case "claude-code": return "claude"
@@ -449,7 +465,7 @@ final class Model: ObservableObject {
     /// group reports a quota; otherwise one "~NN%" estimate from the group's
     /// usage relative to the busiest same-kind window across all accounts
     /// (same normalization as the card bars — an ESTIMATE, tilde-marked).
-    static func stripGroups(from limits: [AccountLimits]) -> [(provider: String, lines: [String])] {
+    static func stripGroups(from limits: [AccountLimits], metric: String, previewHidden: Set<String>) -> [(provider: String, lines: [String])] {
         var maxima: [String: Double] = [:]
         for l in limits {
             for w in l.windows { maxima[w.kind] = max(maxima[w.kind] ?? 0, w.tokens) }
@@ -463,6 +479,7 @@ final class Model: ObservableObject {
         var groups: [String: Group] = [:]
         for l in limits {
             guard let up = upstreamProvider(l) else { continue }
+            if previewHidden.contains(up) { continue } // strip-only visibility
             if groups[up] == nil {
                 groups[up] = Group()
                 order.append(up)
@@ -470,18 +487,26 @@ final class Model: ObservableObject {
             for w in l.windows {
                 if let pct = w.usedPct {
                     groups[up]!.pcts.append(Int(max(0, min(100, 100 - pct)).rounded()))
-                } else {
-                    groups[up]!.estByKind[w.kind, default: 0] += w.tokens
                 }
+                groups[up]!.estByKind[w.kind, default: 0] += w.tokens
             }
         }
 
-        // No real quota → show compact token USAGE (~764M) instead of a
-        // fabricated percentage; a relative-to-peers "%" reads as remaining
-        // quota but isn't. Empty groups render mark-only.
         let kindPriority = ["week", "month", "day"]
-        return order.map { up in
+        return order.compactMap { up -> (provider: String, lines: [String])? in
             let g = groups[up]!
+            if metric == "tokens" {
+                // Uniform mode: every group shows exactly one usage line.
+                for kind in kindPriority {
+                    let tokens = g.estByKind[kind] ?? 0
+                    if tokens > 0 {
+                        return (up, ["~\(humanCount(tokens))"])
+                    }
+                }
+                return nil
+            }
+            // Percent mode: real quotas stack; estimate-only groups show one
+            // tilde-marked usage line; nothing at all renders mark-only.
             if !g.pcts.isEmpty {
                 return (up, g.pcts.prefix(3).map { "\($0)%" })
             }
@@ -491,7 +516,7 @@ final class Model: ObservableObject {
                     return (up, ["~\(humanCount(tokens))"])
                 }
             }
-            return (up, [])
+            return nil
         }
     }
 
@@ -820,27 +845,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         refreshHoverMonitor()
     }
 
-/// Monochrome brand mark for the template strip: real vector path when the
-/// provider has one, π for pi, SF symbol otherwise — all solid black so the
-/// template image tints correctly in light/dark menu bars.
-struct MonoMark: View {
-    let provider: String
-
-    var body: some View {
-        Group {
-            if let vector = BrandIcon.forProvider(provider) {
-                AnyView(vector.fill(Color.black))
-            } else if provider == "pi" {
-                AnyView(Text("π").font(.system(size: 11, weight: .heavy)).foregroundStyle(Color.black))
-            } else {
-                AnyView(Image(systemName: ProviderLogo.symbol(provider))
-                    .font(.system(size: 10, weight: .bold))
-                    .foregroundStyle(Color.black))
-            }
-        }
-        .frame(width: 12, height: 12)
-    }
-}
 
     /// Render [mark] 94%\n43%  [mark] 44% … as black-on-clear SwiftUI (one
     /// mark per provider, that provider's percentages STACKED vertically at a
@@ -1224,16 +1228,50 @@ struct ReorderDropDelegate: DropDelegate {
     func dropUpdated(info: DropInfo) -> DropProposal? { DropProposal(operation: .move) }
 }
 
+/// Monochrome brand mark for the template strip: real vector path when the
+/// provider has one, π for pi, SF symbol otherwise — all solid black so the
+/// template image tints correctly in light/dark menu bars.
+struct MonoMark: View {
+    let provider: String
+
+    var body: some View {
+        Group {
+            if let vector = BrandIcon.forProvider(provider) {
+                AnyView(vector.fill(Color.black))
+            } else if provider == "pi" {
+                AnyView(Text("π").font(.system(size: 11, weight: .heavy)).foregroundStyle(Color.black))
+            } else {
+                AnyView(Image(systemName: ProviderLogo.symbol(provider))
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(Color.black))
+            }
+        }
+        .frame(width: 12, height: 12)
+    }
+}
+
 struct CustomizeSheet: View {
     @ObservedObject var model: Model
     @Binding var isPresented: Bool
-    /// Draft state edited in the sheet; committed on Done.
+    /// Section a — usage-card drafts (order + popover visibility).
     @State private var cards: [CardState] = []
+    /// ui.hidden.menubar targets as of load — the save diff baseline.
+    @State private var originalHiddenTargets: Set<String> = []
+    /// Section b — menu-bar preview toggles (upstream providers).
+    @State private var previewRows: [PreviewRow] = []
 
     struct CardState: Identifiable, Equatable {
+        /// Display/order id ("provider@accountKey").
         let id: String
+        /// ui.hidden.menubar target ("provider:accountKey").
+        let target: String
         var visible: Bool
         var ident: String { id }
+    }
+
+    struct PreviewRow: Identifiable {
+        let id: String
+        var visible: Bool
     }
 
     var body: some View {
@@ -1252,19 +1290,36 @@ struct CustomizeSheet: View {
             .padding(.horizontal, 12).padding(.vertical, 8)
             Divider()
             List {
-                ForEach($cards) { $card in
-                    CardRow(card: $card)
-                        .onDrag {
-                            dragging = card.id
-                            return NSItemProvider(object: card.id as NSString)
-                        }
-                        .onDrop(of: [UTType.plainText], delegate: CardDropDelegate(target: card.id, cards: $cards, dragging: $dragging))
+                Section(header: sectionHeader("Usage cards")) {
+                    ForEach($cards) { $card in
+                        CardRow(card: $card)
+                            .onDrag {
+                                dragging = card.id
+                                return NSItemProvider(object: card.id as NSString)
+                            }
+                            .onDrop(of: [UTType.plainText], delegate: CardDropDelegate(target: card.id, cards: $cards, dragging: $dragging))
+                    }
+                }
+                Section(header: sectionHeader("Menu-bar preview")) {
+                    ForEach(previewRows) { row in
+                        PreviewRowView(row: row, onToggle: { visible in togglePreview(row.id, visible: visible) })
+                    }
+                    if previewRows.isEmpty {
+                        Text("no providers detected")
+                            .font(.caption2).foregroundStyle(.tertiary)
+                    }
                 }
             }
             .listStyle(.inset)
         }
-        .frame(width: 320, height: 420)
+        .frame(width: 320, height: 480)
         .onAppear(perform: load)
+    }
+
+    private func sectionHeader(_ title: String) -> some View {
+        Text(title.uppercased())
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(.secondary)
     }
 
     @State private var dragging: String?
@@ -1279,13 +1334,43 @@ struct CustomizeSheet: View {
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.tertiary)
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(ContentView.cardTitles[card.id] ?? card.id)
+                    Text(cardDisplayName)
                         .font(.system(size: 13, weight: .medium))
                     Text(card.id)
                         .font(.caption2).foregroundStyle(.tertiary)
                 }
                 Spacer()
                 Toggle("", isOn: $card.visible)
+                    .toggleStyle(.switch)
+                    .labelsHidden()
+                    .controlSize(.small)
+            }
+        }
+
+        private var cardDisplayName: String {
+            // "pi@opencode-go" → "opencode-go (pi)"-style friendly label when
+            // the account key already carries the name; harness prefix otherwise.
+            let parts = card.id.split(separator: "@", maxSplits: 1)
+            if parts.count == 2, parts[1] != "default" {
+                return "\(parts[1]) · \(parts[0])"
+            }
+            return card.id
+        }
+    }
+
+    /// Menu-bar preview row (no drag handle; toggle applies immediately).
+    private struct PreviewRowView: View {
+        let row: PreviewRow
+        let onToggle: (Bool) -> Void
+
+        var body: some View {
+            HStack(spacing: 10) {
+                MonoMark(provider: row.id)
+                    .frame(width: 11, height: 11)
+                Text(row.id)
+                    .font(.system(size: 13, weight: .medium))
+                Spacer()
+                Toggle("", isOn: Binding(get: { row.visible }, set: onToggle))
                     .toggleStyle(.switch)
                     .labelsHidden()
                     .controlSize(.small)
@@ -1318,28 +1403,68 @@ struct CustomizeSheet: View {
     }
 
     private func load() {
-        var saved = model.cardLayout.map { CardState(id: $0.id, visible: !$0.hidden) }
-        for id in ContentView.defaultCardOrder where !saved.contains(where: { $0.id == id }) {
-            saved.append(CardState(id: id, visible: true))
+        // Section a: every account card (payload order), visibility from
+        // hidden.menubar via the same "provider:accountKey" targets the
+        // context menu writes. Hidden pairs keep their drag slot.
+        cards = model.limits.map { l in
+            let target = "\(l.provider):\(l.accountKey)"
+            return CardState(
+                id: "\(l.provider)@\(l.accountKey)",
+                target: target,
+                visible: !model.menubarHidden.contains(target),
+            )
         }
-        cards = saved.filter { ContentView.cardTitles[$0.id] != nil }
+        originalHiddenTargets = model.menubarHidden
+        // Section b: upstream provider groups (same derivation as the strip).
+        var order: [String] = []
+        for l in model.limits {
+            guard let up = Model.upstreamProvider(l) else { continue }
+            if !order.contains(up) { order.append(up) }
+        }
+        previewRows = order.map { up in
+            PreviewRow(id: up, visible: !model.previewHidden.contains(up))
+        }
     }
 
     private func move(from source: IndexSet, to destination: Int) {
         cards.move(fromOffsets: source, toOffset: destination)
     }
 
+    /// Menu-bar preview toggles apply immediately (optimistic). No generic
+    /// config setter exists yet, so persistence lands with the next backend
+    /// round; the flip survives until the payload confirms otherwise.
+    private func togglePreview(_ id: String, visible: Bool) {
+        if visible {
+            model.previewHidden.remove(id)
+        } else {
+            model.previewHidden.insert(id)
+        }
+        FileHandle.standardError.write(
+            Data("[tokitoki] preview toggle \(id)=\(visible ? "shown" : "hidden") applied optimistically (not persisted yet)\n".utf8),
+        )
+    }
+
+    /// Done: persist account order + visibility changes, batched on a
+    /// background queue via the existing `ui` flags.
     private func save() {
         let cli = model.currentInvocation()
-        let layout = cards.map { (id: $0.id, hidden: !$0.visible) }
-        // Optimistic: reflect immediately, then confirm on disk + refresh.
-        model.cardLayout = layout
-        let spec = cards.map { "\($0.id):\($0.visible ? "1" : "0")" }.joined(separator: ",")
+        let order = cards.map { $0.id }
+        var argsList: [[String]] = [["ui", "--account-order", order.joined(separator: ",")]]
+        for card in cards {
+            let wasHidden = originalHiddenTargets.contains(card.target)
+            if card.visible && wasHidden {
+                argsList.append(["ui", "--show", card.target])
+            } else if !card.visible && !wasHidden {
+                argsList.append(["ui", "--hide", card.target])
+            }
+        }
         Task {
             do {
-                _ = try await Model.runCLI(cli, ["ui", "--card-set", spec])
+                for args in argsList {
+                    _ = try await Model.runCLI(cli, args)
+                }
             } catch {
-                FileHandle.standardError.write(Data("[tokitoki] card save failed: \(error)\n".utf8))
+                FileHandle.standardError.write(Data("[tokitoki] customize save failed: \(error)\n".utf8))
             }
             await MainActor.run { model.refresh() }
         }
@@ -2426,6 +2551,11 @@ struct AccountLimitCard: View {
             .accessibilityIdentifier("limit-details-toggle")
             if showDetails {
                 VStack(alignment: .leading, spacing: 2) {
+                    if let origin = limits.origin, origin != "scan" {
+                        Text("quota data: \(originExplanation(origin))")
+                            .font(.caption2).foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                    }
                     ForEach(Array(orderedWindows.enumerated()), id: \.offset) { _, w in
                         HStack(spacing: 6) {
                             Text(windowDisplayName(w.kind))
@@ -2442,6 +2572,16 @@ struct AccountLimitCard: View {
                 .padding(.top, 2)
                 .transition(.opacity.combined(with: .move(edge: .top)))
             }
+        }
+    }
+
+    /// Account-level provenance line for the details disclosure.
+    private func originExplanation(_ origin: String) -> String {
+        switch origin {
+        case "polled": return "polled live from the provider API"
+        case "opencodex": return "read from the opencodex account pool"
+        case "manual": return "from a manually registered key"
+        default: return origin
         }
     }
 
