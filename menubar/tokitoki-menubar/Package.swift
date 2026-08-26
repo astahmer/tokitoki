@@ -8,6 +8,11 @@ let package = Package(
         .executableTarget(
             name: "tokitoki-menubar",
             path: "Sources/tokitoki-menubar"
-        )
+        ),
+        .testTarget(
+            name: "menubarTests",
+            dependencies: ["tokitoki-menubar"],
+            path: "Tests/menubarTests"
+        ),
     ]
 )

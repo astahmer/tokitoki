@@ -496,7 +496,7 @@ final class Model: ObservableObject {
         return order.compactMap { up -> (provider: String, lines: [String])? in
             let g = groups[up]!
             if metric == "tokens" {
-                // Uniform mode: every group shows exactly one usage line.
+                // Uniform tokens mode: every group shows exactly one usage line.
                 for kind in kindPriority {
                     let tokens = g.estByKind[kind] ?? 0
                     if tokens > 0 {
@@ -505,18 +505,11 @@ final class Model: ObservableObject {
                 }
                 return nil
             }
-            // Percent mode: real quotas stack; estimate-only groups show one
-            // tilde-marked usage line; nothing at all renders mark-only.
-            if !g.pcts.isEmpty {
-                return (up, g.pcts.prefix(3).map { "\($0)%" })
-            }
-            for kind in kindPriority {
-                let tokens = g.estByKind[kind] ?? 0
-                if tokens > 0 {
-                    return (up, ["~\(humanCount(tokens))"])
-                }
-            }
-            return nil
+            // Percent mode: ONLY provider-reported quotas render as numbers.
+            // Groups without a real denominator stay mark-only — a relative
+            // share would read as remaining quota and is not one.
+            guard !g.pcts.isEmpty else { return (up, []) }
+            return (up, g.pcts.prefix(3).map { "\($0)%" })
         }
     }
 
@@ -1259,6 +1252,11 @@ struct CustomizeSheet: View {
     @State private var originalHiddenTargets: Set<String> = []
     /// Section b — menu-bar preview toggles (upstream providers).
     @State private var previewRows: [PreviewRow] = []
+    /// Section c — manually registered opencode gateway keys.
+    @State private var extraKeys: [ExtraKey] = []
+    @State private var showAddKey = false
+    @State private var newKeyId = ""
+    @State private var newKeyValue = ""
 
     struct CardState: Identifiable, Equatable {
         /// Display/order id ("provider@accountKey").
@@ -1272,6 +1270,12 @@ struct CustomizeSheet: View {
     struct PreviewRow: Identifiable {
         let id: String
         var visible: Bool
+    }
+
+    struct ExtraKey: Identifiable, Equatable, Codable {
+        let id: String
+        let provider: String
+        let key: String
     }
 
     var body: some View {
@@ -1301,18 +1305,62 @@ struct CustomizeSheet: View {
                     }
                 }
                 Section(header: sectionHeader("Menu-bar preview")) {
-                    ForEach(previewRows) { row in
-                        PreviewRowView(row: row, onToggle: { visible in togglePreview(row.id, visible: visible) })
+                    ForEach($previewRows) { $row in
+                        PreviewRowView(row: $row, onToggle: { visible in
+                            togglePreview(row.id, visible: visible)
+                        })
                     }
                     if previewRows.isEmpty {
                         Text("no providers detected")
                             .font(.caption2).foregroundStyle(.tertiary)
                     }
                 }
+                Section(header: sectionHeader("API keys (opencode)")) {
+                    ForEach(extraKeys) { k in
+                        HStack(spacing: 8) {
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(k.id).font(.system(size: 12, weight: .medium))
+                                Text(redactedKeyHint(k.key))
+                                    .font(.caption2.monospacedDigit()).foregroundStyle(.tertiary)
+                            }
+                            Spacer()
+                            Button {
+                                deleteExtraKey(k)
+                            } label: {
+                                Image(systemName: "trash")
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(.secondary)
+                            }
+                            .buttonStyle(.plain)
+                            .help("Remove key")
+                        }
+                    }
+                    Button("Add key…") { newKeyId = ""; newKeyValue = ""; showAddKey = true }
+                        .font(.system(size: 12))
+                }
             }
             .listStyle(.inset)
         }
         .frame(width: 320, height: 480)
+        .sheet(isPresented: $showAddKey) {
+            // Minimal add-key form; Add persists immediately.
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Add opencode key").font(.system(size: 13, weight: .semibold))
+                TextField("name (e.g. work)", text: $newKeyId)
+                    .textFieldStyle(.roundedBorder)
+                SecureField("key (sk-…)", text: $newKeyValue)
+                    .textFieldStyle(.roundedBorder)
+                HStack {
+                    Spacer()
+                    Button("Cancel") { showAddKey = false }.keyboardShortcut(.cancelAction)
+                    Button("Add") { addExtraKey() }
+                        .keyboardShortcut(.defaultAction)
+                        .disabled(!extraKeyInputValid)
+                }
+            }
+            .padding(16)
+            .frame(width: 300)
+        }
         .onAppear(perform: load)
     }
 
@@ -1359,8 +1407,10 @@ struct CustomizeSheet: View {
     }
 
     /// Menu-bar preview row (no drag handle; toggle applies immediately).
+    /// `row` is a Binding so the switch flips immediately — the stale-copy
+    /// get-closure variant never re-rendered the control.
     private struct PreviewRowView: View {
-        let row: PreviewRow
+        @Binding var row: PreviewRow
         let onToggle: (Bool) -> Void
 
         var body: some View {
@@ -1370,10 +1420,16 @@ struct CustomizeSheet: View {
                 Text(row.id)
                     .font(.system(size: 13, weight: .medium))
                 Spacer()
-                Toggle("", isOn: Binding(get: { row.visible }, set: onToggle))
-                    .toggleStyle(.switch)
-                    .labelsHidden()
-                    .controlSize(.small)
+                Toggle("", isOn: Binding(
+                    get: { row.visible },
+                    set: { newValue in
+                        row.visible = newValue // flip the state FIRST so the control animates
+                        onToggle(newValue)
+                    },
+                ))
+                .toggleStyle(.switch)
+                .labelsHidden()
+                .controlSize(.small)
             }
         }
     }
@@ -1415,6 +1471,9 @@ struct CustomizeSheet: View {
             )
         }
         originalHiddenTargets = model.menubarHidden
+        // Section c: manual keys live only in the config file — read it
+        // directly (the payload does not carry them).
+        loadExtraKeysFromDisk()
         // Section b: upstream provider groups (same derivation as the strip).
         var order: [String] = []
         for l in model.limits {
@@ -1423,6 +1482,19 @@ struct CustomizeSheet: View {
         }
         previewRows = order.map { up in
             PreviewRow(id: up, visible: !model.previewHidden.contains(up))
+        }
+    }
+
+    private func loadExtraKeysFromDisk() {
+        let env = ProcessInfo.processInfo.environment
+        let p = env["TOKITOKI_CONFIG"]
+            ?? FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent(".config/tokitoki/config.json").path
+        guard let data = FileManager.default.contents(atPath: p) else { return }
+        struct Cfg: Codable { var poll: PollCfg? }
+        struct PollCfg: Codable { var extraKeys: [ExtraKey]? }
+        if let cfg = try? JSONDecoder().decode(Cfg.self, from: data) {
+            extraKeys = cfg.poll?.extraKeys ?? []
         }
     }
 
@@ -1439,9 +1511,53 @@ struct CustomizeSheet: View {
         } else {
             model.previewHidden.insert(id)
         }
-        FileHandle.standardError.write(
-            Data("[tokitoki] preview toggle \(id)=\(visible ? "shown" : "hidden") applied optimistically (not persisted yet)\n".utf8),
-        )
+        // Persist via the generic dotted-path config setter.
+        let cli = model.currentInvocation()
+        let json = "[" + model.previewHidden.sorted().map { "\"\($0)\"" }.joined(separator: ",") + "]"
+        DispatchQueue.global(qos: .utility).async {
+            let task = Process()
+            task.executableURL = cli.executable
+            task.arguments = cli.prefixArgs + ["config", "set", "ui.previewHidden", json]
+            try? task.run()
+        }
+    }
+
+    /// first4…last4 hint — mirrors poll.ts redactCredential.
+    private func redactedKeyHint(_ key: String) -> String {
+        key.count <= 12 ? "…" : "\(key.prefix(4))…\(key.suffix(4))"
+    }
+
+    private var extraKeyInputValid: Bool {
+        !newKeyId.isEmpty
+            && !newKeyId.contains(" ")
+            && newKeyValue.count > 10
+            && !extraKeys.contains(where: { $0.id == newKeyId })
+    }
+
+    /// Persist via `config set poll.extraKeys <json>`; entries are full
+    /// {id,label,provider,key} objects so deletes preserve siblings.
+    private func persistExtraKeys() {
+        let cli = model.currentInvocation()
+        let encoder = JSONEncoder()
+        guard let data = try? encoder.encode(extraKeys), let json = String(data: data, encoding: .utf8) else { return }
+        DispatchQueue.global(qos: .utility).async {
+            let task = Process()
+            task.executableURL = cli.executable
+            task.arguments = cli.prefixArgs + ["config", "set", "poll.extraKeys", json]
+            try? task.run()
+        }
+    }
+
+    private func addExtraKey() {
+        guard extraKeyInputValid else { return }
+        extraKeys.append(ExtraKey(id: newKeyId, provider: "opencode-go", key: newKeyValue))
+        persistExtraKeys()
+        showAddKey = false
+    }
+
+    private func deleteExtraKey(_ k: ExtraKey) {
+        extraKeys.removeAll { $0.id == k.id }
+        persistExtraKeys()
     }
 
     /// Done: persist account order + visibility changes, batched on a
@@ -1537,54 +1653,58 @@ struct ContentView: View {
     }
 
     var body: some View {
-        ScrollView(.vertical) {
-            VStack(alignment: .leading, spacing: 10) {
-                if let e = model.errorText {
-                    Label(e, systemImage: "exclamationmark.triangle.fill")
-                        .font(.caption).foregroundStyle(.red)
-                        .padding(8).frame(maxWidth: .infinity, alignment: .leading)
-                        .background(.red.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
-                }
-                searchBar
-                ForEach(orderedVisibleCards(), id: \.self) { id in
-                    Group {
-                        if cardSurvives(id) {
-                            cardBody(id)
+        VStack(spacing: 0) {
+            ScrollView(.vertical) {
+                VStack(alignment: .leading, spacing: 10) {
+                    if let e = model.errorText {
+                        Label(e, systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption).foregroundStyle(.red)
+                            .padding(8).frame(maxWidth: .infinity, alignment: .leading)
+                            .background(.red.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
+                    }
+                    searchBar
+                    ForEach(orderedVisibleCards(), id: \.self) { id in
+                        Group {
+                            if cardSurvives(id) {
+                                cardBody(id)
+                            }
                         }
+                        .onDrag {
+                            draggingCard = id
+                            return NSItemProvider(object: id as NSString)
+                        }
+                        .onDrop(of: [UTType.plainText], delegate: PopoverCardDrop(
+                            target: id,
+                            getLayout: { effectiveLayout() },
+                            setLayout: { localLayout = $0 },
+                            dragging: $draggingCard,
+                            onCommit: { persistCardLayout($0) }
+                        ))
                     }
-                    .onDrag {
-                        draggingCard = id
-                        return NSItemProvider(object: id as NSString)
-                    }
-                    .onDrop(of: [UTType.plainText], delegate: PopoverCardDrop(
-                        target: id,
-                        getLayout: { effectiveLayout() },
-                        setLayout: { localLayout = $0 },
-                        dragging: $draggingCard,
-                        onCommit: { persistCardLayout($0) }
-                    ))
                 }
-                HStack(spacing: 8) {
-                    Button(action: openDashboard) { Label("Dashboard", systemImage: "safari") }.buttonStyle(.borderedProminent)
-                    Button(action: { model.refresh() }) { Label("Refresh", systemImage: "arrow.clockwise") }.buttonStyle(.bordered)
-                    Spacer()
-                    Menu {
-                        Button("Save Screenshot to Desktop") { saveScreenshot() }
-                        Button("Copy Summary as Markdown") { copyMarkdownSummary() }
-                    } label: {
-                        Image(systemName: "square.and.arrow.up")
-                    }.help("Share: save a screenshot or copy a markdown summary")
-                    Button(action: { showCustomize = true }) {
-                        Image(systemName: "slider.horizontal.3")
-                    }.buttonStyle(.bordered)
-                        .help("Customize cards")
-                }.frame(maxWidth: .infinity)
-                Text("updated automatically every 5 min")
-                    .font(.caption2).foregroundStyle(.tertiary).frame(maxWidth: .infinity, alignment: .center)
+                .padding(12)
             }
-            .padding(12)
+            .scrollIndicators(.hidden)
+
+            // Sticky footer — always visible regardless of scroll position.
+            Divider()
+            HStack(spacing: 8) {
+                Button(action: openDashboard) { Label("Dashboard", systemImage: "safari") }.buttonStyle(.borderedProminent)
+                Button(action: { model.refresh() }) { Label("Refresh", systemImage: "arrow.clockwise") }.buttonStyle(.bordered)
+                Spacer()
+                Menu {
+                    Button("Save Screenshot to Desktop") { saveScreenshot() }
+                    Button("Copy Summary as Markdown") { copyMarkdownSummary() }
+                } label: {
+                    Image(systemName: "square.and.arrow.up")
+                }.help("Share: save a screenshot or copy a markdown summary")
+                Button(action: { showCustomize = true }) {
+                    Image(systemName: "slider.horizontal.3")
+                }.buttonStyle(.bordered)
+                    .help("Customize cards")
+            }
+            .padding(.horizontal, 12).padding(.vertical, 8)
         }
-        .scrollIndicators(.hidden)
         .frame(width: 340, height: 520)
         .background(.thinMaterial)
         .onAppear { model.refresh() }
@@ -2551,11 +2671,12 @@ struct AccountLimitCard: View {
             .accessibilityIdentifier("limit-details-toggle")
             if showDetails {
                 VStack(alignment: .leading, spacing: 2) {
-                    if let origin = limits.origin, origin != "scan" {
-                        Text("quota data: \(originExplanation(origin))")
-                            .font(.caption2).foregroundStyle(.tertiary)
-                            .lineLimit(1)
-                    }
+                    // Provenance ALWAYS shown — users must be able to tell
+                    // where an account's numbers come from (SCR-ffhr).
+                    let originNote = originExplanation(limits.origin ?? "scan")
+                    Text("quota data: \(originNote)")
+                        .font(.caption2).foregroundStyle(.tertiary)
+                        .lineLimit(1)
                     ForEach(Array(orderedWindows.enumerated()), id: \.offset) { _, w in
                         HStack(spacing: 6) {
                             Text(windowDisplayName(w.kind))
@@ -2581,6 +2702,7 @@ struct AccountLimitCard: View {
         case "polled": return "polled live from the provider API"
         case "opencodex": return "read from the opencodex account pool"
         case "manual": return "from a manually registered key"
+        case "scan": return "estimated from locally scanned sessions"
         default: return origin
         }
     }
