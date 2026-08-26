@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { execFileSync } from "node:child_process";
 
 import type { EventCache } from "./cache.ts";
 
@@ -21,6 +22,20 @@ const WHAM_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
 const TOKEN_REFRESH_URL = "https://auth.openai.com/oauth/token";
 /** codex CLI's public OAuth client id (same value Codex CLI itself ships). */
 const OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
+/** OpenRouter key metadata: limit/limit_remaining when a credit limit is set. */
+const OPENROUTER_KEY_URL = "https://openrouter.ai/api/v1/key";
+/** OpenCode Go plan meters — provider-reported percent + reset per window. */
+const OPENCODE_USAGE_URL = "https://opencode.ai/zen/go/v1/usage";
+/** Claude Code OAuth usage endpoint + refresh config (openusage ClaudeAuthStore). */
+const CLAUDE_USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
+const CLAUDE_REFRESH_URL = "https://platform.claude.com/v1/oauth/token";
+const CLAUDE_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
+/** GitHub Copilot internal usage endpoint — `token` scheme, not Bearer. */
+const COPILOT_USAGE_URL = "https://api.github.com/copilot_internal/user";
+/** Cursor dashboard Connect endpoints. */
+const CURSOR_USAGE_URL = "https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage";
+/** opencodex pooled-account quota cache (~/.opencodex). */
+const OPENCODEX_QUOTA_CACHE = `${process.env.HOME ?? "~"}/.opencodex/codex-quota-cache.json`;
 const USER_AGENT = "tokitoki";
 
 export interface PolledWindow {
@@ -32,6 +47,8 @@ export interface PolledWindow {
 
 export interface PollAccountResult {
   accountKey: string;
+  /** Harnesses sharing this polled account (opencode-go spans pi+opencode). */
+  harnesses?: string[];
   email?: string;
   planType?: string;
   windows: PolledWindow[];
@@ -50,6 +67,20 @@ export interface PollOptions {
   fetcher?: typeof fetch;
   /** Absolute path to a codex auth.json fixture (tests). */
   authPath?: string;
+  /** Absolute path to a pi auth.json fixture (tests). Default ~/.pi/agent/auth.json. */
+  piAuthPath?: string;
+  /** Absolute path to a claude .credentials.json fixture (tests). Default ~/.claude/.credentials.json; keychain fallback when absent. */
+  claudeCredentialsPath?: string;
+  /** Absolute path to a github-copilot apps.json/hosts.json fixture (tests). Default ~/.config/github-copilot/{apps,hosts}.json. */
+  copilotAuthPath?: string;
+  /** Absolute path to a cursor cli-auth.json fixture (tests). Default ~/.cursor/cli-auth.json. */
+  cursorAuthPath?: string;
+  /** Absolute path to an opencodex codex-quota-cache.json fixture (tests). Default ~/.opencodex/codex-quota-cache.json. */
+  opencodexCachePath?: string;
+  /** Absolute path to an opencode auth.json fixture (tests). Default ~/.local/share/opencode/auth.json. */
+  opencodeAuthPath?: string;
+  /** Manually registered gateway keys (config.poll.extraKeys) polled as synthetic accounts. */
+  manualKeys?: Array<{ id: string; provider: "opencode-go"; key: string }>;
   /** EventCache instance (tests use a temp db). Default: open the real one. */
   cache?: EventCache;
   now?: number;
@@ -178,6 +209,390 @@ async function fetchUsage(
   return { status: res.status, body };
 }
 
+/** Read pi's auth store (~/.pi/agent/auth.json) → {provider: raw api key}. */
+export function piCredentials(
+  path: string = `${process.env.PI_DIR ?? `${process.env.HOME ?? "~"}/.pi`}/agent/auth.json`,
+): Record<string, string> {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(path, "utf8")) as Record<string, { type?: string; key?: string }>;
+    const out: Record<string, string> = {};
+    for (const [provider, entry] of Object.entries(parsed)) {
+      if (entry !== null && typeof entry === "object" && typeof entry.key === "string") {
+        out[provider] = entry.key;
+      }
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+interface OpenRouterKeyResponse {
+  data?: { limit?: number | null; limit_remaining?: number | null; limit_reset?: string | null };
+}
+
+/** OpenRouter /key → one window when a credit limit is configured (else skip). */
+async function pollOpenRouter(key: string, fetcher: typeof fetch): Promise<{ windows: PolledWindow[]; skip?: string; error?: string }> {
+  let body: OpenRouterKeyResponse;
+  try {
+    const res = await fetcher(OPENROUTER_KEY_URL, { headers: { authorization: `Bearer ${key}`, accept: "application/json" } });
+    if (!res.ok) return { windows: [], error: `HTTP ${res.status}` };
+    body = (await res.json()) as OpenRouterKeyResponse;
+  } catch (e) {
+    return { windows: [], error: String(e) };
+  }
+  const d = body.data ?? {};
+  if (typeof d.limit !== "number" || d.limit <= 0 || typeof d.limit_remaining !== "number") {
+    return { windows: [], skip: "no credit limit configured on the key" };
+  }
+  const used = Math.max(0, d.limit - Math.max(0, d.limit_remaining));
+  const pct = Math.min(100, (used / d.limit) * 100);
+  const minutes = d.limit_reset === "daily" ? 1440 : d.limit_reset === "weekly" ? 10_080 : 43_200;
+  return { windows: [{ windowMinutes: minutes, usedPct: pct, resetsAtEpoch: 0 }] };
+}
+
+interface OpencodeUsageResponse {
+  usage?: Record<string, { percent?: number; resetsAt?: string }>;
+}
+
+/** OpenCode zen/go usage → rolling(5h)/weekly/monthly percent meters. */
+async function pollOpencodeGo(key: string, fetcher: typeof fetch): Promise<{ windows: PolledWindow[]; error?: string }> {
+  let body: OpencodeUsageResponse;
+  try {
+    const res = await fetcher(OPENCODE_USAGE_URL, { headers: { authorization: `Bearer ${key}`, accept: "application/json" } });
+    if (!res.ok) return { windows: [], error: `HTTP ${res.status}` };
+    body = (await res.json()) as OpencodeUsageResponse;
+  } catch (e) {
+    return { windows: [], error: String(e) };
+  }
+  const u = body.usage ?? {};
+  const spec: Array<[string, number]> = [
+    ["rolling", 300],
+    ["weekly", 10_080],
+    ["monthly", 43_200],
+  ];
+  const windows: PolledWindow[] = [];
+  for (const [name, minutes] of spec) {
+    const w = u[name];
+    if (w === undefined || typeof w.percent !== "number") continue;
+    const resets = typeof w.resetsAt === "string" ? Date.parse(w.resetsAt) : NaN;
+    windows.push({
+      windowMinutes: minutes,
+      usedPct: Math.max(0, Math.min(100, w.percent)),
+      resetsAtEpoch: Number.isFinite(resets) ? Math.round(resets / 1000) : 0,
+    });
+  }
+  if (windows.length === 0) return { windows: [], error: "no usable windows in response" };
+  return { windows };
+}
+
+/**
+ * Claude Code OAuth credentials: ~/.claude/.credentials.json first, then the
+ * macOS Keychain generic password "Claude Code-credentials" (same JSON).
+ * An explicit opts.claudeCredentialsPath (fixture/tests) disables the
+ * Keychain fallback so behavior stays deterministic.
+ */
+export function loadClaudeCredentials(opts: PollOptions): { accessToken?: string; refreshToken?: string } | null {
+  const explicit = opts.claudeCredentialsPath !== undefined;
+  const path = opts.claudeCredentialsPath ?? `${process.env.HOME ?? "~"}/.claude/.credentials.json`;
+  let raw: string | undefined;
+  try {
+    raw = fs.readFileSync(path, "utf8");
+  } catch {
+    // File absent — fall through to the Keychain (macOS only; skip elsewhere)
+    // unless a fixture path was given.
+    if (explicit || process.platform !== "darwin") return null;
+    try {
+      raw = execFileSync("security", ["find-generic-password", "-s", "Claude Code-credentials", "-w"], {
+        stdio: ["ignore", "pipe", "ignore"],
+      }).toString();
+    } catch {
+      return null;
+    }
+  }
+  try {
+    const parsed = JSON.parse(raw) as { claudeAiOauth?: { accessToken?: string; refreshToken?: string } };
+    const oauth = parsed.claudeAiOauth;
+    if (oauth === undefined || typeof oauth.accessToken !== "string" || oauth.accessToken.length === 0) return null;
+    return oauth;
+  } catch {
+    return null;
+  }
+}
+
+async function refreshClaudeToken(refreshToken: string, fetcher: typeof fetch): Promise<{ ok: boolean; accessToken?: string }> {
+  try {
+    const res = await fetcher(CLAUDE_REFRESH_URL, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
+      body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: refreshToken, client_id: CLAUDE_CLIENT_ID }),
+    });
+    if (!res.ok) return { ok: false };
+    const json = (await res.json()) as { access_token?: string };
+    return json.access_token !== undefined && json.access_token.length > 0
+      ? { ok: true, accessToken: json.access_token }
+      : { ok: false };
+  } catch {
+    return { ok: false };
+  }
+}
+
+interface ClaudeUsageWindow {
+  utilization?: number;
+  resets_at?: string;
+}
+
+interface ClaudeUsageResponse {
+  five_hour?: ClaudeUsageWindow;
+  seven_day?: ClaudeUsageWindow;
+}
+
+/** claude-code OAuth usage → Session(300min) + Weekly(10080min) percent meters. */
+async function pollClaudeQuotas(opts: PollOptions, fetcher: typeof fetch): Promise<PollAccountResult | string> {
+  const creds = loadClaudeCredentials(opts);
+  if (creds === null || creds.accessToken === undefined || creds.accessToken.length === 0) {
+    return "not logged in (~/.claude/.credentials.json and keychain both empty)";
+  }
+
+  const fetchOnce = async (accessToken: string) => {
+    try {
+      const res = await fetcher(CLAUDE_USAGE_URL, {
+        headers: {
+          authorization: `Bearer ${accessToken}`,
+          accept: "application/json",
+          "anthropic-beta": "oauth-2025-04-20",
+          "user-agent": "claude-code/2.1.69",
+        },
+      });
+      let body: ClaudeUsageResponse | null = null;
+      try {
+        body = (await res.json()) as ClaudeUsageResponse;
+      } catch {
+        // non-JSON error body
+      }
+      return { status: res.status, body };
+    } catch {
+      return { status: 0, body: null };
+    }
+  };
+
+  let res = await fetchOnce(creds.accessToken);
+  if (res.status === 401 || res.status === 403) {
+    if (creds.refreshToken === undefined || creds.refreshToken.length === 0) {
+      return `unauthorized (${res.status}) and no refresh token available`;
+    }
+    const renewed = await refreshClaudeToken(creds.refreshToken, fetcher);
+    if (!renewed.ok || renewed.accessToken === undefined) {
+      return `unauthorized (${res.status}) and token refresh failed`;
+    }
+    res = await fetchOnce(renewed.accessToken);
+  }
+  if (res.status < 200 || res.status >= 300 || res.body === null) {
+    return `usage endpoint returned HTTP ${res.status}`;
+  }
+
+  // Body windows carry {utilization: 0-100, resets_at: ISO} (openusage mapper).
+  const spec: Array<[ClaudeUsageWindow | undefined, number]> = [
+    [res.body.five_hour, 300],
+    [res.body.seven_day, 10_080],
+  ];
+  const windows: PolledWindow[] = [];
+  for (const [w, minutes] of spec) {
+    if (w === undefined || typeof w.utilization !== "number") continue;
+    const resets = typeof w.resets_at === "string" ? Date.parse(w.resets_at) : NaN;
+    windows.push({
+      windowMinutes: minutes,
+      usedPct: Math.max(0, Math.min(100, w.utilization)),
+      resetsAtEpoch: Number.isFinite(resets) ? Math.round(resets / 1000) : 0,
+    });
+  }
+  if (windows.length === 0) {
+    return { accountKey: "default", harnesses: ["claude-code"], windows, inserted: 0, error: "no usable windows in response" };
+  }
+  const capturedAtIso = new Date(opts.now ?? Date.now()).toISOString();
+  const inserted = opts.cache?.insertPolledSnapshots({
+    provider: "claude-code",
+    accountKey: "default",
+    windows,
+    capturedAtIso,
+    eventId: `poll:${capturedAtIso}:claude`,
+  }) ?? 0;
+  return { accountKey: "default", harnesses: ["claude-code"], windows, inserted };
+}
+
+/** github.com oauth_token from ~/.config/github-copilot/apps.json (newer) or hosts.json. */
+export function copilotToken(path?: string): string | null {
+  const base = `${process.env.HOME ?? "~"}/.config/github-copilot`;
+  const candidates = path !== undefined ? [path] : [`${base}/apps.json`, `${base}/hosts.json`];
+  for (const file of candidates) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as Record<string, { oauth_token?: string }>;
+      const entry = parsed["github.com"] ?? Object.entries(parsed).find(([host]) => host.startsWith("github.com"))?.[1];
+      if (entry !== undefined && typeof entry.oauth_token === "string" && entry.oauth_token.length > 0) {
+        return entry.oauth_token;
+      }
+    } catch {
+      // try next candidate
+    }
+  }
+  return null;
+}
+
+interface CopilotUserResponse {
+  quota_reset_date?: string;
+  quota_snapshots?: Record<string, Record<string, unknown>>;
+}
+
+/** Copilot internal/user → one window per real quota_snapshots bucket. */
+async function pollCopilotQuotas(opts: PollOptions, fetcher: typeof fetch, now: number): Promise<PollAccountResult | string> {
+  const token = copilotToken(opts.copilotAuthPath);
+  if (token === null) return "no GitHub oauth_token in ~/.config/github-copilot/{apps,hosts}.json";
+
+  let body: CopilotUserResponse;
+  try {
+    const res = await fetcher(COPILOT_USAGE_URL, {
+      headers: {
+        authorization: `token ${token}`, // `token` scheme is what this endpoint accepts
+        accept: "application/vnd.github+json",
+        "editor-version": "vscode/1.96.2",
+        "editor-plugin-version": "copilot-chat/0.26.7",
+        "x-github-api-version": "2025-04-01",
+        "user-agent": "GitHubCopilotChat/0.26.7",
+      },
+    });
+    if (!res.ok) return `HTTP ${res.status}`;
+    body = (await res.json()) as CopilotUserResponse;
+  } catch (e) {
+    return String(e);
+  }
+
+  const resetMs = typeof body.quota_reset_date === "string" ? Date.parse(body.quota_reset_date) : NaN;
+  const resetsAtEpoch = Number.isFinite(resetMs) ? Math.round(resetMs / 1000) : 0;
+  // Minutes until reset clamps to a sane window length for the snapshot row.
+  const windowMinutes =
+    Number.isFinite(resetMs)
+      ? Math.max(60, Math.min(43_200, Math.round((resetMs - now) / 60_000)))
+      : 43_200;
+
+  const windows: PolledWindow[] = [];
+  for (const [label, snapshot] of Object.entries(body.quota_snapshots ?? {})) {
+    if (snapshot === null || typeof snapshot !== "object") continue;
+    const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
+    const entitlement = num(snapshot["entitlement"]);
+    const remaining = num(snapshot["remaining"]);
+    const percentRemaining = num(snapshot["percent_remaining"]);
+    // Unlimited (-1 sentinels / explicit flag) or zero entitlement = no real meter.
+    if (snapshot["unlimited"] === true || entitlement === -1 || remaining === -1 || entitlement === 0) continue;
+    let usedPct: number | null = null;
+    if (percentRemaining !== null) usedPct = Math.max(0, Math.min(100, 100 - percentRemaining));
+    else if (entitlement !== null && entitlement > 0 && remaining !== null) {
+      usedPct = Math.max(0, Math.min(100, 100 - (remaining / entitlement) * 100));
+    }
+    if (usedPct === null) continue;
+    windows.push({ windowMinutes, usedPct, resetsAtEpoch });
+    void label; // bucket names (chat/completions/...) are not stable enough to surface
+    break; // one representative meter per account keeps the card compact
+  }
+  if (windows.length === 0) {
+    return { accountKey: "default", windows, inserted: 0, error: "no bounded quota buckets in response" };
+  }
+  const capturedAtIso = new Date(now).toISOString();
+  const inserted = opts.cache?.insertPolledSnapshots({
+    provider: "copilot",
+    accountKey: "default",
+    windows,
+    capturedAtIso,
+    eventId: `poll:${capturedAtIso}:copilot`,
+  }) ?? 0;
+  return { accountKey: "default", harnesses: ["copilot"], windows, inserted };
+}
+
+/** Best-effort cursor access token from ~/.cursor/cli-auth.json (sqlite/keychain unsupported). */
+function cursorAccessToken(opts: PollOptions): string | null {
+  const path = opts.cursorAuthPath ?? `${process.env.HOME ?? "~"}/.cursor/cli-auth.json`;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(path, "utf8")) as { accessToken?: string; api_key?: string };
+    const t = parsed.accessToken ?? parsed.api_key;
+    return typeof t === "string" && t.length > 0 ? t : null;
+  } catch {
+    return null;
+  }
+}
+
+interface CursorUsageResult {
+  usagePercent?: number;
+  nextResetTimestampUtc?: string;
+}
+
+/** Cursor dashboard Connect POST → billing-period percent when recognizable. */
+async function pollCursorQuotas(opts: PollOptions, fetcher: typeof fetch, now: number): Promise<PollAccountResult | string> {
+  const token = cursorAccessToken(opts);
+  if (token === null) return "cursor auth not found (cli-auth.json missing; sqlite/keychain unsupported)";
+
+  let body: unknown;
+  try {
+    const res = await fetcher(CURSOR_USAGE_URL, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+        "connect-protocol-version": "1",
+        accept: "application/json",
+      },
+      body: "{}",
+    });
+    if (!res.ok) return `HTTP ${res.status}`;
+    body = await res.json();
+  } catch (e) {
+    return String(e);
+  }
+
+  // Defensive shape walk — the Connect payload nests the billing period under
+  // either {billingPeriodInfo:{...}} or a bare usage object.
+  const root = (body ?? {}) as Record<string, unknown>;
+  const candidates: Array<Record<string, unknown>> = [];
+  if (typeof root.billingPeriodInfo === "object" && root.billingPeriodInfo !== null) {
+    candidates.push(root.billingPeriodInfo as Record<string, unknown>);
+  }
+  if (typeof root.usage === "object" && root.usage !== null) {
+    candidates.push(root.usage as Record<string, unknown>);
+  }
+  candidates.push(root);
+  for (const c of candidates) {
+    const pct = typeof c.usagePercent === "number" ? c.usagePercent : typeof c.percentUsed === "number" ? c.percentUsed : null;
+    if (pct === null) continue;
+    const resetRaw = typeof c.nextResetTimestampUtc === "string" ? c.nextResetTimestampUtc : undefined;
+    const resetMs = resetRaw !== undefined ? Date.parse(resetRaw) : NaN;
+    const resetsAtEpoch = Number.isFinite(resetMs) ? Math.round(resetMs / 1000) : 0;
+    const windowMinutes = Number.isFinite(resetMs)
+      ? Math.max(60, Math.min(43_200, Math.round((resetMs - now) / 60_000)))
+      : 43_200;
+    const windows = [{ windowMinutes, usedPct: Math.max(0, Math.min(100, pct)), resetsAtEpoch }];
+    const capturedAtIso = new Date(now).toISOString();
+    const inserted = opts.cache?.insertPolledSnapshots({
+      provider: "cursor",
+      accountKey: "default",
+      windows,
+      capturedAtIso,
+      eventId: `poll:${capturedAtIso}:cursor`,
+    }) ?? 0;
+    return { accountKey: "default", harnesses: ["cursor"], windows, inserted };
+  }
+  return "cursor response shape unrecognized";
+}
+
+/** opencodex pooled-account quotas → {key: {weeklyPercent, weeklyResetAt}}. */
+export function opencodexQuotas(path: string = OPENCODEX_QUOTA_CACHE): Record<string, { weeklyPercent?: number; weeklyResetAt?: number }> {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(path, "utf8")) as {
+      quotas?: Record<string, { weeklyPercent?: number; weeklyResetAt?: number }>;
+    };
+    return parsed.quotas ?? {};
+  } catch {
+    return {}; // not installed / not started — fine, nothing to do
+  }
+}
+
 /** Redact a credential for display: first 4 + … + last 4 of the full value. */
 export function redactCredential(secret: string): string {
   if (secret.length <= 12) return "…";
@@ -209,20 +624,169 @@ export function opencodeCredentials(
  */
 export async function pollQuotas(opts: PollOptions = {}): Promise<PollResult> {
   const fetcher = opts.fetcher ?? globalThis.fetch;
+  const accounts: PollAccountResult[] = [];
+  const reasons: string[] = [];
+  const capturedAtIso = new Date(opts.now ?? Date.now()).toISOString();
+  const cache = opts.cache;
+  let now = opts.now ?? Date.now();
+
+  // --- codex (ChatGPT wham/usage, OAuth) --------------------------------
+  try {
+    const codex = await pollCodexQuotas(opts);
+    if (typeof codex === "string") reasons.push(`codex: ${codex}`);
+    else accounts.push(codex);
+  } catch (e) {
+    reasons.push(`codex: ${String(e)}`);
+  }
+
+  // --- openrouter + opencode-go (pi auth store keys) ---------------------
+  // opencode-go's key is shared by pi AND the opencode harness — one upstream
+  // account, so its windows persist under every harness/account pair.
+  const piKeys = piCredentials(opts.piAuthPath);
+  const persistWindows = (windows: PolledWindow[], pairs: Array<[string, string]>, harnesses: string[]): number => {
+    let inserted = 0;
+    if (cache !== undefined) {
+      for (const [provider, accountKey] of pairs) {
+        inserted += cache.insertPolledSnapshots({
+          provider,
+          accountKey,
+          windows,
+          capturedAtIso,
+          eventId: `poll:${capturedAtIso}:${provider}`,
+        });
+      }
+    }
+    void harnesses;
+    return inserted;
+  };
+
+  const orKey = piKeys["openrouter"];
+  if (orKey === undefined || orKey.length === 0) {
+    reasons.push("openrouter: no key in pi auth store");
+  } else {
+    const r = await pollOpenRouter(orKey, fetcher);
+    if (r.error !== undefined) {
+      reasons.push(`openrouter: ${r.error}`);
+    } else if (r.skip !== undefined) {
+      reasons.push(`openrouter: ${r.skip}`);
+    } else {
+      accounts.push({
+        accountKey: "openrouter",
+        harnesses: ["pi"],
+        windows: r.windows.map((w) => ({ ...w, resetsAtEpoch: w.resetsAtEpoch || Math.round(now / 1000) })),
+        inserted: persistWindows(r.windows, [["pi", "openrouter"]], ["pi"]),
+      });
+    }
+  }
+
+  const ocKey = piKeys["opencode-go"] ?? Object.values(opencodeCredentials(opts.opencodeAuthPath))[0] ?? "";
+  if (ocKey === undefined || ocKey.length === 0) {
+    reasons.push("opencode-go: no key in pi/opencode auth stores");
+  } else {
+    const r = await pollOpencodeGo(ocKey, fetcher);
+    if (r.error !== undefined) {
+      reasons.push(`opencode-go: ${r.error}`);
+    } else {
+      accounts.push({
+        accountKey: "opencode-go",
+        harnesses: ["pi", "opencode"],
+        windows: r.windows,
+        inserted: persistWindows(r.windows, [
+          ["pi", "opencode-go"],
+          ["opencode", "opencode-go"],
+        ], ["pi", "opencode"]),
+      });
+    }
+  }
+
+  // --- claude / copilot / cursor (each independent) ---------------------
+  try {
+    const claude = await pollClaudeQuotas(opts, fetcher);
+    if (typeof claude === "string") reasons.push(`claude-code: ${claude}`);
+    else accounts.push(claude);
+  } catch (e) {
+    reasons.push(`claude-code: ${String(e)}`);
+  }
+
+  try {
+    const copilot = await pollCopilotQuotas(opts, fetcher, now);
+    if (typeof copilot === "string") reasons.push(`copilot: ${copilot}`);
+    else accounts.push(copilot);
+  } catch (e) {
+    reasons.push(`copilot: ${String(e)}`);
+  }
+
+  try {
+    const cursor = await pollCursorQuotas(opts, fetcher, now);
+    if (typeof cursor === "string") reasons.push(`cursor: ${cursor}`);
+    else accounts.push(cursor);
+  } catch (e) {
+    reasons.push(`cursor: ${String(e)}`);
+  }
+
+  // --- manual gateway keys (config.poll.extraKeys) -----------------------
+  for (const mk of opts.manualKeys ?? []) {
+    const r = await pollOpencodeGo(mk.key, fetcher);
+    if (r.error !== undefined) {
+      reasons.push(`${mk.id}: ${r.error}`);
+      continue;
+    }
+    accounts.push({
+      accountKey: mk.id,
+      harnesses: ["pi", "opencode"],
+      windows: r.windows,
+      inserted: persistWindows(r.windows, [
+        ["pi", mk.id],
+        ["opencode", mk.id],
+      ], ["pi", "opencode"]),
+    });
+  }
+
+  // --- opencodex pool (only when codex itself yielded nothing fresh) ------
+  const codexPolled = accounts.some((a) => a.accountKey.startsWith("openai:") && a.windows.length > 0);
+  if (!codexPolled) {
+    const pooled = opencodexQuotas(opts.opencodexCachePath);
+    const seenResets = new Set<number>();
+    for (const q of Object.values(pooled)) {
+      if (typeof q.weeklyPercent !== "number" || typeof q.weeklyResetAt !== "number") continue;
+      if (seenResets.has(q.weeklyResetAt)) continue; // identical windows collapse
+      seenResets.add(q.weeklyResetAt);
+      accounts.push({
+        accountKey: "codex",
+        harnesses: ["opencodex"],
+        windows: [{ windowMinutes: 10_080, usedPct: Math.max(0, Math.min(100, q.weeklyPercent)), resetsAtEpoch: q.weeklyResetAt }],
+        inserted:
+          cache?.insertPolledSnapshots({
+            provider: "codex",
+            accountKey: "codex",
+            windows: [{ windowMinutes: 10_080, usedPct: Math.max(0, Math.min(100, q.weeklyPercent)), resetsAtEpoch: q.weeklyResetAt }],
+            capturedAtIso,
+            eventId: `poll:${capturedAtIso}:opencodex`,
+          }) ?? 0,
+      });
+    }
+  }
+
+  const ok = accounts.some((a) => a.windows.length > 0);
+  return { ok, reason: ok ? undefined : reasons.join("; ") || "no provider returned quota data", accounts };
+}
+
+/** codex wham/usage poll. Returns the account result, or a reason string. */
+async function pollCodexQuotas(opts: PollOptions): Promise<PollAccountResult | string> {
+  const fetcher = opts.fetcher ?? globalThis.fetch;
   const auth = loadAuth(opts);
   const token = auth?.tokens?.access_token;
   if (auth === null || token === undefined || token.length === 0) {
-    return { ok: false, reason: "not logged in (no codex auth.json / no access token)", accounts: [] };
+    return "not logged in (no codex auth.json / no access token)";
   }
 
   const claims = decodeJwtPayload(auth.tokens?.id_token ?? "");
   const authInfo = (claims?.["https://api.openai.com/auth"] ?? {}) as {
     chatgpt_account_id?: string;
   };
-  const accountId =
-    auth.tokens?.account_id ?? authInfo.chatgpt_account_id ?? "";
+  const accountId = auth.tokens?.account_id ?? authInfo.chatgpt_account_id ?? "";
   if (accountId.length === 0) {
-    return { ok: false, reason: "no chatgpt account id in auth store", accounts: [] };
+    return "no chatgpt account id in auth store";
   }
   const email = typeof claims?.email === "string" ? claims.email : undefined;
 
@@ -231,17 +795,17 @@ export async function pollQuotas(opts: PollOptions = {}): Promise<PollResult> {
   if (res.status === 401 || res.status === 403) {
     const refresh = auth.tokens?.refresh_token;
     if (refresh === undefined || refresh.length === 0) {
-      return { ok: false, reason: `unauthorized (${res.status}) and no refresh token available`, accounts: [] };
+      return `unauthorized (${res.status}) and no refresh token available`;
     }
     const renewed = await refreshToken(refresh, fetcher);
     if (!renewed.ok) {
-      return { ok: false, reason: `unauthorized (${res.status}) and token refresh failed`, accounts: [] };
+      return `unauthorized (${res.status}) and token refresh failed`;
     }
     access = renewed.accessToken!;
     res = await fetchUsage(access, accountId, fetcher);
   }
   if (res.status < 200 || res.status >= 300 || res.body === null) {
-    return { ok: false, reason: `usage endpoint returned HTTP ${res.status}`, accounts: [] };
+    return `usage endpoint returned HTTP ${res.status}`;
   }
 
   const planType = typeof res.body.plan_type === "string" ? res.body.plan_type : "unknown";
@@ -272,6 +836,5 @@ export async function pollQuotas(opts: PollOptions = {}): Promise<PollResult> {
       eventId: `poll:${capturedAtIso}`,
     });
   }
-
-  return { ok: true, accounts: [result] };
+  return result;
 }
