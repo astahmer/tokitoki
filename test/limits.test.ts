@@ -8,6 +8,7 @@ import { EventCache } from "../src/cache.ts";
 import type { UsageEvent } from "../src/types.ts";
 import {
   computeLimits,
+  groupBySharedCredential,
   nextLocalMidnight,
   nextMonthStart,
   nextWeekStart,
@@ -29,6 +30,20 @@ function makeEvent(overrides: Partial<UsageEvent> & Pick<UsageEvent, "id">): Usa
 }
 
 // ---------------------------------------------------------------- reset math
+
+describe("shared credential cards", () => {
+  it("collapses pi and opencode mirrors into one card", () => {
+    const windows = [{ kind: "week", source: "derived" as const, tokens: 10, cost: 1, requests: 1 }];
+    const result = groupBySharedCredential([
+      { provider: "pi", accountKey: "opencode-go", credential: "sk-a…z", windows },
+      { provider: "opencode", accountKey: "opencode-go", credential: "sk-a…z", windows: [{ ...windows[0]!, tokens: 20 }] },
+    ]);
+    expect(result).toHaveLength(1);
+    expect(result[0]?.provider).toBe("opencode");
+    expect(result[0]?.alsoOn).toEqual(["pi"]);
+    expect(result[0]?.windows[0]?.tokens).toBe(30);
+  });
+});
 
 describe("reset schedule math", () => {
   it("next local midnight is tomorrow 00:00 local", () => {

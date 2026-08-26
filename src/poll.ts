@@ -435,6 +435,33 @@ export function copilotToken(path?: string): string | null {
       // try next candidate
     }
   }
+  // Explicit fixture paths are hermetic and must not fall through to the
+  // machine's Keychain.
+  if (path !== undefined) return null;
+  // GitHub CLI stores the same credential in Keychain on macOS when its
+  // hosts.yml deliberately omits oauth_token. OpenUsage uses this fallback.
+  try {
+    const raw = execFileSync("security", ["find-generic-password", "-s", "gh:github.com", "-w"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    const prefix = "go-keyring-base64:";
+    if (raw.startsWith(prefix)) {
+      const decoded = Buffer.from(raw.slice(prefix.length), "base64").toString("utf8").trim();
+      if (decoded.length > 0) return decoded;
+    }
+    if (raw.length > 0) {
+      try {
+        const wrapped = JSON.parse(raw) as { oauth_token?: string; token?: string };
+        if (typeof wrapped.oauth_token === "string") return wrapped.oauth_token;
+        if (typeof wrapped.token === "string") return wrapped.token;
+      } catch {
+        return raw;
+      }
+    }
+  } catch {
+    // no Keychain credential or non-macOS
+  }
   return null;
 }
 

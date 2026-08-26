@@ -64,6 +64,11 @@ export interface TokitokiConfig {
       key: string;
     }>;
   };
+  /** Escape-hatch flags for features not yet stable enough to document. */
+  experimental?: {
+    /** Zero-usage placeholder cards for detected-but-empty harnesses (default on). */
+    zeroStateCards?: boolean;
+  };
   /**
    * [ui] — visibility toggles for menubar/dashboard surfaces. Entries are
    * provider ids or `provider:account` pairs; hidden ones are excluded from

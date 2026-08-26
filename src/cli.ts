@@ -239,6 +239,11 @@ Rows always show every configured scope×pattern; state is ok | warn (≥80%)
       "  --include-repos     add hashed repo names (raw names never leave)",
     example: "tokitoki share --publish --scope month",
   },
+  config: {
+    usage: "tokitoki config set <dot.path> <json>",
+    flags: "  value parsed as JSON; bare words become strings",
+    example: "tokitoki config set ui.stripMetric \"tokens\"",
+  },
   "menubar-payload": {
     usage: "tokitoki menubar-payload --json",
     flags: "  internal: combined json snapshot consumed by the menu-bar app",
@@ -349,6 +354,7 @@ Commands:
   budgets    spending caps per account/scope (+ init to seed from detected accounts)
   share      opt-in sanitized public stats via atproto (--enable|--disable|--status)
   export     dump any report as json/csv/markdown
+  config     set a config value by dotted path (value parsed as JSON)
   menubar-payload  combined json snapshot for the menu-bar app (internal)
   ui         show/hide providers per surface (menubar preview, dashboard)
   import     backfill usage CSVs from provider consoles
@@ -415,6 +421,7 @@ export async function main(argv: string[]): Promise<void> {
       case "mcp": await runMcpStdio(); break;
       case "menubar": await runMenubar(parsed); break;
       case "poll": await runPoll(parsed); break;
+      case "config": runConfigSet(parsed); break;
       default: {
         const close = closestMatch(parsed.command, Object.keys(COMMAND_HELP));
         console.error(
@@ -455,6 +462,7 @@ const KNOWN_FLAGS: Record<string, string[]> = {
   mcp: [],
   menubar: ["stop", "status", "foreground", "rebuild"],
   poll: ["json", "enable", "disable"],
+  config: ["set"],
   share: ["enable", "disable", "status", "publish", "scope", "include-repos"],
   export: ["last", "by", "format", "out", "sort", "asc", "provider", "since", "until", "show-email", "show-emails"],
   web: ["port"],
@@ -1726,7 +1734,14 @@ async function runPoll(parsed: ParsedInvocation): Promise<void> {
   }
   const cache = new EventCache();
   try {
-    const result = await pollQuotas({ cache });
+    const config = loadConfig();
+    const result = await pollQuotas({
+      cache,
+      // Manually registered opencode gateway keys (multi-account).
+      manualKeys: (config.poll?.extraKeys ?? [])
+        .filter((k) => k.provider === "opencode-go" && k.key.length > 0)
+        .map((k) => ({ id: k.id, provider: "opencode-go" as const, key: k.key })),
+    });
     if (jsonOut) {
       console.log(JSON.stringify(result));
       return;
@@ -1829,6 +1844,49 @@ async function runMenubar(parsed: ParsedInvocation): Promise<void> {
   const result = await startMenubar({ envBin: process.env.TOKITOKI_MENUBAR_BIN });
   if (result.status === "running") console.log(`menubar already running (pid ${result.pid})`);
   else console.log(`menubar started (pid ${result.pid}, ${result.mode})`);
+}
+
+/**
+ * Generic dotted-path config setter: `config set ui.previewHidden ["openai"]`.
+ * The value MUST be valid JSON (strings quoted). Rejects unknown top-level
+ * sections so typos can not invent config shape.
+ */
+function runConfigSet(parsed: ParsedInvocation): void {
+  try {
+    const rest = parsed.rest.filter((r) => r !== "set");
+    const pathArg = rest[0] ?? flagString(parsed, "path");
+    const valueArg = rest[1] ?? flagString(parsed, "value");
+    if (pathArg === undefined || pathArg.length === 0 || valueArg === undefined) {
+      throw new UserError("usage: tokitoki config set <dot.path> <json>", 'tokitoki config set ui.stripMetric "tokens"');
+    }
+    const allowed = new Set(["ui", "poll", "hidden", "plans", "budgets", "extraEventFiles", "experimental"]);
+    const top = pathArg.split(".")[0]!;
+    if (!allowed.has(top)) {
+      throw new UserError(`unknown config section '${top}'`, "sections: ui, poll, plans, budgets");
+    }
+    let value: unknown;
+    try {
+      value = JSON.parse(valueArg);
+    } catch {
+      // convenience: bare words become strings ("tokens", "openai")
+      value = valueArg;
+    }
+    const cfg = loadConfig() as Record<string, unknown>;
+    const parts = pathArg.split(".");
+    let node = cfg;
+    for (let i = 0; i < parts.length - 1; i++) {
+      const key = parts[i]!;
+      if (node[key] === undefined || typeof node[key] !== "object" || node[key] === null) node[key] = {};
+      node = node[key] as Record<string, unknown>;
+    }
+    node[parts[parts.length - 1]!] = value;
+    const p = configPath();
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, JSON.stringify(cfg, null, 2) + "\n");
+    console.log(`${pathArg} = ${JSON.stringify(value)}`);
+  } catch (err) {
+    handleError(err);
+  }
 }
 
 function runWeb(parsed: ParsedInvocation): void {
@@ -2065,8 +2123,13 @@ function runMenubarPayload(parsed: ParsedInvocation): void {
       const creds = opencodeCredentials();
       const piKeys = piCredentials();
       const withCreds = merged.map((l) => {
-        const cred = creds[l.accountKey] ?? (l.provider === "pi" ? piKeys[l.accountKey] : undefined);
-        return cred !== undefined ? { ...l, credential: redactCredential(cred) } : l;
+        // opencodeCredentials() already returns a redacted display value;
+        // piCredentials() returns the raw key. Do not redact the former a
+        // second time (that collapsed it to just "…" and broke grouping).
+        const opencodeCred = creds[l.accountKey];
+        if (opencodeCred !== undefined) return { ...l, credential: opencodeCred };
+        const piCred = l.provider === "pi" ? piKeys[l.accountKey] : undefined;
+        return piCred !== undefined ? { ...l, credential: redactCredential(piCred) } : l;
       });
       // Accounts sharing one credential (pi + opencode on the same gateway
       // key) are ONE real account — collapse to a single card.
@@ -2089,6 +2152,21 @@ function runMenubarPayload(parsed: ParsedInvocation): void {
           return { ...l, origin: "scan" };
         }
       });
+      // Detected-but-empty harnesses still deserve a card (commandcode etc.)
+      // so users can see the harness is known — zero windows until data lands.
+      if (config.experimental?.zeroStateCards !== false) {
+        const known = new Set(withOrigin.map((l) => `${l.provider}@${l.accountKey}`));
+        for (const [provider, accountKey, root] of [
+          ["commandcode", "default", `${process.env.HOME ?? "~"}/.commandcode`],
+        ] as Array<[string, string, string]>) {
+          if (known.has(`${provider}@${accountKey}`)) continue;
+          try {
+            if (fs.existsSync(root)) {
+              withOrigin.push({ provider, accountKey, origin: "scan", windows: [] });
+            }
+          } catch { /* probe only */ }
+        }
+      }
       // Manual opencode keys get a card even with zero scanned events; the
       // poller stores their windows under ("pi", <id>) pairs.
       for (const mk of config.poll?.extraKeys ?? []) {
@@ -2110,6 +2188,37 @@ function runMenubarPayload(parsed: ParsedInvocation): void {
           origin: "manual",
           windows,
         });
+      }
+      // Polled-only providers (Copilot/Cursor) may have no local event rows,
+      // but their live quota must still appear as a card and strip group.
+      try {
+        const polled = cache.database
+          .query("SELECT DISTINCT provider, account_key AS accountKey FROM quota_snapshots WHERE event_id LIKE 'poll:%'")
+          .all() as Array<{ provider: string; accountKey: string }>;
+        const known = new Set(withOrigin.map((l) => `${l.provider}@${l.accountKey}`));
+        for (const p of polled) {
+          const id = `${p.provider}@${p.accountKey}`;
+          // pollQuotas mirrors a gateway quota under both pi and opencode;
+          // grouping has already collapsed those into one card. Do not add
+          // the mirrored snapshot back as a duplicate here.
+          const mirroredInSharedGateway =
+            (p.provider === "pi" || p.provider === "opencode") &&
+            (known.has(`pi@${p.accountKey}`) || known.has(`opencode@${p.accountKey}`));
+          if (known.has(id) || mirroredInSharedGateway) continue;
+          const snaps = cache.latestQuotaSnapshots(p.provider, p.accountKey);
+          const windows = snaps.map((snap) => ({
+            kind: embeddedKind(snap.windowMinutes),
+            source: "embedded" as const,
+            tokens: 0,
+            cost: 0,
+            requests: 0,
+            usedPct: Math.max(0, Math.min(100, snap.usedPct)),
+            resetsAt: new Date(snap.resetsAt * 1000).toISOString(),
+          }));
+          withOrigin.push({ provider: p.provider, accountKey: p.accountKey, origin: "polled", windows });
+        }
+      } catch {
+        // pre-migration cache: no quota snapshot table
       }
       // Drag-saved display order first, then the default (token-heavy) order.
       const savedOrder = config.ui?.menubarAccountOrder ?? [];

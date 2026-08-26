@@ -44,7 +44,8 @@ struct TotalsRow: Codable {
 
 struct ReportPayload: Codable {
     struct Burn: Codable { let perDay: Double; let projected: Double }
-    let period: String
+    // Absolute calendar-day payloads have no named rolling period.
+    let period: String?
     let rows: [ReportRow]
     let total: TotalsRow
     let burn: Burn
@@ -198,6 +199,8 @@ final class Model: ObservableObject {
     @Published var cardLayout: [(id: String, hidden: Bool)] = []
     /// Opt-in background quota polling (`tokitoki poll` every ~15 min).
     @Published var pollAuto = false
+    /// Account-card order override applied immediately after customize saves.
+    @Published var accountOrderOverride: [String]? = nil
     /// Upstream provider ids hidden from the status-bar strip (cards unaffected).
     @Published var previewHidden: Set<String> = []
     /// Uniform strip display: "percent" (default) | "tokens".
@@ -208,6 +211,9 @@ final class Model: ObservableObject {
     @Published var errorText: String?
 
     private var timer: Timer?
+    /// Refresh responses are asynchronous; mutations bump this generation so
+    /// an older payload cannot overwrite a newer optimistic setting.
+    private var refreshGeneration = 0
     private var invocation: CLIInvocation = CLIInvocation(executable: URL(fileURLWithPath: "/usr/bin/false"), prefixArgs: [])
     private var lastLevels: [String: Int] = [:]
     private var notifiedKeys: Set<String> = []
@@ -265,7 +271,12 @@ final class Model: ObservableObject {
 
     private var lastPollAt: Date?
 
+    /// Invalidate payload requests already in flight before a config mutation.
+    func invalidateRefreshes() { refreshGeneration += 1 }
+
     func refresh() {
+        refreshGeneration += 1
+        let generation = refreshGeneration
         if pollAuto, let last = lastPollAt, Date().timeIntervalSince(last) > 15 * 60 {
             lastPollAt = Date()
             runBackgroundPoll()
@@ -273,6 +284,10 @@ final class Model: ObservableObject {
         Task { @MainActor in
             do {
                 let p = try await Self.runJSON(MenubarPayload.self, invocation, ["menubar-payload", "--json"])!
+                guard generation == self.refreshGeneration else {
+                    self.dbg("discarded stale payload generation \(generation)")
+                    return
+                }
                 dbg("fetched · budgets=\(p.budgets.count) anomalies=\(p.anomalies?.anomalies.count ?? -1) limits=\(p.limits?.count ?? -1)")
                 if let ui = p.uiPreview {
                     self.previewMode = ui.previewMode ?? "inline"
@@ -452,6 +467,7 @@ final class Model: ObservableObject {
         case "gemini-cli": return "gemini"
         case "grok": return "grok"
         case "cursor": return "cursor"
+        case "copilot": return "copilot"
         case "pi", "opencode", "opencode-go":
             let key = l.accountKey.lowercased()
             if key.contains("openrouter") { return "openrouter" }
@@ -505,10 +521,10 @@ final class Model: ObservableObject {
                 }
                 return nil
             }
-            // Percent mode: ONLY provider-reported quotas render as numbers.
-            // Groups without a real denominator stay mark-only — a relative
-            // share would read as remaining quota and is not one.
-            guard !g.pcts.isEmpty else { return (up, []) }
+            // Percent mode: ONLY provider-reported quotas render at all —
+            // groups without a real denominator are omitted (icon disabled).
+            // A mark with no number invites the question "why?" every time.
+            guard !g.pcts.isEmpty else { return nil }
             return (up, g.pcts.prefix(3).map { "\($0)%" })
         }
     }
@@ -572,6 +588,16 @@ final class Model: ObservableObject {
         }
     }
 
+    /// Recompute + publish the status-item strip from current state
+    /// (used by immediate-apply paths like customize toggles).
+    func rebuildStripPreview() {
+        previewGroups = Self.stripGroups(
+            from: limits,
+            metric: stripMetric,
+            previewHidden: previewHidden,
+        )
+    }
+
     static func primaryWindow(_ l: AccountLimits) -> LimitWindow? {
         l.windows.first { $0.usedPct != nil } ?? l.windows.first
     }
@@ -624,33 +650,54 @@ final class Model: ObservableObject {
         return try JSONDecoder().decode(T.self, from: data)
     }
 
-    static func runCLI(_ cli: CLIInvocation, _ args: [String]) async throws -> String {
+    /// Serialize all config-mutating CLI calls. Each CLI invocation does a
+    /// whole-file read/modify/write; concurrent calls otherwise lose updates.
+    private static let configWriteQueue = DispatchQueue(label: "dev.tokitoki.config-writes", qos: .utility)
+
+    static func runConfigCLI(_ cli: CLIInvocation, _ args: [String]) async throws -> String {
         try await withCheckedThrowingContinuation { cont in
-            DispatchQueue.global(qos: .utility).async {
-                let proc = Process()
-                proc.executableURL = cli.executable
-                proc.arguments = cli.prefixArgs + args
-                let pipe = Pipe()
-                let errPipe = Pipe()
-                proc.standardOutput = pipe
-                proc.standardError = errPipe
-                do {
-                    try proc.run()
-                    let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                    proc.waitUntilExit()
-                    if proc.terminationStatus == 0 {
-                        cont.resume(returning: String(data: data, encoding: .utf8) ?? "")
-                    } else {
-                        let err = errPipe.fileHandleForReading.readDataToEndOfFile()
-                        let msg = String(data: err, encoding: .utf8) ?? "exit \(proc.terminationStatus)"
-                        cont.resume(throwing: NSError(domain: "tokitoki", code: 1, userInfo: [NSLocalizedDescriptionKey: msg]))
-                    }
-                } catch {
-                    cont.resume(throwing: error)
-                }
+            configWriteQueue.async {
+                runCLIProcess(cli, args, continuation: cont)
             }
         }
     }
+
+    static func runCLI(_ cli: CLIInvocation, _ args: [String]) async throws -> String {
+        try await withCheckedThrowingContinuation { cont in
+            DispatchQueue.global(qos: .utility).async {
+                runCLIProcess(cli, args, continuation: cont)
+            }
+        }
+    }
+
+    private static func runCLIProcess(
+        _ cli: CLIInvocation,
+        _ args: [String],
+        continuation cont: CheckedContinuation<String, Error>,
+    ) {
+        let proc = Process()
+        proc.executableURL = cli.executable
+        proc.arguments = cli.prefixArgs + args
+        let pipe = Pipe()
+        let errPipe = Pipe()
+        proc.standardOutput = pipe
+        proc.standardError = errPipe
+        do {
+            try proc.run()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            proc.waitUntilExit()
+            if proc.terminationStatus == 0 {
+                cont.resume(returning: String(data: data, encoding: .utf8) ?? "")
+            } else {
+                let err = errPipe.fileHandleForReading.readDataToEndOfFile()
+                let msg = String(data: err, encoding: .utf8) ?? "exit \(proc.terminationStatus)"
+                cont.resume(throwing: NSError(domain: "tokitoki", code: 1, userInfo: [NSLocalizedDescriptionKey: msg]))
+            }
+        } catch {
+            cont.resume(throwing: error)
+        }
+    }
+
 }
 
 private func humanCount(_ n: Double) -> String {
@@ -1058,14 +1105,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
               let cli = model?.currentInvocation() else { return }
         let hide = sender.state == .on // checked = visible → clicking hides
         // Optimistic: flip local state so the menu re-renders instantly.
+        model?.invalidateRefreshes()
         model?.applyVisibility(targets, visible: !hide)
-        let task = Process()
-        task.executableURL = cli.executable
-        task.arguments = cli.prefixArgs + [hide ? "--hide" : "--show"] + targets
-        DispatchQueue.global(qos: .utility).async {
-            try? task.run()
-            task.waitUntilExit()
-            DispatchQueue.main.async { self.model?.refresh() }
+        // Every target is a separate `ui` invocation. The old code omitted
+        // the command name and passed `--hide` directly to the CLI, so it
+        // only changed optimistically and then reverted on refresh.
+        Task {
+            do {
+                for target in targets {
+                    _ = try await Model.runConfigCLI(cli, ["ui", hide ? "--hide" : "--show", target])
+                }
+            } catch {
+                FileHandle.standardError.write(Data("[tokitoki] provider visibility save failed: \(error)\n".utf8))
+            }
+            await MainActor.run { self.model?.refresh() }
         }
     }
 
@@ -1131,14 +1184,16 @@ func resolveInvocation() -> CLIInvocation {
     for _ in 0..<6 {
         url.deleteLastPathComponent()
         let repoRoot = url
-        // Portable JS build first (current packaging strategy): needs bun.
-        let cliJs = repoRoot.appendingPathComponent("dist/cli.js")
-        if FileManager.default.fileExists(atPath: cliJs.path), let bun = bunURL {
-            return CLIInvocation(executable: bun, prefixArgs: [cliJs.path])
-        }
+        // Source checkout first: the menubar is developed alongside the repo,
+        // and invoking stale dist/cli.js makes settings appear to revert after
+        // the next payload refresh. Packaged installs still use dist below.
         let cliTs = repoRoot.appendingPathComponent("src/cli.ts")
         if FileManager.default.fileExists(atPath: cliTs.path), let bun = bunURL {
             return CLIInvocation(executable: bun, prefixArgs: [cliTs.path])
+        }
+        let cliJs = repoRoot.appendingPathComponent("dist/cli.js")
+        if FileManager.default.fileExists(atPath: cliJs.path), let bun = bunURL {
+            return CLIInvocation(executable: bun, prefixArgs: [cliJs.path])
         }
         if FileManager.default.fileExists(atPath: repoRoot.appendingPathComponent("dist/tokitoki").path) {
             return CLIInvocation(executable: repoRoot.appendingPathComponent("dist/tokitoki"), prefixArgs: [])
@@ -1146,7 +1201,9 @@ func resolveInvocation() -> CLIInvocation {
     }
     // Repo not found relative to the binary — try the canonical checkout.
     if let bun = bunURL {
-        for rel in ["dist/cli.js", "src/cli.ts"] {
+        // Same source-first rule for the installed ~/bin app's canonical
+        // checkout fallback. Otherwise settings writes use stale dist/cli.js.
+        for rel in ["src/cli.ts", "dist/cli.js"] {
             let u = cliURL("~/dev/tokitoki/" + rel)
             if FileManager.default.fileExists(atPath: u.path) {
                 return CLIInvocation(executable: bun, prefixArgs: [u.path])
@@ -1511,14 +1568,19 @@ struct CustomizeSheet: View {
         } else {
             model.previewHidden.insert(id)
         }
+        // Rebuild the strip NOW — waiting for the next 5-min refresh made
+        // toggles look like no-ops.
+        model.invalidateRefreshes()
+        model.rebuildStripPreview()
         // Persist via the generic dotted-path config setter.
         let cli = model.currentInvocation()
         let json = "[" + model.previewHidden.sorted().map { "\"\($0)\"" }.joined(separator: ",") + "]"
-        DispatchQueue.global(qos: .utility).async {
-            let task = Process()
-            task.executableURL = cli.executable
-            task.arguments = cli.prefixArgs + ["config", "set", "ui.previewHidden", json]
-            try? task.run()
+        Task {
+            do {
+                _ = try await Model.runConfigCLI(cli, ["config", "set", "ui.previewHidden", json])
+            } catch {
+                FileHandle.standardError.write(Data("[tokitoki] preview visibility save failed: \(error)\n".utf8))
+            }
         }
     }
 
@@ -1540,11 +1602,12 @@ struct CustomizeSheet: View {
         let cli = model.currentInvocation()
         let encoder = JSONEncoder()
         guard let data = try? encoder.encode(extraKeys), let json = String(data: data, encoding: .utf8) else { return }
-        DispatchQueue.global(qos: .utility).async {
-            let task = Process()
-            task.executableURL = cli.executable
-            task.arguments = cli.prefixArgs + ["config", "set", "poll.extraKeys", json]
-            try? task.run()
+        Task {
+            do {
+                _ = try await Model.runConfigCLI(cli, ["config", "set", "poll.extraKeys", json])
+            } catch {
+                FileHandle.standardError.write(Data("[tokitoki] API key save failed: \(error)\n".utf8))
+            }
         }
     }
 
@@ -1566,18 +1629,25 @@ struct CustomizeSheet: View {
         let cli = model.currentInvocation()
         let order = cards.map { $0.id }
         var argsList: [[String]] = [["ui", "--account-order", order.joined(separator: ",")]]
+        var newHidden = model.menubarHidden
         for card in cards {
             let wasHidden = originalHiddenTargets.contains(card.target)
             if card.visible && wasHidden {
                 argsList.append(["ui", "--show", card.target])
+                newHidden.remove(card.target)
             } else if !card.visible && !wasHidden {
                 argsList.append(["ui", "--hide", card.target])
+                newHidden.insert(card.target)
             }
         }
+        // Optimistic: apply locally so the popover reflects Done instantly.
+        model.invalidateRefreshes()
+        model.accountOrderOverride = order
+        model.menubarHidden = newHidden
         Task {
             do {
                 for args in argsList {
-                    _ = try await Model.runCLI(cli, args)
+                    _ = try await Model.runConfigCLI(cli, args)
                 }
             } catch {
                 FileHandle.standardError.write(Data("[tokitoki] customize save failed: \(error)\n".utf8))
@@ -1601,8 +1671,6 @@ struct ContentView: View {
     @State private var localLayout: [(id: String, hidden: Bool)]?
     /// Id currently being dragged (popover card reorder).
     @State private var draggingCard: String?
-    /// Account-card order override while a drag session is in flight.
-    @State private var localAccountOrder: [String]?
     /// Account id currently being dragged (limits section reorder).
     @State private var draggingAccount: String?
 
@@ -1736,7 +1804,7 @@ struct ContentView: View {
         let spec = layout.map { "\($0.id):\($0.hidden ? "0" : "1")" }.joined(separator: ",")
         Task {
             do {
-                _ = try await Model.runCLI(cli, ["ui", "--card-set", spec])
+                _ = try await Model.runConfigCLI(cli, ["ui", "--card-set", spec])
             } catch {
                 FileHandle.standardError.write(Data("[tokitoki] card save failed: \(error)\n".utf8))
             }
@@ -1931,21 +1999,29 @@ struct ContentView: View {
 
     /// Account cards in drag-saved order (payload order as fallback).
     private func orderedAccounts() -> [AccountLimits] {
-        let all = model.limits
-        if let local = localAccountOrder {
+        let all = model.limits.filter { accountCardVisible($0) }
+        if let local = model.accountOrderOverride {
             let rank = { (l: AccountLimits) in local.firstIndex(of: "\(l.provider)@\(l.accountKey)") ?? local.count }
             return all.sorted { rank($0) < rank($1) }
         }
         return all
     }
 
+    /// ui.hidden.menubar semantics: an entry is either a bare harness id
+    /// ("codex") or a "harness:accountKey" pair.
+    private func accountCardVisible(_ l: AccountLimits) -> Bool {
+        !model.menubarHidden.contains(l.provider)
+            && !model.menubarHidden.contains("\(l.provider):\(l.accountKey)")
+    }
+
     /// Persist a new account-card order via the CLI, optimistically.
     private func persistAccountOrder(_ ids: [String]) {
-        localAccountOrder = ids
+        model.invalidateRefreshes()
+        model.accountOrderOverride = ids
         let cli = model.currentInvocation()
         Task {
             do {
-                _ = try await Model.runCLI(cli, ["ui", "--account-order", ids.joined(separator: ",")])
+                _ = try await Model.runConfigCLI(cli, ["ui", "--account-order", ids.joined(separator: ",")])
             } catch {
                 FileHandle.standardError.write(Data("[tokitoki] account order save failed: \(error)\n".utf8))
             }
@@ -2578,6 +2654,7 @@ struct ProviderLogo: View {
         case "codex": return "hexagon.fill"
         case "cursor": return "cursorarrow.rays"
         case "gemini-cli": return "sparkle"
+        case "copilot": return "person.crop.circle.fill"
         case "grok": return "xmark"
         case "openrouter": return "arrow.triangle.branch"
         case "pi", "opencode-go", "opencode": return "diamond.fill"
@@ -2674,7 +2751,7 @@ struct AccountLimitCard: View {
                     // Provenance ALWAYS shown — users must be able to tell
                     // where an account's numbers come from (SCR-ffhr).
                     let originNote = originExplanation(limits.origin ?? "scan")
-                    Text("quota data: \(originNote)")
+                    Text("source: \(originNote)")
                         .font(.caption2).foregroundStyle(.tertiary)
                         .lineLimit(1)
                     ForEach(Array(orderedWindows.enumerated()), id: \.offset) { _, w in
@@ -2702,7 +2779,7 @@ struct AccountLimitCard: View {
         case "polled": return "polled live from the provider API"
         case "opencodex": return "read from the opencodex account pool"
         case "manual": return "from a manually registered key"
-        case "scan": return "estimated from locally scanned sessions"
+        case "scan": return "estimated from locally scanned sessions (no provider-reported quota)"
         default: return origin
         }
     }

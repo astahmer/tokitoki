@@ -50,6 +50,8 @@ export interface AccountLimits {
   credential?: string;
   /** Other harnesses sharing this exact credential (credential-grouped cards). */
   alsoOn?: string[];
+  /** Where this account's quota data comes from: polled | opencodex | manual | scan. */
+  origin?: string;
   /** Banked rate-limit resets (codex credits analog). */
   bankedResets?: number;
   bankedExpiresAt?: string;

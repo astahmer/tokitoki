@@ -66,7 +66,7 @@ import Testing
                 window(kind: "week", source: "embedded", tokens: 100, usedPct: 40),
                 window(kind: "day", source: "embedded", tokens: 10, usedPct: 0),
             ]),
-            // anthropic has no denominator → mark-only, NO fabricated line.
+            // anthropic has no denominator → omitted entirely (icon disabled).
             account(provider: "claude-code", accountKey: "default", windows: [
                 window(kind: "week", source: "derived", tokens: 500),
             ]),
@@ -75,7 +75,7 @@ import Testing
         let byId = Dictionary(uniqueKeysWithValues: groups.map { ($0.provider, $0.lines) })
 
         #expect(byId["openai"] == ["60%", "100%"]) // payload window order
-        #expect(byId["claude"] == [])
+        #expect(byId["claude"] == nil)
     }
 
     @Test func percentModeStacksMultipleAccountsOfOneProvider() {
@@ -127,7 +127,8 @@ import Testing
             ]),
         ]
         let groups = Model.stripGroups(from: limits, metric: "percent", previewHidden: ["openai"])
-        #expect(groups.map(\.provider) == ["claude"])
+        // claude is estimate-only → omitted in percent mode; openai hidden.
+        #expect(groups.isEmpty)
     }
 
     @Test func zeroUsagePercentGroupStillRendersItsRealNumber() {
