@@ -8,6 +8,7 @@ import { cursorProvider } from "./cursor.ts";
 import { grokProvider } from "./grok.ts";
 import { geminiCliProvider } from "./gemini.ts";
 import { opencodeProvider } from "./opencode.ts";
+import { commandcodeProvider } from "./commandcode.ts";
 import { SKELETON_PROVIDERS } from "./skeletons.ts";
 
 /**
@@ -22,6 +23,7 @@ export const PROVIDERS: Provider[] = [
   piProvider,
   codexProvider,
   opencodeProvider,
+  commandcodeProvider,
   t3CodeProvider,
   antigravityCliProvider,
   cursorProvider,
