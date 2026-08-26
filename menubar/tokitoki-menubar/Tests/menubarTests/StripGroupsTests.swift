@@ -141,4 +141,19 @@ import Testing
         let groups = Model.stripGroups(from: limits, metric: "percent", previewHidden: [])
         #expect(groups.first?.lines == ["100%"])
     }
+
+    @Test func hoverPreviewLabelsQuotaWindows() {
+        let limits = [
+            account(provider: "codex", accountKey: "openai:plus", windows: [
+                window(kind: "day", source: "polled", tokens: 0, usedPct: 40),
+                window(kind: "week", source: "polled", tokens: 0, usedPct: 0),
+                window(kind: "month", source: "polled", tokens: 0, usedPct: 12),
+            ]),
+        ]
+        let preview = Model.previewText(limits, cfg: UiPreviewConfig(
+            previewLines: 3, previewMode: "hover", providers: nil, menubarHidden: nil,
+            cards: nil, pollAuto: nil, previewHidden: nil, stripMetric: nil,
+        ), labeled: true)
+        #expect(preview == "session 60% weekly 100% monthly 88%")
+    }
 }

@@ -11,7 +11,7 @@ import { DIMENSIONS, EventCache, type AggRow, type Dimension, type SeriesBucket,
 import { renderTable, renderMiniProjects, renderMarkdownTable, resolveExtraFiles, resolveSortColumn, sinceIsoFor, sinceIsoForDays, previousWindow, monthStartIso, sortRows, formatDelta, deltaInfo, totalRow, totalTokens, planGaugeFn, renderBurnLine, burnProjection, type TableContext } from "./report.ts";
 import { accountEmailMap } from "./accounts.ts";
 import { computeLimits, embeddedKind, groupBySharedCredential, mergeAliasLimits, type AccountLimits } from "./limits.ts";
-import { opencodeCredentials, piCredentials, pollQuotas, redactCredential } from "./poll.ts";
+import { opencodexAccountEmails, opencodeCredentials, opencodexQuotas, piCredentials, pollQuotas, redactCredential } from "./poll.ts";
 import {
   assertValidSurface,
   isCardVisibleOn,
@@ -283,10 +283,10 @@ Rows always show every configured scope×pattern; state is ok | warn (≥80%)
   },
   poll: {
     usage: "tokitoki poll [--json]",
-    flags: `  opt-in: fetch provider-reported rate-limit windows by reusing the
-                            OAuth login stored by the codex CLI (~/.codex/auth.json).
-                            Results land in quota_snapshots and surface in limits,
-                            budgets and the menubar like embedded data.
+    flags: `  opt-in: fetch provider-reported rate-limit windows from local auth stores
+  (Codex, Claude, Copilot, OpenRouter, OpenCode Go, Cursor and Command Code).
+  Results land in quota_snapshots and surface in limits,
+  budgets and the menubar like embedded data.
   --json                    machine-readable result`,
     example: "tokitoki poll",
   },
@@ -2114,9 +2114,31 @@ function runMenubarPayload(parsed: ParsedInvocation): void {
       // FULL limits go over the wire — the app filters popover cards via
       // hidden.menubar and strip marks via previewHidden independently.
       const limits = computeLimits(cache, config);
+      const poolEmails = opencodexAccountEmails();
+      const poolQuotas = opencodexQuotas();
+      // Attribute pooled Codex cards to the matching account identity rather
+      // than the currently active ~/.codex login (which may be personal).
+      const limitsWithPoolEmails = limits.map((l) => {
+        if (l.provider !== "codex") return l;
+        const weeklyReset = l.windows.find((w) => w.kind === "week")?.resetsAt;
+        const weeklyEpoch = weeklyReset !== undefined ? Date.parse(weeklyReset) / 1000 : NaN;
+        const poolId = Object.entries(poolQuotas).find(([, q]) =>
+          typeof q.weeklyResetAt === "number" && q.weeklyResetAt === Math.round(weeklyEpoch),
+        )?.[0];
+        const email = poolId !== undefined ? poolEmails[poolId] : undefined;
+        return email !== undefined ? { ...l, email } : l;
+      });
+      // The pool adapter's opaque `chatgpt-<timestamp>` key can also exist
+      // in old scanned logs. Once the same reset is refreshed into the
+      // canonical `codex` card, hide that stale duplicate from the UI.
+      const normalizedLimits = limitsWithPoolEmails.filter((l) => {
+        if (l.provider !== "codex" || !l.accountKey.startsWith("codex:")) return true;
+        const poolKey = l.accountKey.slice("codex:".length);
+        return poolQuotas[poolKey] === undefined;
+      });
       // Same provider + same embedded-quota signature = same underlying
       // account seen through different extraction eras. One card per account.
-      const merged = mergeAliasLimits(limits);
+      const merged = mergeAliasLimits(normalizedLimits);
       // Key-based harnesses: attach a redacted credential so accounts are
       // distinguishable without emails (pi / opencode auth is API-key only).
       // OpenRouter keys live in pi's auth store — same treatment.
@@ -2179,7 +2201,7 @@ function runMenubarPayload(parsed: ParsedInvocation): void {
           cost: 0,
           requests: 0,
           usedPct: Math.max(0, Math.min(100, snap.usedPct)),
-          resetsAt: new Date(snap.resetsAt * 1000).toISOString(),
+          resetsAt: snap.resetsAt > 0 ? new Date(snap.resetsAt * 1000).toISOString() : undefined,
         }));
         withOrigin.push({
           provider: "pi",
@@ -2204,7 +2226,22 @@ function runMenubarPayload(parsed: ParsedInvocation): void {
           const mirroredInSharedGateway =
             (p.provider === "pi" || p.provider === "opencode") &&
             (known.has(`pi@${p.accountKey}`) || known.has(`opencode@${p.accountKey}`));
-          if (known.has(id) || mirroredInSharedGateway) continue;
+          const staleCodexPoolAlias =
+            p.provider === "codex" &&
+            p.accountKey.startsWith("codex:") &&
+            poolQuotas[p.accountKey.slice("codex:".length)] !== undefined;
+          if (known.has(id)) {
+            const existingIndex = withOrigin.findIndex((l) => `${l.provider}@${l.accountKey}` === id);
+            // Replace the earlier detected-but-empty placeholder once a
+            // provider poll has produced real windows.
+            if (existingIndex >= 0 && withOrigin[existingIndex]!.windows.length === 0) {
+              withOrigin.splice(existingIndex, 1);
+              known.delete(id);
+            } else {
+              continue;
+            }
+          }
+          if (mirroredInSharedGateway || staleCodexPoolAlias) continue;
           const snaps = cache.latestQuotaSnapshots(p.provider, p.accountKey);
           const windows = snaps.map((snap) => ({
             kind: embeddedKind(snap.windowMinutes),
@@ -2213,7 +2250,7 @@ function runMenubarPayload(parsed: ParsedInvocation): void {
             cost: 0,
             requests: 0,
             usedPct: Math.max(0, Math.min(100, snap.usedPct)),
-            resetsAt: new Date(snap.resetsAt * 1000).toISOString(),
+            resetsAt: snap.resetsAt > 0 ? new Date(snap.resetsAt * 1000).toISOString() : undefined,
           }));
           withOrigin.push({ provider: p.provider, accountKey: p.accountKey, origin: "polled", windows });
         }

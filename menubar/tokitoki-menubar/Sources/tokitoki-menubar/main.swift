@@ -209,6 +209,7 @@ final class Model: ObservableObject {
     /// nil = no budgets configured; "ok" | "warn" | "exceeded"
     @Published var worstState: String?
     @Published var errorText: String?
+    @Published var refreshingAccounts: Set<String> = []
 
     private var timer: Timer?
     /// Refresh responses are asynchronous; mutations bump this generation so
@@ -219,6 +220,26 @@ final class Model: ObservableObject {
     private var notifiedKeys: Set<String> = []
 
     private static let debug = ProcessInfo.processInfo.environment["TOKITOKI_MENUBAR_DEBUG"] == "1"
+
+    /// Refresh one card using the source that produced its numbers.
+    func refreshAccount(_ account: AccountLimits) {
+        let id = "\(account.provider)@\(account.accountKey)"
+        guard !refreshingAccounts.contains(id) else { return }
+        refreshingAccounts.insert(id)
+        let cli = invocation
+        let args = account.origin == "scan"
+            ? ["scan", "--provider", account.provider]
+            : ["poll", "--json"]
+        Task { [weak self] in
+            do {
+                _ = try await Self.runCLI(cli, args)
+            } catch {
+                self?.dbg("card refresh failed for \(id): \(error.localizedDescription)")
+            }
+            self?.refreshingAccounts.remove(id)
+            self?.refresh()
+        }
+    }
 
     /// Env-gated stderr tracing (`TOKITOKI_MENUBAR_DEBUG=1`) — no-op normally.
     fileprivate func dbg(_ msg: @autoclosure () -> String) {
@@ -320,7 +341,7 @@ final class Model: ObservableObject {
                     metric: stripMetric,
                     previewHidden: previewHidden
                 )
-                let newTitle = composeTitle(today: p.today, preview: Self.previewText(p.limits ?? [], cfg: p.uiPreview), hovering: isHovering, mode: self.previewMode)
+                let newTitle = composeTitle(today: p.today, preview: Self.previewText(p.limits ?? [], cfg: p.uiPreview, labeled: self.previewMode == "hover"), hovering: isHovering, mode: self.previewMode)
                 setTitleIfChanged(newTitle)
                 self.errorText = nil
                 applyAnomalies(p.anomalies)
@@ -602,10 +623,10 @@ final class Model: ObservableObject {
         l.windows.first { $0.usedPct != nil } ?? l.windows.first
     }
 
-    /// Status-item preview: per account, EVERY quota-bearing window's remaining
-    /// % space-separated (openusage kqvu style — e.g. Claude shows "44% 99%"),
-    /// accounts joined by " · ". No icons/tags; the status bar is text-only.
-    static func previewText(_ limits: [AccountLimits], cfg: UiPreviewConfig?) -> String? {
+    /// Status-item preview: per account, every quota-bearing window's remaining
+    /// percentage. Hover mode labels each value so session/weekly/monthly are
+    /// not ambiguous; compact inline mode keeps the old short form.
+    static func previewText(_ limits: [AccountLimits], cfg: UiPreviewConfig?, labeled: Bool = false) -> String? {
         let maxLines = cfg?.previewLines ?? 3
         guard maxLines > 0 else { return nil }
         var groups: [String] = []
@@ -613,7 +634,15 @@ final class Model: ObservableObject {
             let pcts = l.windows.compactMap { w -> String? in
                 guard let pct = w.usedPct else { return nil }
                 let remaining = Int(max(0, min(100, 100 - pct)).rounded())
-                return "\(remaining)%"
+                guard labeled else { return "\(remaining)%" }
+                let label: String
+                switch w.kind {
+                case "day": label = (l.provider == "codex" || l.provider == "claude-code") ? "session" : "day"
+                case "week": label = "weekly"
+                case "month": label = "monthly"
+                default: label = w.kind
+                }
+                return "\(label) \(remaining)%"
             }
             if !pcts.isEmpty { groups.append(pcts.joined(separator: " ")) }
             if groups.count >= maxLines { break }
@@ -633,7 +662,7 @@ final class Model: ObservableObject {
             guard oldValue != isHovering else { return }
             let p = currentPayloadForTitle
             let t = composeTitle(today: p?.today,
-                                 preview: Self.previewText(p?.limits ?? [], cfg: currentPreviewCfg),
+                                 preview: Self.previewText(p?.limits ?? [], cfg: currentPreviewCfg, labeled: previewMode == "hover"),
                                  hovering: isHovering,
                                  mode: previewMode)
             setTitleIfChanged(t)
@@ -1024,6 +1053,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let refresh = NSMenuItem(title: "Refresh Now", action: #selector(refreshNow), keyEquivalent: "r")
         refresh.target = self
         menu.addItem(refresh)
+
+        let actions = NSMenuItem(title: "Actions", action: nil, keyEquivalent: "")
+        let actionSub = NSMenu()
+        actionSub.autoenablesItems = false
+        let rescan = NSMenuItem(title: "Re-scan all sources", action: #selector(rescanAll), keyEquivalent: "")
+        rescan.target = self
+        actionSub.addItem(rescan)
+        let poll = NSMenuItem(title: "Refresh provider quotas", action: #selector(pollNow), keyEquivalent: "")
+        poll.target = self
+        actionSub.addItem(poll)
+        actionSub.addItem(.separator())
+        let polling = NSMenuItem(title: "Background polling", action: nil, keyEquivalent: "")
+        let pollingSub = NSMenu()
+        pollingSub.autoenablesItems = false
+        let enablePolling = NSMenuItem(title: "Enabled", action: #selector(enablePolling), keyEquivalent: "")
+        enablePolling.state = model?.pollAuto == true ? .on : .off
+        enablePolling.target = self
+        let disablePolling = NSMenuItem(title: "Disabled", action: #selector(disablePolling), keyEquivalent: "")
+        disablePolling.state = model?.pollAuto == true ? .off : .on
+        disablePolling.target = self
+        pollingSub.addItem(enablePolling)
+        pollingSub.addItem(disablePolling)
+        polling.submenu = pollingSub
+        actionSub.addItem(polling)
+        actionSub.addItem(.separator())
+        let sources = NSMenuItem(title: "Open Sources", action: #selector(openSources), keyEquivalent: "")
+        sources.target = self
+        actionSub.addItem(sources)
+        let report = NSMenuItem(title: "Open Reports", action: #selector(openReports), keyEquivalent: "")
+        report.target = self
+        actionSub.addItem(report)
+        let mcp = NSMenuItem(title: "Copy MCP connection config", action: #selector(copyMCPConfig), keyEquivalent: "")
+        mcp.target = self
+        actionSub.addItem(mcp)
+        actions.submenu = actionSub
+        menu.addItem(actions)
         menu.addItem(.separator())
 
         // Settings ▸ menubar visibility per UPSTREAM provider (openai,
@@ -1096,6 +1161,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func refreshNow() { model?.refresh() }
+
+    private func runMaintenance(_ args: [String], label: String, config: Bool = false) {
+        guard let model else { return }
+        let cli = model.currentInvocation()
+        Task {
+            do {
+                _ = try await (config ? Model.runConfigCLI(cli, args) : Model.runCLI(cli, args))
+                await MainActor.run { model.refresh() }
+            } catch {
+                FileHandle.standardError.write(Data("[tokitoki] \(label) failed: \(error.localizedDescription)\n".utf8))
+            }
+        }
+    }
+
+    @objc private func rescanAll() { runMaintenance(["scan"], label: "scan") }
+    @objc private func pollNow() { runMaintenance(["poll", "--json"], label: "poll") }
+    @objc private func enablePolling() { runMaintenance(["poll", "--enable"], label: "enable polling", config: true); model?.pollAuto = true }
+    @objc private func disablePolling() { runMaintenance(["poll", "--disable"], label: "disable polling", config: true); model?.pollAuto = false }
+
+    @objc private func openSources() {
+        NSWorkspace.shared.open(URL(string: "http://localhost:7788/?view=sources")!)
+    }
+
+    @objc private func openReports() {
+        NSWorkspace.shared.open(URL(string: "http://localhost:7788/?view=dashboard&range=month")!)
+    }
+
+    @objc private func copyMCPConfig() {
+        let config = #"{"mcpServers":{"tokitoki":{"command":"tokitoki","args":["mcp"]}}}"#
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(config, forType: .string)
+    }
 
     /// Toggle one provider's menubar visibility via `tokitoki ui`, then
     /// refresh so the change shows up immediately.
@@ -1405,8 +1502,18 @@ struct CustomizeSheet: View {
                 Text("Add opencode key").font(.system(size: 13, weight: .semibold))
                 TextField("name (e.g. work)", text: $newKeyId)
                     .textFieldStyle(.roundedBorder)
-                SecureField("key (sk-…)", text: $newKeyValue)
-                    .textFieldStyle(.roundedBorder)
+                HStack(spacing: 6) {
+                    SecureField("key (sk-…)", text: $newKeyValue)
+                        .textFieldStyle(.roundedBorder)
+                    Button("Paste") {
+                        if let pasted = NSPasteboard.general.string(forType: .string) {
+                            newKeyValue = pasted.trimmingCharacters(in: .whitespacesAndNewlines)
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .accessibilityIdentifier("paste-api-key")
+                }
                 HStack {
                     Spacer()
                     Button("Cancel") { showAddKey = false }.keyboardShortcut(.cancelAction)
@@ -1888,7 +1995,7 @@ struct ContentView: View {
             for l in model.limits {
                 let wins = l.windows.map { w -> String in
                     let pct = w.usedPct.map { " \(Int(max(0, min(100, 100 - $0))))% left" } ?? " \(humanCount(w.tokens))"
-                    return "\(windowDisplayName(w.kind)):\(pct)"
+                    return "\(windowDisplayName(w.kind, provider: l.provider)):\(pct)"
                 }.joined(separator: " · ")
                 let who = l.email ?? l.credential ?? l.accountKey
                 md += "| \(l.provider) | \(who) | \(wins) |\n"
@@ -2036,7 +2143,13 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 8) {
             ForEach(Array(visible.enumerated()), id: \.element.id) { idx, l in
                 let accountId = "\(l.provider)@\(l.accountKey)"
-                AccountLimitCard(limits: l, budgets: matchingBudgets(for: l), tokenScale: tokenMaxima(model.limits))
+                AccountLimitCard(
+                    limits: l,
+                    isRefreshing: model.refreshingAccounts.contains(accountId),
+                    onRefresh: { model.refreshAccount(l) },
+                    budgets: matchingBudgets(for: l),
+                    tokenScale: tokenMaxima(model.limits),
+                )
                     .padding(8)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 10))
@@ -2606,6 +2719,8 @@ enum BrandIcon {
     static let googlegemini = "M11.04 19.32Q12 21.51 12 24q0-2.49.93-4.68.96-2.19 2.58-3.81t3.81-2.55Q21.51 12 24 12q-2.49 0-4.68-.93a12.3 12.3 0 0 1-3.81-2.58 12.3 12.3 0 0 1-2.58-3.81Q12 2.49 12 0q0 2.49-.96 4.68-.93 2.19-2.55 3.81a12.3 12.3 0 0 1-3.81 2.58Q2.49 12 0 12q2.49 0 4.68.96 2.19.93 3.81 2.55t2.55 3.81"
     static let x = "M14.234 10.162 22.977 0h-2.072l-7.591 8.824L7.251 0H.258l9.168 13.343L.258 24H2.33l8.016-9.318L16.749 24h6.993zm-2.837 3.299-.929-1.329L3.076 1.56h3.182l5.965 8.532.929 1.329 7.754 11.09h-3.182z"
     static let opencode = "M22 24H2V0h20zM17 4.8H7v14.4h10z"
+    // GitHub Copilot mascot mark from simple-icons (24×24 viewBox).
+    static let githubcopilot = "M23.922 16.997C23.061 18.492 18.063 22.02 12 22.02 5.937 22.02.939 18.492.078 16.997A.641.641 0 0 1 0 16.741v-2.869a.883.883 0 0 1 .053-.22c.372-.935 1.347-2.292 2.605-2.656.167-.429.414-1.055.644-1.517a10.098 10.098 0 0 1-.052-1.086c0-1.331.282-2.499 1.132-3.368.397-.406.89-.717 1.474-.952C7.255 2.937 9.248 1.98 11.978 1.98c2.731 0 4.767.957 6.166 2.093.584.235 1.077.546 1.474.952.85.869 1.132 2.037 1.132 3.368 0 .368-.014.733-.052 1.086.23.462.477 1.088.644 1.517 1.258.364 2.233 1.721 2.605 2.656a.841.841 0 0 1 .053.22v2.869a.641.641 0 0 1-.078.256Zm-11.75-5.992h-.344a4.359 4.359 0 0 1-.355.508c-.77.947-1.918 1.492-3.508 1.492-1.725 0-2.989-.359-3.782-1.259a2.137 2.137 0 0 1-.085-.104L4 11.746v6.585c1.435.779 4.514 2.179 8 2.179 3.486 0 6.565-1.4 8-2.179v-6.585l-.098-.104s-.033.045-.085.104c-.793.9-2.057 1.259-3.782 1.259-1.59 0-2.738-.545-3.508-1.492a4.359 4.359 0 0 1-.355-.508Zm2.328 3.25c.549 0 1 .451 1 1v2c0 .549-.451 1-1 1-.549 0-1-.451-1-1v-2c0-.549.451-1 1-1Zm-5 0c.549 0 1 .451 1 1v2c0 .549-.451 1-1 1-.549 0-1-.451-1-1v-2c0-.549.451-1 1-1Zm3.313-6.185c.136 1.057.403 1.913.878 2.497.442.544 1.134.938 2.344.938 1.573 0 2.292-.337 2.657-.751.384-.435.558-1.15.558-2.361 0-1.14-.243-1.847-.705-2.319-.477-.488-1.319-.862-2.824-1.025-1.487-.161-2.192.138-2.533.529-.269.307-.437.808-.438 1.578v.021c0 .265.021.562.063.893Zm-1.626 0c.042-.331.063-.628.063-.894v-.02c-.001-.77-.169-1.271-.438-1.578-.341-.391-1.046-.69-2.533-.529-1.505.163-2.347.537-2.824 1.025-.462.472-.705 1.179-.705 2.319 0 1.211.175 1.926.558 2.361.365.414 1.084.751 2.657.751 1.21 0 1.902-.394 2.344-.938.475-.584.742-1.44.878-2.497Z"
 
     /// Provider id → mark, nil = no official vector available (caller falls
     /// back to its own glyph).
@@ -2616,6 +2731,7 @@ enum BrandIcon {
         case "claude-code", "claude": d = anthropic
         case "cursor": d = cursor
         case "gemini-cli": d = googlegemini
+        case "copilot": d = githubcopilot
         case "grok": d = x
         case "opencode", "opencode-go": d = opencode
         default: d = nil
@@ -2669,6 +2785,7 @@ struct ProviderLogo: View {
         case "codex", "openai": return Color(red: 0.063, green: 0.639, blue: 0.498)  // #10A37F OpenAI
         case "cursor": return Color(red: 0.400, green: 0.400, blue: 0.440)
         case "gemini-cli": return Color(red: 0.259, green: 0.522, blue: 0.957)  // #4285F4
+        case "copilot": return .primary
         case "grok": return .primary
         case "openrouter": return Color(red: 0.545, green: 0.361, blue: 0.965)  // #8B5CF6
         case "pi", "opencode-go", "opencode": return Color(red: 0.655, green: 0.545, blue: 0.980) // #A78BFA violet
@@ -2698,6 +2815,8 @@ private func tokenMaxima(_ limits: [AccountLimits]) -> [String: Double] {
 
 struct AccountLimitCard: View {
     let limits: AccountLimits
+    let isRefreshing: Bool
+    let onRefresh: () -> Void
     /// Budget rows whose pattern matches this account — rendered as a slim footer.
     var budgets: [BudgetRow] = []
     /// Per-kind max token totals across ALL accounts — used to normalize
@@ -2756,7 +2875,7 @@ struct AccountLimitCard: View {
                         .lineLimit(1)
                     ForEach(Array(orderedWindows.enumerated()), id: \.offset) { _, w in
                         HStack(spacing: 6) {
-                            Text(windowDisplayName(w.kind))
+                            Text(windowDisplayName(w.kind, provider: limits.provider))
                                 .font(.caption2).foregroundStyle(.secondary)
                             Spacer()
                             if let r = w.resetsAt, let target = parseISO(r) {
@@ -2799,7 +2918,7 @@ struct AccountLimitCard: View {
     private func windowBarRow(_ w: LimitWindow) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 6) {
-                Text(windowDisplayName(w.kind))
+                Text(windowDisplayName(w.kind, provider: limits.provider))
                     .font(.caption2.weight(.medium)).foregroundStyle(.secondary)
                 Spacer()
                 if let pct = w.usedPct {
@@ -2876,6 +2995,19 @@ struct AccountLimitCard: View {
             Text(accountLabel)
                 .font(.caption.weight(.medium)).lineLimit(1)
             Spacer()
+            Button(action: onRefresh) {
+                if isRefreshing {
+                    ProgressView()
+                        .controlSize(.small)
+                } else {
+                    Image(systemName: "arrow.clockwise")
+                }
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .disabled(isRefreshing)
+            .accessibilityIdentifier("refresh-limit-\(limits.provider)-\(limits.accountKey)")
+            .help(limits.origin == "scan" ? "Re-scan \(limits.provider)" : "Refresh quota from provider")
             if let url = providerConsoleURL(limits.provider) {
                 Button { NSWorkspace.shared.open(url) } label: {
                     Image(systemName: "arrow.up.right.square")
@@ -2939,9 +3071,10 @@ enum SpendMetric: String {
     case tokens
 }
 
-private func windowDisplayName(_ kind: String) -> String {
+private func windowDisplayName(_ kind: String, provider: String? = nil) -> String {
     switch kind {
-    case "day": return "Session"
+    case "day":
+        return provider == "codex" || provider == "claude-code" || provider == "commandcode" ? "Session" : "Day"
     case "week": return "Weekly"
     case "month": return "Monthly"
     default: return kind.capitalized

@@ -69,6 +69,7 @@ function hermeticPaths(): Record<string, string> {
     copilotAuthPath: miss("copilot-apps.json"),
     cursorAuthPath: miss("cursor-auth.json"),
     opencodexCachePath: miss("opencodex-cache.json"),
+    commandcodeAuthPath: miss("commandcode-auth.json"),
   };
 }
 
@@ -108,6 +109,46 @@ describe("opencodeCredentials", () => {
 });
 
 describe("pollQuotas", () => {
+  it("polls Command Code session/week/month meters from its billing API", async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "tk-poll-commandcode-"));
+    const auth = path.join(dir, "auth.json");
+    writeFileSync(auth, JSON.stringify({ apiKey: "user-test-key" }));
+    const cache = new EventCache(path.join(dir, "cache.db"));
+    try {
+      const fetcher = (async (input: unknown) => {
+        const url = String(input);
+        if (url.endsWith("/alpha/whoami")) return new Response(JSON.stringify({ user: { email: "cc@example.com" }, org: null }), { status: 200 });
+        if (url.includes("/alpha/billing/credits")) {
+          return new Response(JSON.stringify({
+            credits: { monthlyCredits: 20 },
+            windowLimits: {
+              fiveHour: { used: 1, cap: 4, resetAt: 1_800_000_000 },
+              weekly: { used: 2, cap: 10, resetAt: 1_805_000_000 },
+            },
+          }), { status: 200 });
+        }
+        if (url.includes("/alpha/billing/subscriptions")) return new Response(JSON.stringify({ data: { currentPeriodEnd: "2026-09-01T00:00:00.000Z" } }), { status: 200 });
+        if (url.includes("/alpha/usage/summary")) return new Response(JSON.stringify({ totalMonthlyCredits: 5 }), { status: 200 });
+        throw new Error(`unexpected fetch: ${url}`);
+      }) as unknown as typeof fetch;
+      const res = await pollQuotas({
+        authPath: path.join(dir, "missing-codex.json"),
+        piAuthPath: path.join(dir, "missing-pi.json"),
+        fetcher,
+        cache,
+        ...hermeticPaths(),
+        commandcodeAuthPath: auth,
+      });
+      const account = res.accounts.find((a) => a.harnesses === undefined && a.accountKey === "default" && a.email === "cc@example.com");
+      expect(account).toBeDefined();
+      expect(account!.windows.map((w) => w.windowMinutes).sort((a, b) => a - b)).toEqual([300, 10_080, 43_200]);
+      expect(account!.windows.map((w) => Math.round(w.usedPct)).sort((a, b) => a - b)).toEqual([25, 20, 100 * 5 / 25].sort((a, b) => a - b));
+      expect(account!.inserted).toBe(3);
+    } finally {
+      cache.close();
+    }
+  });
+
   it("reports not-logged-in when every auth store is missing", async () => {
     const res = await pollQuotas({
       authPath: path.join(os.tmpdir(), `missing-${Date.now()}.json`),

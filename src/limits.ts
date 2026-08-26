@@ -184,7 +184,9 @@ export function computeLimits(
         cost: usage.cost,
         requests: usage.requests,
         usedPct: Math.max(0, Math.min(100, s.usedPct)),
-        resetsAt: new Date(s.resetsAt * 1000).toISOString(),
+        // Command Code returns resetAt=0 when a rolling window has not
+        // started yet; never render that sentinel as January 1970.
+        resetsAt: s.resetsAt > 0 ? new Date(s.resetsAt * 1000).toISOString() : undefined,
       };
       windows.push(w);
       if (s.creditsJson !== null) {

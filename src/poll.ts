@@ -34,6 +34,8 @@ const CLAUDE_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 const COPILOT_USAGE_URL = "https://api.github.com/copilot_internal/user";
 /** Cursor dashboard Connect endpoints. */
 const CURSOR_USAGE_URL = "https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage";
+/** Command Code billing/usage API (the CLI's own live /usage data source). */
+const COMMANDCODE_API_URL = "https://api.commandcode.ai";
 /** opencodex pooled-account quota cache (~/.opencodex). */
 const OPENCODEX_QUOTA_CACHE = `${process.env.HOME ?? "~"}/.opencodex/codex-quota-cache.json`;
 const USER_AGENT = "tokitoki";
@@ -79,6 +81,8 @@ export interface PollOptions {
   opencodexCachePath?: string;
   /** Absolute path to an opencode auth.json fixture (tests). Default ~/.local/share/opencode/auth.json. */
   opencodeAuthPath?: string;
+  /** Absolute path to Command Code auth.json (tests). Default ~/.commandcode/auth.json. */
+  commandcodeAuthPath?: string;
   /** Manually registered gateway keys (config.poll.extraKeys) polled as synthetic accounts. */
   manualKeys?: Array<{ id: string; provider: "opencode-go"; key: string }>;
   /** EventCache instance (tests use a temp db). Default: open the real one. */
@@ -470,6 +474,128 @@ interface CopilotUserResponse {
   quota_snapshots?: Record<string, Record<string, unknown>>;
 }
 
+interface CommandCodeAuth {
+  apiKey?: string;
+}
+
+function commandcodeAuthPath(opts: PollOptions): string {
+  return opts.commandcodeAuthPath ?? `${process.env.HOME ?? "~"}/.commandcode/auth.json`;
+}
+
+function loadCommandCodeKey(opts: PollOptions): string | null {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(commandcodeAuthPath(opts), "utf8")) as CommandCodeAuth;
+    return typeof parsed.apiKey === "string" && parsed.apiKey.length > 0 ? parsed.apiKey : null;
+  } catch {
+    return null;
+  }
+}
+
+interface CommandCodeCredits {
+  credits?: {
+    monthlyCredits?: number;
+    purchasedCredits?: number;
+    freeCredits?: number;
+  };
+  windowLimits?: {
+    limited?: boolean;
+    fiveHour?: { used?: number; cap?: number; resetAt?: number };
+    weekly?: { used?: number; cap?: number; resetAt?: number };
+  };
+}
+
+interface CommandCodeSummary {
+  totalCost?: number;
+  totalMonthlyCredits?: number;
+}
+
+interface CommandCodeSubscription {
+  data?: { currentPeriodEnd?: string };
+}
+
+/** Command Code's own billing API powers the same meters shown by `/usage`. */
+async function pollCommandCodeQuotas(
+  opts: PollOptions,
+  fetcher: typeof fetch,
+  now: number,
+): Promise<PollAccountResult | string> {
+  const key = loadCommandCodeKey(opts);
+  if (key === null) return "not logged in (no ~/.commandcode/auth.json apiKey)";
+  const headers = { authorization: `Bearer ${key}`, accept: "application/json" };
+  const get = async (path: string): Promise<Record<string, unknown> | string> => {
+    try {
+      const res = await fetcher(`${COMMANDCODE_API_URL}${path}`, { headers });
+      if (!res.ok) return `HTTP ${res.status}`;
+      const body = await res.json();
+      return body !== null && typeof body === "object" ? body as Record<string, unknown> : "invalid JSON response";
+    } catch (e) {
+      return String(e);
+    }
+  };
+
+  const whoami = await get("/alpha/whoami");
+  if (typeof whoami === "string") return `whoami: ${whoami}`;
+  const creditsRaw = await get("/alpha/billing/credits");
+  if (typeof creditsRaw === "string") return `credits: ${creditsRaw}`;
+  const who = whoami.user as { email?: string } | undefined;
+  const credits = creditsRaw as unknown as CommandCodeCredits;
+  const org = whoami.org as { id?: string } | null | undefined;
+  const query = org?.id ? `?orgId=${encodeURIComponent(org.id)}` : "";
+  const [subscriptionRaw, summaryRaw] = await Promise.all([
+    get(`/alpha/billing/subscriptions${query}`),
+    get(`/alpha/usage/summary${query}`),
+  ]);
+  if (typeof subscriptionRaw === "string") return `subscription: ${subscriptionRaw}`;
+  if (typeof summaryRaw === "string") return `summary: ${summaryRaw}`;
+  const limits = credits.windowLimits;
+  const number = (value: unknown): number | undefined =>
+    typeof value === "number" && Number.isFinite(value) ? value : undefined;
+  const windows: PolledWindow[] = [];
+  const addWindow = (value: { used?: number; cap?: number; resetAt?: number } | undefined, minutes: number): void => {
+    const used = number(value?.used);
+    const cap = number(value?.cap);
+    if (used === undefined || cap === undefined || cap <= 0) return;
+    const reset = number(value?.resetAt);
+    windows.push({
+      windowMinutes: minutes,
+      usedPct: Math.max(0, Math.min(100, (used / cap) * 100)),
+      resetsAtEpoch: reset !== undefined && reset > 0 ? Math.round(reset) : 0,
+    });
+  };
+  addWindow(limits?.fiveHour, 300);
+  addWindow(limits?.weekly, 10_080);
+
+  const summary = summaryRaw as unknown as CommandCodeSummary;
+  const remaining = number(credits.credits?.monthlyCredits) ?? 0;
+  const spent = number(summary.totalMonthlyCredits) ?? number(summary.totalCost) ?? 0;
+  const monthCap = remaining + spent;
+  if (monthCap > 0) {
+    const periodEnd = (subscriptionRaw as unknown as CommandCodeSubscription).data?.currentPeriodEnd;
+    const resetMs = typeof periodEnd === "string" ? Date.parse(periodEnd) : NaN;
+    windows.push({
+      windowMinutes: 43_200,
+      usedPct: Math.max(0, Math.min(100, (spent / monthCap) * 100)),
+      resetsAtEpoch: Number.isFinite(resetMs) ? Math.round(resetMs / 1000) : 0,
+    });
+  }
+  if (windows.length === 0) return { accountKey: "default", windows, inserted: 0, error: "no usable usage windows in response" };
+  const capturedAtIso = new Date(now).toISOString();
+  const inserted = opts.cache?.insertPolledSnapshots({
+    provider: "commandcode",
+    accountKey: "default",
+    windows,
+    capturedAtIso,
+    eventId: `poll:${capturedAtIso}:commandcode`,
+  }) ?? 0;
+  return {
+    accountKey: "default",
+    ...(typeof who?.email === "string" ? { email: who.email } : {}),
+    planType: typeof (subscriptionRaw as unknown as CommandCodeSubscription).data === "object" ? "commandcode" : undefined,
+    windows,
+    inserted,
+  };
+}
+
 /** Copilot internal/user → one window per real quota_snapshots bucket. */
 async function pollCopilotQuotas(opts: PollOptions, fetcher: typeof fetch, now: number): Promise<PollAccountResult | string> {
   const token = copilotToken(opts.copilotAuthPath);
@@ -608,11 +734,51 @@ async function pollCursorQuotas(opts: PollOptions, fetcher: typeof fetch, now: n
   return "cursor response shape unrecognized";
 }
 
+/** Read email identities for opencodex's pooled ChatGPT accounts. */
+export function opencodexAccountEmails(
+  path: string = `${process.env.HOME ?? "~"}/.opencodex/codex-accounts.json`,
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  try {
+    const parsed = JSON.parse(fs.readFileSync(path, "utf8")) as Record<string, {
+      credential?: { accessToken?: string; access?: string; email?: string };
+    }>;
+    for (const [id, account] of Object.entries(parsed)) {
+      const direct = account.credential?.email;
+      if (typeof direct === "string" && direct.includes("@")) {
+        out[id] = direct;
+        continue;
+      }
+      const token = account.credential?.accessToken ?? account.credential?.access;
+      const profile = typeof token === "string" ? decodeJwtPayload(token)?.["https://api.openai.com/profile"] : undefined;
+      const email = profile !== null && typeof profile === "object"
+        ? (profile as Record<string, unknown>).email
+        : undefined;
+      if (typeof email === "string" && email.includes("@")) out[id] = email;
+    }
+  } catch {
+    // opencodex is optional
+  }
+  return out;
+}
+
 /** opencodex pooled-account quotas → {key: {weeklyPercent, weeklyResetAt}}. */
-export function opencodexQuotas(path: string = OPENCODEX_QUOTA_CACHE): Record<string, { weeklyPercent?: number; weeklyResetAt?: number }> {
+export function opencodexQuotas(path: string = OPENCODEX_QUOTA_CACHE): Record<string, {
+  weeklyPercent?: number;
+  weeklyResetAt?: number;
+  shortPercent?: number;
+  shortResetAt?: number;
+  shortWindowSeconds?: number;
+}> {
   try {
     const parsed = JSON.parse(fs.readFileSync(path, "utf8")) as {
-      quotas?: Record<string, { weeklyPercent?: number; weeklyResetAt?: number }>;
+      quotas?: Record<string, {
+        weeklyPercent?: number;
+        weeklyResetAt?: number;
+        shortPercent?: number;
+        shortResetAt?: number;
+        shortWindowSeconds?: number;
+      }>;
     };
     return parsed.quotas ?? {};
   } catch {
@@ -751,6 +917,14 @@ export async function pollQuotas(opts: PollOptions = {}): Promise<PollResult> {
     reasons.push(`cursor: ${String(e)}`);
   }
 
+  try {
+    const commandcode = await pollCommandCodeQuotas(opts, fetcher, now);
+    if (typeof commandcode === "string") reasons.push(`commandcode: ${commandcode}`);
+    else accounts.push(commandcode);
+  } catch (e) {
+    reasons.push(`commandcode: ${String(e)}`);
+  }
+
   // --- manual gateway keys (config.poll.extraKeys) -----------------------
   for (const mk of opts.manualKeys ?? []) {
     const r = await pollOpencodeGo(mk.key, fetcher);
@@ -769,29 +943,72 @@ export async function pollQuotas(opts: PollOptions = {}): Promise<PollResult> {
     });
   }
 
-  // --- opencodex pool (only when codex itself yielded nothing fresh) ------
-  const codexPolled = accounts.some((a) => a.accountKey.startsWith("openai:") && a.windows.length > 0);
-  if (!codexPolled) {
-    const pooled = opencodexQuotas(opts.opencodexCachePath);
-    const seenResets = new Set<number>();
-    for (const q of Object.values(pooled)) {
-      if (typeof q.weeklyPercent !== "number" || typeof q.weeklyResetAt !== "number") continue;
-      if (seenResets.has(q.weeklyResetAt)) continue; // identical windows collapse
-      seenResets.add(q.weeklyResetAt);
-      accounts.push({
-        accountKey: "codex",
-        harnesses: ["opencodex"],
-        windows: [{ windowMinutes: 10_080, usedPct: Math.max(0, Math.min(100, q.weeklyPercent)), resetsAtEpoch: q.weeklyResetAt }],
-        inserted:
-          cache?.insertPolledSnapshots({
-            provider: "codex",
-            accountKey: "codex",
-            windows: [{ windowMinutes: 10_080, usedPct: Math.max(0, Math.min(100, q.weeklyPercent)), resetsAtEpoch: q.weeklyResetAt }],
-            capturedAtIso,
-            eventId: `poll:${capturedAtIso}:opencodex`,
-          }) ?? 0,
+  // --- opencodex pool (also when codex itself yielded a fresh login) ------
+  // The pool can contain another ChatGPT login (for example a work account)
+  // that is not represented by ~/.codex/auth.json. The old fallback skipped
+  // the pool whenever the personal login succeeded, leaving that account
+  // stale forever.
+  const ownCodex = accounts.find((a) => a.accountKey.startsWith("openai:") && a.windows.length > 0);
+  const ownWeeklyResets = new Set(
+    ownCodex?.windows.filter((w) => w.windowMinutes === 10_080).map((w) => w.resetsAtEpoch) ?? [],
+  );
+  const pooled = opencodexQuotas(opts.opencodexCachePath);
+  const seenResets = new Set<number>();
+  for (const [poolKey, q] of Object.entries(pooled)) {
+    if (typeof q.weeklyPercent !== "number" || typeof q.weeklyResetAt !== "number") continue;
+    const weeklyResetAt = q.weeklyResetAt;
+    const weeklyPercent = q.weeklyPercent;
+    // Identical reset epochs are the same login mirrored by multiple pool
+    // aliases. Also suppress the pool's __main__ mirror of the live OAuth
+    // account when the reset is within the provider's normal clock skew.
+    if (seenResets.has(weeklyResetAt)) continue;
+    if ([...ownWeeklyResets].some((reset) => Math.abs(reset - weeklyResetAt) <= 15 * 60)) continue;
+    seenResets.add(weeklyResetAt);
+    let accountKey = poolKey === "__main__" ? "codex" : `codex:${poolKey}`;
+    // Reuse the scan-era account key when its embedded weekly reset matches
+    // this pool entry. This is what keeps an existing work-account card
+    // (usually `codex`) fresh instead of creating an opaque new card.
+    if (cache !== undefined) {
+      const shortMinutes = typeof q.shortWindowSeconds === "number" && q.shortWindowSeconds > 0
+        ? Math.round(q.shortWindowSeconds / 60)
+        : 300;
+      for (const existing of cache.detectedAccounts().filter((a) => a.provider === "codex")) {
+        const snapshots = cache.latestQuotaSnapshots("codex", existing.accountKey);
+        if (snapshots.some((w) =>
+          (w.windowMinutes === 10_080 && w.resetsAt === weeklyResetAt) ||
+          (w.windowMinutes === shortMinutes && w.resetsAt === q.shortResetAt)
+        )) {
+          accountKey = existing.accountKey;
+          break;
+        }
+      }
+    }
+    const windows: PolledWindow[] = [{
+      windowMinutes: 10_080,
+      usedPct: Math.max(0, Math.min(100, weeklyPercent)),
+      resetsAtEpoch: weeklyResetAt,
+    }];
+    if (typeof q.shortPercent === "number" && typeof q.shortResetAt === "number") {
+      windows.unshift({
+        windowMinutes: typeof q.shortWindowSeconds === "number" && q.shortWindowSeconds > 0
+          ? Math.round(q.shortWindowSeconds / 60)
+          : 300,
+        usedPct: Math.max(0, Math.min(100, q.shortPercent)),
+        resetsAtEpoch: q.shortResetAt,
       });
     }
+    accounts.push({
+      accountKey,
+      harnesses: ["opencodex"],
+      windows,
+      inserted: cache?.insertPolledSnapshots({
+        provider: "codex",
+        accountKey,
+        windows,
+        capturedAtIso,
+        eventId: `poll:${capturedAtIso}:opencodex:${poolKey}`,
+      }) ?? 0,
+    });
   }
 
   const ok = accounts.some((a) => a.windows.length > 0);
