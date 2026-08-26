@@ -46,10 +46,23 @@ export interface TokitokiConfig {
    * automatically; intervalMinutes is reserved for a future scheduler.
    */
   poll?: {
-    /** Reserved: poller currently only runs via the explicit command. */
+    /** Menubar app runs `tokitoki poll` every ~15 minutes when true. */
     enabled?: boolean;
     /** Reserved for future background scheduling. */
     intervalMinutes?: number;
+    /**
+     * Manually registered opencode gateway keys (multi-account): each is
+     * polled as its own synthetic account and gets a card even with zero
+     * scanned events.
+     */
+    extraKeys?: Array<{
+      /** Stable id = accountKey on the card (and quota_snapshots key). */
+      id: string;
+      /** Optional display label; defaults to the id. */
+      label?: string;
+      provider?: "opencode-go";
+      key: string;
+    }>;
   };
   /**
    * [ui] — visibility toggles for menubar/dashboard surfaces. Entries are
@@ -65,6 +78,19 @@ export interface TokitokiConfig {
     };
     /** Show only these providers in the menubar preview (empty = all). */
     menubarProviders?: string[];
+    /**
+     * UPSTREAM providers hidden from the STATUS-BAR STRIP only (openai,
+     * claude, opencode, openrouter, gemini, grok, cursor) — popover cards
+     * are unaffected. Distinct from hidden.menubar, which hides accounts
+     * from the popover CARDS.
+     */
+    previewHidden?: string[];
+    /**
+     * Uniform status-strip metric: "percent" (default) shows real
+     * provider-reported remaining % and nothing when unknown; "tokens"
+     * shows a compact usage estimate (~764M) for every group.
+     */
+    stripMetric?: "percent" | "tokens";
     /** Max provider percentages shown in the status-item preview line. */
     menubarPreviewLines?: number;
     /** "inline" (default): preview always in the status item. "hover": only while pointing at it. */

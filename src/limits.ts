@@ -90,8 +90,10 @@ interface UsageRow {
 const ZERO: UsageRow = { tokens: 0, cost: 0, requests: 0 };
 
 /** Map an embedded window length to a friendly kind. */
-function embeddedKind(windowMinutes: number): string {
-  if (windowMinutes === 1440) return "day";
+export function embeddedKind(windowMinutes: number): string {
+  // 300min = the 5h session window; 1440 = calendar day. Both display as
+  // "Session"/sort first via the existing kind tables.
+  if (windowMinutes === 300 || windowMinutes === 1440) return "day";
   if (windowMinutes === 10080) return "week";
   if (windowMinutes === 43200) return "month";
   return `${windowMinutes}min`;

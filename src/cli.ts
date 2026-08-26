@@ -10,14 +10,15 @@ import type { UsageEvent } from "./types.ts";
 import { DIMENSIONS, EventCache, type AggRow, type Dimension, type SeriesBucket, type SessionSummary } from "./cache.ts";
 import { renderTable, renderMiniProjects, renderMarkdownTable, resolveExtraFiles, resolveSortColumn, sinceIsoFor, sinceIsoForDays, previousWindow, monthStartIso, sortRows, formatDelta, deltaInfo, totalRow, totalTokens, planGaugeFn, renderBurnLine, burnProjection, type TableContext } from "./report.ts";
 import { accountEmailMap } from "./accounts.ts";
-import { computeLimits, groupBySharedCredential, mergeAliasLimits, type AccountLimits } from "./limits.ts";
-import { opencodeCredentials, pollQuotas } from "./poll.ts";
+import { computeLimits, embeddedKind, groupBySharedCredential, mergeAliasLimits, type AccountLimits } from "./limits.ts";
+import { opencodeCredentials, piCredentials, pollQuotas, redactCredential } from "./poll.ts";
 import {
   assertValidSurface,
-  isVisibleOn,
+  isCardVisibleOn,
   setMenubarProviders,
   setMenubarCards,
   setMenubarAccountOrder,
+  setPollEnabled,
   setSurfaceVisibility,
   menubarCardLayout,
 } from "./uiToggles.ts";
@@ -453,7 +454,7 @@ const KNOWN_FLAGS: Record<string, string[]> = {
   statusline: [],
   mcp: [],
   menubar: ["stop", "status", "foreground", "rebuild"],
-  poll: ["json"],
+  poll: ["json", "enable", "disable"],
   share: ["enable", "disable", "status", "publish", "scope", "include-repos"],
   export: ["last", "by", "format", "out", "sort", "asc", "provider", "since", "until", "show-email", "show-emails"],
   web: ["port"],
@@ -1713,6 +1714,16 @@ function handleErrorAsync(err: unknown): void {
 
 async function runPoll(parsed: ParsedInvocation): Promise<void> {
   const jsonOut = flagBool(parsed, "json");
+  if (parsed.flags["enable"] !== undefined) {
+    setPollEnabled(true);
+    console.log("background quota polling enabled (menubar runs it every ~15 min)");
+    return;
+  }
+  if (parsed.flags["disable"] !== undefined) {
+    setPollEnabled(false);
+    console.log("background quota polling disabled");
+    return;
+  }
   const cache = new EventCache();
   try {
     const result = await pollQuotas({ cache });
@@ -2017,7 +2028,6 @@ function runMenubarPayload(parsed: ParsedInvocation): void {
   capture("today", () => runReport(inv("report", { by: "provider", json: true, from: todayKey, to: todayKey })));
   capture("week", () => runReport(inv("report", { last: "week", by: "provider", json: true })));
   capture("reposMonth", () => runReport(inv("report", { last: "month", by: "repo", json: true })));
-  capture("reposMonth", () => runReport(inv("report", { last: "month", by: "repo", json: true })));
   capture("budgets", () => runBudgets(inv("budgets", { json: true })));
   capture("anomalies", () => runAnomalies(inv("anomalies", { json: true })));
   capture("topTools", () => runTools(inv("tools", { last: "day", top: "3", json: true })));
@@ -2031,7 +2041,10 @@ function runMenubarPayload(parsed: ParsedInvocation): void {
           previewMode: config.ui?.menubarPreviewMode ?? "inline",
           providers: [...cache.providerStats().keys()].sort(),
           menubarHidden: config.ui?.hidden?.menubar ?? [],
+          previewHidden: config.ui?.previewHidden ?? [],
+          stripMetric: config.ui?.stripMetric ?? "percent",
           cards: menubarCardLayout(config),
+          pollAuto: config.poll?.enabled === true,
         }),
       );
     });
@@ -2040,30 +2053,72 @@ function runMenubarPayload(parsed: ParsedInvocation): void {
     const config = loadConfig();
     withCache((cache) => {
       cache.sync(config.extraEventFiles ?? []);
-      const limits = computeLimits(cache, config).filter((l) =>
-        isVisibleOn(config, "menubar", l.provider, l.accountKey),
-      );
+      // FULL limits go over the wire — the app filters popover cards via
+      // hidden.menubar and strip marks via previewHidden independently.
+      const limits = computeLimits(cache, config);
       // Same provider + same embedded-quota signature = same underlying
       // account seen through different extraction eras. One card per account.
       const merged = mergeAliasLimits(limits);
       // Key-based harnesses: attach a redacted credential so accounts are
       // distinguishable without emails (pi / opencode auth is API-key only).
+      // OpenRouter keys live in pi's auth store — same treatment.
       const creds = opencodeCredentials();
+      const piKeys = piCredentials();
       const withCreds = merged.map((l) => {
-        const cred = creds[l.accountKey];
-        return cred !== undefined ? { ...l, credential: cred } : l;
+        const cred = creds[l.accountKey] ?? (l.provider === "pi" ? piKeys[l.accountKey] : undefined);
+        return cred !== undefined ? { ...l, credential: redactCredential(cred) } : l;
       });
       // Accounts sharing one credential (pi + opencode on the same gateway
       // key) are ONE real account — collapse to a single card.
       const grouped = groupBySharedCredential(withCreds);
+      // Origin provenance for the details disclosure: where did this
+      // account's quota data come from? One tiny indexed query per account.
+      const withOrigin = grouped.map((l) => {
+        try {
+          const row = cache.database
+            .query(
+              `SELECT CASE WHEN event_id LIKE '%:opencodex' THEN 'opencodex'
+                           ELSE 'polled' END AS origin
+               FROM quota_snapshots
+               WHERE provider = ? AND account_key = ? AND event_id LIKE 'poll:%'
+               LIMIT 1`,
+            )
+            .get(l.provider, l.accountKey) as { origin?: string } | null;
+          return { ...l, origin: row?.origin ?? "scan" };
+        } catch {
+          return { ...l, origin: "scan" };
+        }
+      });
+      // Manual opencode keys get a card even with zero scanned events; the
+      // poller stores their windows under ("pi", <id>) pairs.
+      for (const mk of config.poll?.extraKeys ?? []) {
+        if (withOrigin.some((l) => l.accountKey === mk.id)) continue;
+        const snaps = cache.latestQuotaSnapshots("pi", mk.id);
+        const windows = snaps.map((snap) => ({
+          kind: embeddedKind(snap.windowMinutes),
+          source: "embedded" as const,
+          tokens: 0,
+          cost: 0,
+          requests: 0,
+          usedPct: Math.max(0, Math.min(100, snap.usedPct)),
+          resetsAt: new Date(snap.resetsAt * 1000).toISOString(),
+        }));
+        withOrigin.push({
+          provider: "pi",
+          accountKey: mk.id,
+          credential: redactCredential(mk.key),
+          origin: "manual",
+          windows,
+        });
+      }
       // Drag-saved display order first, then the default (token-heavy) order.
       const savedOrder = config.ui?.menubarAccountOrder ?? [];
       const rank = (l: AccountLimits): number => {
         const i = savedOrder.indexOf(`${l.provider}@${l.accountKey}`);
         return i === -1 ? savedOrder.length : i;
       };
-      grouped.sort((a, b) => rank(a) - rank(b));
-      console.log(JSON.stringify(grouped));
+      withOrigin.sort((a, b) => rank(a) - rank(b));
+      console.log(JSON.stringify(withOrigin));
     });
   });
   capture("spendPeriods", () => {

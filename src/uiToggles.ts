@@ -35,15 +35,36 @@ export function isVisibleOn(
   provider: string,
   accountKey: string,
 ): boolean {
-  const hidden = config.ui?.hidden?.[surface] ?? [];
+  if (surface === "menubar") return isCardVisibleOn(config, provider, accountKey);
+  const hidden = config.ui?.hidden?.dashboard ?? [];
   for (const raw of hidden) {
     if (matches(parseToggleTarget(raw), provider, accountKey)) return false;
   }
-  if (surface === "menubar") {
-    const only = config.ui?.menubarProviders ?? [];
-    if (only.length > 0 && !only.includes(provider)) return false;
-  }
   return true;
+}
+
+/**
+ * Popover-CARD visibility (menubar surface): entries in ui.hidden.menubar
+ * hide accounts from the popover cards. The status-bar STRIP has its own
+ * switch — see isPreviewVisible.
+ */
+export function isCardVisibleOn(config: TokitokiConfig, provider: string, accountKey: string): boolean {
+  const hidden = config.ui?.hidden?.menubar ?? [];
+  for (const raw of hidden) {
+    if (matches(parseToggleTarget(raw), provider, accountKey)) return false;
+  }
+  const only = config.ui?.menubarProviders ?? [];
+  if (only.length > 0 && !only.includes(provider)) return false;
+  return true;
+}
+
+/**
+ * STATUS-BAR STRIP visibility: ui.previewHidden lists UPSTREAM provider ids
+ * (openai, claude, opencode, openrouter, ...) whose marks are hidden from
+ * the strip while their cards stay visible.
+ */
+export function isPreviewVisible(config: TokitokiConfig, upstreamProvider: string): boolean {
+  return !(config.ui?.previewHidden ?? []).includes(upstreamProvider);
 }
 
 function saveUiMutator(mutate: (cfg: TokitokiConfig) => void): void {
@@ -113,6 +134,14 @@ export function setMenubarCards(spec: string): void {
   saveUiMutator((cfg) => {
     cfg.ui ??= {};
     cfg.ui.menubarCards = parsed.map((p) => (p.hidden ? `!${p.id}` : p.id));
+  });
+}
+
+/** Toggle opt-in background quota polling. */
+export function setPollEnabled(enabled: boolean): void {
+  saveUiMutator((cfg) => {
+    cfg.poll ??= {};
+    cfg.poll.enabled = enabled;
   });
 }
 

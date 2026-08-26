@@ -144,6 +144,8 @@ struct UiPreviewConfig: Codable {
     let menubarHidden: [String]?
     // Card layout (Customize sheet): ordered ids + hidden flags.
     let cards: [MenubarCardConfig]?
+    // Opt-in background quota polling (menubar runs `tokitoki poll`).
+    let pollAuto: Bool?
 }
 
 // Combined snapshot from `tokitoki menubar-payload --json` (single CLI
@@ -188,6 +190,8 @@ final class Model: ObservableObject {
     @Published var menubarHidden: Set<String> = []
     /// Popover card layout from the payload: ordered ids + hidden flags.
     @Published var cardLayout: [(id: String, hidden: Bool)] = []
+    /// Opt-in background quota polling (`tokitoki poll` every ~15 min).
+    @Published var pollAuto = false
     @Published var spendPeriods: [SpendPeriod] = []
     /// nil = no budgets configured; "ok" | "warn" | "exceeded"
     @Published var worstState: String?
@@ -207,6 +211,17 @@ final class Model: ObservableObject {
 
     /// Accessor for AppDelegate context-menu actions.
     func currentInvocation() -> CLIInvocation { invocation }
+
+    /// Fire-and-forget `tokitoki poll` (opt-in via config.poll.enabled).
+    private func runBackgroundPoll() {
+        let cli = invocation
+        DispatchQueue.global(qos: .utility).async {
+            let task = Process()
+            task.executableURL = cli.executable
+            task.arguments = cli.prefixArgs + ["poll"]
+            try? task.run()
+        }
+    }
 
     func start(invocation: CLIInvocation) {
         self.invocation = invocation
@@ -238,7 +253,13 @@ final class Model: ObservableObject {
         }
     }
 
+    private var lastPollAt: Date?
+
     func refresh() {
+        if pollAuto, let last = lastPollAt, Date().timeIntervalSince(last) > 15 * 60 {
+            lastPollAt = Date()
+            runBackgroundPoll()
+        }
         Task { @MainActor in
             do {
                 let p = try await Self.runJSON(MenubarPayload.self, invocation, ["menubar-payload", "--json"])!
@@ -248,6 +269,7 @@ final class Model: ObservableObject {
                     self.knownProviders = ui.providers ?? []
                     self.menubarHidden = Set(ui.menubarHidden ?? [])
                     self.cardLayout = (ui.cards ?? []).map { ($0.id, $0.hidden) }
+                    self.pollAuto = ui.pollAuto ?? false
                 }
                 self.spendPeriods = p.spendPeriods ?? []
                 self.today = p.today
@@ -454,24 +476,81 @@ final class Model: ObservableObject {
             }
         }
 
+        // No real quota → show compact token USAGE (~764M) instead of a
+        // fabricated percentage; a relative-to-peers "%" reads as remaining
+        // quota but isn't. Empty groups render mark-only.
         let kindPriority = ["week", "month", "day"]
         return order.map { up in
             let g = groups[up]!
             if !g.pcts.isEmpty {
                 return (up, g.pcts.prefix(3).map { "\($0)%" })
             }
-            // Estimate: first priority kind that has both usage and a peer max.
             for kind in kindPriority {
                 let tokens = g.estByKind[kind] ?? 0
-                let scale = maxima[kind] ?? 0
-                if tokens > 0, scale > 0 {
-                    let usedShare = min(1.0, tokens / scale)
-                    let remaining = max(1, min(99, Int((100 - usedShare * 100).rounded())))
-                    return (up, ["~\(remaining)%"])
+                if tokens > 0 {
+                    return (up, ["~\(humanCount(tokens))"])
                 }
             }
-            // No usage recorded at all → everything left.
-            return (up, ["~100%"])
+            return (up, [])
+        }
+    }
+
+    /// Context-menu visibility items grouped by UPSTREAM provider.
+    struct VisibilityItem {
+        let display: String
+        let targets: [String]
+        let anyVisible: Bool
+    }
+
+    /// Optimistic visibility flip for the context menu (config confirms later).
+    func applyVisibility(_ targets: [String], visible: Bool) {
+        var set = menubarHidden
+        if visible {
+            for t in targets { set.remove(t) }
+        } else {
+            for t in targets { set.insert(t) }
+        }
+        menubarHidden = set
+    }
+
+    func providerVisibilityItems() -> [VisibilityItem]? {
+        guard !limits.isEmpty else { return nil }
+        var order: [String] = []
+        var byUp: [String: [AccountLimits]] = [:]
+        for l in limits {
+            let up = Self.upstreamProvider(l) ?? l.provider
+            if byUp[up] == nil { order.append(up) }
+            byUp[up, default: []].append(l)
+        }
+        var harnessTotals: [String: Int] = [:]
+        for l in limits { harnessTotals[l.provider, default: 0] += 1 }
+
+        func targetIsVisible(_ t: String) -> Bool {
+            if menubarHidden.contains(t) { return false }
+            if t.contains(":") {
+                let h = String(t.split(separator: ":")[0])
+                if menubarHidden.contains(h) { return false }
+            }
+            return true
+        }
+
+        return order.sorted().map { up in
+            let ls = byUp[up]!
+            var byHarness: [String: [AccountLimits]] = [:]
+            for l in ls { byHarness[l.provider, default: []].append(l) }
+            var targets: [String] = []
+            for (harness, accs) in byHarness {
+                if accs.count == harnessTotals[harness] {
+                    targets.append(harness) // whole harness belongs to this provider
+                } else {
+                    for a in accs { targets.append("\(harness):\(a.accountKey)") }
+                }
+            }
+            return VisibilityItem(
+                display: up,
+                targets: targets.sorted(),
+                anyVisible: targets.contains(where: targetIsVisible),
+            )
         }
     }
 
@@ -732,9 +811,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let img = content {
             button.image = img
             button.title = ""
+            button.toolTip = entries.map { "\($0.provider): \($0.lines.joined(separator: " · "))" }.joined(separator: "\n")
         } else {
             button.image = nil
             button.title = fallback
+            button.toolTip = nil
         }
         refreshHoverMonitor()
     }
@@ -882,6 +963,17 @@ struct MonoMark: View {
         let menu = NSMenu()
         menu.autoenablesItems = false
 
+        // Quick console links per upstream provider.
+        for item in (model?.providerVisibilityItems() ?? []).sorted(by: { $0.display < $1.display }) {
+            if let url = upstreamConsoleURL(item.display) {
+                let mi = NSMenuItem(title: "Open \(item.display) Console", action: #selector(openUpstreamConsole(_:)), keyEquivalent: "")
+                mi.representedObject = url.absoluteString
+                mi.target = self
+                menu.addItem(mi)
+            }
+        }
+        if !(model?.providerVisibilityItems() ?? []).isEmpty { menu.addItem(.separator()) }
+
         let dashboard = NSMenuItem(title: "Open Dashboard", action: #selector(openDashboard), keyEquivalent: "o")
         dashboard.target = self
         menu.addItem(dashboard)
@@ -890,16 +982,17 @@ struct MonoMark: View {
         menu.addItem(refresh)
         menu.addItem(.separator())
 
-        // Settings ▸ per-provider menubar visibility (backs onto `tokitoki ui`).
-        let providers = model?.knownProviders ?? []
-        if !providers.isEmpty {
+        // Settings ▸ menubar visibility per UPSTREAM provider (openai,
+        // claude, opencode…), not harness ids. Each item hides every
+        // harness/account pair belonging to that provider.
+        if let items = model?.providerVisibilityItems() {
             let settings = NSMenuItem(title: "Menubar Providers", action: nil, keyEquivalent: "")
             let sub = NSMenu()
             sub.autoenablesItems = false
-            for id in providers {
-                let toggle = NSMenuItem(title: id, action: #selector(toggleProviderVisibility(_:)), keyEquivalent: "")
-                toggle.representedObject = id
-                toggle.state = (model?.menubarHidden.contains(id) ?? false) ? .off : .on
+            for item in items {
+                let toggle = NSMenuItem(title: item.display, action: #selector(toggleProviderVisibility(_:)), keyEquivalent: "")
+                toggle.representedObject = item.targets
+                toggle.state = item.anyVisible ? .on : .off
                 toggle.target = self
                 sub.addItem(toggle)
             }
@@ -936,6 +1029,24 @@ struct MonoMark: View {
         return (try? task.run()).map { task.waitUntilExit(); return task.terminationStatus == 0 } ?? false
     }
 
+    private func upstreamConsoleURL(_ provider: String) -> URL? {
+        switch provider {
+        case "openai": return URL(string: "https://platform.openai.com/usage")
+        case "claude": return URL(string: "https://console.anthropic.com/settings/usage")
+        case "opencode": return URL(string: "https://opencode.ai/auth")
+        case "openrouter": return URL(string: "https://openrouter.ai/credits")
+        case "gemini": return URL(string: "https://aistudio.google.com")
+        case "grok": return URL(string: "https://console.x.ai")
+        case "cursor": return URL(string: "https://cursor.com/dashboard")
+        default: return nil
+        }
+    }
+
+    @objc private func openUpstreamConsole(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String, let url = URL(string: raw) else { return }
+        NSWorkspace.shared.open(url)
+    }
+
     @objc private func openDashboard() {
         if let url = URL(string: "http://localhost:7788") { NSWorkspace.shared.open(url) }
     }
@@ -945,15 +1056,20 @@ struct MonoMark: View {
     /// Toggle one provider's menubar visibility via `tokitoki ui`, then
     /// refresh so the change shows up immediately.
     @objc private func toggleProviderVisibility(_ sender: NSMenuItem) {
-        guard let id = sender.representedObject as? String,
+        guard let targets = sender.representedObject as? [String],
+              !targets.isEmpty,
               let cli = model?.currentInvocation() else { return }
         let hide = sender.state == .on // checked = visible → clicking hides
+        // Optimistic: flip local state so the menu re-renders instantly.
+        model?.applyVisibility(targets, visible: !hide)
         let task = Process()
         task.executableURL = cli.executable
-        task.arguments = cli.prefixArgs + ["ui", hide ? "--hide" : "--show", id]
-        try? task.run()
-        task.waitUntilExit()
-        model?.refresh()
+        task.arguments = cli.prefixArgs + [hide ? "--hide" : "--show"] + targets
+        DispatchQueue.global(qos: .utility).async {
+            try? task.run()
+            task.waitUntilExit()
+            DispatchQueue.main.async { self.model?.refresh() }
+        }
     }
 
     @objc private func toggleStartAtLogin() {
@@ -1599,9 +1715,6 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 8) {
             ForEach(Array(visible.enumerated()), id: \.element.id) { idx, l in
                 let accountId = "\(l.provider)@\(l.accountKey)"
-                if idx > 0, visible[idx - 1].provider == l.provider {
-                    Divider()
-                }
                 AccountLimitCard(limits: l, budgets: matchingBudgets(for: l), tokenScale: tokenMaxima(model.limits))
                     .padding(8)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -1787,7 +1900,14 @@ struct ContentView: View {
 
     @ViewBuilder private func card<Content: View>(title: String, icon: String, @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 7) {
-            Label(title.uppercased(), systemImage: icon).font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+            HStack(spacing: 4) {
+                Image(systemName: "line.3.horizontal")
+                    .font(.system(size: 8, weight: .semibold))
+                    .foregroundStyle(.quaternary)
+                    .help("drag to reorder")
+                Label(title.uppercased(), systemImage: icon).font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+                Spacer()
+            }
             content()
         }.padding(10).background(.quaternary.opacity(0.28), in: RoundedRectangle(cornerRadius: 12))
     }
@@ -2409,6 +2529,10 @@ struct AccountLimitCard: View {
 
     private var headerRow: some View {
         HStack(spacing: 5) {
+            Image(systemName: "line.3.horizontal")
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(.quaternary)
+                .help("drag to reorder")
             ProviderLogo(provider: limits.provider)
             Text(accountLabel)
                 .font(.caption.weight(.medium)).lineLimit(1)
