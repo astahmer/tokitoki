@@ -1682,13 +1682,36 @@ final class Model: ObservableObject {
         proc.standardError = errPipe
         do {
             try proc.run()
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            // Drain both pipes concurrently. Reading stdout to EOF before
+            // stderr can deadlock a verbose Bun/SQLite failure when stderr's
+            // pipe fills, which used to present as an intermittent popover
+            // stall and a clipped error fragment.
+            let outputGroup = DispatchGroup()
+            let dataLock = NSLock()
+            var data = Data()
+            var errorData = Data()
+            outputGroup.enter()
+            DispatchQueue.global(qos: .utility).async {
+                let value = pipe.fileHandleForReading.readDataToEndOfFile()
+                dataLock.lock()
+                data = value
+                dataLock.unlock()
+                outputGroup.leave()
+            }
+            outputGroup.enter()
+            DispatchQueue.global(qos: .utility).async {
+                let value = errPipe.fileHandleForReading.readDataToEndOfFile()
+                dataLock.lock()
+                errorData = value
+                dataLock.unlock()
+                outputGroup.leave()
+            }
             proc.waitUntilExit()
+            outputGroup.wait()
             if proc.terminationStatus == 0 {
                 cont.resume(returning: String(data: data, encoding: .utf8) ?? "")
             } else {
-                let err = errPipe.fileHandleForReading.readDataToEndOfFile()
-                let raw = String(data: err, encoding: .utf8) ?? "exit \(proc.terminationStatus)"
+                let raw = String(data: errorData, encoding: .utf8) ?? "exit \(proc.terminationStatus)"
                 let msg = Self.conciseCLIError(raw)
                 cont.resume(throwing: NSError(domain: "tokitoki", code: 1, userInfo: [NSLocalizedDescriptionKey: msg]))
             }
