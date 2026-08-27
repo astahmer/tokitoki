@@ -145,7 +145,7 @@ describe("pidfile liveness", () => {
     process.env.TOKITOKI_DATA_DIR = dir;
     try {
       writeFileSync(menubarPidFile(), "999999999\n");
-      const status = await menubarStatus({ identity: () => "tokitoki-menubar" });
+      const status = await menubarStatus({ platform: "linux", identity: () => "tokitoki-menubar" });
       expect(status).toEqual({ status: "stopped" });
       // stale pidfile was removed
       let existed = false;
@@ -215,7 +215,7 @@ describe("start/stop flow with stubbed binary", () => {
         identity: (pid) => (pid === sleepPid ? "tokitoki-menubar" : null),
       });
       expect(stopped.status === "stopped" && stopped.via === "signal").toBe(true);
-      expect(await menubarStatus({ pidFile, identity: () => "tokitoki-menubar" })).toEqual({
+      expect(await menubarStatus({ platform: "linux", pidFile, identity: () => "tokitoki-menubar" })).toEqual({
         status: "stopped",
       });
     } finally {

@@ -351,13 +351,34 @@ export async function stopMenubar(opts: StopOpts = {}): Promise<StopResult> {
   return { status: "stopped", via: "signal" };
 }
 
-export interface StatusOpts extends PidIdentityOpts {
+export interface StatusOpts extends PidIdentityOpts, Omit<LaunchCtlOpts, "runner"> {
   pidFile?: string;
+  platform?: NodeJS.Platform;
 }
 
 export type StatusResult = { status: "running"; pid: number } | { status: "stopped" };
 
 export async function menubarStatus(opts: StatusOpts = {}): Promise<StatusResult> {
   const pid = await readLivePid(opts);
-  return pid !== null ? { status: "running", pid } : { status: "stopped" };
+  if (pid !== null) return { status: "running", pid };
+
+  // launchd can restart a KeepAlive job without going through this CLI, so
+  // the best-effort pidfile may lag behind the real process. Recover status
+  // from the configured LaunchAgent and refresh the pidfile for later calls.
+  const platform = opts.platform ?? process.platform;
+  if (platform === "darwin") {
+    const plist = opts.plistExists ?? fs.existsSync(launchAgentPlistPath(opts.home));
+    if (plist) {
+      const launchdPid = await findAppPid();
+      if (launchdPid !== null) {
+        try {
+          fs.writeFileSync(opts.pidFile ?? menubarPidFile(), String(launchdPid));
+        } catch {
+          // Status remains useful even when pidfile repair is unavailable.
+        }
+        return { status: "running", pid: launchdPid };
+      }
+    }
+  }
+  return { status: "stopped" };
 }
