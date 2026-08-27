@@ -2136,6 +2136,29 @@ function captureStdoutJson(fn: () => void): unknown {
   return JSON.parse(chunks.join("\n"));
 }
 
+/** Keep composed menubar payloads valid when a child command adds diagnostics. */
+function parseMenubarCapture(key: string, chunks: string[]): unknown {
+  const candidates = [...chunks.slice().reverse(), chunks.join("\n")];
+  for (const candidate of candidates) {
+    const text = candidate.trim();
+    if (text.length === 0) continue;
+    try {
+      return JSON.parse(text);
+    } catch {
+      // A diagnostic may share a line with the JSON. Try its JSON suffix.
+      const objectStart = text.search(/[\[{]/);
+      if (objectStart > 0) {
+        try {
+          return JSON.parse(text.slice(objectStart));
+        } catch {
+          // Try the next captured emission.
+        }
+      }
+    }
+  }
+  throw new Error(`menubar payload capture '${key}' did not produce valid JSON`);
+}
+
 function inv(command: string, flags: Record<string, FlagValue | string[]> = {}): ParsedInvocation {
   return { command, flags, rest: [] };
 }
@@ -2169,12 +2192,14 @@ function runMenubarPayload(parsed: ParsedInvocation): void {
   const parts: Record<string, unknown> = {};
   const capture = (key: string, fn: () => void): void => {
     const orig = console.log;
-    console.log = (...a: unknown[]) => { parts[key] = JSON.parse(a.map(String).join(" ")); };
+    const chunks: string[] = [];
+    console.log = (...a: unknown[]) => { chunks.push(a.map(String).join(" ")); };
     try {
       fn();
     } finally {
       console.log = orig;
     }
+    parts[key] = parseMenubarCapture(key, chunks);
   };
   // "today" = local CALENDAR day, not a rolling 24h window — a rolling
   // window makes the hero number drift DOWN as yesterday's hours fall out.
