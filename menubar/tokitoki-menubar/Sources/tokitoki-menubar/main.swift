@@ -350,6 +350,9 @@ final class Model: ObservableObject {
     @Published var pollStatus: String?
     @Published var pollLastResult: String?
     @Published var nextPollAt: Date?
+    @Published var isLoading = true
+    @Published var loadingCompleted = 0
+    @Published var loadingTotal = 1
     @Published var dashboardStatus: String?
     @Published var lastUpdatedAt: Date?
     /// Account-card order override applied immediately after customize saves.
@@ -411,6 +414,7 @@ final class Model: ObservableObject {
     private var quotaObservations: [String: QuotaObservation] = [:]
     private var payloadInFlight = false
     private var payloadRefreshPending = false
+    private var sessionRequestGeneration = 0
 
     private struct QuotaObservation: Codable {
         let remaining: Double
@@ -462,18 +466,25 @@ final class Model: ObservableObject {
     private func fetchPopoverSessions(page: Int) {
         let cli = invocation
         let trimmed = sessionQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        sessionRequestGeneration += 1
+        let requestGeneration = sessionRequestGeneration
         sessionStatus = "Searching sessions…"
         Task { @MainActor [weak self] in
             guard let self else { return }
             do {
-                var args = ["sessions", "--last", "month", "--top", "50", "--page", String(page), "--json"]
+                // The payload refresh already ingests and indexes local stores.
+                // Session navigation must be a read-only cache query; syncing
+                // here made a 50-row search compete with the full scanner.
+                var args = ["sessions", "--cached", "--last", "month", "--top", "50", "--page", String(page), "--json"]
                 if !trimmed.isEmpty { args += ["--search", trimmed] }
                 let payload = try await Self.runJSON(PopoverSessionsPayload.self, cli, args)
+                guard requestGeneration == self.sessionRequestGeneration else { return }
                 self.sessionRows = payload?.rows ?? []
                 self.sessionPage = payload?.page ?? page
                 self.sessionHasMore = payload?.hasMore ?? false
                 self.sessionStatus = self.sessionRows.isEmpty ? "No sessions found" : "\(self.sessionRows.count) session\(self.sessionRows.count == 1 ? "" : "s") · page \(self.sessionPage)"
             } catch {
+                guard requestGeneration == self.sessionRequestGeneration else { return }
                 self.sessionRows = []
                 self.sessionStatus = "Session search failed: \(error.localizedDescription)"
             }
@@ -482,6 +493,7 @@ final class Model: ObservableObject {
 
     func loadPopoverSession(_ row: PopoverSessionRow) {
         let cli = invocation
+        sessionRequestGeneration += 1
         selectedSessionRow = row
         selectedSession = nil
         sessionEventsLoading = true
@@ -490,7 +502,7 @@ final class Model: ObservableObject {
             guard let self else { return }
             do {
                 let detail = try await Self.runJSON(PopoverSessionDetail.self, cli, [
-                    "sessions", "--provider", row.provider, "--session", row.sessionId,
+                    "sessions", "--cached", "--provider", row.provider, "--session", row.sessionId,
                     "--events-limit", "40", "--events-offset", "0", "--json",
                 ])
                 self.selectedSession = detail
@@ -504,6 +516,7 @@ final class Model: ObservableObject {
     }
 
     func clearPopoverSession() {
+        sessionRequestGeneration += 1
         selectedSession = nil
         selectedSessionRow = nil
         sessionEventsLoading = false
@@ -522,7 +535,7 @@ final class Model: ObservableObject {
             guard let self else { return }
             do {
                 let next = try await Self.runJSON(PopoverSessionDetail.self, cli, [
-                    "sessions", "--provider", row.provider, "--session", row.sessionId,
+                    "sessions", "--cached", "--provider", row.provider, "--session", row.sessionId,
                     "--events-limit", "40", "--events-offset", String(offset), "--json",
                 ])
                 if let next {
@@ -954,6 +967,9 @@ final class Model: ObservableObject {
     func refresh() {
         refreshGeneration += 1
         let generation = refreshGeneration
+        isLoading = true
+        loadingCompleted = 0
+        loadingTotal = 1
         if payloadInFlight {
             payloadRefreshPending = true
             return
@@ -971,6 +987,7 @@ final class Model: ObservableObject {
         Task { @MainActor in
             defer {
                 self.payloadInFlight = false
+                self.isLoading = false
                 if self.payloadRefreshPending {
                     self.payloadRefreshPending = false
                     self.refresh()
@@ -1049,6 +1066,7 @@ final class Model: ObservableObject {
                 setTitleIfChanged(newTitle)
                 self.errorText = nil
                 self.lastUpdatedAt = Date()
+                self.loadingCompleted = 1
                 applyAnomalies(p.anomalies)
                 AppDelegate.shared?.refreshProofIfShown()
                 // Test-mode diagnostics don't require the popover to be open.
@@ -3659,26 +3677,30 @@ struct ContentView: View {
                         .background(.red.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
                 }
                 freshnessRow
-                attentionSummary
-                searchBar
-                webDashboardLinks
-                LazyVStack(alignment: .leading, spacing: 10) {
-                    ForEach(orderedVisibleCards(), id: \.self) { id in
-                    Group {
-                        if cardSurvives(id) { cardBody(id) }
+                if model.isLoading && model.today == nil {
+                    loadingState
+                } else {
+                    attentionSummary
+                    searchBar
+                    webDashboardLinks
+                    LazyVStack(alignment: .leading, spacing: 10) {
+                        ForEach(orderedVisibleCards(), id: \.self) { id in
+                            Group {
+                                if cardSurvives(id) { cardBody(id) }
+                            }
+                            .onDrag {
+                                draggingCard = id
+                                return NSItemProvider(object: id as NSString)
+                            }
+                            .onDrop(of: [UTType.plainText], delegate: PopoverCardDrop(
+                                target: id,
+                                getLayout: { effectiveLayout() },
+                                setLayout: { localLayout = $0 },
+                                dragging: $draggingCard,
+                                onCommit: { persistCardLayout($0) }
+                            ))
+                        }
                     }
-                    .onDrag {
-                        draggingCard = id
-                        return NSItemProvider(object: id as NSString)
-                    }
-                    .onDrop(of: [UTType.plainText], delegate: PopoverCardDrop(
-                        target: id,
-                        getLayout: { effectiveLayout() },
-                        setLayout: { localLayout = $0 },
-                        dragging: $draggingCard,
-                        onCommit: { persistCardLayout($0) }
-                    ))
-                }
                 }
             }
             .padding(12)
@@ -3765,7 +3787,9 @@ struct ContentView: View {
         ScrollView(.vertical) {
             VStack(alignment: .leading, spacing: 10) {
                 freshnessRow
-                if model.limits.isEmpty {
+                if model.isLoading && model.today == nil {
+                    loadingState
+                } else if model.limits.isEmpty {
                     emptyState("No quota accounts detected", detail: "Enable polling in Settings or scan a provider first.", icon: "chart.bar.xaxis")
                 } else {
                     limitsSection
@@ -3778,12 +3802,16 @@ struct ContentView: View {
         ScrollView(.vertical) {
             VStack(alignment: .leading, spacing: 10) {
                 freshnessRow
-                tokenPulseCard
-                tokenProviderCard
-                tokenUpstreamProviderCard
-                tokenModelCard
-                tokenMixCard
-                historyCard
+                if model.isLoading && model.today == nil {
+                    loadingState
+                } else {
+                    tokenPulseCard
+                    tokenProviderCard
+                    tokenUpstreamProviderCard
+                    tokenModelCard
+                    tokenMixCard
+                    historyCard
+                }
             }
             .padding(12)
         }
@@ -3987,15 +4015,19 @@ struct ContentView: View {
         ScrollView(.vertical) {
             VStack(alignment: .leading, spacing: 10) {
                 freshnessRow
-                heroCard
-                if let grid = model.activityGrid { activityGridCard(grid) }
-                if !(model.today?.rows ?? []).isEmpty { pieCard() }
-                if !model.repos.isEmpty { reposCard }
-                if let repoHistory = model.repoHistory, !repoHistory.series.isEmpty {
-                    card(title: "repo activity · 30 days", icon: "chart.bar.xaxis") {
-                        UsageHistoryChart(history: repoHistory)
-                            .frame(height: 128)
-                            .accessibilityLabel("30 day repository activity history")
+                if model.isLoading && model.today == nil {
+                    loadingState
+                } else {
+                    heroCard
+                    if let grid = model.activityGrid { activityGridCard(grid) }
+                    if !(model.today?.rows ?? []).isEmpty { pieCard() }
+                    if !model.repos.isEmpty { reposCard }
+                    if let repoHistory = model.repoHistory, !repoHistory.series.isEmpty {
+                        card(title: "repo activity · 30 days", icon: "chart.bar.xaxis") {
+                            UsageHistoryChart(history: repoHistory)
+                                .frame(height: 128)
+                                .accessibilityLabel("30 day repository activity history")
+                        }
                     }
                 }
                 if !model.blocks.isEmpty {
@@ -4104,7 +4136,12 @@ struct ContentView: View {
             }
         }
         .onAppear {
-            if model.sessionRows.isEmpty { model.searchPopoverSessions("") }
+            if model.sessionRows.isEmpty && !model.isLoading { model.searchPopoverSessions("") }
+        }
+        .onReceive(model.$isLoading.removeDuplicates()) { loading in
+            if !loading && model.sessionRows.isEmpty && model.selectedSessionRow == nil {
+                model.searchPopoverSessions(model.sessionQuery)
+            }
         }
     }
 
@@ -4174,7 +4211,7 @@ struct ContentView: View {
                 }
                 if let conversation = model.selectedSession?.conversation {
                     card(title: conversation.title.isEmpty ? "conversation" : conversation.title, icon: "doc.text") {
-                        ConversationBodyView(rawBody: conversation.body)
+                        ConversationBodyView(rawBody: conversation.body, title: conversation.title)
                     }
                 }
                 if let detail = model.selectedSession, let events = detail.events, !events.isEmpty {
@@ -4213,6 +4250,7 @@ struct ContentView: View {
 /// wall of `[tool:read]` lines.
 private struct ConversationBodyView: View {
     let rawBody: String
+    let title: String
 
     private func toolName(for rawLine: Substring) -> String? {
         let line = rawLine.trimmingCharacters(in: .whitespaces)
@@ -4236,10 +4274,20 @@ private struct ConversationBodyView: View {
     }
 
     private var readableBody: String {
-        rawBody.split(separator: "\n", omittingEmptySubsequences: false)
+        var lines = rawBody.split(separator: "\n", omittingEmptySubsequences: false)
             .filter { toolName(for: $0) == nil }
-            .joined(separator: "\n")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .map(String.init)
+        let normalizedTitle = title.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression).trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if !normalizedTitle.isEmpty,
+           let first = lines.firstIndex(where: { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }),
+           lines[first].replacingOccurrences(of: "^[#>*-]+\\s*", with: "", options: .regularExpression).replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression).trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == normalizedTitle {
+            lines.remove(at: first)
+        }
+        return lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var readableBlocks: [String] {
+        readableBody.components(separatedBy: "\n\n").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
     }
 
     var bodyView: some View {
@@ -4260,18 +4308,33 @@ private struct ConversationBodyView: View {
             if readableBody.isEmpty {
                 Text("No conversation body indexed.")
                     .font(.caption2).foregroundStyle(.secondary)
-            } else if let markdown = try? AttributedString(markdown: readableBody) {
-                Text(markdown)
-                    .font(.system(size: 12, weight: .regular))
-                    .lineSpacing(2)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
             } else {
-                Text(readableBody)
-                    .font(.system(size: 12, weight: .regular))
-                    .lineSpacing(2)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                ForEach(Array(readableBlocks.enumerated()), id: \.offset) { _, block in
+                    if block.hasPrefix("```") || block.contains("\n```") {
+                        Text(block.replacingOccurrences(of: "^```[\\w-]*\\n?", with: "", options: .regularExpression).replacingOccurrences(of: "\\n?```$", with: "", options: .regularExpression))
+                            .font(.system(size: 10, design: .monospaced))
+                            .textSelection(.enabled)
+                            .padding(8)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(.black.opacity(0.18), in: RoundedRectangle(cornerRadius: 7))
+                    } else if block.hasPrefix("#"), let heading = block.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: true).first {
+                        Text(String(heading.drop(while: { $0 == "#" || $0 == " " })))
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.primary)
+                    } else if let markdown = try? AttributedString(markdown: block) {
+                        Text(markdown)
+                            .font(.system(size: 12, weight: .regular))
+                            .lineSpacing(2)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    } else {
+                        Text(block)
+                            .font(.system(size: 12, weight: .regular))
+                            .lineSpacing(2)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
             }
         }
     }
@@ -4569,17 +4632,40 @@ private struct ConversationBodyView: View {
 
     private var freshnessRow: some View {
         HStack(spacing: 5) {
-            Circle().fill(model.errorText == nil && !dataIsStale ? .green : .orange).frame(width: 6, height: 6)
-            Text(model.lastUpdatedAt.map {
-                dataIsStale ? "Stale · updated \(relativeDate($0))" : "Updated \(relativeDate($0))"
-            } ?? "Loading latest data…")
+            Circle().fill(model.isLoading ? .orange : (model.errorText == nil && !dataIsStale ? .green : .orange)).frame(width: 6, height: 6)
+            Text(model.isLoading
+                ? "Loading latest data… \(model.loadingCompleted)/\(model.loadingTotal)"
+                : (model.lastUpdatedAt.map {
+                    dataIsStale ? "Stale · updated \(relativeDate($0))" : "Updated \(relativeDate($0))"
+                } ?? "Loading latest data…"))
                 .font(.caption2).foregroundStyle(.secondary)
             Spacer()
             if model.pollInFlight { ProgressView().controlSize(.small) }
         }
-        .accessibilityLabel(model.lastUpdatedAt.map {
-            dataIsStale ? "Stale data, updated \(relativeDate($0))" : "Updated \(relativeDate($0))"
-        } ?? "Loading latest data")
+        .accessibilityLabel(model.isLoading
+            ? "Loading latest data, step \(model.loadingCompleted) of \(model.loadingTotal)"
+            : (model.lastUpdatedAt.map {
+                dataIsStale ? "Stale data, updated \(relativeDate($0))" : "Updated \(relativeDate($0))"
+            } ?? "Loading latest data"))
+    }
+
+    private var loadingState: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text("Preparing your local usage snapshot")
+                    .font(.caption.weight(.semibold))
+            }
+            Text("Reading harness stores, quotas, and the conversation index…")
+                .font(.caption2).foregroundStyle(.secondary)
+            ProgressView(value: Double(model.loadingCompleted), total: Double(max(1, model.loadingTotal)))
+                .tint(.accentColor)
+            Text("Step \(model.loadingCompleted) of \(model.loadingTotal) · your previous snapshot stays visible during refresh")
+                .font(.caption2).foregroundStyle(.tertiary)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 10))
     }
 
     private func relativeDate(_ date: Date) -> String {

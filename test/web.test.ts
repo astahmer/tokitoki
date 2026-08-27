@@ -131,6 +131,15 @@ describe("web api + server", () => {
     expect(Array.isArray(body.records)).toBe(true);
   });
 
+  test("session detail keeps a stable numeric contract for deep links", async () => {
+    const res = await fetch(`http://localhost:${server.port}/api/sessions/detail?provider=pi&id=s-e1&limit=40`);
+    const body = (await res.json()) as { eventsTotal: unknown; events: unknown[]; eventsHasMore: unknown };
+    expect(res.status).toBe(200);
+    expect(typeof body.eventsTotal).toBe("number");
+    expect(Array.isArray(body.events)).toBe(true);
+    expect(typeof body.eventsHasMore).toBe("boolean");
+  });
+
   function days_len(b: { days: string[] }): number {
     return b.days.length;
   }

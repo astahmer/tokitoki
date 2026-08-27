@@ -23,6 +23,10 @@ describe("cli help completeness", () => {
     expect(commandHelpText("budgets")).toContain("init");
   });
 
+  it("documents the cached sessions read path", () => {
+    expect(commandHelpText("sessions")).toContain("--cached");
+  });
+
   it("every command's help documents all of its known flags", () => {
     for (const [cmd, entry] of Object.entries(COMMAND_HELP) as [string, CommandHelp][]) {
       const text = `${entry.usage}\n${entry.flags ?? ""}`;
