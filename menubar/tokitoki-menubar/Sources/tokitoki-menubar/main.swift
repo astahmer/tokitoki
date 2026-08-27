@@ -748,6 +748,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let popover = NSPopover()
     private var monitors: [Any] = []
     private var testContextObserver: NSObjectProtocol?
+    private var dashboardProcess: Process?
     var model: Model?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -798,11 +799,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    func applicationWillTerminate(_ notification: Notification) {
+        // Only terminate a web server this app launched itself. If a user
+        // started `tokitoki web` separately, dashboardProcess is nil and the
+        // existing server remains available for other clients.
+        if dashboardProcess?.isRunning == true {
+            dashboardProcess?.terminate()
+        }
+    }
+
     func showTestContextMenu() {
         guard let button = statusItem?.button else { return }
         // Leave a deterministic, non-user-facing proof for the e2e harness:
         // AX cannot enumerate an NSMenu while it is owned by WindowServer.
-        let labels = ["Open Dashboard", "Refresh Now", "Start at Login", "Quit tokitoki"]
+        let labels = ["Open Dashboard", "Open Reports", "Open Sources", "Refresh Now", "Start at Login", "Quit tokitoki"]
         if let data = try? JSONSerialization.data(withJSONObject: labels) {
             try? data.write(to: URL(fileURLWithPath: "/tmp/tokitoki-menubar.context-menu.json"))
         }
@@ -1015,6 +1025,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             "sections": ["limits", "pie", "providers", "budgets"],
 
             "accounts": model.limits.map { "\($0.provider)@\($0.accountKey)" },
+            "todayRows": model.today?.rows.count ?? 0,
             "hasPie": hasPie,
             "limitCards": model.limits.count,
             // Diagnostics: what each card actually renders for its primary window.
@@ -1050,6 +1061,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let dashboard = NSMenuItem(title: "Open Dashboard", action: #selector(openDashboard), keyEquivalent: "o")
         dashboard.target = self
         menu.addItem(dashboard)
+        let reports = NSMenuItem(title: "Open Reports", action: #selector(openReports), keyEquivalent: "")
+        reports.target = self
+        menu.addItem(reports)
+        let sources = NSMenuItem(title: "Open Sources", action: #selector(openSources), keyEquivalent: "")
+        sources.target = self
+        menu.addItem(sources)
         let refresh = NSMenuItem(title: "Refresh Now", action: #selector(refreshNow), keyEquivalent: "r")
         refresh.target = self
         menu.addItem(refresh)
@@ -1078,12 +1095,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         polling.submenu = pollingSub
         actionSub.addItem(polling)
         actionSub.addItem(.separator())
-        let sources = NSMenuItem(title: "Open Sources", action: #selector(openSources), keyEquivalent: "")
-        sources.target = self
-        actionSub.addItem(sources)
-        let report = NSMenuItem(title: "Open Reports", action: #selector(openReports), keyEquivalent: "")
-        report.target = self
-        actionSub.addItem(report)
         let mcp = NSMenuItem(title: "Copy MCP connection config", action: #selector(copyMCPConfig), keyEquivalent: "")
         mcp.target = self
         actionSub.addItem(mcp)
@@ -1157,7 +1168,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func openDashboard() {
-        if let url = URL(string: "http://localhost:7788") { NSWorkspace.shared.open(url) }
+        openLocalDashboard(path: "/")
     }
 
     @objc private func refreshNow() { model?.refresh() }
@@ -1181,11 +1192,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func disablePolling() { runMaintenance(["poll", "--disable"], label: "disable polling", config: true); model?.pollAuto = false }
 
     @objc private func openSources() {
-        NSWorkspace.shared.open(URL(string: "http://localhost:7788/?view=sources")!)
+        openLocalDashboard(path: "/?view=sources")
     }
 
     @objc private func openReports() {
-        NSWorkspace.shared.open(URL(string: "http://localhost:7788/?view=dashboard&range=month")!)
+        openLocalDashboard(path: "/?view=dashboard&range=month")
+    }
+
+    /// Open a local dashboard route, starting the web server when the user
+    /// does not already have one running. A single launcher keeps Dashboard,
+    /// Reports, and Sources consistent from both the popover and context menu.
+    func openLocalDashboard(path: String) {
+        if dashboardProcess?.isRunning != true {
+            guard let cli = model?.currentInvocation() else {
+                NSSound.beep()
+                return
+            }
+            let proc = Process()
+            proc.executableURL = cli.executable
+            proc.arguments = cli.prefixArgs + ["web"]
+            do {
+                try proc.run()
+                dashboardProcess = proc
+            } catch {
+                NSSound.beep()
+                return
+            }
+        }
+
+        guard let url = Self.localDashboardURL(path: path) else { return }
+        // Bun.serve binds asynchronously; give a cold launch a moment before
+        // handing the route to the browser.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    static func localDashboardURL(path: String) -> URL? {
+        let suffix = path.hasPrefix("/") ? path : "/\(path)"
+        return URL(string: "http://localhost:7788\(suffix)")
     }
 
     @objc private func copyMCPConfig() {
@@ -1766,8 +1811,6 @@ struct CustomizeSheet: View {
 
 struct ContentView: View {
     @ObservedObject var model: Model
-    let invocation = resolveInvocation()
-    @State var dashboardProcess: Process?
     /// Card filter — matches harness/account names, repo paths, tools.
     @State private var searchText = ""
     /// Customize sheet (card toggles + drag reorder).
@@ -1838,6 +1881,7 @@ struct ContentView: View {
                             .background(.red.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
                     }
                     searchBar
+                    webDashboardLinks
                     ForEach(orderedVisibleCards(), id: \.self) { id in
                         Group {
                             if cardSurvives(id) {
@@ -1961,6 +2005,30 @@ struct ContentView: View {
         .padding(.horizontal, 8).padding(.vertical, 5)
         .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 8))
         .accessibilityIdentifier("popover-search")
+    }
+
+    /// The two detailed browser surfaces are visible from the primary
+    /// popover, instead of being discoverable only through right-click.
+    private var webDashboardLinks: some View {
+        HStack(spacing: 7) {
+            Label("web dashboard", systemImage: "safari")
+                .font(.caption2.weight(.medium))
+                .foregroundStyle(.secondary)
+            Spacer(minLength: 4)
+            Button("Reports") { openWebDashboard("/?view=dashboard&range=month") }
+                .controlSize(.mini)
+                .help("Open monthly reports in your browser; starts the local dashboard if needed")
+            Button("Sources") { openWebDashboard("/?view=sources") }
+                .controlSize(.mini)
+                .help("Inspect tracked files and machines in your browser; starts the local dashboard if needed")
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(.quaternary.opacity(0.28), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func openWebDashboard(_ path: String) {
+        AppDelegate.shared?.openLocalDashboard(path: path)
     }
 
     /// Capture the popover content and write it as a PNG on the Desktop,
@@ -2467,24 +2535,7 @@ struct ContentView: View {
     }
 
     private func openDashboard() {
-        if dashboardProcess?.isRunning != true {
-            let proc = Process()
-            proc.executableURL = invocation.executable
-            proc.arguments = invocation.prefixArgs + ["web"]
-            do {
-                try proc.run()
-                dashboardProcess = proc
-            } catch {
-                NSSound.beep()
-                return
-            }
-        }
-        // The CLI binds asynchronously. Waiting briefly avoids opening the
-        // browser into a connection-refused/503 page on a cold launch.
-        let url = URL(string: "http://localhost:7788")!
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
-            NSWorkspace.shared.open(url)
-        }
+        AppDelegate.shared?.openLocalDashboard(path: "/")
     }
 }
 
@@ -3303,7 +3354,3 @@ struct SpendLegend: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
-
-
-
-

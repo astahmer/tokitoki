@@ -6,6 +6,7 @@ import path from "node:path";
 import { EventCache } from "../src/cache.ts";
 import {
   opencodeCredentials,
+  opencodexAccountIdentities,
   pollQuotas,
   redactCredential,
 } from "../src/poll.ts";
@@ -105,6 +106,23 @@ describe("opencodeCredentials", () => {
     const creds = opencodeCredentials(file);
     expect(creds["opencode-go"]).toBe("sk-i…Xy12");
     expect(Object.keys(creds)).not.toContain("broken");
+  });
+});
+
+describe("opencodexAccountIdentities", () => {
+  it("reads email and stable account id from pooled credentials", () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "tk-poll-pool-identity-"));
+    const file = path.join(dir, "accounts.json");
+    const payload = Buffer.from(JSON.stringify({
+      "https://api.openai.com/profile": { email: "work@example.com" },
+      "https://api.openai.com/auth": { chatgpt_account_id: "work-account" },
+    })).toString("base64url");
+    writeFileSync(file, JSON.stringify({
+      work: { credential: { accessToken: `header.${payload}.signature`, chatgptAccountId: "work-account" } },
+    }));
+    expect(opencodexAccountIdentities(file)).toEqual({
+      work: { email: "work@example.com", accountId: "work-account" },
+    });
   });
 });
 

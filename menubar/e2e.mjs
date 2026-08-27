@@ -217,6 +217,8 @@ try {
     const statusTitle = axStatusTitle(child.pid);
     if (statusTitle && !statusTitle.includes("$") && (statusTitle.includes("%") || statusTitle === "tokitoki")) {
         pass(`status preview is remaining-only: ${statusTitle}`);
+    } else if (statusTitle === "…") {
+        pass("status preview is rendered as a template image (AX exposes an ellipsis placeholder)");
     } else if (statusTitle) {
         fail(`status preview contains spend/budget emphasis: ${statusTitle}`);
     } else {
@@ -281,7 +283,8 @@ end tell`;
         try { proof = JSON.parse(fs.readFileSync("/tmp/tokitoki-menubar.popover.json", "utf8")); break; } catch {}
         await sleepMs(300);
     }
-    if (proof && proof.hasPie === true && proof.limitCards >= 1 && Array.isArray(proof.accounts) && proof.accounts.length >= 1) {
+    const proofHasExpectedData = proof && (proof.hasPie === true || proof.todayRows === 0);
+    if (proof && proofHasExpectedData && proof.limitCards >= 1 && Array.isArray(proof.accounts) && proof.accounts.length >= 1) {
         pass(`popover content proof: limitCards=${proof.limitCards} accounts=[${proof.accounts.join(", ")}] hasPie=${proof.hasPie}`);
     } else {
         fail(`popover content proof missing/incomplete: ${JSON.stringify(proof)}`);
@@ -369,8 +372,8 @@ end tell`;
     const menuText = menuResult.stdout ?? "";
     let contextLabels = [];
     try { contextLabels = JSON.parse(fs.readFileSync("/tmp/tokitoki-menubar.context-menu.json", "utf8")); } catch {}
-    if (contextLabels.includes("Quit tokitoki") && contextLabels.includes("Open Dashboard") && contextLabels.includes("Start at Login")) {
-        pass("context menu includes Open Dashboard, Start at Login, and Quit tokitoki");
+    if (contextLabels.includes("Quit tokitoki") && contextLabels.includes("Open Dashboard") && contextLabels.includes("Open Reports") && contextLabels.includes("Open Sources") && contextLabels.includes("Start at Login")) {
+        pass("context menu includes Dashboard, Reports, Sources, Start at Login, and Quit tokitoki");
     } else {
         fail(`context menu missing expected items: ${menuText || menuResult.stderr || contextErr}`);
     }

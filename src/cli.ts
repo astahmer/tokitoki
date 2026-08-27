@@ -11,7 +11,7 @@ import { DIMENSIONS, EventCache, type AggRow, type Dimension, type SeriesBucket,
 import { renderTable, renderMiniProjects, renderMarkdownTable, resolveExtraFiles, resolveSortColumn, sinceIsoFor, sinceIsoForDays, previousWindow, monthStartIso, sortRows, formatDelta, deltaInfo, totalRow, totalTokens, planGaugeFn, renderBurnLine, burnProjection, type TableContext } from "./report.ts";
 import { accountEmailMap } from "./accounts.ts";
 import { computeLimits, embeddedKind, groupBySharedCredential, mergeAliasLimits, type AccountLimits } from "./limits.ts";
-import { opencodexAccountEmails, opencodeCredentials, opencodexQuotas, piCredentials, pollQuotas, redactCredential } from "./poll.ts";
+import { opencodexAccountIdentities, opencodeCredentials, opencodexQuotas, piCredentials, pollQuotas, redactCredential } from "./poll.ts";
 import {
   assertValidSurface,
   isCardVisibleOn,
@@ -2114,18 +2114,17 @@ function runMenubarPayload(parsed: ParsedInvocation): void {
       // FULL limits go over the wire — the app filters popover cards via
       // hidden.menubar and strip marks via previewHidden independently.
       const limits = computeLimits(cache, config);
-      const poolEmails = opencodexAccountEmails();
+      const poolIdentities = opencodexAccountIdentities();
       const poolQuotas = opencodexQuotas();
-      // Attribute pooled Codex cards to the matching account identity rather
-      // than the currently active ~/.codex login (which may be personal).
+      // Attribute pooled Codex cards by the stable provider account ID. Reset
+      // timestamps are quota data, not identity, and can drift independently.
       const limitsWithPoolEmails = limits.map((l) => {
         if (l.provider !== "codex") return l;
-        const weeklyReset = l.windows.find((w) => w.kind === "week")?.resetsAt;
-        const weeklyEpoch = weeklyReset !== undefined ? Date.parse(weeklyReset) / 1000 : NaN;
-        const poolId = Object.entries(poolQuotas).find(([, q]) =>
-          typeof q.weeklyResetAt === "number" && q.weeklyResetAt === Math.round(weeklyEpoch),
+        const accountIds = cache.quotaAccountIds("codex", l.accountKey);
+        const poolId = Object.entries(poolIdentities).find(([, identity]) =>
+          identity.accountId !== undefined && accountIds.has(identity.accountId),
         )?.[0];
-        const email = poolId !== undefined ? poolEmails[poolId] : undefined;
+        const email = poolId !== undefined ? poolIdentities[poolId]?.email : undefined;
         return email !== undefined ? { ...l, email } : l;
       });
       // The pool adapter's opaque `chatgpt-<timestamp>` key can also exist

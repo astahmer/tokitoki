@@ -23,6 +23,8 @@ const ZERO_ROW: UsageRow = { tokens: 0, cost: 0, requests: 0 };
 
 export interface QuotaSnapshotRow {
   accountKey: string;
+  /** Provider account identity when the snapshot came from an authenticated poll. */
+  accountId: string | null;
   windowMinutes: number;
   usedPct: number;
   resetsAt: number;
@@ -104,6 +106,7 @@ export class EventCache {
       CREATE TABLE IF NOT EXISTS quota_snapshots (
         provider TEXT NOT NULL,
         account_key TEXT NOT NULL,
+        account_id TEXT,
         window_minutes INTEGER NOT NULL,
         used_pct REAL NOT NULL,
         resets_at INTEGER NOT NULL,
@@ -130,6 +133,10 @@ export class EventCache {
         PRIMARY KEY (day, provider, account_key, model, machine_id, repo)
       );
     `);
+    const quotaCols = this.db.query("PRAGMA table_info(quota_snapshots)").all() as Array<{ name: string }>;
+    if (!quotaCols.some((c) => c.name === "account_id")) {
+      this.db.exec("ALTER TABLE quota_snapshots ADD COLUMN account_id TEXT");
+    }
     try {
       ensureSessionFts(this.db);
     } catch {
@@ -216,21 +223,23 @@ export class EventCache {
   insertPolledSnapshots(input: {
     provider: string;
     accountKey: string;
+    accountId?: string;
     windows: Array<{ windowMinutes: number; usedPct: number; resetsAtEpoch: number }>;
     capturedAtIso: string;
     eventId: string;
   }): number {
     const stmt = this.db.prepare(`
       INSERT OR REPLACE INTO quota_snapshots (
-        provider, account_key, window_minutes, used_pct, resets_at,
+        provider, account_key, account_id, window_minutes, used_pct, resets_at,
         captured_at, event_id, credits_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)
     `);
     const tx = this.db.transaction(() => {
       for (const w of input.windows) {
         stmt.run(
           input.provider,
           input.accountKey,
+          input.accountId ?? null,
           Math.round(w.windowMinutes),
           w.usedPct,
           Math.round(w.resetsAtEpoch),
@@ -556,8 +565,9 @@ export class EventCache {
   latestQuotaSnapshots(provider: string, accountKey: string): QuotaSnapshotRow[] {
     try {
       return this.db
-        .query(
-          `SELECT qs.account_key AS accountKey, qs.window_minutes AS windowMinutes,
+      .query(
+          `SELECT qs.account_key AS accountKey, qs.account_id AS accountId,
+                  qs.window_minutes AS windowMinutes,
                   qs.used_pct AS usedPct, qs.resets_at AS resetsAt,
                   qs.credits_json AS creditsJson, qs.captured_at AS capturedAt
            FROM quota_snapshots qs
@@ -575,6 +585,22 @@ export class EventCache {
     } catch {
       // table missing in pre-migration cache — treated as no embedded data
       return [];
+    }
+  }
+
+  /** Stable provider identities attached to the latest polled snapshots. */
+  quotaAccountIds(provider: string, accountKey: string): Set<string> {
+    try {
+      const rows = this.db
+        .query(
+          `SELECT DISTINCT account_id AS accountId
+           FROM quota_snapshots
+           WHERE provider = ? AND account_key = ? AND account_id IS NOT NULL AND account_id <> ''`,
+        )
+        .all(provider, accountKey) as Array<{ accountId: string | null }>;
+      return new Set(rows.map((r) => r.accountId).filter((id): id is string => typeof id === "string" && id.length > 0));
+    } catch {
+      return new Set();
     }
   }
 

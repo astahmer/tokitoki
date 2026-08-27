@@ -24,6 +24,41 @@ export function accountEmailFor(providerId: string): string | null {
   }
 }
 
+export interface AccountIdentity {
+  email?: string;
+  accountId?: string;
+}
+
+/** Resolve the stable identity behind a local provider login. */
+export function accountIdentityFor(providerId: string): AccountIdentity | null {
+  if (providerId !== "codex") return null;
+  const home = process.env.CODEX_HOME ?? `${process.env.HOME ?? "~"}/.codex`;
+  try {
+    const auth = JSON.parse(fs.readFileSync(`${home}/auth.json`, "utf8")) as {
+      tokens?: { id_token?: string; account_id?: string };
+    };
+    const jwt = auth.tokens?.id_token;
+    if (typeof jwt !== "string") return null;
+    const payloadPart = jwt.split(".")[1];
+    if (payloadPart === undefined) return null;
+    const b64 = payloadPart.replaceAll("-", "+").replaceAll("_", "/");
+    const payload = JSON.parse(
+      Buffer.from(b64 + "=".repeat((4 - (b64.length % 4)) % 4), "base64").toString("utf8"),
+    ) as Record<string, unknown>;
+    const authClaims = payload["https://api.openai.com/auth"];
+    const authRecord = authClaims !== null && typeof authClaims === "object"
+      ? authClaims as Record<string, unknown>
+      : {};
+    const email = typeof payload.email === "string" && payload.email.includes("@") ? payload.email : undefined;
+    const accountId = auth.tokens?.account_id
+      ?? (typeof authRecord.chatgpt_account_id === "string" ? authRecord.chatgpt_account_id : undefined);
+    if (email === undefined && accountId === undefined) return null;
+    return { ...(email !== undefined ? { email } : {}), ...(accountId !== undefined ? { accountId } : {}) };
+  } catch {
+    return null;
+  }
+}
+
 function claudeEmail(): string | null {
   const configDir = process.env.CLAUDE_CONFIG_DIR;
   const candidates = [

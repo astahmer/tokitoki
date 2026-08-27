@@ -156,4 +156,10 @@ import Testing
         ), labeled: true)
         #expect(preview == "session 60% weekly 100% monthly 88%")
     }
+
+    @Test func localDashboardRoutesUseTheSharedServer() {
+        #expect(AppDelegate.localDashboardURL(path: "/")?.absoluteString == "http://localhost:7788/")
+        #expect(AppDelegate.localDashboardURL(path: "/?view=sources")?.absoluteString == "http://localhost:7788/?view=sources")
+        #expect(AppDelegate.localDashboardURL(path: "?view=dashboard&range=month")?.absoluteString == "http://localhost:7788/?view=dashboard&range=month")
+    }
 }

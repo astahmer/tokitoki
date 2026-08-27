@@ -49,6 +49,8 @@ export interface PolledWindow {
 
 export interface PollAccountResult {
   accountKey: string;
+  /** Stable provider account identity; reset timestamps are not identity. */
+  accountId?: string;
   /** Harnesses sharing this polled account (opencode-go spans pi+opencode). */
   harnesses?: string[];
   email?: string;
@@ -79,6 +81,8 @@ export interface PollOptions {
   cursorAuthPath?: string;
   /** Absolute path to an opencodex codex-quota-cache.json fixture (tests). Default ~/.opencodex/codex-quota-cache.json. */
   opencodexCachePath?: string;
+  /** Absolute path to opencodex's pooled account credentials (tests). */
+  opencodexAccountsPath?: string;
   /** Absolute path to an opencode auth.json fixture (tests). Default ~/.local/share/opencode/auth.json. */
   opencodeAuthPath?: string;
   /** Absolute path to Command Code auth.json (tests). Default ~/.commandcode/auth.json. */
@@ -734,32 +738,60 @@ async function pollCursorQuotas(opts: PollOptions, fetcher: typeof fetch, now: n
   return "cursor response shape unrecognized";
 }
 
-/** Read email identities for opencodex's pooled ChatGPT accounts. */
-export function opencodexAccountEmails(
+export interface OpencodexAccountIdentity {
+  email?: string;
+  accountId?: string;
+}
+
+/** Read stable identities for opencodex's pooled ChatGPT accounts. */
+export function opencodexAccountIdentities(
   path: string = `${process.env.HOME ?? "~"}/.opencodex/codex-accounts.json`,
-): Record<string, string> {
-  const out: Record<string, string> = {};
+): Record<string, OpencodexAccountIdentity> {
+  const out: Record<string, OpencodexAccountIdentity> = {};
   try {
     const parsed = JSON.parse(fs.readFileSync(path, "utf8")) as Record<string, {
-      credential?: { accessToken?: string; access?: string; email?: string };
+      credential?: { accessToken?: string; access?: string; email?: string; chatgptAccountId?: string };
     }>;
     for (const [id, account] of Object.entries(parsed)) {
       const direct = account.credential?.email;
-      if (typeof direct === "string" && direct.includes("@")) {
-        out[id] = direct;
-        continue;
-      }
       const token = account.credential?.accessToken ?? account.credential?.access;
-      const profile = typeof token === "string" ? decodeJwtPayload(token)?.["https://api.openai.com/profile"] : undefined;
+      const claims = typeof token === "string" ? decodeJwtPayload(token) : undefined;
+      const auth = claims?.["https://api.openai.com/auth"];
+      const authId = auth !== null && typeof auth === "object"
+        ? (auth as Record<string, unknown>).chatgpt_account_id
+        : undefined;
+      const profile = claims?.["https://api.openai.com/profile"];
       const email = profile !== null && typeof profile === "object"
         ? (profile as Record<string, unknown>).email
         : undefined;
-      if (typeof email === "string" && email.includes("@")) out[id] = email;
+      const resolvedEmail = typeof direct === "string" && direct.includes("@")
+        ? direct
+        : typeof email === "string" && email.includes("@") ? email : undefined;
+      const resolvedId = typeof account.credential?.chatgptAccountId === "string" && account.credential.chatgptAccountId.length > 0
+        ? account.credential.chatgptAccountId
+        : typeof authId === "string" && authId.length > 0 ? authId : undefined;
+      if (resolvedEmail !== undefined || resolvedId !== undefined) {
+        out[id] = {
+          ...(resolvedEmail !== undefined ? { email: resolvedEmail } : {}),
+          ...(resolvedId !== undefined ? { accountId: resolvedId } : {}),
+        };
+      }
     }
   } catch {
     // opencodex is optional
   }
   return out;
+}
+
+/** Backwards-compatible email-only view for callers that do not need IDs. */
+export function opencodexAccountEmails(
+  path: string = `${process.env.HOME ?? "~"}/.opencodex/codex-accounts.json`,
+): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(opencodexAccountIdentities(path))
+      .filter(([, identity]) => identity.email !== undefined)
+      .map(([id, identity]) => [id, identity.email!]),
+  );
 }
 
 /** opencodex pooled-account quotas → {key: {weeklyPercent, weeklyResetAt}}. */
@@ -953,6 +985,7 @@ export async function pollQuotas(opts: PollOptions = {}): Promise<PollResult> {
     ownCodex?.windows.filter((w) => w.windowMinutes === 10_080).map((w) => w.resetsAtEpoch) ?? [],
   );
   const pooled = opencodexQuotas(opts.opencodexCachePath);
+  const poolIdentities = opencodexAccountIdentities(opts.opencodexAccountsPath);
   const seenResets = new Set<number>();
   for (const [poolKey, q] of Object.entries(pooled)) {
     if (typeof q.weeklyPercent !== "number" || typeof q.weeklyResetAt !== "number") continue;
@@ -999,11 +1032,15 @@ export async function pollQuotas(opts: PollOptions = {}): Promise<PollResult> {
     }
     accounts.push({
       accountKey,
+      ...(poolIdentities[poolKey]?.accountId !== undefined
+        ? { accountId: poolIdentities[poolKey]!.accountId }
+        : {}),
       harnesses: ["opencodex"],
       windows,
       inserted: cache?.insertPolledSnapshots({
         provider: "codex",
         accountKey,
+        accountId: poolIdentities[poolKey]?.accountId,
         windows,
         capturedAtIso,
         eventId: `poll:${capturedAtIso}:opencodex:${poolKey}`,
@@ -1060,6 +1097,7 @@ async function pollCodexQuotas(opts: PollOptions): Promise<PollAccountResult | s
 
   const result: PollAccountResult = {
     accountKey,
+    accountId,
     ...(email !== undefined ? { email } : {}),
     planType,
     windows,
@@ -1075,6 +1113,7 @@ async function pollCodexQuotas(opts: PollOptions): Promise<PollAccountResult | s
     result.inserted = cache.insertPolledSnapshots({
       provider: "codex",
       accountKey,
+      accountId,
       windows,
       capturedAtIso,
       eventId: `poll:${capturedAtIso}`,

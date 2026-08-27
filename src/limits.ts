@@ -2,7 +2,7 @@ import fs from "node:fs";
 
 import type { TokitokiConfig } from "./config.ts";
 import type { EventCache } from "./cache.ts";
-import { accountEmailFor } from "./accounts.ts";
+import { accountEmailFor, accountIdentityFor } from "./accounts.ts";
 
 /**
  * Usage/limits engine: per provider+account windows with reset schedules.
@@ -275,7 +275,19 @@ export function computeLimits(
     const own = cache.ownLoginFingerprints(provider);
     const foreign = foreignQuotaFingerprints(provider);
     let email = accountEmailFor(provider) ?? undefined;
-    if (!pairs.some((p) => own.has(p)) && !(own.size === 0 && !pairs.some((p) => foreign.has(p)))) {
+    if (provider === "codex") {
+      const localId = accountIdentityFor(provider)?.accountId;
+      const snapshotIds = cache.quotaAccountIds(provider, accountKey);
+      // Account IDs are authoritative. A card with polled identity data that
+      // belongs to another login must never inherit the active JWT email.
+      if (snapshotIds.size > 0 && (localId === undefined || !snapshotIds.has(localId))) {
+        email = undefined;
+      } else if (snapshotIds.size === 0 && (!pairs.some((p) => own.has(p)) && !(own.size === 0 && !pairs.some((p) => foreign.has(p))))) {
+        // Compatibility for pre-account_id snapshots; this path disappears
+        // naturally after the next poll writes stable identity metadata.
+        email = undefined;
+      }
+    } else if (!pairs.some((p) => own.has(p)) && !(own.size === 0 && !pairs.some((p) => foreign.has(p)))) {
       email = undefined;
     }
 

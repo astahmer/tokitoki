@@ -1,4 +1,4 @@
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -102,6 +102,49 @@ function limitsCache(): EventCache {
 }
 
 describe("computeLimits", () => {
+  it("attributes Codex email only to the matching stable account id", () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "tk-limits-identity-"));
+    const oldCodexHome = process.env.CODEX_HOME;
+    process.env.CODEX_HOME = dir;
+    const payload = Buffer.from(JSON.stringify({
+      email: "personal@example.com",
+      "https://api.openai.com/auth": { chatgpt_account_id: "personal-account" },
+    })).toString("base64url");
+    writeFileSync(path.join(dir, "auth.json"), JSON.stringify({
+      tokens: { id_token: `header.${payload}.signature` },
+    }));
+    const cache = limitsCache();
+    try {
+      const windows = [{ windowMinutes: 300, usedPct: 10, resetsAtEpoch: 1_800_000_000 }];
+      cache.insertPolledSnapshots({
+        provider: "codex",
+        accountKey: "openai:plus",
+        accountId: "personal-account",
+        windows,
+        capturedAtIso: "2026-08-27T10:00:00.000Z",
+        eventId: "poll:personal",
+      });
+      cache.insertPolledSnapshots({
+        provider: "codex",
+        accountKey: "codex",
+        accountId: "work-account",
+        windows,
+        capturedAtIso: "2026-08-27T10:01:00.000Z",
+        eventId: "poll:work",
+      });
+      const limits = computeLimits(cache, {}, new Date(2026, 7, 27, 12, 0), [
+        { provider: "codex", accountKey: "openai:plus" },
+        { provider: "codex", accountKey: "codex" },
+      ]);
+      expect(limits.find((l) => l.accountKey === "openai:plus")?.email).toBe("personal@example.com");
+      expect(limits.find((l) => l.accountKey === "codex")?.email).toBeUndefined();
+    } finally {
+      cache.close();
+      if (oldCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = oldCodexHome;
+    }
+  });
+
   it("derived windows sum per account and omit usedPct without plan caps", () => {
     const cache = limitsCache();
     try {
