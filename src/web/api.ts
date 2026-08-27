@@ -407,7 +407,6 @@ export function apiSessions(
       accountKey: account,
       limit: Math.max(1, Math.min(top, 100)),
     });
-    updateSessionIndex(cache.database, undefined, { throttleMs: 0 });
     return {
       window: toApiWindow(w),
       rows: rows.map((row) => ({
@@ -422,6 +421,9 @@ export interface SessionDetailPayload {
   provider: string;
   sessionId: string;
   conversation: { title: string; body: string } | null;
+  eventsTotal: number;
+  eventsOffset: number;
+  eventsHasMore: boolean;
   events: Array<{
     ts: string;
     model: string;
@@ -433,11 +435,24 @@ export interface SessionDetailPayload {
 }
 
 /** Request timeline for one session (provider required to disambiguate). */
-export function apiSessionDetail(provider: string, sessionId: string): SessionDetailPayload {
+export function apiSessionDetail(
+  provider: string,
+  sessionId: string,
+  eventsLimit = 40,
+  eventsOffset = 0,
+): SessionDetailPayload {
   return withCache((cache) => {
-    updateSessionIndex(cache.database, undefined, { throttleMs: 0 });
-    const events = cache.sessionDetail(provider, sessionId);
-    return { provider, sessionId, conversation: sessionConversation(cache.database, provider, sessionId), events };
+    const eventsTotal = cache.sessionEventCount(provider, sessionId);
+    const events = cache.sessionDetail(provider, sessionId, { limit: eventsLimit, offset: eventsOffset });
+    return {
+      provider,
+      sessionId,
+      conversation: sessionConversation(cache.database, provider, sessionId),
+      eventsTotal,
+      eventsOffset,
+      eventsHasMore: eventsOffset + events.length < eventsTotal,
+      events,
+    };
   });
 }
 
@@ -475,7 +490,7 @@ export function apiSessionSearch(
 ): SessionSearchPayload {
   const w = resolveTimeWindow({ ...wp, fallbackPeriod: "month" as Period });
   return withCache((cache) => {
-    const stats = updateSessionIndex(cache.database, undefined, { throttleMs: 0 });
+    const stats = updateSessionIndex(cache.database);
     const res = searchSessions(cache.database, {
       query,
       providers: providers.length > 0 ? providers : undefined,

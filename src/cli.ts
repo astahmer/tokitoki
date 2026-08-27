@@ -221,6 +221,8 @@ Rows always show every configured scope×pattern; state is ok | warn (≥80%)
   --top N                   leaderboard size (default: 10)
   --by provider|repo        group the leaderboard under section headers
   --session <id>            drill into one session: request timeline + running total
+  --events-limit N          detail requests per page (default: all in CLI, 40 in UI)
+  --events-offset N         zero-based detail request offset
   --provider <id>           filter (repeatable)
   --json                    machine-readable output`,
     example: "tokitoki sessions --search \"kumo treemap\" --last month",
@@ -462,7 +464,7 @@ const KNOWN_FLAGS: Record<string, string[]> = {
   chart: ["last", "by", "spark", "provider", "from", "to"],
   pie: ["last", "by", "provider", "from", "to"],
   grid: ["last", "metric", "since", "until", "from", "to"],
-  sessions: ["last", "by", "top", "session", "json", "provider", "since", "until", "account", "from", "to", "search", "page"],
+  sessions: ["last", "by", "top", "session", "events-limit", "events-offset", "json", "provider", "since", "until", "account", "from", "to", "search", "page"],
   anomalies: ["last", "metric", "json", "since", "until", "from", "to"],
   budgets: ["json"],
   tools: ["last", "from", "to", "since", "until", "top", "provider", "json"],
@@ -1144,12 +1146,21 @@ function runSessions(parsed: ParsedInvocation): void {
       const filter = { sinceIso, untilIso: w.untilIso, providers: providers.length > 0 ? providers : undefined };
 
       if (drillId !== undefined) {
-        return renderSessionDrill(cache, drillId, json);
+        const eventsLimit = flagString(parsed, "events-limit");
+        const eventsOffset = flagString(parsed, "events-offset");
+        return renderSessionDrill(
+          cache,
+          drillId,
+          json,
+          eventsLimit === undefined ? undefined : Math.max(1, Number(eventsLimit) || 1),
+          eventsOffset === undefined ? 0 : Math.max(0, Number(eventsOffset) || 0),
+          providers.length === 1 ? providers[0] : undefined,
+        );
       }
 
       if (searchQuery !== undefined && searchQuery.trim().length > 0) {
         const page = Math.max(1, Number(flagString(parsed, "page") ?? "1") || 1);
-        const stats = updateSessionIndex(cache.database, undefined, { throttleMs: 0 });
+        const stats = updateSessionIndex(cache.database);
         const res = searchSessions(cache.database, {
           query: searchQuery,
           providers: providers.length > 0 ? providers : undefined,
@@ -1200,12 +1211,11 @@ function runSessions(parsed: ParsedInvocation): void {
       const hasMore = rows.length > topN;
       const visibleRows = rows.slice(0, topN);
       if (json) {
-        const stats = updateSessionIndex(cache.database, undefined, { throttleMs: 0 });
         const enrichedRows = visibleRows.map((row) => ({
           ...row,
           ...(sessionPreview(cache.database, row.provider, row.sessionId) ?? {}),
         }));
-        return JSON.stringify({ window: { since: w.sinceIso, until: w.untilIso ?? null, label: w.label }, top: topN, page, hasMore, indexedFiles: stats.filesIndexed, rows: enrichedRows }, null, 2);
+        return JSON.stringify({ window: { since: w.sinceIso, until: w.untilIso ?? null, label: w.label }, top: topN, page, hasMore, rows: enrichedRows }, null, 2);
       }
       if (visibleRows.length === 0) {
         return `${windowLine(w)}\nno sessions recorded in this window — run \`tokitoki scan\` first`;
@@ -1299,8 +1309,15 @@ function sumCost(rows: SessionSummary[]): number {
   return rows.reduce((acc, r) => acc + r.costUsd, 0);
 }
 
-function renderSessionDrill(cache: EventCache, sessionId: string, json: boolean): string {
-  const matches = cache.sessionProviders(sessionId);
+function renderSessionDrill(
+  cache: EventCache,
+  sessionId: string,
+  json: boolean,
+  eventsLimit?: number,
+  eventsOffset = 0,
+  provider?: string,
+): string {
+  const matches = cache.sessionProviders(sessionId).filter((candidate) => provider === undefined || candidate === provider);
   if (matches.length === 0) {
     throw new UserError(`no session '${sessionId}' in the local data`, "tokitoki scan && tokitoki sessions --top 25");
   }
@@ -1310,17 +1327,25 @@ function renderSessionDrill(cache: EventCache, sessionId: string, json: boolean)
       `tokitoki sessions --session ${sessionId} --provider <one-of-them>`,
     );
   }
-  const events = cache.sessionDetail(matches[0]!, sessionId);
-  let runningTokens = 0;
+  const eventsTotal = cache.sessionEventCount(matches[0]!, sessionId);
+  const events = cache.sessionDetail(matches[0]!, sessionId, { limit: eventsLimit, offset: eventsOffset });
+  let runningTokens = cache.sessionTokensBefore(matches[0]!, sessionId, eventsOffset);
   const detailRows = events.map((e, i) => {
     runningTokens += e.inputTokens + e.outputTokens + e.cacheReadTokens + e.cacheWriteTokens;
     return { n: i + 1, ...e, runningTokens };
   });
   if (json) {
-    updateSessionIndex(cache.database, undefined, { throttleMs: 0 });
-    return JSON.stringify({ provider: matches[0], sessionId, conversation: sessionConversation(cache.database, matches[0]!, sessionId), events: detailRows }, null, 2);
+    return JSON.stringify({
+      provider: matches[0],
+      sessionId,
+      conversation: sessionConversation(cache.database, matches[0]!, sessionId),
+      events: detailRows,
+      eventsTotal,
+      eventsOffset,
+      eventsHasMore: eventsOffset + events.length < eventsTotal,
+    }, null, 2);
   }
-  const header = `session ${sessionId} · ${matches[0]} · ${events.length} requests`;
+  const header = `session ${sessionId} · ${matches[0]} · ${eventsTotal} requests`;
   const widths = [4, 9, 22, 10, 10, 10, 8, 9, 11];
   const headers = ["#", "time", "model", "input", "output", "cache-rd", "%cache", "cost", "run.tok"];
   const lines = [header, headers.map((h, i) => (i <= 2 ? h.padEnd(widths[i]!) : h.padStart(widths[i]!).slice(0, widths[i]!))).join("  "), widths.map((w) => "-".repeat(w)).join("  ")];

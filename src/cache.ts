@@ -1311,7 +1311,13 @@ export class EventCache {
   }
 
   /** Request-by-request timeline for one session, ordered by ts. */
-  sessionDetail(provider: string, sessionId: string): SessionEventRow[] {
+  sessionDetail(
+    provider: string,
+    sessionId: string,
+    opts: { limit?: number; offset?: number } = {},
+  ): SessionEventRow[] {
+    const limit = opts.limit ?? -1;
+    const offset = opts.offset ?? 0;
     const rows = this.db
       .query(
         `
@@ -1320,9 +1326,10 @@ export class EventCache {
         FROM events
         WHERE provider = ? AND session_id = ?
         ORDER BY ts, id
+        LIMIT ? OFFSET ?
         `,
       )
-      .all(provider, sessionId) as Array<RawSessionEventRow>;
+      .all(provider, sessionId, limit, offset) as Array<RawSessionEventRow>;
     return rows.map((r) => ({
       ts: r.ts,
       model: r.model,
@@ -1332,6 +1339,30 @@ export class EventCache {
       cacheWriteTokens: r.cache_write_tokens ?? 0,
       costUsd: r.cost_usd ?? 0,
     }));
+  }
+
+  sessionEventCount(provider: string, sessionId: string): number {
+    const row = this.db
+      .query("SELECT COUNT(*) AS count FROM events WHERE provider = ? AND session_id = ?")
+      .get(provider, sessionId) as { count?: number } | undefined;
+    return Number(row?.count ?? 0);
+  }
+
+  sessionTokensBefore(provider: string, sessionId: string, limit: number): number {
+    if (limit <= 0) return 0;
+    const row = this.db
+      .query(
+        `SELECT COALESCE(SUM(input_tokens + output_tokens + cache_read_tokens + cache_write_tokens), 0) AS tokens
+         FROM (
+           SELECT input_tokens, output_tokens, cache_read_tokens, cache_write_tokens
+           FROM events
+           WHERE provider = ? AND session_id = ?
+           ORDER BY ts, id
+           LIMIT ?
+         )`,
+      )
+      .get(provider, sessionId, limit) as { tokens?: number } | undefined;
+    return Number(row?.tokens ?? 0);
   }
 }
 

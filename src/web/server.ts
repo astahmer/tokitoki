@@ -262,7 +262,9 @@ export function startWebServer(options: WebServerOptions = {}): Bun.Server<undef
         if (provider === null || provider.length === 0 || sessionId === null || sessionId.length === 0) {
           return text("provider and id are required\n", 400);
         }
-        return json(apiSessionDetail(provider, sessionId));
+        const limit = Math.max(1, Math.min(200, Number(url.searchParams.get("limit") ?? "40") || 40));
+        const offset = Math.max(0, Number(url.searchParams.get("offset") ?? "0") || 0);
+        return json(apiSessionDetail(provider, sessionId, limit, offset));
       }
       default:
         if (request.method !== "GET") return text("method not allowed\n", 405);

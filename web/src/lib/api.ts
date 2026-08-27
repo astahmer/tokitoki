@@ -193,6 +193,9 @@ export interface SessionDetailPayload {
   provider: string;
   sessionId: string;
   conversation: { title: string; body: string } | null;
+  eventsTotal: number;
+  eventsOffset: number;
+  eventsHasMore: boolean;
   events: SessionEvent[];
 }
 
@@ -210,9 +213,16 @@ export function fetchSessions(params: {
   return get<SessionsPayload>(`/api/sessions?${q.toString()}`);
 }
 
-export function fetchSessionDetail(provider: string, sessionId: string): Promise<SessionDetailPayload> {
+export function fetchSessionDetail(
+  provider: string,
+  sessionId: string,
+  opts: { limit?: number; offset?: number } = {},
+): Promise<SessionDetailPayload> {
+  const params = new URLSearchParams({ provider, id: sessionId });
+  if (opts.limit !== undefined) params.set("limit", String(opts.limit));
+  if (opts.offset !== undefined) params.set("offset", String(opts.offset));
   return get<SessionDetailPayload>(
-    `/api/sessions/detail?provider=${encodeURIComponent(provider)}&id=${encodeURIComponent(sessionId)}`,
+    `/api/sessions/detail?${params.toString()}`,
   );
 }
 

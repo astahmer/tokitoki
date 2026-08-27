@@ -7,6 +7,7 @@ import {
   fetchSessions,
   fetchSessionsSearch,
   type SessionDetailPayload,
+  type SessionEvent,
   type SessionRow,
   type SessionSearchRow,
 } from "../lib/api";
@@ -27,10 +28,14 @@ export function SessionsView({
   win,
   providers,
   account,
+  initialSessionProvider,
+  initialSessionId,
 }: {
   win: WindowSelection;
   providers: string[];
   account?: string;
+  initialSessionProvider?: string;
+  initialSessionId?: string;
 }) {
   // Search text + page live in the URL (?q=, ?page=) so searched views are
   // shareable and pagination survives a tab switch.
@@ -39,7 +44,22 @@ export function SessionsView({
   const [query, setQuery] = useState(initialQ);
   const [submitted, setSubmitted] = useState(initialQ);
   const [page, setPage] = useState(initialPage);
-  const [selected, setSelected] = useState<SessionRow | undefined>(undefined);
+  const [selected, setSelected] = useState<SessionRow | undefined>(() => (
+    initialSessionProvider !== undefined && initialSessionId !== undefined
+      ? {
+          provider: initialSessionProvider,
+          sessionId: initialSessionId,
+          accountKey: "",
+          startedAt: "",
+          requests: 0,
+          models: [],
+          repos: [],
+          totalTokens: 0,
+          cachePct: 0,
+          costUsd: 0,
+        }
+      : undefined
+  ));
   const searchRef = useRef<HTMLInputElement>(null);
 
   const syncUrl = useCallback((q: string, pg: number): void => {
@@ -48,6 +68,23 @@ export function SessionsView({
     else url.searchParams.delete("q");
     if (pg > 1) url.searchParams.set("page", String(pg));
     else url.searchParams.delete("page");
+    window.history.replaceState(null, "", url);
+  }, []);
+
+  const selectSession = useCallback((row: SessionRow): void => {
+    setSelected(row);
+    const url = new URL(window.location.href);
+    url.searchParams.set("view", "sessions");
+    url.searchParams.set("provider", row.provider);
+    url.searchParams.set("session", row.sessionId);
+    window.history.replaceState(null, "", url);
+  }, []);
+
+  const clearSelectedSession = useCallback((): void => {
+    setSelected(undefined);
+    const url = new URL(window.location.href);
+    url.searchParams.delete("session");
+    url.searchParams.delete("provider");
     window.history.replaceState(null, "", url);
   }, []);
 
@@ -82,13 +119,12 @@ export function SessionsView({
       searching
         ? // Leaderboard isn't rendered while searching; skip the fetch.
           Promise.resolve({ window: { since: "", until: null, label: "" }, rows: [] })
-        : fetchSessions({ providers, account, top: 25, ...win }),
+        : fetchSessions({ providers, account, top: PAGE_SIZE, ...win }),
     [win.from ?? "", win.to ?? "", win.last ?? "", providers.join("|"), account],
   );
 
-  return (
-    <>
-      <Surface as="section" className="mb-4 p-4">
+  return selected === undefined ? (
+    <Surface as="section" className="mb-4 p-4">
         <div className="mb-3 flex items-center justify-between">
           <Heading>sessions · click a row for its request timeline</Heading>
         </div>
@@ -119,7 +155,7 @@ export function SessionsView({
           )}
         </div>
         {searching ? (
-          <SearchResults query={submitted} page={page} setPage={setPage} providers={providers} win={win} onSelect={setSelected} selectedId={selected?.sessionId} />
+          <SearchResults query={submitted} page={page} setPage={setPage} providers={providers} win={win} onSelect={selectSession} />
         ) : sessions.state === "loading" ? (
           <TableSkeleton rows={8} cols={7} />
         ) : sessions.state === "error" ? (
@@ -127,15 +163,17 @@ export function SessionsView({
         ) : sessions.data.rows.length === 0 ? (
           <EmptyState message="no sessions recorded in this window — try widening the range or clearing filters" />
         ) : (
-          <SessionTable rows={sessions.data.rows} selected={selected?.sessionId} onSelect={setSelected} />
+          <SessionTable rows={sessions.data.rows} selected={undefined} onSelect={selectSession} />
         )}
       </Surface>
-      {selected !== undefined && (
-        <Surface as="section" className="p-4">
-          <SessionDetail provider={selected.provider} sessionId={selected.sessionId} />
-        </Surface>
-      )}
-    </>
+  ) : (
+    <Surface as="section" className="p-4">
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <Button variant="secondary" onClick={clearSelectedSession}>← sessions</Button>
+        <span className="truncate text-[11px] text-kumo-subtle">{selected.title || selected.sessionId}</span>
+      </div>
+      <SessionDetail provider={selected.provider} sessionId={selected.sessionId} />
+    </Surface>
   );
 }
 
@@ -364,15 +402,36 @@ function SessionTable({
 
 function SessionDetail({ provider, sessionId }: { provider: string; sessionId: string }) {
   const detail = useAsyncStaleWhileRevalidate(
-    () => fetchSessionDetail(provider, sessionId),
+    () => fetchSessionDetail(provider, sessionId, { limit: 40, offset: 0 }),
     [provider, sessionId],
   );
+  const [events, setEvents] = useState<SessionEvent[]>([]);
+  const [eventsHasMore, setEventsHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+
+  useEffect(() => {
+    if (detail.state !== "ok") return;
+    setEvents(detail.data.events);
+    setEventsHasMore(detail.data.eventsHasMore);
+  }, [detail.state, detail.state === "ok" ? detail.data.events : undefined]);
+
+  const loadMore = async (): Promise<void> => {
+    if (loadingMore || !eventsHasMore) return;
+    setLoadingMore(true);
+    try {
+      const next = await fetchSessionDetail(provider, sessionId, { limit: 40, offset: events.length });
+      setEvents((current) => [...current, ...next.events]);
+      setEventsHasMore(next.eventsHasMore);
+    } finally {
+      setLoadingMore(false);
+    }
+  };
 
   return (
     <>
       <Heading>
         session · {sessionId} · {provider} ·{" "}
-        {detail.state === "ok" ? `${detail.data.events.length} requests` : "…"}
+        {detail.state === "ok" ? `${detail.data.eventsTotal.toLocaleString("en-US")} requests` : "…"}
       </Heading>
       {detail.state === "loading" ? (
         <SkeletonBlock className="h-48" />
@@ -385,15 +444,59 @@ function SessionDetail({ provider, sessionId }: { provider: string; sessionId: s
               <summary className="cursor-pointer text-xs font-medium">
                 conversation{detail.data.conversation.title.length > 0 ? ` · ${detail.data.conversation.title}` : ""}
               </summary>
-              <pre className="mt-3 max-h-80 overflow-auto whitespace-pre-wrap break-words text-[11px] leading-relaxed text-kumo-subtle">
-                {detail.data.conversation.body}
-              </pre>
+              <ConversationBody body={detail.data.conversation.body} />
             </details>
           )}
-          <Timeline payload={detail.data} />
+          <Timeline payload={{ ...detail.data, events }} />
+          {eventsHasMore && (
+            <Button variant="secondary" disabled={loadingMore} onClick={() => void loadMore()}>
+              {loadingMore ? "loading…" : `load next 40 requests (${events.length} of ${detail.data.eventsTotal})`}
+            </Button>
+          )}
         </div>
       )}
     </>
+  );
+}
+
+function ConversationBody({ body }: { body: string }) {
+  const toolCounts = new Map<string, number>();
+  const visibleLines = body.split("\n").filter((line) => {
+    const trimmed = line.trim();
+    let name: string | undefined;
+    if (trimmed.startsWith("[tool:")) name = trimmed.slice(6).split("]", 1)[0];
+    else if (trimmed.startsWith("tools.") || trimmed.startsWith("functions.")) name = trimmed.split("(", 1)[0];
+    if (name !== undefined && name.length > 0) {
+      toolCounts.set(name, (toolCounts.get(name) ?? 0) + 1);
+      return false;
+    }
+    return true;
+  });
+  const blocks = visibleLines.join("\n").split(/\n{2,}/).map((block) => block.trim()).filter(Boolean);
+  return (
+    <div className="mt-3 max-h-[32rem] space-y-3 overflow-auto text-xs leading-relaxed text-kumo-subtle">
+      {toolCounts.size > 0 && (
+        <details className="rounded-md border border-kumo-border/60 bg-kumo-recessed/50 p-2">
+          <summary className="cursor-pointer font-medium text-kumo-default">
+            tools used · {[...toolCounts.values()].reduce((sum, count) => sum + count, 0)}
+          </summary>
+          <div className="mt-1 grid grid-cols-2 gap-x-3 gap-y-0.5 text-[11px]">
+            {[...toolCounts.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([name, count]) => (
+              <span key={name}>{name} · {count}</span>
+            ))}
+          </div>
+        </details>
+      )}
+      {blocks.map((block, i) => {
+        if (block.startsWith("```") || block.includes("\n```")) {
+          return <pre key={i} className="overflow-x-auto rounded-md bg-kumo-recessed p-2 font-mono text-[11px]">{block.replace(/^```[\w-]*\n?/, "").replace(/\n?```$/, "")}</pre>;
+        }
+        if (/^#{1,4}\s/.test(block)) {
+          return <h4 key={i} className="font-semibold text-kumo-default">{block.replace(/^#{1,4}\s+/, "")}</h4>;
+        }
+        return <p key={i} className="whitespace-pre-wrap break-words">{block}</p>;
+      })}
+    </div>
   );
 }
 

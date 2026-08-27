@@ -1080,9 +1080,42 @@ export async function pollQuotas(opts: PollOptions = {}): Promise<PollResult> {
   );
   const pooled = opencodexQuotas(opts.opencodexCachePath);
   const poolIdentities = opencodexAccountIdentities(opts.opencodexAccountsPath);
+  const poolCredentials = opencodexAccountCredentials(opts.opencodexAccountsPath);
+  const freshPoolKeys = new Set<string>();
+  // The quota JSON is a lossy compatibility cache. When opencodex has the
+  // OAuth credential, ask WHAM directly so a legacy/misclassified cache field
+  // cannot turn the 5-hour window into a weekly card (or retain stale values).
+  if (providerEnabled("codex")) {
+    for (const [poolKey, credential] of Object.entries(poolCredentials)) {
+      const poolAccountId = poolIdentities[poolKey]?.accountId ?? credential.accountId;
+      if (poolAccountId !== undefined && poolAccountId === ownCodex?.accountId) continue;
+      if (credential.accessToken === undefined || poolAccountId === undefined) continue;
+      const accountKey = poolKey === "__main__" ? "codex" : `codex:${poolKey}`;
+      const result = await pollCodexCredential(
+        opts,
+        {
+          tokens: {
+            access_token: credential.accessToken,
+            ...(credential.refreshToken !== undefined ? { refresh_token: credential.refreshToken } : {}),
+            account_id: poolAccountId,
+          },
+        },
+        accountKey,
+        poolIdentities[poolKey]?.email ?? credential.email,
+        `:opencodex:${poolKey}`,
+      );
+      if (typeof result === "string") {
+        reasons.push(`${accountKey}: ${result}`);
+      } else if (result.windows.length > 0) {
+        accounts.push({ ...result, harnesses: ["opencodex"] });
+        freshPoolKeys.add(poolKey);
+      }
+    }
+  }
   const seenResets = new Set<number>();
   const seenPoolIds = new Set<string>();
   for (const [poolKey, q] of providerEnabled("codex") ? Object.entries(pooled) : []) {
+    if (freshPoolKeys.has(poolKey)) continue;
     if (typeof q.weeklyPercent !== "number" || typeof q.weeklyResetAt !== "number") continue;
     const weeklyResetAt = q.weeklyResetAt;
     const weeklyPercent = q.weeklyPercent;
@@ -1165,6 +1198,23 @@ async function pollCodexQuotas(opts: PollOptions): Promise<PollAccountResult | s
     return "not logged in (no codex auth.json / no access token)";
   }
 
+  return pollCodexCredential(opts, auth);
+}
+
+/** Poll one OAuth credential, including pooled accounts managed by opencodex. */
+async function pollCodexCredential(
+  opts: PollOptions,
+  auth: CodexAuth,
+  accountKeyOverride?: string,
+  fallbackEmail?: string,
+  eventIdSuffix?: string,
+): Promise<PollAccountResult | string> {
+  const fetcher = opts.fetcher ?? globalThis.fetch;
+  const token = auth.tokens?.access_token;
+  if (token === undefined || token.length === 0) {
+    return "no access token in credential";
+  }
+
   const claims = decodeJwtPayload(auth.tokens?.id_token ?? "");
   const authInfo = (claims?.["https://api.openai.com/auth"] ?? {}) as {
     chatgpt_account_id?: string;
@@ -1173,7 +1223,10 @@ async function pollCodexQuotas(opts: PollOptions): Promise<PollAccountResult | s
   if (accountId.length === 0) {
     return "no chatgpt account id in auth store";
   }
-  const email = typeof claims?.email === "string" ? claims.email : undefined;
+  const profile = (claims?.["https://api.openai.com/profile"] ?? {}) as { email?: unknown };
+  const email = typeof claims?.email === "string"
+    ? claims.email
+    : typeof profile.email === "string" ? profile.email : fallbackEmail;
 
   let access = token;
   let res = await fetchUsage(access, accountId, fetcher);
@@ -1196,7 +1249,7 @@ async function pollCodexQuotas(opts: PollOptions): Promise<PollAccountResult | s
   const planType = typeof res.body.plan_type === "string" ? res.body.plan_type : "unknown";
   // Scan-era account keys are "<model_provider>:<plan_type>"; the ChatGPT
   // login maps to model_provider "openai".
-  const accountKey = `openai:${planType}`;
+  const accountKey = accountKeyOverride ?? `openai:${planType}`;
   const windows = parseWindows(res.body.rate_limit);
   let credits = parsePolledCredits(res.body.rate_limit?.credits);
   if (credits === undefined || !credits.hasCredits || Number(credits.balance) <= 0) {
@@ -1226,8 +1279,40 @@ async function pollCodexQuotas(opts: PollOptions): Promise<PollAccountResult | s
       windows,
       credits,
       capturedAtIso,
-      eventId: `poll:${capturedAtIso}`,
+      eventId: `poll:${capturedAtIso}${eventIdSuffix ?? ""}`,
     });
   }
   return result;
+}
+
+interface OpencodexAccountCredential {
+  accessToken?: string;
+  refreshToken?: string;
+  accountId?: string;
+  email?: string;
+}
+
+/** Read OAuth credentials for pooled ChatGPT accounts without exposing tokens. */
+function opencodexAccountCredentials(
+  path: string = `${process.env.HOME ?? "~"}/.opencodex/codex-accounts.json`,
+): Record<string, OpencodexAccountCredential> {
+  const out: Record<string, OpencodexAccountCredential> = {};
+  try {
+    const parsed = JSON.parse(fs.readFileSync(path, "utf8")) as Record<string, {
+      credential?: { accessToken?: unknown; refreshToken?: unknown; chatgptAccountId?: unknown; email?: unknown };
+    }>;
+    for (const [id, account] of Object.entries(parsed)) {
+      const credential = account.credential;
+      if (credential === undefined || typeof credential !== "object" || credential === null) continue;
+      out[id] = {
+        ...(typeof credential.accessToken === "string" ? { accessToken: credential.accessToken } : {}),
+        ...(typeof credential.refreshToken === "string" ? { refreshToken: credential.refreshToken } : {}),
+        ...(typeof credential.chatgptAccountId === "string" ? { accountId: credential.chatgptAccountId } : {}),
+        ...(typeof credential.email === "string" ? { email: credential.email } : {}),
+      };
+    }
+  } catch {
+    // opencodex is optional
+  }
+  return out;
 }

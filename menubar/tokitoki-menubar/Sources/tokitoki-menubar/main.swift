@@ -289,6 +289,9 @@ struct PopoverSessionDetail: Codable {
     }
 
     let events: [Event]?
+    let eventsTotal: Int?
+    let eventsOffset: Int?
+    let eventsHasMore: Bool?
 }
 
 struct MenubarPayload: Codable {
@@ -380,9 +383,11 @@ final class Model: ObservableObject {
     @Published var sessionRows: [PopoverSessionRow] = []
     @Published var sessionQuery = ""
     @Published var selectedSession: PopoverSessionDetail?
+    @Published var selectedSessionRow: PopoverSessionRow?
     @Published var sessionStatus: String?
     @Published var sessionPage = 1
     @Published var sessionHasMore = false
+    @Published var sessionEventsLoading = false
     @Published var maintenanceStatus: String?
     @Published var customHarnessRows: [ReportRow] = []
     @Published var customModelRows: [ReportRow] = []
@@ -473,15 +478,65 @@ final class Model: ObservableObject {
 
     func loadPopoverSession(_ row: PopoverSessionRow) {
         let cli = invocation
+        selectedSessionRow = row
+        selectedSession = nil
+        sessionEventsLoading = true
         sessionStatus = "Loading conversation…"
         Task { @MainActor [weak self] in
             guard let self else { return }
             do {
-                let detail = try await Self.runJSON(PopoverSessionDetail.self, cli, ["sessions", "--session", row.sessionId, "--json"])
+                let detail = try await Self.runJSON(PopoverSessionDetail.self, cli, [
+                    "sessions", "--provider", row.provider, "--session", row.sessionId,
+                    "--events-limit", "40", "--events-offset", "0", "--json",
+                ])
                 self.selectedSession = detail
+                self.sessionEventsLoading = false
                 self.sessionStatus = detail?.conversation == nil ? "No conversation body indexed" : nil
             } catch {
+                self.sessionEventsLoading = false
                 self.sessionStatus = "Could not load conversation: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    func clearPopoverSession() {
+        selectedSession = nil
+        selectedSessionRow = nil
+        sessionEventsLoading = false
+        sessionStatus = nil
+    }
+
+    func loadMorePopoverSessionEvents() {
+        guard let row = selectedSessionRow,
+              let detail = selectedSession,
+              detail.eventsHasMore == true,
+              !sessionEventsLoading else { return }
+        let offset = detail.events?.count ?? 0
+        let cli = invocation
+        sessionEventsLoading = true
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                let next = try await Self.runJSON(PopoverSessionDetail.self, cli, [
+                    "sessions", "--provider", row.provider, "--session", row.sessionId,
+                    "--events-limit", "40", "--events-offset", String(offset), "--json",
+                ])
+                if let next {
+                    let oldEvents = detail.events ?? []
+                    self.selectedSession = PopoverSessionDetail(
+                        provider: next.provider,
+                        sessionId: next.sessionId,
+                        conversation: detail.conversation ?? next.conversation,
+                        events: oldEvents + (next.events ?? []),
+                        eventsTotal: next.eventsTotal,
+                        eventsOffset: 0,
+                        eventsHasMore: next.eventsHasMore,
+                    )
+                }
+                self.sessionEventsLoading = false
+            } catch {
+                self.sessionEventsLoading = false
+                self.sessionStatus = "Could not load more requests: \(error.localizedDescription)"
             }
         }
     }
@@ -2161,6 +2216,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func openReports() {
         openLocalDashboard(path: "/?view=reports&last=month")
+    }
+
+    func openSessionInDashboard(provider: String, sessionId: String) {
+        var components = URLComponents()
+        components.path = "/"
+        components.queryItems = [
+            URLQueryItem(name: "view", value: "sessions"),
+            URLQueryItem(name: "provider", value: provider),
+            URLQueryItem(name: "session", value: sessionId),
+        ]
+        openLocalDashboard(path: components.string ?? "/?view=sessions")
     }
 
     func refreshDashboardStatus() {
@@ -3978,57 +4044,122 @@ struct ContentView: View {
     }
 
     private var sessionsBody: some View {
+        VStack(spacing: 0) {
+            if let row = model.selectedSessionRow {
+                sessionDetailBody(row)
+            } else {
+                ScrollView(.vertical) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        freshnessRow
+                        card(title: "find conversations", icon: "text.bubble") {
+                            HStack(spacing: 6) {
+                                TextField("search titles and conversation text…", text: $model.sessionQuery)
+                                    .textFieldStyle(.roundedBorder)
+                                    .font(.caption)
+                                    .onSubmit { model.searchPopoverSessions(model.sessionQuery) }
+                                Button("Search") { model.searchPopoverSessions(model.sessionQuery) }
+                                    .buttonStyle(.bordered).controlSize(.small)
+                            }
+                            if let status = model.sessionStatus {
+                                Text(status).font(.caption2).foregroundStyle(.secondary)
+                            }
+                            LazyVStack(alignment: .leading, spacing: 0) {
+                                ForEach(model.sessionRows) { row in
+                                    Button { model.loadPopoverSession(row) } label: {
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            HStack(spacing: 5) {
+                                                Text(row.title?.isEmpty == false ? row.title! : "(no title)")
+                                                    .font(.caption.weight(.semibold)).lineLimit(1)
+                                                Spacer()
+                                                Text("\(row.requests) req · \(humanCount(row.totalTokens))")
+                                                    .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                                            }
+                                            Text(row.snippet ?? "No indexed conversation text for this session.")
+                                                .font(.caption2).foregroundStyle(.secondary).lineLimit(2)
+                                            Text("\(row.provider) · \(row.accountKey) · \(row.startedAt.prefix(16).replacingOccurrences(of: "T", with: " "))")
+                                                .font(.caption2).foregroundStyle(.tertiary).lineLimit(1)
+                                        }
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        .padding(.vertical, 6)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .contentShape(Rectangle())
+                                    .overlay(alignment: .bottom) { Divider().opacity(0.3) }
+                                }
+                            }
+                        }
+                    }.padding(12)
+                }
+                sessionPaginationBar
+            }
+        }
+        .onAppear {
+            if model.sessionRows.isEmpty { model.searchPopoverSessions("") }
+        }
+    }
+
+    private var sessionPaginationBar: some View {
+        Group {
+            if model.sessionPage > 1 || model.sessionHasMore {
+                HStack {
+                    Button("← Previous") { model.previousPopoverSessionPage() }
+                        .buttonStyle(.bordered).controlSize(.mini)
+                        .disabled(model.sessionPage <= 1)
+                    Spacer()
+                    Text("Page \(model.sessionPage)")
+                        .font(.caption2).foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Next →") { model.nextPopoverSessionPage() }
+                        .buttonStyle(.bordered).controlSize(.mini)
+                        .disabled(!model.sessionHasMore)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 7)
+                .background(.regularMaterial)
+                .overlay(alignment: .top) { Divider() }
+            }
+        }
+    }
+
+    private func sessionDetailBody(_ row: PopoverSessionRow) -> some View {
         ScrollView(.vertical) {
             VStack(alignment: .leading, spacing: 10) {
-                freshnessRow
-                card(title: "find conversations", icon: "text.bubble") {
-                    HStack(spacing: 6) {
-                        TextField("search titles and conversation text…", text: $model.sessionQuery)
-                            .textFieldStyle(.roundedBorder)
+                HStack(spacing: 8) {
+                    Button {
+                        model.clearPopoverSession()
+                    } label: {
+                        Label("Sessions", systemImage: "chevron.left")
+                    }
+                    .buttonStyle(.bordered).controlSize(.small)
+                    Spacer()
+                    Button {
+                        AppDelegate.shared?.openSessionInDashboard(provider: row.provider, sessionId: row.sessionId)
+                    } label: {
+                        Label("Open in web UI", systemImage: "arrow.up.right.square")
+                    }
+                    .buttonStyle(.bordered).controlSize(.small)
+                }
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(row.title?.isEmpty == false ? row.title! : "Conversation")
+                        .font(.headline).lineLimit(2)
+                    Spacer()
+                    Text("\(row.requests) requests")
+                        .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                }
+                Text("\(row.provider) · \(row.accountKey) · \(row.startedAt.prefix(16).replacingOccurrences(of: "T", with: " "))")
+                    .font(.caption2).foregroundStyle(.secondary)
+                if model.sessionEventsLoading && model.selectedSession == nil {
+                    card(title: "loading conversation", icon: "hourglass") {
+                        ProgressView().frame(maxWidth: .infinity, alignment: .leading)
+                        Text("Loading the first 40 requests only…")
+                            .font(.caption2).foregroundStyle(.secondary)
+                    }
+                }
+                if let status = model.sessionStatus, !status.hasPrefix("Loading conversation") {
+                    card(title: "session status", icon: "info.circle") {
+                        Text(status)
                             .font(.caption)
-                            .onSubmit { model.searchPopoverSessions(model.sessionQuery) }
-                        Button("Search") { model.searchPopoverSessions(model.sessionQuery) }
-                            .buttonStyle(.bordered).controlSize(.small)
-                    }
-                    if let status = model.sessionStatus {
-                        Text(status).font(.caption2).foregroundStyle(.secondary)
-                    }
-                    ForEach(model.sessionRows) { row in
-                        Button { model.loadPopoverSession(row) } label: {
-                            VStack(alignment: .leading, spacing: 2) {
-                                HStack(spacing: 5) {
-                                    Text(row.title?.isEmpty == false ? row.title! : "(no title)")
-                                        .font(.caption.weight(.semibold)).lineLimit(1)
-                                    Spacer()
-                                    Text("\(row.requests) req · \(humanCount(row.totalTokens))")
-                                        .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
-                                }
-                                Text(row.snippet ?? "No indexed conversation text for this session.")
-                                    .font(.caption2).foregroundStyle(.secondary).lineLimit(2)
-                                Text("\(row.provider) · \(row.accountKey) · \(row.startedAt.prefix(16).replacingOccurrences(of: "T", with: " "))")
-                                    .font(.caption2).foregroundStyle(.tertiary).lineLimit(1)
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.vertical, 4)
-                        }
-                        .buttonStyle(.plain)
-                        .contentShape(Rectangle())
-                        .overlay(alignment: .bottom) { Divider().opacity(0.3) }
-                    }
-                    if model.sessionPage > 1 || model.sessionHasMore {
-                        HStack {
-                            Button("← Previous") { model.previousPopoverSessionPage() }
-                                .buttonStyle(.bordered).controlSize(.mini)
-                                .disabled(model.sessionPage <= 1)
-                            Spacer()
-                            Text("Page \(model.sessionPage)")
-                                .font(.caption2).foregroundStyle(.tertiary)
-                            Spacer()
-                            Button("Next →") { model.nextPopoverSessionPage() }
-                                .buttonStyle(.bordered).controlSize(.mini)
-                                .disabled(!model.sessionHasMore)
-                        }
-                        .padding(.top, 3)
+                            .foregroundStyle(status.hasPrefix("Could not") ? .red : .secondary)
                     }
                 }
                 if let conversation = model.selectedSession?.conversation {
@@ -4036,31 +4167,36 @@ struct ContentView: View {
                         ConversationBodyView(rawBody: conversation.body)
                     }
                 }
-                if let events = model.selectedSession?.events, !events.isEmpty {
-                    card(title: "request timeline · \(events.count)", icon: "timeline.selection") {
-                        ForEach(events.prefix(30)) { event in
-                            let eventCost = String(format: "$%.2f", event.costUsd)
-                            HStack(spacing: 5) {
-                                Text("\(event.n)").font(.caption2.monospacedDigit()).foregroundStyle(.tertiary).frame(width: 22, alignment: .trailing)
-                                Text(String(event.ts.dropFirst(11).prefix(8))).font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
-                                Text(event.model).font(.caption2).lineLimit(1)
-                                Spacer()
-                                Text("\(humanCount(event.runningTokens)) · \(eventCost)")
-                                    .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                if let detail = model.selectedSession, let events = detail.events, !events.isEmpty {
+                    card(title: "request timeline · \(detail.eventsTotal ?? events.count)", icon: "timeline.selection") {
+                        LazyVStack(alignment: .leading, spacing: 5) {
+                            ForEach(events) { event in
+                                let eventCost = String(format: "$%.2f", event.costUsd)
+                                HStack(spacing: 5) {
+                                    Text("\(event.n)").font(.caption2.monospacedDigit()).foregroundStyle(.tertiary).frame(width: 28, alignment: .trailing)
+                                    Text(String(event.ts.dropFirst(11).prefix(8))).font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                                    Text(event.model).font(.caption2).lineLimit(1)
+                                    Spacer()
+                                    Text("\(humanCount(event.runningTokens)) · \(eventCost)")
+                                        .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                                }
                             }
                         }
-                        if events.count > 30 {
-                            Text("Showing the first 30 requests; the full timeline is available in the dashboard.")
+                        if detail.eventsHasMore == true {
+                            Button(model.sessionEventsLoading ? "Loading…" : "Load next 40 requests") {
+                                model.loadMorePopoverSessionEvents()
+                            }
+                            .buttonStyle(.bordered).controlSize(.small)
+                            .disabled(model.sessionEventsLoading)
+                            Text("Showing \(events.count) of \(detail.eventsTotal ?? events.count) requests; loading is incremental.")
                                 .font(.caption2).foregroundStyle(.tertiary)
                         }
                     }
                 }
-            }.padding(12)
+            }
+            .padding(12)
         }
-        .onAppear {
-            if model.sessionRows.isEmpty { model.searchPopoverSessions("") }
     }
-}
 
 /// Compact native conversation renderer: markdown gets readable hierarchy and
 /// tool calls are summarized separately so a long transcript is not just a
@@ -4068,11 +4204,22 @@ struct ContentView: View {
 private struct ConversationBodyView: View {
     let rawBody: String
 
+    private func toolName(for rawLine: Substring) -> String? {
+        let line = rawLine.trimmingCharacters(in: .whitespaces)
+        if line.hasPrefix("[tool:"), let end = line.firstIndex(of: "]") {
+            return String(line[line.index(line.startIndex, offsetBy: 6)..<end])
+        }
+        for prefix in ["tools.", "functions."] where line.hasPrefix(prefix) {
+            let end = line.firstIndex(of: "(") ?? line.endIndex
+            return String(line[..<end])
+        }
+        return nil
+    }
+
     private var toolCounts: [(name: String, count: Int)] {
         var counts: [String: Int] = [:]
         for line in rawBody.split(separator: "\n") {
-            guard line.hasPrefix("[tool:"), let end = line.firstIndex(of: "]") else { continue }
-            let name = String(line[line.index(line.startIndex, offsetBy: 6)..<end])
+            guard let name = toolName(for: line) else { continue }
             counts[name, default: 0] += 1
         }
         return counts.keys.sorted().map { ($0, counts[$0] ?? 0) }
@@ -4080,7 +4227,7 @@ private struct ConversationBodyView: View {
 
     private var readableBody: String {
         rawBody.split(separator: "\n", omittingEmptySubsequences: false)
-            .filter { !$0.hasPrefix("[tool:") }
+            .filter { toolName(for: $0) == nil }
             .joined(separator: "\n")
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
@@ -4105,12 +4252,14 @@ private struct ConversationBodyView: View {
                     .font(.caption2).foregroundStyle(.secondary)
             } else if let markdown = try? AttributedString(markdown: readableBody) {
                 Text(markdown)
-                    .font(.caption2)
+                    .font(.system(size: 12, weight: .regular))
+                    .lineSpacing(2)
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
             } else {
                 Text(readableBody)
-                    .font(.caption2)
+                    .font(.system(size: 12, weight: .regular))
+                    .lineSpacing(2)
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }

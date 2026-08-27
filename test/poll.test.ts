@@ -70,6 +70,7 @@ function hermeticPaths(): Record<string, string> {
     copilotAuthPath: miss("copilot-apps.json"),
     cursorAuthPath: miss("cursor-auth.json"),
     opencodexCachePath: miss("opencodex-cache.json"),
+    opencodexAccountsPath: miss("opencodex-accounts.json"),
     commandcodeAuthPath: miss("commandcode-auth.json"),
   };
 }
@@ -571,6 +572,53 @@ describe("pollQuotas", () => {
       const windows = res.accounts.find((a) => a.accountKey === "codex")?.windows ?? [];
       expect(windows.map((window) => window.windowMinutes)).toEqual([18_000 / 60, 10_080]);
       void res;
+    } finally {
+      cache.close();
+    }
+  });
+
+  it("polls pooled Codex OAuth accounts directly so 5-hour and weekly stay distinct", async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "tk-poll-pool-live-"));
+    const cache = new EventCache(path.join(dir, "cache.db"));
+    try {
+      const ocCache = path.join(dir, "codex-quota-cache.json");
+      const ocAccounts = path.join(dir, "codex-accounts.json");
+      writeFileSync(ocCache, JSON.stringify({ quotas: {
+        "chatgpt-work": { weeklyPercent: 23, weeklyResetAt: 1_800_000_000, shortPercent: 65, shortResetAt: 1_800_000_001, shortWindowSeconds: 18_000 },
+      }}));
+      writeFileSync(ocAccounts, JSON.stringify({ "chatgpt-work": {
+        credential: { accessToken: "at-work", refreshToken: "rt-work", chatgptAccountId: "work-id", email: "work@example.com" },
+      }}));
+      const fetcher = (async (input: unknown) => {
+        const url = String(input);
+        if (url.includes("rate-limit-reset-credits")) {
+          return new Response(JSON.stringify({ available_count: 0, credits: [] }), { status: 200 });
+        }
+        return new Response(JSON.stringify({
+          plan_type: "plus",
+          email: "work@example.com",
+          rate_limit: {
+            primary_window: { used_percent: 65, reset_at: 1_800_000_100, limit_window_seconds: 18_000 },
+            secondary_window: { used_percent: 10, reset_at: 1_800_604_900, limit_window_seconds: 604_800 },
+          },
+        }), { status: 200 });
+      }) as unknown as typeof fetch;
+      const result = await pollQuotas({
+        ...hermeticPaths(),
+        providers: ["codex"],
+        authPath: path.join(dir, "missing-auth.json"),
+        opencodexCachePath: ocCache,
+        opencodexAccountsPath: ocAccounts,
+        fetcher,
+        cache,
+      });
+      const account = result.accounts.find((candidate) => candidate.accountKey === "codex:chatgpt-work");
+      expect(account?.windows.map((window) => [window.windowMinutes, window.usedPct])).toEqual([
+        [300, 65],
+        [10_080, 10],
+      ]);
+      expect(account?.email).toBe("work@example.com");
+      expect(account?.harnesses).toEqual(["opencodex"]);
     } finally {
       cache.close();
     }

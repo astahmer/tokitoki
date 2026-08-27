@@ -125,6 +125,20 @@ describe("sessionDetail + sessionProviders", () => {
     cache.close();
   });
 
+  it("supports bounded event pages without changing chronological order", () => {
+    const cache = tmpCache();
+    cache.insert([
+      ev({ ts: "2026-08-20T10:00:00Z", sessionId: "paged", inputTokens: 10 }),
+      ev({ ts: "2026-08-20T10:01:00Z", sessionId: "paged", inputTokens: 20 }),
+      ev({ ts: "2026-08-20T10:02:00Z", sessionId: "paged", inputTokens: 30 }),
+    ]);
+    expect(cache.sessionEventCount("p1", "paged")).toBe(3);
+    expect(cache.sessionTokensBefore("p1", "paged", 2)).toBe(30);
+    expect(cache.sessionDetail("p1", "paged", { limit: 2, offset: 0 }).map((r) => r.inputTokens)).toEqual([10, 20]);
+    expect(cache.sessionDetail("p1", "paged", { limit: 2, offset: 2 }).map((r) => r.inputTokens)).toEqual([30]);
+    cache.close();
+  });
+
   it("returns an empty timeline for unknown sessions", () => {
     const cache = tmpCache();
     expect(cache.sessionProviders("nope")).toEqual([]);

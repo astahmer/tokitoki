@@ -59,6 +59,8 @@ interface AppState {
   account?: string;
   providers: string[];
   showEmail: boolean;
+  sessionProvider?: string;
+  sessionId?: string;
 }
 
 function readStateFromUrl(): AppState {
@@ -80,6 +82,8 @@ function readStateFromUrl(): AppState {
     account: p.get("account") ?? undefined,
     providers: p.getAll("provider").filter((x) => x.length > 0),
     showEmail: p.get("emails") === "1",
+    sessionProvider: p.get("provider") ?? undefined,
+    sessionId: p.get("session") ?? undefined,
   };
 }
 
@@ -113,7 +117,7 @@ function writeStateToUrl(s: AppState): void {
 
 export function App() {
   const [state, setState] = useState<AppState>(readStateFromUrl);
-  const { view, range, dimension, account, providers, showEmail } = state;
+  const { view, range, dimension, account, providers, showEmail, sessionProvider, sessionId } = state;
 
   const patch = useCallback((partial: Partial<AppState>): void => {
     setState((prev) => {
@@ -264,7 +268,13 @@ export function App() {
             accounts={table.state === "ok" ? table.data.accounts.map((a) => a.key) : []}
             setAccount={(a) => patch({ account: a })}
           />
-          <SessionsView win={win} providers={providers} account={account} />
+          <SessionsView
+            win={win}
+            providers={providers}
+            account={account}
+            initialSessionProvider={sessionProvider}
+            initialSessionId={sessionId}
+          />
         </>
       ) : view === "reports" ? (
         <>
