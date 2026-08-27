@@ -26,7 +26,13 @@ import {
 import { renderGrid } from "./grid.ts";
 import { renderBlocks } from "./blocks.ts";
 import { parseStatuslineStdin, renderStatusline } from "./statusline.ts";
-import { resolveMenubarBin, startMenubar, stopMenubar, menubarStatus } from "./menubar-launch.ts";
+import {
+  installRebuiltMenubarBinary,
+  resolveMenubarBin,
+  startMenubar,
+  stopMenubar,
+  menubarStatus,
+} from "./menubar-launch.ts";
 import { runMcpStdio } from "./mcp-server.ts";
 import { detectAnomalies, ANOMALY_METRICS, anomalyFooter } from "./anomalies.ts";
 import { processBudgetAlerts, seedBudgetsConfig } from "./budgets.ts";
@@ -306,7 +312,7 @@ Rows always show every configured scope×pattern; state is ok | warn (≥80%)
   --status                  pid + running state
   --stop                    stop a running instance (launchctl-aware)
   --foreground              run attached instead of detached
-  --rebuild                 rebuild from source first (swift build -c release)`,
+  --rebuild                 rebuild, install the launchd binary, and restart it`,
     example: "tokitoki menubar",
   },
 };
@@ -1831,6 +1837,16 @@ async function runMenubar(parsed: ParsedInvocation): Promise<void> {
   if (rebuild && bin !== null && bin.source === "repo-build") {
     const proc = Bun.spawnSync(["swift", "build", "-c", "release"], { cwd: "menubar/tokitoki-menubar", stdout: "inherit", stderr: "inherit" });
     if (!proc.success) throw new UserError("swift build failed", "tokitoki menubar --rebuild");
+  }
+
+  // A configured LaunchAgent does not execute the repo build selected above;
+  // it executes its own ProgramArguments path (normally ~/bin). Keep those
+  // two paths synchronized, then restart launchd so an already-running stale
+  // process cannot survive a successful rebuild.
+  let installedRebuild = false;
+  if (rebuild && bin !== null && bin.source === "repo-build" && process.platform === "darwin") {
+    installedRebuild = installRebuiltMenubarBinary(bin.path) !== null;
+    if (installedRebuild) await stopMenubar();
   }
 
   if (foreground) {

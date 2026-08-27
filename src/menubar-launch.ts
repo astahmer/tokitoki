@@ -161,8 +161,43 @@ async function readLivePid(opts: PidIdentityOpts & { pidFile?: string } = {}): P
 
 // -------------------------------------------------------------- darwin bits
 
-function launchAgentPlistPath(home?: string): string {
+export function launchAgentPlistPath(home?: string): string {
   return path.join(home ?? os.homedir(), "Library", "LaunchAgents", `${LAUNCH_AGENT_LABEL}.plist`);
+}
+
+/**
+ * Read the executable configured as the first LaunchAgent ProgramArgument.
+ * The plist is intentionally parsed narrowly: this is only used to verify
+ * that a rebuild will update the binary launchd actually executes.
+ */
+export function launchAgentProgramPath(home?: string): string | null {
+  let plist: string;
+  try {
+    plist = fs.readFileSync(launchAgentPlistPath(home), "utf8");
+  } catch {
+    return null;
+  }
+  const match = plist.match(
+    /<key>ProgramArguments<\/key>\s*<array>\s*<string>([^<]+)<\/string>/,
+  );
+  return match?.[1] ?? null;
+}
+
+/**
+ * Install a freshly rebuilt repo binary only when the user's LaunchAgent
+ * explicitly points at the conventional ~/bin target. This avoids silently
+ * overwriting an unrelated custom binary or an env-selected app.
+ */
+export function installRebuiltMenubarBinary(
+  sourcePath: string,
+  home = os.homedir(),
+): string | null {
+  const expectedTarget = path.join(home, "bin", MENUBAR_BIN_NAME);
+  if (launchAgentProgramPath(home) !== expectedTarget) return null;
+  fs.mkdirSync(path.dirname(expectedTarget), { recursive: true });
+  fs.copyFileSync(sourcePath, expectedTarget);
+  fs.chmodSync(expectedTarget, 0o755);
+  return expectedTarget;
 }
 
 function uid(): number {
@@ -292,7 +327,14 @@ export async function stopMenubar(opts: StopOpts = {}): Promise<StopResult> {
       runner: opts.runner,
       plistExists: opts.plistExists,
     });
-    if (viaLaunchd) return { status: "stopped", via: "launchd" };
+    if (viaLaunchd) {
+      try {
+        fs.unlinkSync(opts.pidFile ?? menubarPidFile());
+      } catch {
+        // The pidfile is best-effort state and may already be absent.
+      }
+      return { status: "stopped", via: "launchd" };
+    }
   }
   const pid = await readLivePid(opts);
   if (pid === null) return { status: "not-running" };

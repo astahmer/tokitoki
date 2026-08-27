@@ -1,10 +1,12 @@
 import { afterAll, describe, expect, it } from "bun:test";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
 import {
   isMenubarRunning,
+  installRebuiltMenubarBinary,
+  launchAgentProgramPath,
   menubarPidFile,
   menubarStatus,
   resolveMenubarBin,
@@ -67,6 +69,55 @@ describe("resolveMenubarBin", () => {
     cleanupDirs.push(home);
     mkdirSync(deep, { recursive: true });
     expect(resolveMenubarBin({ cwd: deep, home, envBin: "/nonexistent/bin" })).toBeNull();
+  });
+});
+
+describe("LaunchAgent deployment", () => {
+  it("updates only the conventional home-bin target configured by the plist", () => {
+    const home = tmpdir();
+    cleanupDirs.push(home);
+    const launchAgents = path.join(home, "Library", "LaunchAgents");
+    mkdirSync(launchAgents, { recursive: true });
+    writeFileSync(
+      path.join(launchAgents, "dev.tokitoki.menubar.plist"),
+      [
+        "<plist><dict>",
+        "<key>ProgramArguments</key>",
+        "<array><string>" + path.join(home, "bin", "tokitoki-menubar") + "</string><string>--x</string></array>",
+        "</dict></plist>",
+      ].join(""),
+    );
+    const source = path.join(home, "rebuilt-menubar");
+    writeFileSync(source, "new build");
+
+    expect(launchAgentProgramPath(home)).toBe(path.join(home, "bin", "tokitoki-menubar"));
+    const installed = installRebuiltMenubarBinary(source, home);
+    expect(installed).toBe(path.join(home, "bin", "tokitoki-menubar"));
+    expect(readFileSync(installed!, "utf8")).toBe("new build");
+
+    const custom = path.join(home, "custom-menubar");
+    writeFileSync(
+      path.join(launchAgents, "dev.tokitoki.menubar.plist"),
+      `<key>ProgramArguments</key><array><string>${custom}</string></array>`,
+    );
+    expect(installRebuiltMenubarBinary(source, home)).toBeNull();
+  });
+
+  it("makes the installed binary executable", () => {
+    const home = tmpdir();
+    cleanupDirs.push(home);
+    const launchAgents = path.join(home, "Library", "LaunchAgents");
+    mkdirSync(launchAgents, { recursive: true });
+    const target = path.join(home, "bin", "tokitoki-menubar");
+    writeFileSync(
+      path.join(launchAgents, "dev.tokitoki.menubar.plist"),
+      `<key>ProgramArguments</key><array><string>${target}</string></array>`,
+    );
+    const source = path.join(home, "rebuilt-menubar");
+    writeFileSync(source, "binary");
+    chmodSync(source, 0o644);
+    installRebuiltMenubarBinary(source, home);
+    expect(statSync(target).mode & 0o111).toBeGreaterThan(0);
   });
 });
 
@@ -211,13 +262,17 @@ describe("darwin launchctl branch", () => {
   it("stop prefers bootout when plist exists", async () => {
     recordedCalls.length = 0;
     const okRunner: Runner = () => ({ ok: true });
+    const dir = tmpdir();
+    const pidFile = path.join(dir, "menubar.pid");
+    writeFileSync(pidFile, "1234");
     const res = await stopMenubar({
       platform: "darwin",
       plistExists: true,
       runner: okRunner,
-      pidFile: path.join(tmpdir(), "absent.pid"),
+      pidFile,
     });
     expect(res).toEqual({ status: "stopped", via: "launchd" });
+    expect(() => readFileSync(pidFile)).toThrow();
   });
 });
 
