@@ -275,6 +275,31 @@ describe("computeLimits", () => {
       cache.close();
     }
   });
+
+  it("marks old live quota observations stale instead of implying zero", () => {
+    const cache = limitsCache();
+    try {
+      cache.insertPolledSnapshots({
+        provider: "codex",
+        accountKey: "openai:plus",
+        accountId: "personal-account",
+        windows: [{ windowMinutes: 300, usedPct: 73, resetsAtEpoch: 1_800_000_000 }],
+        capturedAtIso: "2026-08-27T10:00:00.000Z",
+        eventId: "poll:2026-08-27T10:00:00.000Z:codex",
+      });
+      const limits = computeLimits(
+        cache,
+        { poll: { intervalMinutes: 15 } },
+        new Date("2026-08-27T10:31:00.000Z"),
+        [{ provider: "codex", accountKey: "openai:plus" }],
+      );
+      expect(limits[0]?.freshness).toBe("stale");
+      expect(limits[0]?.observedAt).toBe("2026-08-27T10:00:00.000Z");
+      expect(limits[0]?.windows[0]?.usedPct).toBe(73);
+    } finally {
+      cache.close();
+    }
+  });
 });
 
 // ------------------------------------------------------------------ toggles

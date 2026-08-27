@@ -40,6 +40,7 @@ describe("menubar config persistence", () => {
     expect(run(["config", "set", "notifications.enabled", "false"], configPath).status).toBe(0);
     expect(run(["config", "set", "notifications.resetAware", "true"], configPath).status).toBe(0);
     expect(run(["config", "set", "notifications.burnWarningRatio", "0.9"], configPath).status).toBe(0);
+    expect(run(["config", "set", "privacy.hideIdentities", "true"], configPath).status).toBe(0);
     expect(run(["ui", "--tabs", "tokens,overview,quotas,reports,mcp,sources,settings"], configPath).status).toBe(0);
     expect(run(["config", "set", "sync.backend", '"dir"'], configPath).status).toBe(0);
 
@@ -55,6 +56,7 @@ describe("menubar config persistence", () => {
       sync?: { backend?: string };
       poll?: { adaptive?: boolean };
       notifications?: { enabled?: boolean; resetAware?: boolean; burnWarningRatio?: number };
+      privacy?: { hideIdentities?: boolean };
     };
     expect(cfg.ui?.previewHidden).toEqual(["claude", "openrouter"]);
     expect(cfg.ui?.stripMetric).toBe("smart");
@@ -67,6 +69,7 @@ describe("menubar config persistence", () => {
     expect(cfg.notifications?.enabled).toBe(false);
     expect(cfg.notifications?.resetAware).toBe(true);
     expect(cfg.notifications?.burnWarningRatio).toBe(0.9);
+    expect(cfg.privacy?.hideIdentities).toBe(true);
   });
 
   it("rejects a foreign config section without touching the file", () => {

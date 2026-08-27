@@ -54,6 +54,10 @@ export interface AccountLimits {
   alsoOn?: string[];
   /** Where this account's quota data comes from: polled | opencodex | manual | scan. */
   origin?: string;
+  /** Most recent quota observation used to render this card. */
+  observedAt?: string;
+  /** Freshness of provider-reported data; never confuse stale data with zero. */
+  freshness?: "fresh" | "stale" | "unknown";
   /** Banked rate-limit resets (codex credits analog). */
   bankedResets?: number;
   bankedExpiresAt?: string;
@@ -208,6 +212,22 @@ export function computeLimits(
 
     // --- Embedded snapshots (real data wins) -----------------------------
     const snaps = cache.latestQuotaSnapshots(provider, accountKey);
+    const observedAt = snaps
+      .map((s) => Date.parse(s.capturedAt))
+      .filter((value) => Number.isFinite(value))
+      .sort((a, b) => b - a)[0];
+    const polledObservedAt = snaps
+      .filter((s) => s.eventId?.startsWith("poll:") === true)
+      .map((s) => Date.parse(s.capturedAt))
+      .filter((value) => Number.isFinite(value))
+      .sort((a, b) => b - a)[0];
+    const freshness = snaps.length === 0
+      ? "unknown" as const
+      : polledObservedAt === undefined
+        ? "fresh" as const
+        : now.getTime() - polledObservedAt <= Math.max(10, (config.poll?.intervalMinutes ?? 15) * 2) * 60_000
+          ? "fresh" as const
+          : "stale" as const;
     const quotaAccountIds = cache.quotaAccountIds(provider, accountKey);
     const accountId = quotaAccountIds.size === 1 ? quotaAccountIds.values().next().value : undefined;
     const embeddedKinds = new Set<string>();
@@ -351,6 +371,8 @@ export function computeLimits(
       windows,
       bankedResets,
       bankedExpiresAt,
+      ...(observedAt !== undefined ? { observedAt: new Date(observedAt).toISOString() } : {}),
+      freshness,
     });
   }
   return out;

@@ -128,6 +128,38 @@ describe("opencodexAccountIdentities", () => {
 });
 
 describe("pollQuotas", () => {
+  it("coalesces concurrent callers into one upstream poll", async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "tk-poll-single-flight-"));
+    const cache = new EventCache(path.join(dir, "cache.db"));
+    const previousLock = process.env.TOKITOKI_POLL_LOCK;
+    process.env.TOKITOKI_POLL_LOCK = path.join(dir, "poll.lock");
+    try {
+      let calls = 0;
+      const fetcher = (async (input: unknown) => {
+        calls += 1;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        const url = String(input);
+        if (url.includes("wham/usage")) return new Response(JSON.stringify(USAGE_BODY), { status: 200 });
+        if (url.includes("rate-limit-reset-credits")) return new Response(JSON.stringify({ credits: [], available_count: 0 }), { status: 200 });
+        throw new Error(`unexpected fetch: ${url}`);
+      }) as unknown as typeof fetch;
+      const options = {
+        ...hermeticPaths(),
+        providers: ["codex"],
+        authPath: fixtureAuth(),
+        fetcher,
+        cache,
+      };
+      const [one, two] = await Promise.all([pollQuotas(options), pollQuotas(options)]);
+      expect(one).toEqual(two);
+      expect(calls).toBe(2); // usage + banked-reset inventory
+    } finally {
+      cache.close();
+      if (previousLock === undefined) delete process.env.TOKITOKI_POLL_LOCK;
+      else process.env.TOKITOKI_POLL_LOCK = previousLock;
+    }
+  });
+
   it("keeps a pooled account's stable identity when materializing its quota card", async () => {
     const dir = mkdtempSync(path.join(os.tmpdir(), "tk-poll-pool-stable-id-"));
     const cache = new EventCache(path.join(dir, "cache.db"));

@@ -51,6 +51,8 @@ export interface QuotaSnapshotRow {
   resetsAt: number;
   creditsJson: string | null;
   capturedAt: string;
+  /** Original event id; poll:* rows are authenticated/provider-live data. */
+  eventId?: string;
 }
 export class EventCache {
   private db: Database;
@@ -226,7 +228,7 @@ export class EventCache {
       if (newRows.length > 0) this.applyRollups(newRows);
       return inserted;
     });
-    const n = tx(events) as number;
+    const n = sqliteRetry(() => tx(events)) as number;
     this.insertQuotaSnapshots(events);
     return n;
   }
@@ -271,7 +273,7 @@ export class EventCache {
         );
       }
     });
-    tx();
+    sqliteRetry(() => tx());
     return input.windows.length;
   }
 
@@ -304,7 +306,7 @@ export class EventCache {
         );
       }
     });
-    tx();
+    sqliteRetry(() => tx());
   }
 
   // -- daily rollups -------------------------------------------------------
@@ -419,7 +421,7 @@ export class EventCache {
         if (e.tool !== undefined) stmt.run(e.tool, e.id);
       }
     });
-    tx();
+    sqliteRetry(() => tx());
   }
 
   // -- log-offset tracking -------------------------------------------------
@@ -598,7 +600,8 @@ export class EventCache {
             `SELECT account_key AS accountKey, account_id AS accountId,
                     window_minutes AS windowMinutes,
                     used_pct AS usedPct, resets_at AS resetsAt,
-                    credits_json AS creditsJson, captured_at AS capturedAt
+                    credits_json AS creditsJson, captured_at AS capturedAt,
+                    event_id AS eventId
              FROM quota_snapshots
              WHERE provider = ? AND account_key = ?
              ORDER BY captured_at DESC, window_minutes DESC
@@ -611,7 +614,8 @@ export class EventCache {
           `SELECT qs.account_key AS accountKey, qs.account_id AS accountId,
                   qs.window_minutes AS windowMinutes,
                   qs.used_pct AS usedPct, qs.resets_at AS resetsAt,
-                  qs.credits_json AS creditsJson, qs.captured_at AS capturedAt
+                  qs.credits_json AS creditsJson, qs.captured_at AS capturedAt,
+                  qs.event_id AS eventId
            FROM quota_snapshots qs
            JOIN (
              SELECT window_minutes, MAX(captured_at) AS captured_at

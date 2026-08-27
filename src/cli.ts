@@ -2307,6 +2307,7 @@ function runMenubarPayload(parsed: ParsedInvocation): void {
           burnWarnings: config.notifications?.burnWarnings !== false,
           burnWarningRatio: Math.max(0, Math.min(1, config.notifications?.burnWarningRatio ?? 0.8)),
           disabledNotifications: config.notifications?.disabled ?? [],
+          privacyHideIdentities: config.privacy?.hideIdentities === true,
         }),
       );
     });
@@ -2491,6 +2492,20 @@ function runMenubarPayload(parsed: ParsedInvocation): void {
             resetsAt: snap.resetsAt > 0 ? new Date(snap.resetsAt * 1000).toISOString() : undefined,
           }));
           const accountIds = cache.quotaAccountIds(p.provider, p.accountKey);
+          const observedEpoch = snaps
+            .map((snap) => Date.parse(snap.capturedAt))
+            .filter((value) => Number.isFinite(value))
+            .sort((a, b) => b - a)[0];
+          const pollObservedEpoch = snaps
+            .filter((snap) => snap.eventId?.startsWith("poll:") === true)
+            .map((snap) => Date.parse(snap.capturedAt))
+            .filter((value) => Number.isFinite(value))
+            .sort((a, b) => b - a)[0];
+          const freshness = pollObservedEpoch === undefined
+            ? "unknown" as const
+            : Date.now() - pollObservedEpoch <= Math.max(10, (config.poll?.intervalMinutes ?? 15) * 2) * 60_000
+              ? "fresh" as const
+              : "stale" as const;
           if (
             p.provider === "codex" &&
             localCodexAccountId !== undefined &&
@@ -2508,9 +2523,12 @@ function runMenubarPayload(parsed: ParsedInvocation): void {
           withOrigin.push({
             provider: p.provider,
             accountKey: p.accountKey,
+            ...(accountIds.size === 1 ? { accountId: [...accountIds][0] } : {}),
             ...(poolIdentity?.email !== undefined ? { email: poolIdentity.email } : {}),
             origin: "polled",
             windows,
+            ...(observedEpoch !== undefined ? { observedAt: new Date(observedEpoch).toISOString() } : {}),
+            freshness,
             ...(bankedResets !== undefined ? { bankedResets } : {}),
             ...(bankedExpiresAt !== undefined ? { bankedExpiresAt } : {}),
           });

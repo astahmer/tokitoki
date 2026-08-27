@@ -167,6 +167,8 @@ struct AccountLimits: Codable, Identifiable {
     let origin: String?
     let bankedResets: Int?
     let bankedExpiresAt: String?
+    var observedAt: String? = nil
+    var freshness: String? = nil
 
     var id: String { "\(provider)@\(accountKey)" }
 }
@@ -200,6 +202,7 @@ struct UiPreviewConfig: Codable {
     var syncPath: String? = nil
     var syncUrl: String? = nil
     var syncHandle: String? = nil
+    var privacyHideIdentities: Bool? = nil
 }
 
 // Combined snapshot from `tokitoki menubar-payload --json` (single CLI
@@ -378,6 +381,7 @@ final class Model: ObservableObject {
     @Published var burnWarnings = true
     @Published var burnWarningRatio = 0.8
     @Published var disabledNotifications: Set<String> = []
+    @Published var privacyHideIdentities = false
     @Published var notificationStatus: String?
     @Published var notificationHistory: [NotificationRecord] = []
     @Published var sessionRows: [PopoverSessionRow] = []
@@ -713,6 +717,11 @@ final class Model: ObservableObject {
         persistUISetting(path: "notifications.burnWarningRatio", json: String(format: "%.2f", burnWarningRatio))
     }
 
+    func setPrivacyHideIdentities(_ enabled: Bool) {
+        privacyHideIdentities = enabled
+        persistUISetting(path: "privacy.hideIdentities", json: enabled ? "true" : "false")
+    }
+
     func setNotificationKindEnabled(_ kind: String, enabled: Bool) {
         if enabled { disabledNotifications.remove(kind) } else { disabledNotifications.insert(kind) }
         notificationStatus = enabled ? "\(notificationKindLabel(kind)) alerts enabled" : "\(notificationKindLabel(kind)) alerts disabled"
@@ -999,6 +1008,7 @@ final class Model: ObservableObject {
                     self.syncPath = ui.syncPath ?? ""
                     self.syncUrl = ui.syncUrl ?? ""
                     self.syncHandle = ui.syncHandle ?? ""
+                    self.privacyHideIdentities = ui.privacyHideIdentities ?? false
                 }
                 self.updatePollSchedule()
                 self.spendPeriods = p.spendPeriods ?? []
@@ -4322,6 +4332,15 @@ private struct ConversationBodyView: View {
                     .buttonStyle(.bordered).controlSize(.small)
                     .accessibilityIdentifier("open-config-file")
                 }
+                card(title: "privacy", icon: "eye.slash") {
+                    Toggle("Hide account identities in the popover", isOn: Binding(
+                        get: { model.privacyHideIdentities },
+                        set: { model.setPrivacyHideIdentities($0) },
+                    ))
+                    .font(.caption)
+                    Text("Emails, account ids, and credential hints are replaced with private labels locally. The config remains plain text and contains no secrets.")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
                 card(title: "notifications & spend guard", icon: "bell.badge.fill") {
                     Toggle("Critical quota alerts", isOn: Binding(
                         get: { model.notificationsEnabled },
@@ -5017,6 +5036,7 @@ private struct ConversationBodyView: View {
                     onHide: { model.hideAccount(l) },
                     budgets: matchingBudgets(for: l),
                     tokenScale: tokenMaxima(model.limits),
+                    privacyMode: model.privacyHideIdentities,
                 )
                     .padding(8)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -5674,6 +5694,8 @@ struct AccountLimitCard: View {
     /// progress bars for windows without a real quota denominator so every
     /// card renders bars consistently (fill = tokens / kind-max, clamped).
     var tokenScale: [String: Double] = [:]
+    /// Local-only redaction for screenshots/shared screens.
+    var privacyMode = false
     /// openusage-style collapsible "details" disclosure.
     @State private var showDetails = false
     /// Account cards default open but can be collapsed independently.
@@ -5728,6 +5750,13 @@ struct AccountLimitCard: View {
                     Text("source: \(originNote)")
                         .font(.caption2).foregroundStyle(.tertiary)
                         .lineLimit(1)
+                    if let observed = limits.observedAt, let date = parseISO(observed) {
+                        Text("last observed " + date.formatted(date: .abbreviated, time: .shortened) + (limits.freshness == "stale" ? " · stale" : ""))
+                            .font(.caption2).foregroundStyle(limits.freshness == "stale" ? AnyShapeStyle(.orange) : AnyShapeStyle(.tertiary))
+                    } else if limits.freshness == "unknown" {
+                        Text("no provider observation available")
+                            .font(.caption2).foregroundStyle(.tertiary)
+                    }
                     ForEach(Array(orderedWindows.enumerated()), id: \.offset) { _, w in
                         HStack(spacing: 6) {
                             Text(windowDisplayName(w.kind, provider: limits.provider))
@@ -5910,12 +5939,14 @@ struct AccountLimitCard: View {
     }
 
     private var accountPrimaryLabel: String {
+        if privacyMode { return "Private account" }
         if let email = limits.email, !email.isEmpty { return email }
         if let cred = limits.credential, !cred.isEmpty { return "\(limits.provider) \(cred)" }
         return limits.provider
     }
 
     private var accountSecondaryLabel: String {
+        if privacyMode { return limits.provider + " · identities hidden" }
         var label = limits.accountKey
         if let also = limits.alsoOn, !also.isEmpty {
             label += " · via " + also.joined(separator: ", ")

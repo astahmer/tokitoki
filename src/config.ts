@@ -21,6 +21,11 @@ export interface NotificationsConfig {
   disabled?: string[];
 }
 
+export interface PrivacyConfig {
+  /** Redact account emails, ids, and credential hints in the native UI. */
+  hideIdentities?: boolean;
+}
+
 export interface ProviderConfig {
   /** Override roots to scan for this provider */
   paths?: string[];
@@ -56,6 +61,8 @@ export interface TokitokiConfig {
   budgets?: BudgetsConfig;
   /** [notifications] — local quota/reset alerts and spend-burn warnings. */
   notifications?: NotificationsConfig;
+  /** [privacy] — local-only display redaction for screenshots/shared screens. */
+  privacy?: PrivacyConfig;
   /**
    * [poll] — provider quota polling (`tokitoki poll`). Reuses locally stored
    * OAuth credentials to fetch real rate-limit windows. The menubar scheduler
@@ -191,6 +198,7 @@ function normalize(value: unknown): TokitokiConfig {
   if (cfg.sync !== undefined && typeof cfg.sync !== "object") delete cfg.sync;
   if (cfg.budgets !== undefined && typeof cfg.budgets !== "object") delete cfg.budgets;
   if (cfg.notifications !== undefined && typeof cfg.notifications !== "object") delete cfg.notifications;
+  if (cfg.privacy !== undefined && typeof cfg.privacy !== "object") delete cfg.privacy;
   if (cfg.poll !== undefined && typeof cfg.poll !== "object") delete cfg.poll;
   return cfg;
 }

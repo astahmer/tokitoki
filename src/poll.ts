@@ -1,7 +1,9 @@
 import fs from "node:fs";
 import { execFileSync } from "node:child_process";
+import path from "node:path";
 
 import type { EventCache } from "./cache.ts";
+import { dataDir } from "./store.ts";
 
 /**
  * CodexBar-style opt-in quota polling: reuse the OAuth access token stored by
@@ -907,7 +909,69 @@ export function opencodeCredentials(
  * persist them into quota_snapshots so computeLimits() picks them up exactly
  * like scan-embedded ones. Opt-in only (`tokitoki poll`).
  */
-export async function pollQuotas(opts: PollOptions = {}): Promise<PollResult> {
+let pollInFlight: Promise<PollResult> | undefined;
+
+const POLL_LOCK_MAX_AGE_MS = 15 * 60_000;
+
+/**
+ * Polling is commonly started by the menubar, a web request, and a manual CLI
+ * command at the same time. SQLite's busy timeout protects the database, but
+ * it does not stop duplicate upstream requests or last-writer-wins snapshots.
+ * A small process lock gives all callers one serialized poll, while the
+ * in-process promise coalesces concurrent callers to the same result.
+ */
+function acquirePollLock(): { fd: number; file: string } | undefined {
+  const file = process.env.TOKITOKI_POLL_LOCK ?? path.join(dataDir(), "poll.lock");
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const fd = fs.openSync(file, "wx");
+      fs.writeFileSync(fd, JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }));
+      return { fd, file };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") return undefined;
+      try {
+        const age = Date.now() - fs.statSync(file).mtimeMs;
+        if (age > POLL_LOCK_MAX_AGE_MS) {
+          fs.unlinkSync(file);
+          continue;
+        }
+      } catch {
+        // Another poll may have released the lock between stat/unlink.
+        continue;
+      }
+      return undefined;
+    }
+  }
+  return undefined;
+}
+
+function releasePollLock(lock: { fd: number; file: string }): void {
+  try { fs.closeSync(lock.fd); } catch { /* already closed */ }
+  try { fs.unlinkSync(lock.file); } catch { /* another process cleaned it */ }
+}
+
+export function pollQuotas(opts: PollOptions = {}): Promise<PollResult> {
+  if (pollInFlight !== undefined) return pollInFlight;
+  pollInFlight = pollQuotasUnlocked(opts).finally(() => {
+    pollInFlight = undefined;
+  });
+  return pollInFlight;
+}
+
+async function pollQuotasUnlocked(opts: PollOptions = {}): Promise<PollResult> {
+  const lock = acquirePollLock();
+  if (lock === undefined) {
+    return { ok: false, reason: "another quota poll is already running", accounts: [] };
+  }
+  try {
+    return await pollQuotasLocked(opts);
+  } finally {
+    releasePollLock(lock);
+  }
+}
+
+async function pollQuotasLocked(opts: PollOptions = {}): Promise<PollResult> {
   const fetcher = opts.fetcher ?? globalThis.fetch;
   const accounts: PollAccountResult[] = [];
   const reasons: string[] = [];
