@@ -112,7 +112,10 @@ export function monthLabels(grid: Grid): Array<{ col: number; label: string }> {
 
 export function renderGrid(days: DailyTotal[], startDate: Date, options: { metric: GridMetric; now?: Date }): string {
   const grid = buildGrid(days, startDate, options.metric, options.now ?? new Date());
-  const tty = process.stdout.isTTY === true;
+  // Keep machine-readable/piped output deterministic even when the caller
+  // inherited a TTY. This also follows the NO_COLOR convention used by the
+  // rest of the CLI.
+  const tty = process.stdout.isTTY === true && process.env.NO_COLOR === undefined;
 
   const cellText = (level: number): string => {
     if (tty) return `\x1b[${BG[level]!}m  \x1b[0m`;

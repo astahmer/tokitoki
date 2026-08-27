@@ -41,7 +41,11 @@ describe("grid", () => {
       t += 111_000;
       daily.push(day(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`, t));
     }
+    const previousNoColor = process.env.NO_COLOR;
+    process.env.NO_COLOR = "1";
     const out = renderGrid(daily, start, { metric: "tokens", now: new Date("2026-08-23T12:00:00") });
+    if (previousNoColor === undefined) delete process.env.NO_COLOR;
+    else process.env.NO_COLOR = previousNoColor;
     // Drop the legend line (it contains ramp glyphs too), then count cells.
     const body = out.split("\n").filter((l) => !l.startsWith("less")).join("\n");
     const ansi = new RegExp("\\x1b\\[48;5;\\d+m", "g");
