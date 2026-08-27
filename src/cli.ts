@@ -44,6 +44,7 @@ import { importCsv, IMPORT_SOURCES } from "./import.ts";
 import { repoEfficiency } from "./report.ts";
 import { bar, formatCost, humanCount, sparkline, formatInt, cachePct } from "./format.ts";
 import { loadConfig, configPath } from "./config.ts";
+import { computeSpendHealth } from "./spend-health.ts";
 import {
   buildSharePayload,
   describePayload,
@@ -1885,10 +1886,10 @@ function runConfigSet(parsed: ParsedInvocation): void {
     if (pathArg === undefined || pathArg.length === 0 || valueArg === undefined) {
       throw new UserError("usage: tokitoki config set <dot.path> <json>", 'tokitoki config set ui.stripMetric "tokens"');
     }
-  const allowed = new Set(["ui", "poll", "sync", "hidden", "plans", "budgets", "extraEventFiles", "experimental"]);
+    const allowed = new Set(["ui", "poll", "sync", "hidden", "plans", "budgets", "notifications", "extraEventFiles", "experimental"]);
     const top = pathArg.split(".")[0]!;
     if (!allowed.has(top)) {
-      throw new UserError(`unknown config section '${top}'`, "sections: ui, poll, plans, budgets");
+      throw new UserError(`unknown config section '${top}'`, "sections: ui, poll, plans, budgets, notifications");
     }
     let value: unknown;
     try {
@@ -2117,6 +2118,14 @@ function runMenubarPayload(parsed: ParsedInvocation): void {
   capture("rollingDay", () => runReport(inv("report", { last: "day", by: "provider", json: true })));
   capture("week", () => runReport(inv("report", { last: "week", by: "provider", json: true })));
   capture("reposMonth", () => runReport(inv("report", { last: "month", by: "repo", json: true })));
+  capture("spendHealth", () => {
+    const config = loadConfig();
+    withCache((cache) => {
+      cache.sync(resolveExtraFiles(config));
+      const mtd = cache.hybridUsage(monthStartIso());
+      console.log(JSON.stringify(computeSpendHealth(mtd, new Date(), config.budgets?.monthly, config.notifications?.burnWarningRatio ?? 0.8)));
+    });
+  });
   capture("budgets", () => runBudgets(inv("budgets", { json: true })));
   capture("anomalies", () => runAnomalies(inv("anomalies", { json: true })));
   capture("topTools", () => runTools(inv("tools", { last: "day", top: "3", json: true })));
@@ -2167,10 +2176,23 @@ function runMenubarPayload(parsed: ParsedInvocation): void {
           pollAuto: config.poll?.enabled === true,
           pollIntervalMinutes: config.poll?.intervalMinutes ?? 15,
           pollAdaptive: config.poll?.adaptive === true,
+          notificationsEnabled: config.notifications?.enabled !== false,
+          quotaResetNotifications: config.notifications?.resetAware !== false,
+          quotaCriticalPercent: Math.max(0, Math.min(100, config.notifications?.quotaCriticalPercent ?? 10)),
+          burnWarnings: config.notifications?.burnWarnings !== false,
+          burnWarningRatio: Math.max(0, Math.min(1, config.notifications?.burnWarningRatio ?? 0.8)),
         }),
       );
     });
   });
+  const notifications = loadConfig().notifications;
+  parts["notifications"] = {
+    enabled: notifications?.enabled !== false,
+    resetAware: notifications?.resetAware !== false,
+    quotaCriticalPercent: Math.max(0, Math.min(100, notifications?.quotaCriticalPercent ?? 10)),
+    burnWarnings: notifications?.burnWarnings !== false,
+    burnWarningRatio: Math.max(0, Math.min(1, notifications?.burnWarningRatio ?? 0.8)),
+  };
   capture("limits", () => {
     const config = loadConfig();
     withCache((cache) => {

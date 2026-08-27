@@ -339,9 +339,27 @@ fires once per period.
   + days left in the period (hidden entirely when no `[budgets]` config)
 - **anomaly row**: top flagged day from `tokitoki anomalies --json`, if any
 - **native notifications** on threshold *crossings* (not while staying past
-  one), deduped per (label, level) in `<data-dir>/menubar-state.json` so a
-  restart never re-notifies; permission requested lazily, denial degrades to
-  badge-only
+  one), deduped per period in `<data-dir>/menubar-state.json` so a restart
+  never re-notifies; bare LaunchAgent builds use macOS's local notification
+  bridge when a bundle identifier is unavailable
+- **critical quota alerts** when a provider reports a configured amount of
+  remaining capacity, plus a reset notification when an exhausted window
+  becomes available again; observations survive restarts in
+  `<data-dir>/menubar-quota-state.json`
+- **spend guard** in Settings: month-to-date spend, daily burn rate, projected
+  month-end spend, and warning/exceeded state against `[budgets].monthly`
+
+Menubar notification preferences are stored in a top-level `[notifications]`
+section:
+
+```toml
+[notifications]
+enabled = true
+resetAware = true
+quotaCriticalPercent = 10
+burnWarnings = true
+burnWarningRatio = 0.8
+```
 
 ## Pricing data
 

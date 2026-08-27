@@ -7,6 +7,18 @@ import TOML from "@iarna/toml";
 import type { SyncConfig } from "./sync/types.ts";
 import type { BudgetsConfig } from "./budgets.ts";
 
+export interface NotificationsConfig {
+  /** Native/local alerts are enabled by default for critical states. */
+  enabled?: boolean;
+  /** Notify when a previously exhausted quota becomes available again. */
+  resetAware?: boolean;
+  /** Remaining percentage at which a quota becomes critical. */
+  quotaCriticalPercent?: number;
+  /** Warn when the month-end spend projection reaches this fraction of cap. */
+  burnWarnings?: boolean;
+  burnWarningRatio?: number;
+}
+
 export interface ProviderConfig {
   /** Override roots to scan for this provider */
   paths?: string[];
@@ -40,6 +52,8 @@ export interface TokitokiConfig {
   plans?: Record<string, PlanConfig>;
   /** [budgets] — USD caps per period + optional ntfy topic for push alerts. */
   budgets?: BudgetsConfig;
+  /** [notifications] — local quota/reset alerts and spend-burn warnings. */
+  notifications?: NotificationsConfig;
   /**
    * [poll] — provider quota polling (`tokitoki poll`). Reuses locally stored
    * OAuth credentials to fetch real rate-limit windows. The menubar scheduler
@@ -157,6 +171,7 @@ function normalize(value: unknown): TokitokiConfig {
   if (cfg.plans !== undefined && typeof cfg.plans !== "object") delete cfg.plans;
   if (cfg.sync !== undefined && typeof cfg.sync !== "object") delete cfg.sync;
   if (cfg.budgets !== undefined && typeof cfg.budgets !== "object") delete cfg.budgets;
+  if (cfg.notifications !== undefined && typeof cfg.notifications !== "object") delete cfg.notifications;
   if (cfg.poll !== undefined && typeof cfg.poll !== "object") delete cfg.poll;
   return cfg;
 }

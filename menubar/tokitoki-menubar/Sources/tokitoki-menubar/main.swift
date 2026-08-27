@@ -80,6 +80,26 @@ struct AnomaliesPayload: Codable {
     let anomalies: [AnomalyItem]
 }
 
+struct SpendHealthPayload: Codable {
+    let monthToDate: Double
+    let requests: Int
+    let perDay: Double
+    let projected: Double
+    let monthlyCap: Double?
+    let projectedRatio: Double?
+    let state: String
+    let daysElapsed: Int
+    let daysInMonth: Int
+}
+
+struct NotificationConfigPayload: Codable {
+    let enabled: Bool?
+    let resetAware: Bool?
+    let quotaCriticalPercent: Int?
+    let burnWarnings: Bool?
+    let burnWarningRatio: Double?
+}
+
 struct MachineHeartbeat: Codable {
     let machineId: String
     let host: String
@@ -194,6 +214,8 @@ struct MenubarPayload: Codable {
     let reposMonth: ReportPayload?
     let budgets: [BudgetRow]
     let anomalies: AnomaliesPayload?
+    let spendHealth: SpendHealthPayload?
+    let notifications: NotificationConfigPayload?
     let topTools: ToolsPayload?
     let presence: [MachineHeartbeat]?
     let limits: [AccountLimits]?
@@ -213,6 +235,7 @@ final class Model: ObservableObject {
     @Published var activeOtherMachines = 0
     @Published var budgets: [BudgetRow] = []
     @Published var anomalyLine: String?
+    @Published var spendHealth: SpendHealthPayload?
     @Published var limits: [AccountLimits] = []
     @Published var previewMode: String = "inline"
     /// Status-item strip groups: UPSTREAM providers (openai, claude,
@@ -250,6 +273,12 @@ final class Model: ObservableObject {
     @Published var syncUrl = ""
     @Published var syncHandle = ""
     @Published var mcpStatus = "Ready · stdio is agent-owned"
+    @Published var notificationsEnabled = true
+    @Published var resetAwareNotifications = true
+    @Published var quotaCriticalPercent = 10
+    @Published var burnWarnings = true
+    @Published var burnWarningRatio = 0.8
+    @Published var notificationStatus: String?
     /// nil = no budgets configured; "ok" | "warn" | "exceeded"
     @Published var worstState: String?
     @Published var errorText: String?
@@ -262,8 +291,14 @@ final class Model: ObservableObject {
     private var invocation: CLIInvocation = CLIInvocation(executable: URL(fileURLWithPath: "/usr/bin/false"), prefixArgs: [])
     private var lastLevels: [String: Int] = [:]
     private var notifiedKeys: Set<String> = []
+    private var quotaObservations: [String: QuotaObservation] = [:]
     private var payloadInFlight = false
     private var payloadRefreshPending = false
+
+    private struct QuotaObservation: Codable {
+        let remaining: Double
+        let resetAt: String?
+    }
 
     private static let debug = ProcessInfo.processInfo.environment["TOKITOKI_MENUBAR_DEBUG"] == "1"
 
@@ -364,6 +399,36 @@ final class Model: ObservableObject {
         pollAdaptive = enabled
         updatePollSchedule()
         persistUISetting(path: "poll.adaptive", json: enabled ? "true" : "false")
+    }
+
+    func setNotificationsEnabled(_ enabled: Bool) {
+        notificationsEnabled = enabled
+        notificationStatus = enabled ? "Critical alerts enabled" : "Notifications disabled"
+        persistUISetting(path: "notifications.enabled", json: enabled ? "true" : "false")
+    }
+
+    func setResetAwareNotifications(_ enabled: Bool) {
+        resetAwareNotifications = enabled
+        notificationStatus = enabled ? "Reset alerts enabled" : "Reset alerts disabled"
+        persistUISetting(path: "notifications.resetAware", json: enabled ? "true" : "false")
+    }
+
+    func setQuotaCriticalPercent(_ percent: Int) {
+        quotaCriticalPercent = max(0, min(100, percent))
+        notificationStatus = "Critical threshold saved"
+        persistUISetting(path: "notifications.quotaCriticalPercent", json: "\(quotaCriticalPercent)")
+    }
+
+    func setBurnWarnings(_ enabled: Bool) {
+        burnWarnings = enabled
+        notificationStatus = enabled ? "Burn warnings enabled" : "Burn warnings disabled"
+        persistUISetting(path: "notifications.burnWarnings", json: enabled ? "true" : "false")
+    }
+
+    func setBurnWarningRatio(_ ratio: Double) {
+        burnWarningRatio = max(0, min(1, ratio))
+        notificationStatus = "Burn threshold saved"
+        persistUISetting(path: "notifications.burnWarningRatio", json: String(format: "%.2f", burnWarningRatio))
     }
 
     func setTabOrder(_ order: [PopoverSubview]) {
@@ -471,6 +536,7 @@ final class Model: ObservableObject {
         self.invocation = invocation
         dbg("start · exec=\(invocation.executable.path) prefix=\(invocation.prefixArgs)")
         notifiedKeys = Self.loadNotifiedKeys()
+        quotaObservations = Self.loadQuotaObservations()
         dbg("loaded \(notifiedKeys.count) notified keys from \(Self.stateFileURL.path)")
         refresh()
         timer = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { [weak self] _ in
@@ -573,6 +639,13 @@ final class Model: ObservableObject {
                     return
                 }
                 dbg("fetched · budgets=\(p.budgets.count) anomalies=\(p.anomalies?.anomalies.count ?? -1) limits=\(p.limits?.count ?? -1)")
+                if let notifications = p.notifications {
+                    self.notificationsEnabled = notifications.enabled ?? true
+                    self.resetAwareNotifications = notifications.resetAware ?? true
+                    self.quotaCriticalPercent = max(0, min(100, notifications.quotaCriticalPercent ?? 10))
+                    self.burnWarnings = notifications.burnWarnings ?? true
+                    self.burnWarningRatio = max(0, min(1, notifications.burnWarningRatio ?? 0.8))
+                }
                 if let ui = p.uiPreview {
                     self.previewMode = ui.previewMode ?? "inline"
                     self.knownProviders = ui.providers ?? []
@@ -594,6 +667,7 @@ final class Model: ObservableObject {
                 self.updatePollSchedule()
                 self.spendPeriods = p.spendPeriods ?? []
                 self.history = p.history
+                self.spendHealth = p.spendHealth
                 self.today = p.today
                 self.rollingDay = p.rollingDay
                 self.week = p.week
@@ -605,8 +679,10 @@ final class Model: ObservableObject {
                 self.topTools = Array((p.topTools?.tools ?? []).prefix(3))
                 let local = ProcessInfo.processInfo.hostName
                 self.activeOtherMachines = (p.presence ?? []).filter { $0.state == "active" && $0.machineId != local }.count
-                applyBudgets(p.budgets)
                 self.limits = p.limits ?? []
+                applyBudgets(p.budgets)
+                applyQuotaNotifications(self.limits)
+                applySpendHealthNotifications(p.spendHealth)
                 self.previewMode = p.uiPreview?.previewMode ?? "inline"
                 // Upstream-provider groups with stacked quota percentages;
                 // providers without a real denominator get ONE usage-relative
@@ -665,6 +741,10 @@ final class Model: ObservableObject {
         }
         worstState = rows.isEmpty ? nil : worst
         guard !rows.isEmpty else { return }
+        guard notificationsEnabled else {
+            lastLevels = current
+            return
+        }
 
         // Notify only on transitions INTO warn/exceeded (not while staying there).
         // State is persisted BEFORE attempting delivery so a crash/missing
@@ -673,15 +753,75 @@ final class Model: ObservableObject {
         for (label, level) in current where level > 0 {
             let prev = lastLevels[label] ?? 0
             guard level > prev else { continue }
-            let key = "\(label)|\(level)"
-            guard !notifiedKeys.contains(key) else { continue }
-            notifiedKeys.insert(key)
             let row = rows.first { $0.label == label }
-            saveNotifiedKeys()
-            dbg("transition · \(key) · state-file=\(Self.stateFileURL.path)")
-            notify(label: label, level: level, used: row?.used ?? 0, cap: row?.cap ?? 0)
+            let key = "budget|\(label)|\(level)|\(Self.notificationPeriodKey(label: label))"
+            notifyOnce(
+                key: key,
+                title: "tokitoki budget \(level)%",
+                body: "\(label): $\(String(format: "%.2f", row?.used ?? 0)) / $\(String(format: "%.2f", row?.cap ?? 0))",
+            )
         }
         lastLevels = current
+    }
+
+    /// Compare persisted quota observations so a restart can still detect a
+    /// reset after an exhausted window. Reset timestamps are part of the
+    /// notification identity, which prevents repeated alerts in one window.
+    private func applyQuotaNotifications(_ limits: [AccountLimits]) {
+        var changed = false
+        for account in limits {
+            for window in account.windows {
+                guard let used = window.usedPct else { continue }
+                let remaining = max(0, min(100, 100 - used))
+                let identity = "\(account.provider)@\(account.accountKey)|\(window.kind)"
+                let previous = quotaObservations[identity]
+                let resetChanged = previous?.resetAt != nil
+                    && window.resetsAt != nil
+                    && previous?.resetAt != window.resetsAt
+                let recovered = previous.map { $0.remaining <= Double(quotaCriticalPercent) && remaining >= 50 } ?? false
+                let display = account.email ?? account.credential ?? account.accountKey
+                let name = "\(account.provider) · \(display) · \(windowDisplayName(window.kind, provider: account.provider))"
+                let reset = window.resetsAt.map(countdown) ?? "—"
+
+                if notificationsEnabled && remaining <= Double(quotaCriticalPercent) {
+                    let key = "quota-critical|\(identity)|\(window.resetsAt ?? "unknown")"
+                    notifyOnce(
+                        key: key,
+                        title: "tokitoki quota critical",
+                        body: "\(name): \(Int(remaining.rounded()))% left · resets in \(reset)",
+                    )
+                }
+                if notificationsEnabled && resetAwareNotifications && (resetChanged || recovered) {
+                    let key = "quota-reset|\(identity)|\(window.resetsAt ?? "unknown")"
+                    notifyOnce(
+                        key: key,
+                        title: "tokitoki quota available",
+                        body: "\(name) is available again · \(Int(remaining.rounded()))% left",
+                    )
+                }
+
+                let next = QuotaObservation(remaining: remaining, resetAt: window.resetsAt)
+                if previous?.remaining != next.remaining || previous?.resetAt != next.resetAt {
+                    quotaObservations[identity] = next
+                    changed = true
+                }
+            }
+        }
+        if changed { saveQuotaObservations() }
+    }
+
+    private func applySpendHealthNotifications(_ health: SpendHealthPayload?) {
+        guard notificationsEnabled, burnWarnings, let health,
+              let cap = health.monthlyCap,
+              let ratio = health.projectedRatio,
+              ratio >= burnWarningRatio else { return }
+        let level = ratio >= 1 ? 100 : 80
+        let key = "burn|\(Self.notificationPeriodKey(label: "monthly"))|\(level)"
+        notifyOnce(
+            key: key,
+            title: "tokitoki burn-rate warning",
+            body: "Projected $\(String(format: "%.0f", health.projected)) by month end vs $\(String(format: "%.0f", cap)) cap · $\(String(format: "%.2f", health.perDay))/day",
+        )
     }
 
     private func applyAnomalies(_ payload: AnomaliesPayload?) {
@@ -704,6 +844,22 @@ final class Model: ObservableObject {
         return base.appendingPathComponent("menubar-state.json")
     }
 
+    private static var quotaStateFileURL: URL {
+        stateFileURL.deletingLastPathComponent().appendingPathComponent("menubar-quota-state.json")
+    }
+
+    private static func notificationPeriodKey(label: String) -> String {
+        let now = Date()
+        let calendar = Calendar.current
+        if label.contains("monthly") || label.contains("month") {
+            return String(format: "%04d-%02d", calendar.component(.year, from: now), calendar.component(.month, from: now))
+        }
+        if label.contains("weekly") || label.contains("week") {
+            return String(format: "%04d-w%02d", calendar.component(.yearForWeekOfYear, from: now), calendar.component(.weekOfYear, from: now))
+        }
+        return String(format: "%04d-%02d-%02d", calendar.component(.year, from: now), calendar.component(.month, from: now), calendar.component(.day, from: now))
+    }
+
     private static func loadNotifiedKeys() -> Set<String> {
         guard let data = try? Data(contentsOf: stateFileURL),
               let keys = try? JSONDecoder().decode([String].self, from: data) else { return [] }
@@ -718,19 +874,55 @@ final class Model: ObservableObject {
         }
     }
 
-    private func notify(label: String, level: Int, used: Double, cap: Double) {
-        // UNUserNotificationCenter hard-crashes outside a real .app bundle
-        // (bare swift-build binary): degrade to badge-only in that case.
-        guard Bundle.main.bundleIdentifier != nil else { return }
+    private static func loadQuotaObservations() -> [String: QuotaObservation] {
+        guard let data = try? Data(contentsOf: quotaStateFileURL),
+              let observations = try? JSONDecoder().decode([String: QuotaObservation].self, from: data) else { return [:] }
+        return observations
+    }
+
+    private func saveQuotaObservations() {
+        let url = Self.quotaStateFileURL
+        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        if let data = try? JSONEncoder().encode(quotaObservations) {
+            try? data.write(to: url)
+        }
+    }
+
+    private func notifyOnce(key: String, title: String, body: String) {
+        guard !notifiedKeys.contains(key) else { return }
+        notifiedKeys.insert(key)
+        saveNotifiedKeys()
+        dbg("notification · \(key) · state-file=\(Self.stateFileURL.path)")
+        deliverNotification(title: title, body: body)
+    }
+
+    private func deliverNotification(title: String, body: String) {
+        // The development/release binary is intentionally a bare LaunchAgent
+        // executable, so it has no bundle identifier. Use native UN alerts
+        // for a bundled build and an osascript fallback for the installed
+        // binary instead of silently dropping every notification.
+        guard Bundle.main.bundleIdentifier != nil else {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+            process.arguments = ["-e", "display notification \(appleScriptQuote(body)) with title \(appleScriptQuote(title))"]
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+            try? process.run()
+            return
+        }
         let center = UNUserNotificationCenter.current()
         center.requestAuthorization(options: [.alert]) { granted, _ in
             guard granted else { return } // badge already reflects the state
             let content = UNMutableNotificationContent()
-            content.title = "tokitoki budget \(level)%"
-            content.body = "\(label): $\(String(format: "%.2f", used)) / $\(String(format: "%.2f", cap))"
+            content.title = title
+            content.body = body
             let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
             center.add(request)
         }
+    }
+
+    private func appleScriptQuote(_ value: String) -> String {
+        "\"" + value.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") + "\""
     }
 
     static func baseTitle(for p: ReportPayload) -> String {
@@ -3070,16 +3262,20 @@ struct ContentView: View {
     }
 
     private var attentionSummary: some View {
-        let attention = model.limits.compactMap { limit -> (String, String)? in
+        var attention: [(String, String)] = model.limits.compactMap { limit -> (String, String)? in
             guard let window = limit.windows.compactMap({ window -> (LimitWindow, Double)? in
                 guard let used = window.usedPct else { return nil }
                 return (window, max(0, min(100, 100 - used)))
-            }).min(by: { $0.1 < $1.1 }), window.1 <= 10 else { return nil }
+            }).min(by: { $0.1 < $1.1 }), window.1 <= Double(model.quotaCriticalPercent) else { return nil }
             let reset = window.0.resetsAt.map(countdown) ?? "—"
             let timing = reset == "now" ? "available now" : "resets in \(reset)"
             let identity = limit.email ?? "\(limit.provider) · \(limit.accountKey)"
             return (identity, "\(windowDisplayName(window.0.kind, provider: limit.provider)) · \(Int(window.1.rounded()))% left · \(timing)")
-        }.prefix(2)
+        }
+        if let health = model.spendHealth, health.state != "ok", let cap = health.monthlyCap {
+            attention.append(("Monthly spend pace", "projected $\(String(format: "%.0f", health.projected)) / $\(String(format: "%.0f", cap))"))
+        }
+        attention = Array(attention.prefix(3))
         if attention.isEmpty { return AnyView(EmptyView()) }
         return AnyView(
             VStack(alignment: .leading, spacing: 4) {
@@ -3336,6 +3532,57 @@ struct ContentView: View {
         ScrollView(.vertical) {
             VStack(alignment: .leading, spacing: 10) {
                 freshnessRow
+                card(title: "notifications & spend guard", icon: "bell.badge.fill") {
+                    Toggle("Critical quota alerts", isOn: Binding(
+                        get: { model.notificationsEnabled },
+                        set: { model.setNotificationsEnabled($0) },
+                    ))
+                    .font(.caption)
+                    Toggle("Notify when an exhausted quota resets", isOn: Binding(
+                        get: { model.resetAwareNotifications },
+                        set: { model.setResetAwareNotifications($0) },
+                    ))
+                    .font(.caption)
+                    .disabled(!model.notificationsEnabled)
+                    Picker("Alert when quota has", selection: Binding(
+                        get: { model.quotaCriticalPercent },
+                        set: { model.setQuotaCriticalPercent($0) },
+                    )) {
+                        Text("5% left").tag(5)
+                        Text("10% left").tag(10)
+                        Text("20% left").tag(20)
+                    }
+                    .pickerStyle(.menu)
+                    .disabled(!model.notificationsEnabled)
+                    Divider().opacity(0.35)
+                    Toggle("Warn when projected spend reaches the cap", isOn: Binding(
+                        get: { model.burnWarnings },
+                        set: { model.setBurnWarnings($0) },
+                    ))
+                    .font(.caption)
+                    .disabled(!model.notificationsEnabled)
+                    Picker("Warn at", selection: Binding(
+                        get: { model.burnWarningRatio },
+                        set: { model.setBurnWarningRatio($0) },
+                    )) {
+                        Text("80% of monthly cap").tag(0.8)
+                        Text("90% of monthly cap").tag(0.9)
+                        Text("100% of monthly cap").tag(1.0)
+                    }
+                    .pickerStyle(.menu)
+                    .disabled(!model.notificationsEnabled || !model.burnWarnings)
+                    if let health = model.spendHealth {
+                        Text("This month: $\(String(format: "%.2f", health.monthToDate)) · burn $\(String(format: "%.2f", health.perDay))/day · projected $\(String(format: "%.0f", health.projected))")
+                            .font(.caption2)
+                            .foregroundStyle(health.state == "ok" ? AnyShapeStyle(.secondary) : AnyShapeStyle(.orange))
+                    } else {
+                        Text("Add a monthly budget to receive burn-rate warnings.")
+                            .font(.caption2).foregroundStyle(.tertiary)
+                    }
+                    if let status = model.notificationStatus {
+                        Text(status).font(.caption2).foregroundStyle(.secondary)
+                    }
+                }
                 card(title: "background quota polling", icon: "clock.arrow.circlepath") {
                     Toggle("Poll provider quotas automatically", isOn: Binding(
                         get: { model.pollAuto },
@@ -3824,7 +4071,8 @@ struct ContentView: View {
             Spacer()
             VStack(alignment: .trailing, spacing: 7) {
                 metric("this week", model.week.map { String(format: "$%.0f", $0.total.costUsd) } ?? "—")
-                metric("month projection", model.today.map { String(format: "$%.0f", $0.burn.projected) } ?? "—")
+                metric("month to date", model.spendHealth.map { String(format: "$%.2f", $0.monthToDate) } ?? "—")
+                metric("burn · projected", model.spendHealth.map { String(format: "$%.2f → $%.0f", $0.perDay, $0.projected) } ?? "—")
             }
         }
         .padding(14)
