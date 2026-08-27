@@ -408,6 +408,9 @@ function SessionDetail({ provider, sessionId }: { provider: string; sessionId: s
   const [events, setEvents] = useState<SessionEvent[]>([]);
   const [eventsHasMore, setEventsHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
+  const requestCount = detail.state === "ok" && Number.isFinite(detail.data.eventsTotal)
+    ? detail.data.eventsTotal.toLocaleString("en-US")
+    : "—";
 
   useEffect(() => {
     if (detail.state !== "ok") return;
@@ -431,7 +434,7 @@ function SessionDetail({ provider, sessionId }: { provider: string; sessionId: s
     <>
       <Heading>
         session · {sessionId} · {provider} ·{" "}
-        {detail.state === "ok" ? `${detail.data.eventsTotal.toLocaleString("en-US")} requests` : "…"}
+        {detail.state === "ok" ? `${requestCount} requests` : "…"}
       </Heading>
       {detail.state === "loading" ? (
         <SkeletonBlock className="h-48" />
@@ -441,10 +444,8 @@ function SessionDetail({ provider, sessionId }: { provider: string; sessionId: s
         <div className="space-y-4">
           {detail.data.conversation !== null && detail.data.conversation.body.length > 0 && (
             <details open className="rounded-md border border-kumo-border/60 bg-kumo-surface p-3">
-              <summary className="cursor-pointer text-xs font-medium">
-                conversation{detail.data.conversation.title.length > 0 ? ` · ${detail.data.conversation.title}` : ""}
-              </summary>
-              <ConversationBody body={detail.data.conversation.body} />
+              <summary className="cursor-pointer text-xs font-medium">conversation</summary>
+              <ConversationBody body={detail.data.conversation.body} title={detail.data.conversation.title} />
             </details>
           )}
           <Timeline payload={{ ...detail.data, events }} />
@@ -459,9 +460,9 @@ function SessionDetail({ provider, sessionId }: { provider: string; sessionId: s
   );
 }
 
-function ConversationBody({ body }: { body: string }) {
+function ConversationBody({ body, title }: { body: string; title?: string }) {
   const toolCounts = new Map<string, number>();
-  const visibleLines = body.split("\n").filter((line) => {
+  let visibleLines = body.split("\n").filter((line) => {
     const trimmed = line.trim();
     let name: string | undefined;
     if (trimmed.startsWith("[tool:")) name = trimmed.slice(6).split("]", 1)[0];
@@ -472,6 +473,13 @@ function ConversationBody({ body }: { body: string }) {
     }
     return true;
   });
+  const normalizedTitle = title?.replace(/\s+/g, " ").trim().toLowerCase();
+  if (normalizedTitle !== undefined && normalizedTitle.length > 0) {
+    const first = visibleLines.findIndex((line) => line.trim().length > 0);
+    if (first >= 0 && visibleLines[first]!.replace(/^[#>*-]+\s*/, "").replace(/\s+/g, " ").trim().toLowerCase() === normalizedTitle) {
+      visibleLines = visibleLines.slice(0, first).concat(visibleLines.slice(first + 1));
+    }
+  }
   const blocks = visibleLines.join("\n").split(/\n{2,}/).map((block) => block.trim()).filter(Boolean);
   return (
     <div className="mt-3 max-h-[32rem] space-y-3 overflow-auto text-xs leading-relaxed text-kumo-subtle">
@@ -487,17 +495,23 @@ function ConversationBody({ body }: { body: string }) {
           </div>
         </details>
       )}
-      {blocks.map((block, i) => {
-        if (block.startsWith("```") || block.includes("\n```")) {
-          return <pre key={i} className="overflow-x-auto rounded-md bg-kumo-recessed p-2 font-mono text-[11px]">{block.replace(/^```[\w-]*\n?/, "").replace(/\n?```$/, "")}</pre>;
-        }
-        if (/^#{1,4}\s/.test(block)) {
-          return <h4 key={i} className="font-semibold text-kumo-default">{block.replace(/^#{1,4}\s+/, "")}</h4>;
-        }
-        return <p key={i} className="whitespace-pre-wrap break-words">{block}</p>;
-      })}
+      {blocks.map((block, i) => <ConversationBlock key={i} block={block} />)}
     </div>
   );
+}
+
+function ConversationBlock({ block }: { block: string }) {
+  if (block.startsWith("```") || block.includes("\n```")) {
+    return <pre className="overflow-x-auto rounded-md border border-kumo-border/60 bg-kumo-recessed p-3 font-mono text-[11px] leading-relaxed text-kumo-default">{block.replace(/^```[\w-]*\n?/, "").replace(/\n?```$/, "")}</pre>;
+  }
+  const heading = /^(#{1,4})\s+(.+)$/.exec(block);
+  if (heading !== null) {
+    return <h4 className="border-b border-kumo-border/50 pb-1 font-semibold text-kumo-default">{heading[2]}</h4>;
+  }
+  if (/^(?:[-*]\s|\d+[.)]\s)/.test(block)) {
+    return <div className="whitespace-pre-wrap break-words rounded-md bg-kumo-recessed/40 px-2 py-1.5 text-kumo-default">{block}</div>;
+  }
+  return <p className="whitespace-pre-wrap break-words text-kumo-default">{block}</p>;
 }
 
 function Timeline({ payload }: { payload: SessionDetailPayload }) {

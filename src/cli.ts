@@ -224,6 +224,7 @@ Rows always show every configured scope×pattern; state is ok | warn (≥80%)
   --events-limit N          detail requests per page (default: all in CLI, 40 in UI)
   --events-offset N         zero-based detail request offset
   --provider <id>           filter (repeatable)
+  --cached                  read the local cache without syncing harness stores
   --json                    machine-readable output`,
     example: "tokitoki sessions --search \"kumo treemap\" --last month",
   },
@@ -464,7 +465,7 @@ const KNOWN_FLAGS: Record<string, string[]> = {
   chart: ["last", "by", "spark", "provider", "from", "to"],
   pie: ["last", "by", "provider", "from", "to"],
   grid: ["last", "metric", "since", "until", "from", "to"],
-  sessions: ["last", "by", "top", "session", "events-limit", "events-offset", "json", "provider", "since", "until", "account", "from", "to", "search", "page"],
+  sessions: ["last", "by", "top", "session", "events-limit", "events-offset", "json", "provider", "since", "until", "account", "from", "to", "search", "page", "cached"],
   anomalies: ["last", "metric", "json", "since", "until", "from", "to"],
   budgets: ["json"],
   tools: ["last", "from", "to", "since", "until", "top", "provider", "json"],
@@ -1138,9 +1139,10 @@ function runSessions(parsed: ParsedInvocation): void {
     }
     const json = flagBool(parsed, "json");
     const providers = flagStrings(parsed, "provider");
+    const cached = flagBool(parsed, "cached");
 
     const out = withCache((cache) => {
-      cache.sync(resolveExtraFiles(loadConfig()));
+      if (!cached) cache.sync(resolveExtraFiles(loadConfig()));
       const w = resolveTimeWindow({ last: flagString(parsed, "last"), from: flagString(parsed, "from"), to: flagString(parsed, "to"), fallbackPeriod: "week" });
       const sinceIso = w.sinceIso;
       const filter = { sinceIso, untilIso: w.untilIso, providers: providers.length > 0 ? providers : undefined };
@@ -1160,7 +1162,9 @@ function runSessions(parsed: ParsedInvocation): void {
 
       if (searchQuery !== undefined && searchQuery.trim().length > 0) {
         const page = Math.max(1, Number(flagString(parsed, "page") ?? "1") || 1);
-        const stats = updateSessionIndex(cache.database);
+        const stats = cached
+          ? { filesIndexed: 0, docsIndexed: 0, durationMs: 0, throttled: true }
+          : updateSessionIndex(cache.database);
         const res = searchSessions(cache.database, {
           query: searchQuery,
           providers: providers.length > 0 ? providers : undefined,
@@ -2155,6 +2159,13 @@ function runMenubarPayload(parsed: ParsedInvocation): void {
       onSaveCursors: (cursors) => saveProviderCursors(provider.id, cursors),
     });
   }
+  // Build the searchable conversation index once as part of the payload
+  // refresh. The popover can then use `sessions --cached` without paying the
+  // raw-store walk on every search or detail navigation.
+  withCache((cache) => {
+    cache.sync(resolveExtraFiles(loadConfig()));
+    updateSessionIndex(cache.database);
+  });
   const parts: Record<string, unknown> = {};
   const capture = (key: string, fn: () => void): void => {
     const orig = console.log;

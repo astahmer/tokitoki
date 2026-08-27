@@ -221,9 +221,39 @@ export function fetchSessionDetail(
   const params = new URLSearchParams({ provider, id: sessionId });
   if (opts.limit !== undefined) params.set("limit", String(opts.limit));
   if (opts.offset !== undefined) params.set("offset", String(opts.offset));
-  return get<SessionDetailPayload>(
-    `/api/sessions/detail?${params.toString()}`,
-  );
+  return get<SessionDetailPayload>(`/api/sessions/detail?${params.toString()}`).then((raw) => {
+    // Deep links can outlive a server/frontend rebuild. Normalize the small
+    // numeric surface here so an older or partially populated response cannot
+    // turn a detail view into `undefined.toLocaleString()`.
+    const numberOrZero = (value: unknown): number =>
+      typeof value === "number" && Number.isFinite(value) ? value : 0;
+    const events = Array.isArray(raw.events)
+      ? raw.events.map((event) => ({
+          ts: typeof event.ts === "string" ? event.ts : "",
+          model: typeof event.model === "string" ? event.model : "unknown",
+          inputTokens: numberOrZero(event.inputTokens),
+          outputTokens: numberOrZero(event.outputTokens),
+          cacheReadTokens: numberOrZero(event.cacheReadTokens),
+          costUsd: numberOrZero(event.costUsd),
+        }))
+      : [];
+    return {
+      ...raw,
+      provider: typeof raw.provider === "string" ? raw.provider : provider,
+      sessionId: typeof raw.sessionId === "string" ? raw.sessionId : sessionId,
+      eventsTotal: numberOrZero(raw.eventsTotal),
+      eventsOffset: numberOrZero(raw.eventsOffset),
+      eventsHasMore: raw.eventsHasMore === true,
+      events,
+      conversation:
+        raw.conversation !== null && typeof raw.conversation === "object"
+          ? {
+              title: typeof raw.conversation.title === "string" ? raw.conversation.title : "",
+              body: typeof raw.conversation.body === "string" ? raw.conversation.body : "",
+            }
+          : null,
+    };
+  });
 }
 
 // ---------------------------------------------------------------- sessions search
