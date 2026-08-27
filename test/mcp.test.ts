@@ -73,7 +73,7 @@ afterAll(async () => {
 });
 
 describe("tokitoki MCP server", () => {
-  it("exposes all 13 tools over the wire", async () => {
+  it("exposes all 14 tools over the wire", async () => {
     ready = Promise.all([server.server.connect(serverTransport), client.connect(clientTransport)]);
     await ready;
     const { tools } = await client.listTools();
