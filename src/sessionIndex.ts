@@ -44,9 +44,10 @@ export interface SessionIndexStats {
   skippedLargeFiles?: number;
 }
 
-/** Store files larger than this are not FTS-indexed: re-extracting multi-GB
- * codex rollouts on mtime change dominated search latency (measured 55s). */
-const MAX_INDEX_FILE_BYTES = 64 * 1024 * 1024;
+/** Guard truly pathological stores while still indexing normal long-running
+ * Codex rollouts. Extractors cap indexed text separately, so a 100–200MB
+ * append-only rollout does not create an equivalently large FTS row. */
+const MAX_INDEX_FILE_BYTES = 256 * 1024 * 1024;
 /** Minimum interval between full incremental index runs (search-call path). */
 const UPDATE_THROTTLE_MS = 120_000;
 
@@ -330,8 +331,24 @@ export function sessionConversation(
        ORDER BY length(body) DESC LIMIT 1`,
     )
     .get(provider, sessionId) as { title?: string | null; body?: string | null } | undefined;
-  if (row === undefined) return null;
+  if (row == null) return null;
   return { title: row.title ?? "", body: String(row.body ?? "").slice(0, 12_000) };
+}
+
+/** Compact metadata for leaderboard rows, backed by the same indexed body as
+ * search/detail. This keeps recent-session views useful when a harness does
+ * not persist a first-class title. */
+export function sessionPreview(
+  db: Database,
+  provider: string,
+  sessionId: string,
+): { title: string; snippet: string } | null {
+  const conversation = sessionConversation(db, provider, sessionId);
+  if (conversation === null) return null;
+  const lines = conversation.body.split("\n").map((line) => line.trim()).filter(Boolean);
+  const title = conversation.title.trim() || lines[0]?.slice(0, 200) || "";
+  const snippet = (lines.slice(0, 3).join(" ") || title).slice(0, 300);
+  return { title, snippet };
 }
 
 /**

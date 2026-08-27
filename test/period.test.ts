@@ -77,6 +77,11 @@ describe("resolveTimeWindow", () => {
 });
 
 describe("calendar windows", () => {
+  it("keeps a same-day bare date range non-empty", () => {
+    const w = resolveTimeWindow({ from: "2026-08-27", to: "2026-08-27" });
+    expect(new Date(w.untilIso!).getTime()).toBeGreaterThan(new Date(w.sinceIso).getTime());
+  });
+
   it("today is a calendar window starting at local midnight", () => {
     const w = calendarDayWindow();
     const start = new Date(w.sinceIso);

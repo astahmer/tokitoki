@@ -88,4 +88,28 @@ describe("codex provider", () => {
       ),
     ).toHaveLength(0);
   });
+
+  it("preserves banked-credit expiry metadata from Codex rate limits", () => {
+    const c = ctx();
+    codexProvider.parseLine(META, c);
+    codexProvider.parseLine(TURN, c);
+    const [event] = codexProvider.parseLine(JSON.stringify({
+      timestamp: "2026-07-29T10:38:27.434Z",
+      type: "event_msg",
+      payload: {
+        type: "token_count",
+        info: { last_token_usage: { input_tokens: 10, output_tokens: 5 } },
+        rate_limits: {
+          primary: { used_percent: 1, window_minutes: 300, resets_at: 1788160164 },
+          credits: { has_credits: true, unlimited: false, balance: "2", expires_at: 1788160164 },
+        },
+      },
+    }), c);
+    expect(event?.quota?.credits).toEqual({
+      hasCredits: true,
+      unlimited: false,
+      balance: "2",
+      expiresAt: new Date(1788160164 * 1000).toISOString(),
+    });
+  });
 });

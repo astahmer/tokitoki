@@ -31,7 +31,7 @@ import {
 } from "../period.ts";
 import { collectSources } from "../sources.ts";
 import { collectMachines } from "../presence.ts";
-import { searchSessions, sessionConversation, updateSessionIndex } from "../sessionIndex.ts";
+import { searchSessions, sessionConversation, sessionPreview, updateSessionIndex } from "../sessionIndex.ts";
 import { detectAnomalies, type AnomalyMetric } from "../anomalies.ts";
 
 /** JSON responses reuse the exact CLI aggregation — no duplicated SQL. */
@@ -407,7 +407,14 @@ export function apiSessions(
       accountKey: account,
       limit: Math.max(1, Math.min(top, 100)),
     });
-    return { window: toApiWindow(w), rows };
+    updateSessionIndex(cache.database, undefined, { throttleMs: 0 });
+    return {
+      window: toApiWindow(w),
+      rows: rows.map((row) => ({
+        ...row,
+        ...(sessionPreview(cache.database, row.provider, row.sessionId) ?? {}),
+      })),
+    };
   });
 }
 
@@ -428,7 +435,7 @@ export interface SessionDetailPayload {
 /** Request timeline for one session (provider required to disambiguate). */
 export function apiSessionDetail(provider: string, sessionId: string): SessionDetailPayload {
   return withCache((cache) => {
-    updateSessionIndex(cache.database);
+    updateSessionIndex(cache.database, undefined, { throttleMs: 0 });
     const events = cache.sessionDetail(provider, sessionId);
     return { provider, sessionId, conversation: sessionConversation(cache.database, provider, sessionId), events };
   });
@@ -468,7 +475,7 @@ export function apiSessionSearch(
 ): SessionSearchPayload {
   const w = resolveTimeWindow({ ...wp, fallbackPeriod: "month" as Period });
   return withCache((cache) => {
-    const stats = updateSessionIndex(cache.database);
+    const stats = updateSessionIndex(cache.database, undefined, { throttleMs: 0 });
     const res = searchSessions(cache.database, {
       query,
       providers: providers.length > 0 ? providers : undefined,

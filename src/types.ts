@@ -47,7 +47,13 @@ export interface QuotaWindow {
 export interface QuotaSnapshot {
   primary?: QuotaWindow;
   secondary?: QuotaWindow;
-  credits?: { hasCredits: boolean; unlimited: boolean; balance: string };
+  credits?: {
+    hasCredits: boolean;
+    unlimited: boolean;
+    balance: string;
+    /** Provider-reported expiry for purchased/banked reset credits. */
+    expiresAt?: string;
+  };
 }
 
 /** Optional on UsageEvent — only providers with embedded quota set it. */

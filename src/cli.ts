@@ -68,7 +68,7 @@ import {
   type TimeWindow,
 } from "./period.ts";
 import { collectSources, renderSources } from "./sources.ts";
-import { rebuildSessionIndex, searchSessions, sessionConversation, updateSessionIndex } from "./sessionIndex.ts";
+import { rebuildSessionIndex, searchSessions, sessionConversation, sessionPreview, updateSessionIndex } from "./sessionIndex.ts";
 
 export { UserError } from "./errors.ts";
 
@@ -1149,7 +1149,7 @@ function runSessions(parsed: ParsedInvocation): void {
 
       if (searchQuery !== undefined && searchQuery.trim().length > 0) {
         const page = Math.max(1, Number(flagString(parsed, "page") ?? "1") || 1);
-        const stats = updateSessionIndex(cache.database);
+        const stats = updateSessionIndex(cache.database, undefined, { throttleMs: 0 });
         const res = searchSessions(cache.database, {
           query: searchQuery,
           providers: providers.length > 0 ? providers : undefined,
@@ -1188,7 +1188,12 @@ function runSessions(parsed: ParsedInvocation): void {
 
       const rows = cache.topSessions({ ...filter, limit: topN });
       if (json) {
-        return JSON.stringify({ window: { since: w.sinceIso, until: w.untilIso ?? null, label: w.label }, top: topN, rows }, null, 2);
+        const stats = updateSessionIndex(cache.database, undefined, { throttleMs: 0 });
+        const enrichedRows = rows.map((row) => ({
+          ...row,
+          ...(sessionPreview(cache.database, row.provider, row.sessionId) ?? {}),
+        }));
+        return JSON.stringify({ window: { since: w.sinceIso, until: w.untilIso ?? null, label: w.label }, top: topN, indexedFiles: stats.filesIndexed, rows: enrichedRows }, null, 2);
       }
       if (rows.length === 0) {
         return `${windowLine(w)}\nno sessions recorded in this window — run \`tokitoki scan\` first`;
@@ -1300,7 +1305,7 @@ function renderSessionDrill(cache: EventCache, sessionId: string, json: boolean)
     return { n: i + 1, ...e, runningTokens };
   });
   if (json) {
-    updateSessionIndex(cache.database);
+    updateSessionIndex(cache.database, undefined, { throttleMs: 0 });
     return JSON.stringify({ provider: matches[0], sessionId, conversation: sessionConversation(cache.database, matches[0]!, sessionId), events: detailRows }, null, 2);
   }
   const header = `session ${sessionId} · ${matches[0]} · ${events.length} requests`;
@@ -2100,6 +2105,16 @@ function localDateKey(offsetDays = 0): string {
 function runMenubarPayload(parsed: ParsedInvocation): void {
   // Sequential single-process composition: the menu bar previously spawned
   // 7 CLIs at once (~1GB RSS each) and thrashed memory.
+  // Ingest changed harness stores before any report is composed. This is
+  // incremental (provider cursors make unchanged files cheap) and prevents
+  // the popover from showing a stale/zero token period after a session ends.
+  const machineId = localMachineId();
+  for (const provider of PROVIDERS) {
+    scanProviderCore(provider, machineId, {
+      onEvents: (events) => appendEvents(events),
+      onSaveCursors: (cursors) => saveProviderCursors(provider.id, cursors),
+    });
+  }
   const parts: Record<string, unknown> = {};
   const capture = (key: string, fn: () => void): void => {
     const orig = console.log;
@@ -2113,7 +2128,8 @@ function runMenubarPayload(parsed: ParsedInvocation): void {
   // "today" = local CALENDAR day, not a rolling 24h window — a rolling
   // window makes the hero number drift DOWN as yesterday's hours fall out.
   const todayKey = localDateKey(0);
-  capture("today", () => runReport(inv("report", { by: "provider", json: true, from: todayKey, to: todayKey })));
+  const tomorrowKey = localDateKey(-1);
+  capture("today", () => runReport(inv("report", { by: "provider", json: true, from: todayKey, to: tomorrowKey })));
   // Token Pulse intentionally uses a rolling 24-hour window: people use this
   // view to answer "what have I spent today?" even when yesterday evening's
   // activity is still within the current workday. Keep the calendar-day

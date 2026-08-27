@@ -171,6 +171,8 @@ export type SessionRow = {
   totalTokens: number;
   cachePct: number;
   costUsd: number;
+  title?: string;
+  snippet?: string;
 };
 
 export interface SessionsPayload {

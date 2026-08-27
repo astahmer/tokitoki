@@ -5227,7 +5227,7 @@ struct AccountLimitCard: View {
                                 .font(.caption2).foregroundStyle(.secondary)
                             Spacer()
                             if let r = w.resetsAt, let target = parseISO(r) {
-                                Text("resets " + target.formatted(date: .abbreviated, time: .omitted))
+                                Text("resets " + target.formatted(date: .abbreviated, time: .shortened))
                                     .font(.caption2.monospacedDigit()).foregroundStyle(.tertiary)
                             }
                         }
@@ -5432,7 +5432,7 @@ struct AccountLimitCard: View {
                 Image(systemName: "banknote.fill").font(.caption2)
                 Text("\(banked) banked reset\(banked == 1 ? "" : "s")")
                 if let exp = limits.bankedExpiresAt {
-                    Text("(exp " + shortDate(exp) + ")")
+                    Text("(expires " + shortDateTime(exp) + " · " + countdown(exp) + ")")
                 }
             }
             .font(.caption2).foregroundStyle(.mint)
@@ -5463,6 +5463,11 @@ private func windowDisplayName(_ kind: String, provider: String? = nil) -> Strin
 
 private func shortDate(_ iso: String) -> String {
     String(iso.prefix(10))
+}
+
+private func shortDateTime(_ iso: String) -> String {
+    guard let date = parseISO(iso) else { return shortDate(iso) }
+    return date.formatted(date: .abbreviated, time: .shortened)
 }
 
 /// Humanized time-until-reset ("4h 12m", "3d", "42m").
@@ -5685,7 +5690,12 @@ struct SpendLegend: View {
         VStack(alignment: .leading, spacing: 3) {
             ForEach(Array(slices.enumerated()), id: \.offset) { _, slice in
                 HStack(spacing: 5) {
-                    ProviderLogo(provider: slice.name)
+                    // The legend is part of the chart contract: use the exact
+                    // sector color instead of independently-derived provider
+                    // branding (which made every model dot pink).
+                    Circle()
+                        .fill(slice.color)
+                        .frame(width: 8, height: 8)
                     Text(slice.name).font(.caption2).lineLimit(1)
                     Spacer()
                     Text(metric == .cost ? String(format: "$%.2f", slice.value) : humanCount(slice.value))

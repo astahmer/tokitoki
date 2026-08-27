@@ -217,7 +217,12 @@ describe("computeLimits", () => {
           id: "q",
           quota: {
             primary: { usedPct: 42.5, windowMinutes: 10080, resetsAtEpoch: 1788160164 },
-            credits: { hasCredits: true, unlimited: false, balance: "2" },
+            credits: {
+              hasCredits: true,
+              unlimited: false,
+              balance: "2",
+              expiresAt: "2026-08-30T12:00:00.000Z",
+            },
           },
         }),
       ]);
@@ -231,6 +236,7 @@ describe("computeLimits", () => {
       expect(codex.windows.filter((w) => w.source === "derived").map((w) => w.kind)).toEqual(["day", "month"]);
       // credits surface as banked resets
       expect(codex.bankedResets).toBe(2);
+      expect(codex.bankedExpiresAt).toBe("2026-08-30T12:00:00.000Z");
     } finally {
       cache.close();
     }

@@ -14,6 +14,20 @@ interface CodexTokenUsage {
   output_tokens?: number;
 }
 
+/** Normalize the several expiry encodings used by Codex credit responses. */
+function creditExpiry(value: unknown): string | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    const ms = value > 10_000_000_000 ? value : value * 1000;
+    const date = new Date(ms);
+    return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
+  }
+  if (typeof value !== "string" || value.trim().length === 0) return undefined;
+  const numeric = Number(value);
+  if (Number.isFinite(numeric)) return creditExpiry(numeric);
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
+}
+
 /**
  * Codex CLI/Desktop rollouts live under ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl.
  * Relevant lines:
@@ -175,6 +189,9 @@ export const codexProvider: Provider = {
               hasCredits: creditsRaw.has_credits,
               unlimited: creditsRaw.unlimited === true,
               balance: typeof creditsRaw.balance === "string" ? creditsRaw.balance : "0",
+              expiresAt: creditExpiry(
+                creditsRaw.expires_at ?? creditsRaw.expiration_date ?? creditsRaw.expiresAt ?? creditsRaw.expirationDate,
+              ),
             }
           : undefined;
       const primary = win(rl.primary);

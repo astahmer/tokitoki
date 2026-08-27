@@ -234,9 +234,17 @@ export function computeLimits(
       windows.push(w);
       if (s.creditsJson !== null) {
         try {
-          const c = JSON.parse(s.creditsJson) as { hasCredits: boolean; unlimited: boolean; balance: string };
+          const c = JSON.parse(s.creditsJson) as {
+            hasCredits: boolean;
+            unlimited: boolean;
+            balance: string;
+            expiresAt?: string;
+          };
           if (c.hasCredits && !c.unlimited && Number(c.balance) > 0) {
             bankedResets = Math.floor(Number(c.balance));
+            if (typeof c.expiresAt === "string" && !Number.isNaN(Date.parse(c.expiresAt))) {
+              bankedExpiresAt = c.expiresAt;
+            }
           }
         } catch {
           // malformed credits json — ignore

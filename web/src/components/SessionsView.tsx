@@ -322,6 +322,9 @@ function SessionTable({
             >
               <Table.Cell className="whitespace-nowrap">
                 {r.startedAt.slice(5, 16).replace("T", " ")}
+                <div className="max-w-56 truncate text-[10px] text-kumo-subtle" title={r.title ?? r.snippet}>
+                  {r.title?.trim() || r.snippet?.trim() || "Conversation preview unavailable"}
+                </div>
               </Table.Cell>
               <Table.Cell className="whitespace-nowrap text-kumo-subtle">
                 {(r.lastRequestAt ?? r.startedAt).slice(5, 16).replace("T", " ")}
