@@ -89,8 +89,8 @@ export interface PollOptions {
   opencodeAuthPath?: string;
   /** Absolute path to Command Code auth.json (tests). Default ~/.commandcode/auth.json. */
   commandcodeAuthPath?: string;
-  /** Manually registered gateway keys (config.poll.extraKeys) polled as synthetic accounts. */
-  manualKeys?: Array<{ id: string; provider: "opencode-go"; key: string }>;
+  /** Manually registered provider keys polled as synthetic accounts. */
+  manualKeys?: Array<{ id: string; provider: "opencode-go" | "openrouter"; key: string }>;
   /** EventCache instance (tests use a temp db). Default: open the real one. */
   cache?: EventCache;
   now?: number;
@@ -976,7 +976,24 @@ export async function pollQuotas(opts: PollOptions = {}): Promise<PollResult> {
   }
 
   // --- manual gateway keys (config.poll.extraKeys) -----------------------
-  for (const mk of providerEnabled("opencode-go") ? opts.manualKeys ?? [] : []) {
+  for (const mk of opts.manualKeys ?? []) {
+    if (!providerEnabled(mk.provider)) continue;
+    if (mk.provider === "openrouter") {
+      const r = await pollOpenRouter(mk.key, fetcher);
+      if (r.error !== undefined) {
+        reasons.push(`${mk.id}: ${r.error}`);
+      } else if (r.skip !== undefined) {
+        reasons.push(`${mk.id}: ${r.skip}`);
+      } else {
+        accounts.push({
+          accountKey: mk.id,
+          harnesses: ["pi"],
+          windows: r.windows,
+          inserted: persistWindows(r.windows, [["openrouter", mk.id]], ["pi"]),
+        });
+      }
+      continue;
+    }
     const r = await pollOpencodeGo(mk.key, fetcher);
     if (r.error !== undefined) {
       reasons.push(`${mk.id}: ${r.error}`);

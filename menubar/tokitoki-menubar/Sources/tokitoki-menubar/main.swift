@@ -253,6 +253,26 @@ final class Model: ObservableObject {
         }
     }
 
+    /// Hide one account card immediately, then persist the same canonical
+    /// provider:account target used by Customize and the CLI.
+    func hideAccount(_ account: AccountLimits) {
+        let target = "\(account.provider):\(account.accountKey)"
+        menubarHidden.insert(target)
+        invalidateRefreshes()
+        let cli = invocation
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                _ = try await Self.runConfigCLI(cli, ["ui", "--hide", target])
+                self.pollStatus = "Hidden \(account.accountKey)"
+                self.refresh()
+            } catch {
+                self.menubarHidden.remove(target)
+                self.pollStatus = "Could not hide card: \(error.localizedDescription)"
+            }
+        }
+    }
+
     private func refreshProvider(for account: AccountLimits) -> String {
         if account.provider == "codex" { return "codex" }
         if account.provider == "copilot" { return "copilot" }
@@ -590,6 +610,7 @@ final class Model: ObservableObject {
         case "grok": return "grok"
         case "cursor": return "cursor"
         case "copilot": return "copilot"
+        case "openrouter": return "openrouter"
         case "pi", "opencode", "opencode-go":
             let key = l.accountKey.lowercased()
             if key.contains("openrouter") { return "openrouter" }
@@ -923,6 +944,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var monitors: [Any] = []
     private var testContextObserver: NSObjectProtocol?
     private var dashboardProcess: Process?
+    private let hoverPopover = NSPopover()
+    private let hoverActivationDelay: TimeInterval = 0.15
+    private var hoverWorkItem: DispatchWorkItem?
     var model: Model?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -947,6 +971,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let content = ContentView(model: model)
         popover.contentViewController = NSHostingController(rootView: content)
+        hoverPopover.behavior = .transient
+        hoverPopover.animates = false
+        hoverPopover.contentViewController = NSHostingController(rootView: HoverPreviewView(model: model))
         // .transient: AppKit's own outside-click dismissal — works for real
         // user clicks without any TCC permissions. Synthetic HID events don't
         // route here (they never activate the accessory app), so tests use
@@ -1091,7 +1118,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let img = content {
             button.image = img
             button.title = ""
-            button.toolTip = entries.map { "\($0.provider): \($0.lines.joined(separator: " · "))" }.joined(separator: "\n")
+            button.toolTip = model.previewMode == "hover"
+                ? "Hover for quota summary · click for details"
+                : entries.map { "\($0.provider): \($0.lines.joined(separator: " · "))" }.joined(separator: "\n")
         } else {
             button.image = nil
             button.title = fallback
@@ -1151,19 +1180,55 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// mouse-moved monitor hit-testing the button frame is deterministic.
     private var hoverMonitor: Any?
     private func refreshHoverMonitor() {
+        let preserveHoverPopover = model?.previewMode == "hover" && model?.isHovering == true
         if let hoverMonitor { NSEvent.removeMonitor(hoverMonitor); self.hoverMonitor = nil }
+        hoverWorkItem?.cancel()
+        hoverWorkItem = nil
+        if !preserveHoverPopover { hideHoverPopover() }
         guard model?.previewMode == "hover", statusItem?.button != nil else { return }
+        if preserveHoverPopover {
+            DispatchQueue.main.async { [weak self] in self?.showHoverPopover() }
+        }
         hoverMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved, .leftMouseUp, .rightMouseUp]) { [weak self] event in
             guard let self, let button = self.statusItem?.button,
                   let window = button.window else { return }
             let inside = window.frame.contains(NSEvent.mouseLocation)
-            DispatchQueue.main.async { self.model?.isHovering = inside }
+            DispatchQueue.main.async {
+                guard let model = self.model else { return }
+                if inside {
+                    guard !model.isHovering, self.hoverWorkItem == nil else { return }
+                    let work = DispatchWorkItem { [weak self] in
+                        guard let self, let model = self.model else { return }
+                        self.hoverWorkItem = nil
+                        model.isHovering = true
+                        self.showHoverPopover()
+                    }
+                    self.hoverWorkItem = work
+                    DispatchQueue.main.asyncAfter(deadline: .now() + self.hoverActivationDelay, execute: work)
+                } else {
+                    self.hoverWorkItem?.cancel()
+                    self.hoverWorkItem = nil
+                    model.isHovering = false
+                    self.hideHoverPopover()
+                }
+            }
         }
+    }
+
+    private func showHoverPopover() {
+        guard let button = statusItem?.button, let model, !popover.isShown else { return }
+        hoverPopover.contentViewController = NSHostingController(rootView: HoverPreviewView(model: model))
+        hoverPopover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+    }
+
+    private func hideHoverPopover() {
+        if hoverPopover.isShown { hoverPopover.performClose(nil) }
     }
 
     @objc private func statusItemAction(_ sender: Any?) {
         FileHandle.standardError.write(Data("[tokitoki-menubar] statusItemAction fired\n".utf8))
         guard let button = statusItem?.button else { return }
+        hideHoverPopover()
         if let event = NSApp.currentEvent,
            event.type == .rightMouseUp || event.modifierFlags.contains(.control) {
             showContextMenu(for: button, event: event)
@@ -1655,11 +1720,6 @@ struct CustomizeSheet: View {
     @State private var cards: [CardState] = []
     /// ui.hidden.menubar targets as of load — the save diff baseline.
     @State private var originalHiddenTargets: Set<String> = []
-    /// Manually registered opencode gateway keys.
-    @State private var extraKeys: [ExtraKey] = []
-    @State private var showAddKey = false
-    @State private var newKeyId = ""
-    @State private var newKeyValue = ""
 
     struct CardState: Identifiable, Equatable {
         /// Display/order id ("provider@accountKey").
@@ -1668,12 +1728,6 @@ struct CustomizeSheet: View {
         let target: String
         var visible: Bool
         var ident: String { id }
-    }
-
-    struct ExtraKey: Identifiable, Equatable, Codable {
-        let id: String
-        let provider: String
-        let key: String
     }
 
     var body: some View {
@@ -1702,62 +1756,10 @@ struct CustomizeSheet: View {
                             .onDrop(of: [UTType.plainText], delegate: CardDropDelegate(target: card.id, cards: $cards, dragging: $dragging))
                     }
                 }
-                Section(header: sectionHeader("API keys (opencode)")) {
-                    ForEach(extraKeys) { k in
-                        HStack(spacing: 8) {
-                            VStack(alignment: .leading, spacing: 1) {
-                                Text(k.id).font(.system(size: 12, weight: .medium))
-                                Text(redactedKeyHint(k.key))
-                                    .font(.caption2.monospacedDigit()).foregroundStyle(.tertiary)
-                            }
-                            Spacer()
-                            Button {
-                                deleteExtraKey(k)
-                            } label: {
-                                Image(systemName: "trash")
-                                    .font(.system(size: 10))
-                                    .foregroundStyle(.secondary)
-                            }
-                            .buttonStyle(.plain)
-                            .help("Remove key")
-                        }
-                    }
-                    Button("Add key…") { newKeyId = ""; newKeyValue = ""; showAddKey = true }
-                        .font(.system(size: 12))
-                }
             }
             .listStyle(.inset)
         }
         .frame(width: 320, height: 480)
-        .sheet(isPresented: $showAddKey) {
-            // Minimal add-key form; Add persists immediately.
-            VStack(alignment: .leading, spacing: 10) {
-                Text("Add opencode key").font(.system(size: 13, weight: .semibold))
-                TextField("name (e.g. work)", text: $newKeyId)
-                    .textFieldStyle(.roundedBorder)
-                HStack(spacing: 6) {
-                    SecureField("key (sk-…)", text: $newKeyValue)
-                        .textFieldStyle(.roundedBorder)
-                    Button("Paste") {
-                        if let pasted = NSPasteboard.general.string(forType: .string) {
-                            newKeyValue = pasted.trimmingCharacters(in: .whitespacesAndNewlines)
-                        }
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .accessibilityIdentifier("paste-api-key")
-                }
-                HStack {
-                    Spacer()
-                    Button("Cancel") { showAddKey = false }.keyboardShortcut(.cancelAction)
-                    Button("Add") { addExtraKey() }
-                        .keyboardShortcut(.defaultAction)
-                        .disabled(!extraKeyInputValid)
-                }
-            }
-            .padding(16)
-            .frame(width: 300)
-        }
         .onAppear(perform: load)
     }
 
@@ -1840,65 +1842,10 @@ struct CustomizeSheet: View {
             )
         }
         originalHiddenTargets = model.menubarHidden
-        // Manual keys live only in the config file — read it
-        // directly (the payload does not carry them).
-        loadExtraKeysFromDisk()
-    }
-
-    private func loadExtraKeysFromDisk() {
-        let env = ProcessInfo.processInfo.environment
-        let p = env["TOKITOKI_CONFIG"]
-            ?? FileManager.default.homeDirectoryForCurrentUser
-                .appendingPathComponent(".config/tokitoki/config.json").path
-        guard let data = FileManager.default.contents(atPath: p) else { return }
-        struct Cfg: Codable { var poll: PollCfg? }
-        struct PollCfg: Codable { var extraKeys: [ExtraKey]? }
-        if let cfg = try? JSONDecoder().decode(Cfg.self, from: data) {
-            extraKeys = cfg.poll?.extraKeys ?? []
-        }
     }
 
     private func move(from source: IndexSet, to destination: Int) {
         cards.move(fromOffsets: source, toOffset: destination)
-    }
-
-    /// first4…last4 hint — mirrors poll.ts redactCredential.
-    private func redactedKeyHint(_ key: String) -> String {
-        key.count <= 12 ? "…" : "\(key.prefix(4))…\(key.suffix(4))"
-    }
-
-    private var extraKeyInputValid: Bool {
-        !newKeyId.isEmpty
-            && !newKeyId.contains(" ")
-            && newKeyValue.count > 10
-            && !extraKeys.contains(where: { $0.id == newKeyId })
-    }
-
-    /// Persist via `config set poll.extraKeys <json>`; entries are full
-    /// {id,label,provider,key} objects so deletes preserve siblings.
-    private func persistExtraKeys() {
-        let cli = model.currentInvocation()
-        let encoder = JSONEncoder()
-        guard let data = try? encoder.encode(extraKeys), let json = String(data: data, encoding: .utf8) else { return }
-        Task {
-            do {
-                _ = try await Model.runConfigCLI(cli, ["config", "set", "poll.extraKeys", json])
-            } catch {
-                FileHandle.standardError.write(Data("[tokitoki] API key save failed: \(error)\n".utf8))
-            }
-        }
-    }
-
-    private func addExtraKey() {
-        guard extraKeyInputValid else { return }
-        extraKeys.append(ExtraKey(id: newKeyId, provider: "opencode-go", key: newKeyValue))
-        persistExtraKeys()
-        showAddKey = false
-    }
-
-    private func deleteExtraKey(_ k: ExtraKey) {
-        extraKeys.removeAll { $0.id == k.id }
-        persistExtraKeys()
     }
 
     /// Done: persist account order + visibility changes, batched on a
@@ -1932,6 +1879,194 @@ struct CustomizeSheet: View {
             }
             await MainActor.run { model.refresh() }
         }
+    }
+}
+
+/// Dedicated provider-key manager. Keys stay in local config; quota polling
+/// stores only provider snapshots and UI exposes redacted hints.
+struct ApiKeysSheet: View {
+    @ObservedObject var model: Model
+    @Binding var isPresented: Bool
+    @State private var keys: [ProviderKey] = []
+    @State private var showAdd = false
+    @State private var newId = ""
+    @State private var newProvider = "opencode-go"
+    @State private var newValue = ""
+
+    struct ProviderKey: Identifiable, Codable, Equatable {
+        let id: String
+        let label: String?
+        let provider: String
+        let key: String
+
+        enum CodingKeys: String, CodingKey { case id, label, provider, key }
+
+        init(id: String, label: String? = nil, provider: String, key: String) {
+            self.id = id
+            self.label = label
+            self.provider = provider
+            self.key = key
+        }
+
+        init(from decoder: Decoder) throws {
+            let values = try decoder.container(keyedBy: CodingKeys.self)
+            id = try values.decode(String.self, forKey: .id)
+            label = try values.decodeIfPresent(String.self, forKey: .label)
+            provider = try values.decodeIfPresent(String.self, forKey: .provider) ?? "opencode-go"
+            key = try values.decode(String.self, forKey: .key)
+        }
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Button("Cancel") { isPresented = false }
+                    .buttonStyle(.plain).foregroundStyle(.secondary)
+                Spacer()
+                Text("Provider API keys").font(.system(size: 13, weight: .semibold))
+                Spacer()
+                Button("Done") { isPresented = false }
+                    .buttonStyle(.plain).fontWeight(.semibold)
+            }
+            .padding(.horizontal, 14).padding(.vertical, 10)
+            Divider()
+            List {
+                Section {
+                    if keys.isEmpty {
+                        Text("No manual keys yet")
+                            .font(.caption).foregroundStyle(.secondary)
+                    } else {
+                        ForEach(keys) { key in
+                            HStack(spacing: 8) {
+                                ProviderLogo(provider: key.provider)
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(key.label ?? key.id).font(.system(size: 12, weight: .medium))
+                                    if key.label != nil { Text(key.id).font(.caption2).foregroundStyle(.secondary) }
+                                    Text("\(providerName(key.provider)) · \(redactedKeyHint(key.key))")
+                                        .font(.caption2.monospacedDigit()).foregroundStyle(.tertiary)
+                                }
+                                Spacer()
+                                Button { delete(key) } label: {
+                                    Image(systemName: "trash")
+                                        .font(.system(size: 10)).foregroundStyle(.secondary)
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel("Remove \(key.id) API key")
+                                .help("Remove API key")
+                            }
+                        }
+                    }
+                    Button("Add API key…") {
+                        newId = ""
+                        newProvider = "opencode-go"
+                        newValue = ""
+                        showAdd = true
+                    }
+                    .buttonStyle(.bordered).controlSize(.small)
+                    .accessibilityIdentifier("add-api-key")
+                } header: {
+                    Text("Saved keys")
+                } footer: {
+                    Text("Each key is polled separately and appears as its own quota card. Use Refresh quotas now after adding one.")
+                }
+            }
+            .listStyle(.inset)
+        }
+        .frame(width: 340, height: 390)
+        .sheet(isPresented: $showAdd) { addKeyForm }
+        .onAppear(perform: load)
+    }
+
+    private var addKeyForm: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Add provider API key").font(.system(size: 13, weight: .semibold))
+            Picker("Provider", selection: $newProvider) {
+                Text("OpenCode Go").tag("opencode-go")
+                Text("OpenRouter").tag("openrouter")
+            }
+            .pickerStyle(.menu)
+            TextField("name (e.g. work)", text: $newId)
+                .textFieldStyle(.roundedBorder)
+            HStack(spacing: 6) {
+                SecureField("API key", text: $newValue)
+                    .textFieldStyle(.roundedBorder)
+                Button("Paste") {
+                    if let pasted = NSPasteboard.general.string(forType: .string) {
+                        newValue = pasted.trimmingCharacters(in: .whitespacesAndNewlines)
+                    }
+                }
+                .buttonStyle(.bordered).controlSize(.small)
+                .accessibilityIdentifier("paste-api-key")
+            }
+            HStack {
+                Spacer()
+                Button("Cancel") { showAdd = false }.keyboardShortcut(.cancelAction)
+                Button("Add") { add() }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(!inputValid)
+            }
+        }
+        .padding(16)
+        .frame(width: 310)
+    }
+
+    private var configURL: URL {
+        if let path = ProcessInfo.processInfo.environment["TOKITOKI_CONFIG"], !path.isEmpty {
+            return URL(fileURLWithPath: path)
+        }
+        return FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".config/tokitoki/config.json")
+    }
+
+    private func load() {
+        guard let data = try? Data(contentsOf: configURL) else { return }
+        struct Config: Codable { var poll: Poll? }
+        struct Poll: Codable { var extraKeys: [ProviderKey]? }
+        if let config = try? JSONDecoder().decode(Config.self, from: data) {
+            keys = config.poll?.extraKeys ?? []
+        }
+    }
+
+    private func persist() {
+        guard let data = try? JSONEncoder().encode(keys), let json = String(data: data, encoding: .utf8) else { return }
+        let cli = model.currentInvocation()
+        Task {
+            do {
+                _ = try await Model.runConfigCLI(cli, ["config", "set", "poll.extraKeys", json])
+                await MainActor.run { model.refresh() }
+            } catch {
+                await MainActor.run { model.pollStatus = "Could not save API key: \(error.localizedDescription)" }
+            }
+        }
+    }
+
+    private var inputValid: Bool {
+        !newId.isEmpty && !newId.contains(" ") && newValue.count > 10
+            && !keys.contains(where: { $0.id == newId && $0.provider == newProvider })
+    }
+
+    private func add() {
+        guard inputValid else { return }
+        keys.append(ProviderKey(id: newId, provider: newProvider, key: newValue))
+        persist()
+        showAdd = false
+    }
+
+    private func delete(_ key: ProviderKey) {
+        keys.removeAll { $0.id == key.id && $0.provider == key.provider }
+        persist()
+    }
+
+    private func providerName(_ provider: String) -> String {
+        switch provider {
+        case "opencode-go": return "OpenCode Go"
+        case "openrouter": return "OpenRouter"
+        default: return provider
+        }
+    }
+
+    private func redactedKeyHint(_ key: String) -> String {
+        key.count <= 12 ? "…" : "\(key.prefix(4))…\(key.suffix(4))"
     }
 }
 
@@ -2057,6 +2192,85 @@ enum PopoverSubview: String, CaseIterable, Hashable {
     }
 }
 
+/// Compact hover surface for the status item. It answers "what is tightest
+/// right now?" without opening the full popover, while click still opens all
+/// details. Rows use the same colors and reset semantics as quota cards.
+struct HoverPreviewView: View {
+    @ObservedObject var model: Model
+
+    struct Entry: Identifiable {
+        let id: String
+        let provider: String
+        let account: String
+        let window: String
+        let value: String
+        let reset: String
+        let remaining: Double?
+    }
+
+    private var entries: [Entry] {
+        model.limits
+            .filter { !model.menubarHidden.contains($0.provider) && !model.menubarHidden.contains("\($0.provider):\($0.accountKey)") }
+            .flatMap { limit in
+                let account = limit.email ?? limit.credential ?? limit.accountKey
+                return limit.windows.prefix(3).map { window in
+                    let remaining = window.usedPct.map { max(0, min(100, 100 - $0)) }
+                    return Entry(
+                        id: "\(limit.id):\(window.kind)",
+                        provider: limit.provider,
+                        account: account,
+                        window: windowDisplayName(window.kind, provider: limit.provider),
+                        value: remaining.map { "\(Int($0.rounded()))% left" } ?? "~\(humanCount(window.tokens)) tokens",
+                        reset: window.resetsAt.map(countdown) ?? "—",
+                        remaining: remaining,
+                    )
+                }
+            }
+            .sorted { ($0.remaining ?? 101) < ($1.remaining ?? 101) }
+            .prefix(8)
+            .map { $0 }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Label("Usage preview", systemImage: "gauge.with.dots.needle.67percent")
+                    .font(.caption.weight(.semibold))
+                Spacer()
+                Text("click for details")
+                    .font(.caption2).foregroundStyle(.tertiary)
+            }
+            Divider()
+            if entries.isEmpty {
+                Text("No provider quota data")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else {
+                ForEach(entries) { entry in
+                    HStack(spacing: 7) {
+                        ProviderLogo(provider: entry.provider)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(entry.account).font(.caption).lineLimit(1)
+                            Text("\(entry.provider) · \(entry.window)")
+                                .font(.caption2).foregroundStyle(.secondary)
+                        }
+                        Spacer(minLength: 8)
+                        VStack(alignment: .trailing, spacing: 1) {
+                            Text(entry.value)
+                                .font(.caption2.monospacedDigit().weight(.semibold))
+                                .foregroundStyle(entry.remaining.map(barTint) ?? .secondary)
+                            Text(entry.reset == "now" ? "Available now" : "Resets in \(entry.reset)")
+                                .font(.caption2).foregroundStyle(.tertiary)
+                        }
+                    }
+                }
+            }
+        }
+        .padding(11)
+        .frame(width: 310, alignment: .leading)
+        .background(.thickMaterial)
+    }
+}
+
 struct ContentView: View {
     @ObservedObject var model: Model
     /// Card filter — matches harness/account names, repo paths, tools.
@@ -2065,6 +2279,8 @@ struct ContentView: View {
     @State private var showCustomize = false
     /// Separate status-item preview settings (provider marks and display mode).
     @State private var showPreviewSettings = false
+    /// Provider API-key manager, kept separate from card layout editing.
+    @State private var showAPIKeys = false
     /// Repo row currently expanded in the repos card.
     @State private var expandedRepo: String?
     /// Card order override while a drag session is in flight.
@@ -2148,6 +2364,9 @@ struct ContentView: View {
         .sheet(isPresented: $showPreviewSettings) {
             PreviewSettingsSheet(model: model, isPresented: $showPreviewSettings)
         }
+        .sheet(isPresented: $showAPIKeys) {
+            ApiKeysSheet(model: model, isPresented: $showAPIKeys)
+        }
     }
 
     private var navigationHeader: some View {
@@ -2164,6 +2383,7 @@ struct ContentView: View {
                         .frame(maxWidth: .infinity)
                         .padding(.horizontal, 3).padding(.vertical, 5)
                         .background(activeSubview == view ? AnyShapeStyle(.quaternary.opacity(0.9)) : AnyShapeStyle(.clear), in: RoundedRectangle(cornerRadius: 6))
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(activeSubview == view ? .primary : .secondary)
@@ -2391,6 +2611,12 @@ struct ContentView: View {
                     Text("Choose how the status item shows provider marks, percentages, and reset countdowns.")
                         .font(.caption).foregroundStyle(.secondary)
                     Button("Customize preview…") { showPreviewSettings = true }
+                        .buttonStyle(.bordered).controlSize(.small)
+                }
+                card(title: "provider API keys", icon: "key.fill") {
+                    Text("Add multiple keys for providers that expose quota APIs. Each key gets its own usage card.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Button("Manage API keys…") { showAPIKeys = true }
                         .buttonStyle(.bordered).controlSize(.small)
                 }
                 card(title: "local dashboard", icon: "safari") {
@@ -2729,6 +2955,7 @@ struct ContentView: View {
                     limits: l,
                     isRefreshing: model.refreshingAccounts.contains(accountId),
                     onRefresh: { model.refreshAccount(l) },
+                    onHide: { model.hideAccount(l) },
                     budgets: matchingBudgets(for: l),
                     tokenScale: tokenMaxima(model.limits),
                 )
@@ -3383,6 +3610,7 @@ struct AccountLimitCard: View {
     let limits: AccountLimits
     let isRefreshing: Bool
     let onRefresh: () -> Void
+    let onHide: () -> Void
     /// Budget rows whose pattern matches this account — rendered as a slim footer.
     var budgets: [BudgetRow] = []
     /// Per-kind max token totals across ALL accounts — used to normalize
@@ -3596,6 +3824,14 @@ struct AccountLimitCard: View {
             .disabled(isRefreshing)
             .accessibilityIdentifier("refresh-limit-\(limits.provider)-\(limits.accountKey)")
             .help(limits.origin == "scan" ? "Re-scan \(limits.provider)" : "Refresh quotas for \(limits.provider)")
+            Button(action: onHide) {
+                Image(systemName: "eye.slash")
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .accessibilityLabel("Hide \(limits.provider) \(limits.accountKey) card")
+            .accessibilityIdentifier("hide-limit-\(limits.provider)-\(limits.accountKey)")
+            .help("Hide this card; restore it in Customize")
             planBadge
         }
     }

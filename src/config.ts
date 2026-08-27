@@ -51,16 +51,16 @@ export interface TokitokiConfig {
     /** Menubar background poll cadence in minutes (default 15). */
     intervalMinutes?: number;
     /**
-     * Manually registered opencode gateway keys (multi-account): each is
-     * polled as its own synthetic account and gets a card even with zero
-     * scanned events.
+     * Manually registered provider API keys (multi-account): each is polled
+     * as its own synthetic account and gets a card even with zero scanned
+     * events.
      */
     extraKeys?: Array<{
       /** Stable id = accountKey on the card (and quota_snapshots key). */
       id: string;
       /** Optional display label; defaults to the id. */
       label?: string;
-      provider?: "opencode-go";
+      provider?: "opencode-go" | "openrouter";
       key: string;
     }>;
   };

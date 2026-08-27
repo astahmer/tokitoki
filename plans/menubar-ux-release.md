@@ -279,10 +279,20 @@ The serialized account identity must remain canonical and deterministic. A sourc
 ## Final validation
 
 - `bun run typecheck`: passed.
-- `bun test`: 277 passed, 0 failed, 1083 expectations.
+- `bun test`: 277 passed, 0 failed, 1085 expectations.
 - `swift test`: 11 passed, 0 failed.
 - `bun run menubar:e2e`: passed, including visible status item, painted strip, popover content, close behavior, and context menu.
 - `bun run menubar`: rebuilt the release binary and reloaded LaunchAgent `dev.tokitoki.menubar`; `bun run menubar:status` confirmed the live PID.
+
+## Follow-up implementation (2026-08-27)
+
+- [x] Add card-level visibility controls with the canonical `provider:account` target and rollback on persistence failure.
+- [x] Restore a dedicated provider API-key manager with multiple keys, provider selection, paste support, redacted display, deletion, and per-key quota cards.
+- [x] Support OpenRouter manual-key polling alongside OpenCode Go and scope refreshes to the selected provider.
+- [x] Add a custom hover quota surface with a named 150 ms activation delay, tightest-window ordering, reset state, and click-through details behavior.
+- [x] Preserve an active hover surface across status-strip refreshes and make the full tab button hit area clickable.
+- [x] Preserve legacy API-key labels when the manager rewrites configuration.
+- [ ] Optimize the Twitch feature: blocked in this checkout because no Twitch implementation, schema, provider, or feature path exists here. Do not add Redis or speculative code until the actual Twitch checkout/path is supplied.
 
 ## Decisions log
 

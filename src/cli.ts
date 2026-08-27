@@ -1748,8 +1748,12 @@ async function runPoll(parsed: ParsedInvocation): Promise<void> {
       providers: flagStrings(parsed, "provider"),
       // Manually registered opencode gateway keys (multi-account).
       manualKeys: (config.poll?.extraKeys ?? [])
-        .filter((k) => k.provider === "opencode-go" && k.key.length > 0)
-        .map((k) => ({ id: k.id, provider: "opencode-go" as const, key: k.key })),
+        .filter((k) => k.key.length > 0)
+        .map((k) => ({
+          id: k.id,
+          provider: (k.provider ?? "opencode-go") as "opencode-go" | "openrouter",
+          key: k.key,
+        })),
     });
     if (jsonOut) {
       console.log(JSON.stringify(result));
@@ -2223,11 +2227,14 @@ function runMenubarPayload(parsed: ParsedInvocation): void {
           } catch { /* probe only */ }
         }
       }
-      // Manual opencode keys get a card even with zero scanned events; the
-      // poller stores their windows under ("pi", <id>) pairs.
+      // Manual provider keys get a card even with zero scanned events; the
+      // poller stores OpenCode Go under pi/<id> and OpenRouter under
+      // openrouter/<id>.
       for (const mk of config.poll?.extraKeys ?? []) {
-        if (withOrigin.some((l) => l.accountKey === mk.id)) continue;
-        const snaps = cache.latestQuotaSnapshots("pi", mk.id);
+        const provider = mk.provider ?? "opencode-go";
+        const cardProvider = provider === "openrouter" ? "openrouter" : "pi";
+        if (withOrigin.some((l) => l.provider === cardProvider && l.accountKey === mk.id)) continue;
+        const snaps = cache.latestQuotaSnapshots(cardProvider, mk.id);
         const windows = snaps.map((snap) => ({
           kind: embeddedKind(snap.windowMinutes),
           source: "embedded" as const,
@@ -2238,7 +2245,7 @@ function runMenubarPayload(parsed: ParsedInvocation): void {
           resetsAt: snap.resetsAt > 0 ? new Date(snap.resetsAt * 1000).toISOString() : undefined,
         }));
         withOrigin.push({
-          provider: "pi",
+          provider: cardProvider,
           accountKey: mk.id,
           credential: redactCredential(mk.key),
           origin: "manual",

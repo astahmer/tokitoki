@@ -458,11 +458,20 @@ describe("pollQuotas", () => {
             { status: 200 },
           );
         }
+        if (url.includes("openrouter.ai/api/v1/key")) {
+          return new Response(
+            JSON.stringify({ data: { limit: 100, limit_remaining: 40, limit_reset: "monthly" } }),
+            { status: 200 },
+          );
+        }
         throw new Error(`unexpected fetch: ${url}`);
       }) as unknown as typeof fetch;
 
       const res = await pollQuotas({
-        manualKeys: [{ id: "work-gateway", provider: "opencode-go", key: "sk-manual" }],
+        manualKeys: [
+          { id: "work-gateway", provider: "opencode-go", key: "sk-manual" },
+          { id: "personal-router", provider: "openrouter", key: "sk-router" },
+        ],
         fetcher,
         cache,
         ...hermeticPaths(),
@@ -477,6 +486,11 @@ describe("pollQuotas", () => {
         .all() as Array<{ provider: string; account_key: string }>;
       expect(rows).toContainEqual({ provider: "pi", account_key: "work-gateway" });
       expect(rows).toContainEqual({ provider: "opencode", account_key: "work-gateway" });
+      expect(res.accounts.find((a) => a.accountKey === "personal-router")?.windows[0]?.usedPct).toBeCloseTo(60);
+      const routerRows = cache.database
+        .query("SELECT DISTINCT provider, account_key FROM quota_snapshots WHERE account_key='personal-router'")
+        .all() as Array<{ provider: string; account_key: string }>;
+      expect(routerRows).toContainEqual({ provider: "openrouter", account_key: "personal-router" });
     } finally {
       cache.close();
     }
