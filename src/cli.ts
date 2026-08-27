@@ -2110,6 +2110,11 @@ function runMenubarPayload(parsed: ParsedInvocation): void {
   // window makes the hero number drift DOWN as yesterday's hours fall out.
   const todayKey = localDateKey(0);
   capture("today", () => runReport(inv("report", { by: "provider", json: true, from: todayKey, to: todayKey })));
+  // Token Pulse intentionally uses a rolling 24-hour window: people use this
+  // view to answer "what have I spent today?" even when yesterday evening's
+  // activity is still within the current workday. Keep the calendar-day
+  // payload above for the Home/report semantics.
+  capture("rollingDay", () => runReport(inv("report", { last: "day", by: "provider", json: true })));
   capture("week", () => runReport(inv("report", { last: "week", by: "provider", json: true })));
   capture("reposMonth", () => runReport(inv("report", { last: "month", by: "repo", json: true })));
   capture("budgets", () => runBudgets(inv("budgets", { json: true })));

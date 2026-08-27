@@ -189,6 +189,7 @@ struct DailyUsageHistory: Codable {
 
 struct MenubarPayload: Codable {
     let today: ReportPayload
+    let rollingDay: ReportPayload?
     let week: ReportPayload
     let reposMonth: ReportPayload?
     let budgets: [BudgetRow]
@@ -205,6 +206,7 @@ struct MenubarPayload: Codable {
 final class Model: ObservableObject {
     @Published var title: String = "…"
     @Published var today: ReportPayload?
+    @Published var rollingDay: ReportPayload?
     @Published var week: ReportPayload?
     @Published var repos: [ReportRow] = []
     @Published var topTools: [ToolRow] = []
@@ -593,6 +595,7 @@ final class Model: ObservableObject {
                 self.spendPeriods = p.spendPeriods ?? []
                 self.history = p.history
                 self.today = p.today
+                self.rollingDay = p.rollingDay
                 self.week = p.week
                 self.currentPayloadForTitle = p
                 self.currentPreviewCfg = p.uiPreview
@@ -3134,7 +3137,7 @@ struct ContentView: View {
                     Text(humanCount(totals.tokens))
                         .font(.system(size: 28, weight: .bold, design: .rounded))
                         .monospacedDigit()
-                    Text("tokens · \(tokenPeriodLabel(tokenPeriodKey))")
+                    Text("tokens · \(tokenPeriodLabel(tokenPeriodKey))\(tokenPeriodKey == "today" ? " · rolling 24h" : "")")
                         .font(.caption2).foregroundStyle(.secondary)
                 }
                 Spacer()
@@ -3178,9 +3181,9 @@ struct ContentView: View {
                     .font(.caption).foregroundStyle(.secondary)
             } else {
                 HStack(spacing: 14) {
-                    DonutChart(slices: slices, centerLabel: humanCount(total), centerUnit: "today")
+                    DonutChart(slices: slices, centerLabel: humanCount(total), centerUnit: "last 24h")
                         .frame(width: 112, height: 112)
-                        .accessibilityLabel("today token composition donut chart")
+                        .accessibilityLabel("last 24 hours token composition donut chart")
                     VStack(alignment: .leading, spacing: 4) {
                         ForEach(Array(slices.enumerated()), id: \.offset) { _, slice in
                             HStack(spacing: 5) {
@@ -3743,11 +3746,14 @@ struct ContentView: View {
     }
 
     private func tokenRows(for key: String) -> [ReportRow] {
-        spendPeriodRows(for: key)
+        if key == "today", let rolling = model.rollingDay {
+            return rolling.rows.filter { matches($0.bucket) }
+        }
+        return spendPeriodRows(for: key)
     }
 
     private func tokenTotals(for key: String) -> (tokens: Double, cost: Double, requests: Int, sessions: Int) {
-        if key == "today", let p = model.today {
+        if key == "today", let p = model.rollingDay ?? model.today {
             return (p.total.totalTokens, p.total.costUsd, p.total.requests, p.total.sessions)
         }
         if key == "week", let p = model.week {
@@ -3794,7 +3800,7 @@ struct ContentView: View {
     }
 
     private var tokenMixSlices: [(name: String, value: Double, color: Color)] {
-        guard let total = model.today?.total else { return [] }
+        guard let total = (model.rollingDay ?? model.today)?.total else { return [] }
         return [
             ("input", total.inputTokens ?? 0, Color(red: 0.30, green: 0.64, blue: 0.98)),
             ("output", total.outputTokens ?? 0, Color(red: 0.95, green: 0.44, blue: 0.30)),
