@@ -3,6 +3,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+import TOML from "@iarna/toml";
+
 const cli = path.join(import.meta.dir, "..", "src", "cli.ts");
 const configs: string[] = [];
 
@@ -76,5 +78,21 @@ describe("menubar config persistence", () => {
     const result = run(["config", "set", "secrets.token", '"nope"'], configPath);
     expect(result.status).not.toBe(0);
     expect(JSON.parse(fs.readFileSync(configPath, "utf8"))).toEqual({ ui: { previewHidden: ["claude"] } });
+  });
+
+  it("keeps TOML configs writable when they are the configured source of truth", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tokitoki-config-toml-"));
+    const configPath = path.join(dir, "config.toml");
+    configs.push(configPath);
+
+    expect(run(["config", "set", "ui.stripMetric", '"smart"'], configPath).status).toBe(0);
+    expect(run(["ui", "--hide", "codex:work"], configPath).status).toBe(0);
+
+    const parsed = TOML.parse(fs.readFileSync(configPath, "utf8")) as {
+      ui?: { stripMetric?: string; hidden?: { menubar?: string[] } };
+    };
+    expect(parsed.ui?.stripMetric).toBe("smart");
+    expect(parsed.ui?.hidden?.menubar).toEqual(["codex:work"]);
+    expect(fs.readFileSync(configPath, "utf8")).not.toContain("{\n");
   });
 });

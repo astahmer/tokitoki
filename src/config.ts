@@ -135,7 +135,13 @@ export interface TokitokiConfig {
 export function configPath(): string {
   const override = process.env.TOKITOKI_CONFIG;
   if (override !== undefined && override.length > 0) return override;
-  return path.join(os.homedir(), ".config", "tokitoki", "config.json");
+  const jsonPath = path.join(os.homedir(), ".config", "tokitoki", "config.json");
+  const tomlPath = path.join(os.homedir(), ".config", "tokitoki", "config.toml");
+  // Keep a user's existing TOML config as the writable source of truth. This
+  // matters for Nix/Home Manager users: a UI change must not silently create a
+  // higher-priority JSON sidecar that drifts from the declarative file.
+  if (!fs.existsSync(jsonPath) && fs.existsSync(tomlPath)) return tomlPath;
+  return jsonPath;
 }
 
 export function loadConfig(): TokitokiConfig {
@@ -161,6 +167,17 @@ export function loadConfig(): TokitokiConfig {
     return normalize(JSON.parse(raw) as unknown);
   } catch {
     return {};
+  }
+}
+
+/** Persist the same config file that loadConfig() considers authoritative. */
+export function writeConfig(config: TokitokiConfig): void {
+  const p = configPath();
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  if (p.endsWith(".toml")) {
+    fs.writeFileSync(p, TOML.stringify(config as never));
+  } else {
+    fs.writeFileSync(p, JSON.stringify(config, null, 2) + "\n");
   }
 }
 

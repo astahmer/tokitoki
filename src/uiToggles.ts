@@ -1,6 +1,4 @@
-import fs from "node:fs";
-
-import { loadConfig, configPath, type TokitokiConfig } from "./config.ts";
+import { loadConfig, writeConfig, type TokitokiConfig } from "./config.ts";
 import { UserError } from "./errors.ts";
 
 /**
@@ -68,12 +66,9 @@ export function isPreviewVisible(config: TokitokiConfig, upstreamProvider: strin
 }
 
 function saveUiMutator(mutate: (cfg: TokitokiConfig) => void): void {
-  // loadConfig reads json or toml; writes always go to the canonical path.
   const cfg = loadConfig();
   mutate(cfg);
-  const p = configPath();
-  fs.mkdirSync(p.replace(/[/][^/]+$/, ""), { recursive: true });
-  fs.writeFileSync(p, JSON.stringify(cfg, null, 2) + "\n");
+  writeConfig(cfg);
 }
 
 export function setSurfaceVisibility(

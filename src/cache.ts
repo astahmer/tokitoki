@@ -8,6 +8,7 @@ import { dataDir, eventsFile, readEventsFile, readEventsTail } from "./store.ts"
 import { partitionBlocks, type BlockRow } from "./blocks.ts";import { resolveRepo } from "./repos.ts";
 import { ensureSessionFts } from "./sessionIndex.ts";
 import { EXTRACTION_VERSION } from "./scan.ts";
+import { modelProvider } from "./model-provider.ts";
 
 /** SQLite can briefly reject a new connection while another process is
  * recovering a WAL. Retry only that transient class; programming/schema
@@ -748,6 +749,49 @@ export class EventCache {
       )
       .all(sinceIso, ...where.params) as Array<RawAggRow>;
     return rows.map(fromRawRow);
+  }
+
+  /**
+   * Aggregate by inferred upstream model provider. The SQL first collapses
+   * identical harness/account/model rows, keeping the JS remapping bounded by
+   * distinct models rather than raw events.
+   */
+  aggregateModelProviders(sinceIso: string, providers?: string[], untilIso?: string): AggRow[] {
+    const where = this.whereClause(providers, untilIso);
+    const rows = this.db
+      .query(
+        `
+        SELECT provider, account_key, model,
+               COUNT(*) AS requests,
+               COUNT(DISTINCT session_id) AS sessions,
+               SUM(input_tokens) AS input_tokens,
+               SUM(output_tokens) AS output_tokens,
+               SUM(cache_read_tokens) AS cache_read_tokens,
+               SUM(cache_write_tokens) AS cache_write_tokens,
+               SUM(cost_usd) AS cost_usd
+        FROM events
+        WHERE ${where.sql}
+        GROUP BY provider, account_key, model
+        `,
+      )
+      .all(sinceIso, ...where.params) as Array<RawAggRow & { provider: string; account_key: string; model: string }>;
+    const grouped = new Map<string, RawAggRow>();
+    for (const row of rows) {
+      const bucket = modelProvider(row.model, row.provider, row.account_key);
+      const previous = grouped.get(bucket);
+      if (previous === undefined) {
+        grouped.set(bucket, { ...row, bucket });
+      } else {
+        previous.requests += row.requests;
+        previous.sessions = (previous.sessions ?? 0) + (row.sessions ?? 0);
+        previous.input_tokens = (previous.input_tokens ?? 0) + (row.input_tokens ?? 0);
+        previous.output_tokens = (previous.output_tokens ?? 0) + (row.output_tokens ?? 0);
+        previous.cache_read_tokens = (previous.cache_read_tokens ?? 0) + (row.cache_read_tokens ?? 0);
+        previous.cache_write_tokens = (previous.cache_write_tokens ?? 0) + (row.cache_write_tokens ?? 0);
+        previous.cost_usd = (previous.cost_usd ?? 0) + (row.cost_usd ?? 0);
+      }
+    }
+    return [...grouped.values()].map(fromRawRow);
   }
 
   /** Single TOTAL row over the window (global distinct sessions, no grouping). */

@@ -81,6 +81,26 @@ describe("EventCache", () => {
     }
   });
 
+  it("aggregates upstream providers without losing harness attribution", () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "tk-cache-provider-"));
+    const cache = new EventCache(path.join(dir, "cache.db"));
+    try {
+      cache.insert([
+        makeEvent({ id: "openai-1", provider: "codex", accountKey: "openai:plus", model: "gpt-5", inputTokens: 100 }),
+        makeEvent({ id: "openai-2", provider: "pi", accountKey: "codex-work", model: "gpt-5", inputTokens: 200 }),
+        makeEvent({ id: "router-1", provider: "pi", accountKey: "openrouter", model: "anthropic/claude-sonnet-4", inputTokens: 300 }),
+      ]);
+      const rows = cache.aggregateModelProviders("2026-08-01T00:00:00.000Z");
+      const byBucket = Object.fromEntries(rows.map((r) => [r.bucket, r]));
+      expect(byBucket.openai?.inputTokens).toBe(300);
+      expect(byBucket.openai?.requests).toBe(2);
+      expect(byBucket.openrouter?.inputTokens).toBe(300);
+      expect(byBucket.openrouter?.requests).toBe(1);
+    } finally {
+      cache.close();
+    }
+  });
+
   it("rebuild is a pure projection of the merged logs", () => {
     const dir = mkdtempSync(path.join(os.tmpdir(), "tk-cache3-"));
     process.env.TOKITOKI_DATA_DIR = dir;

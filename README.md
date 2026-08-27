@@ -293,6 +293,13 @@ tokitoki menubar --foreground   # attached, logs to stdout
 Binary resolution mirrors the app's own CLI lookup in reverse:
 `$TOKITOKI_MENUBAR_BIN` → repo build → `~/bin/tokitoki-menubar`.
 
+The Settings tab's **Open config file** button opens the active configuration
+source. By default this is `~/.config/tokitoki/config.json`; if JSON is absent
+and `config.toml` exists, TOML remains the writable source so UI changes do
+not create a drifting JSON sidecar. UI setters also accept an explicit
+`TOKITOKI_CONFIG=/path/to/config.toml` override. `tokitoki config --json` is a
+read-only machine-readable view of the effective file.
+
 ## Backfill imports
 
 `tokitoki import <file.csv> [--source anthropic|openai|openrouter] [--dry-run]`

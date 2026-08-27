@@ -43,7 +43,7 @@ import { computeBudgetStatus, gaugesForMenubar } from "./budget-status.ts";
 import { importCsv, IMPORT_SOURCES } from "./import.ts";
 import { repoEfficiency } from "./report.ts";
 import { bar, formatCost, humanCount, sparkline, formatInt, cachePct } from "./format.ts";
-import { loadConfig, configPath } from "./config.ts";
+import { configPath, loadConfig, writeConfig } from "./config.ts";
 import { computeSpendHealth } from "./spend-health.ts";
 import {
   buildSharePayload,
@@ -250,8 +250,8 @@ Rows always show every configured scope×pattern; state is ok | warn (≥80%)
     example: "tokitoki share --publish --scope month",
   },
   config: {
-    usage: "tokitoki config set <dot.path> <json>",
-    flags: "  value parsed as JSON; bare words become strings",
+    usage: "tokitoki config set <dot.path> <json>\n       tokitoki config --json",
+    flags: "  --json                print the effective config without changing it\n  value                 parsed as JSON; bare words become strings",
     example: "tokitoki config set ui.stripMetric \"tokens\"",
   },
   "menubar-payload": {
@@ -474,7 +474,7 @@ const KNOWN_FLAGS: Record<string, string[]> = {
   mcp: [],
   menubar: ["stop", "status", "foreground", "rebuild"],
   poll: ["json", "enable", "disable", "provider"],
-  config: ["set"],
+  config: ["set", "json"],
   share: ["enable", "disable", "status", "publish", "scope", "include-repos"],
   export: ["last", "by", "format", "out", "sort", "asc", "provider", "since", "until", "show-email", "show-emails"],
   web: ["port"],
@@ -1880,6 +1880,10 @@ async function runMenubar(parsed: ParsedInvocation): Promise<void> {
  */
 function runConfigSet(parsed: ParsedInvocation): void {
   try {
+    if (flagBool(parsed, "json")) {
+      console.log(JSON.stringify(loadConfig()));
+      return;
+    }
     const rest = parsed.rest.filter((r) => r !== "set");
     const pathArg = rest[0] ?? flagString(parsed, "path");
     const valueArg = rest[1] ?? flagString(parsed, "value");
@@ -1907,9 +1911,7 @@ function runConfigSet(parsed: ParsedInvocation): void {
       node = node[key] as Record<string, unknown>;
     }
     node[parts[parts.length - 1]!] = value;
-    const p = configPath();
-    fs.mkdirSync(path.dirname(p), { recursive: true });
-    fs.writeFileSync(p, JSON.stringify(cfg, null, 2) + "\n");
+    writeConfig(cfg);
     console.log(`${pathArg} = ${JSON.stringify(value)}`);
   } catch (err) {
     handleError(err);
@@ -2387,25 +2389,56 @@ function runMenubarPayload(parsed: ParsedInvocation): void {
     });
   });
   capture("spendPeriods", () => {
+    const config = loadConfig();
     const yFrom = new Date(Date.now() - 86_400_000);
     const yKey = `${yFrom.getFullYear()}-${String(yFrom.getMonth() + 1).padStart(2, "0")}-${String(yFrom.getDate()).padStart(2, "0")}`;
-    const periods: Array<Record<string, unknown>> = [];
-    const grab = (key: string, flags: Record<string, FlagValue>): void => {
-      try {
-        capture("rows", () => runReport(inv("report", { by: "provider", sort: "cost", json: true, ...flags })));
-        const report = parts["rows"] as { rows?: unknown } | undefined;
-        periods.push({ key, rows: report?.rows ?? [] });
-      } catch {
-        periods.push({ key, rows: [] });
-      }
-    };
-    grab("today", { from: todayKey, to: todayKey });
-    grab("yesterday", { from: yKey, to: yKey });
-    grab("week", { last: "week" });
-    grab("month", { last: "month" });
-    grab("year", { last: "year" });
-    console.log(JSON.stringify(periods));
+    const periodFlags: Array<[string, Record<string, FlagValue>]> = [
+      ["today", { last: "day" }],
+      ["yesterday", { from: yKey, to: yKey }],
+      ["week", { last: "week" }],
+      ["month", { last: "month" }],
+      ["year", { last: "year" }],
+    ];
+    withCache((cache) => {
+      cache.sync(resolveExtraFiles(config));
+      const collect = (groupBy: "provider" | "model", flags: Record<string, FlagValue>): Array<Record<string, unknown>> =>
+        periodFlags.map(([key, defaultFlags]) => {
+          const mergedFlags = { ...defaultFlags, ...flags };
+          const window = resolveTimeWindow({
+            last: flagString({ command: "report", flags: mergedFlags, rest: [] }, "last"),
+            from: flagString({ command: "report", flags: mergedFlags, rest: [] }, "from"),
+            to: flagString({ command: "report", flags: mergedFlags, rest: [] }, "to"),
+            fallbackPeriod: "month",
+          });
+          const rows = cache.aggregate(window.sinceIso, groupBy, undefined, window.untilIso);
+          return { key, rows };
+        });
+      const providerPeriods = periodFlags.map(([key, flags]) => {
+        const window = resolveTimeWindow({
+          last: flagString({ command: "report", flags, rest: [] }, "last"),
+          from: flagString({ command: "report", flags, rest: [] }, "from"),
+          to: flagString({ command: "report", flags, rest: [] }, "to"),
+          fallbackPeriod: "month",
+        });
+        return { key, rows: cache.aggregateModelProviders(window.sinceIso, undefined, window.untilIso) };
+      });
+      console.log(JSON.stringify({
+        harnessPeriods: collect("provider", {}),
+        modelPeriods: collect("model", {}),
+        providerPeriods,
+      }));
+    });
   });
+  const tokenBreakdowns = parts["spendPeriods"] as {
+    harnessPeriods?: unknown;
+    modelPeriods?: unknown;
+    providerPeriods?: unknown;
+  } | undefined;
+  if (tokenBreakdowns !== undefined && !Array.isArray(tokenBreakdowns)) {
+    parts["spendPeriods"] = tokenBreakdowns.harnessPeriods ?? [];
+    parts["modelPeriods"] = tokenBreakdowns.modelPeriods ?? [];
+    parts["providerPeriods"] = tokenBreakdowns.providerPeriods ?? [];
+  }
   console.log(JSON.stringify(parts));
 }
 

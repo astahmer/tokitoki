@@ -189,8 +189,8 @@ struct UiPreviewConfig: Codable {
 
 // Combined snapshot from `tokitoki menubar-payload --json` (single CLI
 // process instead of seven parallel ones that thrashed memory).
-/// Provider cost rows for one selectable period (today|yesterday|week|month).
-/// Backed by `tokitoki report --by provider --sort cost --json` per period.
+/// Token rows for one selectable period (today|yesterday|week|month|year).
+/// The payload carries separate harness, inferred-provider, and model series.
 struct SpendPeriod: Codable {
     let key: String
     let rows: [ReportRow]
@@ -221,6 +221,8 @@ struct MenubarPayload: Codable {
     let limits: [AccountLimits]?
     let uiPreview: UiPreviewConfig?
     let spendPeriods: [SpendPeriod]?
+    let providerPeriods: [SpendPeriod]?
+    let modelPeriods: [SpendPeriod]?
     let history: DailyUsageHistory?
 }
 
@@ -264,6 +266,8 @@ final class Model: ObservableObject {
     @Published var stripMetric: String = "percent"
     @Published var stripExhausted: String = "reset"
     @Published var spendPeriods: [SpendPeriod] = []
+    @Published var providerPeriods: [SpendPeriod] = []
+    @Published var modelPeriods: [SpendPeriod] = []
     @Published var history: DailyUsageHistory?
     @Published var tabOrder: [PopoverSubview] = PopoverSubview.defaultOrder
     @Published var syncBackend: String?
@@ -361,6 +365,44 @@ final class Model: ObservableObject {
 
     /// Accessor for AppDelegate context-menu actions.
     func currentInvocation() -> CLIInvocation { invocation }
+
+    /// Resolve the same writable config file as the CLI. An existing TOML
+    /// file wins when no JSON file exists, keeping declarative/Nix-owned
+    /// settings from silently drifting into a sidecar.
+    static func configFileURL() -> URL {
+        if let path = ProcessInfo.processInfo.environment["TOKITOKI_CONFIG"], !path.isEmpty {
+            return URL(fileURLWithPath: path)
+        }
+        let dir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".config/tokitoki")
+        let json = dir.appendingPathComponent("config.json")
+        let toml = dir.appendingPathComponent("config.toml")
+        if !FileManager.default.fileExists(atPath: json.path), FileManager.default.fileExists(atPath: toml.path) {
+            return toml
+        }
+        return json
+    }
+
+    var configFilePath: String { Self.configFileURL().path }
+
+    func openConfigFile() {
+        let url = Self.configFileURL()
+        do {
+            try FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(),
+                withIntermediateDirectories: true,
+            )
+            if !FileManager.default.fileExists(atPath: url.path) {
+                try Data("{}\n".utf8).write(to: url, options: .atomic)
+            }
+            guard NSWorkspace.shared.open(url) else {
+                pollStatus = "Could not open (url.lastPathComponent)"
+                return
+            }
+            pollStatus = "Opened (url.lastPathComponent)"
+        } catch {
+            pollStatus = "Could not open config: (error.localizedDescription)"
+        }
+    }
 
     func setPolling(enabled: Bool) {
         pollAuto = enabled
@@ -666,6 +708,8 @@ final class Model: ObservableObject {
                 }
                 self.updatePollSchedule()
                 self.spendPeriods = p.spendPeriods ?? []
+                self.providerPeriods = p.providerPeriods ?? []
+                self.modelPeriods = p.modelPeriods ?? []
                 self.history = p.history
                 self.spendHealth = p.spendHealth
                 self.today = p.today
@@ -2464,20 +2508,18 @@ struct ApiKeysSheet: View {
         .frame(width: 310)
     }
 
-    private var configURL: URL {
-        if let path = ProcessInfo.processInfo.environment["TOKITOKI_CONFIG"], !path.isEmpty {
-            return URL(fileURLWithPath: path)
-        }
-        return FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".config/tokitoki/config.json")
-    }
-
     private func load() {
-        guard let data = try? Data(contentsOf: configURL) else { return }
         struct Config: Codable { var poll: Poll? }
         struct Poll: Codable { var extraKeys: [ProviderKey]? }
-        if let config = try? JSONDecoder().decode(Config.self, from: data) {
-            keys = config.poll?.extraKeys ?? []
+        let cli = model.currentInvocation()
+        Task {
+            do {
+                let config = try await Model.runJSON(Config.self, cli, ["config", "--json"])
+                await MainActor.run { keys = config?.poll?.extraKeys ?? [] }
+            } catch {
+                // An unavailable CLI should not make the key sheet unusable;
+                // the next appearance retries the read.
+            }
         }
     }
 
@@ -3318,6 +3360,8 @@ struct ContentView: View {
                 freshnessRow
                 tokenPulseCard
                 tokenProviderCard
+                tokenUpstreamProviderCard
+                tokenModelCard
                 tokenMixCard
                 historyCard
             }
@@ -3354,7 +3398,7 @@ struct ContentView: View {
     private var tokenProviderCard: some View {
         let slices = tokenSlices(for: tokenPeriodKey)
         let total = slices.reduce(0) { $0 + $1.value }
-        return card(title: "tokens by provider", icon: "chart.pie.fill") {
+        return card(title: "tokens by harness", icon: "chart.pie.fill") {
             if slices.isEmpty {
                 emptyState("No tokens recorded", detail: "Run a scan or widen the selected period.", icon: "number")
             } else {
@@ -3362,6 +3406,40 @@ struct ContentView: View {
                     DonutChart(slices: slices, centerLabel: humanCount(total), centerUnit: "tokens")
                         .frame(width: 112, height: 112)
                         .accessibilityLabel("tokens by provider donut chart")
+                    SpendLegend(slices: Array(slices.prefix(6)), metric: .tokens)
+                }
+            }
+        }
+    }
+
+    private var tokenUpstreamProviderCard: some View {
+        let slices = breakdownSlices(from: model.providerPeriods, key: tokenPeriodKey)
+        let total = slices.reduce(0) { $0 + $1.value }
+        return card(title: "tokens by provider", icon: "building.2.fill") {
+            if slices.isEmpty {
+                emptyState("No provider attribution", detail: "Provider attribution appears when model or account routing identifies it.", icon: "questionmark.circle")
+            } else {
+                HStack(spacing: 14) {
+                    DonutChart(slices: slices, centerLabel: humanCount(total), centerUnit: "tokens")
+                        .frame(width: 112, height: 112)
+                        .accessibilityLabel("tokens by upstream provider donut chart")
+                    SpendLegend(slices: Array(slices.prefix(6)), metric: .tokens)
+                }
+            }
+        }
+    }
+
+    private var tokenModelCard: some View {
+        let slices = breakdownSlices(from: model.modelPeriods, key: tokenPeriodKey)
+        let total = slices.reduce(0) { $0 + $1.value }
+        return card(title: "tokens by model", icon: "cube.fill") {
+            if slices.isEmpty {
+                emptyState("No model usage recorded", detail: "Run a scan or widen the selected period.", icon: "number")
+            } else {
+                HStack(spacing: 14) {
+                    DonutChart(slices: slices, centerLabel: humanCount(total), centerUnit: "tokens")
+                        .frame(width: 112, height: 112)
+                        .accessibilityLabel("tokens by model donut chart")
                     SpendLegend(slices: Array(slices.prefix(6)), metric: .tokens)
                 }
             }
@@ -3532,6 +3610,22 @@ struct ContentView: View {
         ScrollView(.vertical) {
             VStack(alignment: .leading, spacing: 10) {
                 freshnessRow
+                card(title: "configuration file", icon: "doc.badge.gearshape") {
+                    Text("Popover, preview, polling, notification, sync, and provider-key settings are persisted here so the same file can be managed by Nix or Home Manager.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Text(model.configFilePath)
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(2)
+                        .textSelection(.enabled)
+                    Button {
+                        model.openConfigFile()
+                    } label: {
+                        Label("Open config file", systemImage: "arrow.up.right.square")
+                    }
+                    .buttonStyle(.bordered).controlSize(.small)
+                    .accessibilityIdentifier("open-config-file")
+                }
                 card(title: "notifications & spend guard", icon: "bell.badge.fill") {
                     Toggle("Critical quota alerts", isOn: Binding(
                         get: { model.notificationsEnabled },
@@ -3997,6 +4091,14 @@ struct ContentView: View {
             return rolling.rows.filter { matches($0.bucket) }
         }
         return spendPeriodRows(for: key)
+    }
+
+    private func breakdownSlices(from periods: [SpendPeriod], key: String) -> [(name: String, value: Double, color: Color)] {
+        guard key != "custom", let period = periods.first(where: { $0.key == key }) else { return [] }
+        return period.rows
+            .map { (name: $0.bucket, value: $0.totalTokens, color: bucketColor($0.bucket)) }
+            .filter { $0.value > 0 }
+            .sorted { $0.value > $1.value }
     }
 
     private func tokenTotals(for key: String) -> (tokens: Double, cost: Double, requests: Int, sessions: Int) {
