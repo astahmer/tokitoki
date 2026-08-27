@@ -119,6 +119,8 @@ struct LimitWindow: Codable {
 struct AccountLimits: Codable, Identifiable {
     let provider: String
     let accountKey: String
+    /// Stable provider account id; never use reset timestamps as identity.
+    let accountId: String? = nil
     let email: String?
     /** Redacted api-key/credential hint ("sk-x…12ab") when key-based. */
     let credential: String?
@@ -635,9 +637,12 @@ final class Model: ObservableObject {
             for w in l.windows { maxima[w.kind] = max(maxima[w.kind] ?? 0, w.tokens) }
         }
 
+        struct AccountPreview {
+            let percentLines: [String]
+            let smartLine: String
+        }
         struct Group {
-            var pcts: [Int] = []
-            var resets: [Date] = []
+            var accounts: [AccountPreview] = []
             var estByKind: [String: Double] = [:]
         }
         var order: [String] = []
@@ -649,15 +654,42 @@ final class Model: ObservableObject {
                 groups[up] = Group()
                 order.append(up)
             }
+            var accountPcts: [Int] = []
+            var accountResets: [Date] = []
             for w in l.windows {
                 if let pct = w.usedPct {
                     let remaining = Int(max(0, min(100, 100 - pct)).rounded())
-                    groups[up]!.pcts.append(remaining)
+                    accountPcts.append(remaining)
                     if remaining == 0, let reset = w.resetsAt, let date = parseISO(reset) {
-                        groups[up]!.resets.append(date)
+                        accountResets.append(date)
                     }
                 }
                 groups[up]!.estByKind[w.kind, default: 0] += w.tokens
+            }
+            if metric != "tokens" && !accountPcts.isEmpty {
+                let percentLines: [String]
+                if let nextReset = nextUnblockingReset(
+                    pcts: accountPcts,
+                    resets: accountResets,
+                    exhaustedBehavior: exhaustedBehavior
+                ) {
+                    percentLines = [countdown(nextReset)]
+                } else if exhaustedBehavior == "hide" && accountPcts.allSatisfy({ $0 == 0 }) {
+                    percentLines = []
+                } else {
+                    percentLines = accountPcts.map { "\($0)%" }
+                }
+                if !percentLines.isEmpty {
+                    let smartLine = nextUnblockingReset(
+                        pcts: accountPcts,
+                        resets: accountResets,
+                        exhaustedBehavior: "reset"
+                    ).map(countdown) ?? "\(accountPcts.min()!)%"
+                    groups[up]!.accounts.append(AccountPreview(
+                        percentLines: percentLines,
+                        smartLine: smartLine
+                    ))
+                }
             }
         }
 
@@ -675,31 +707,28 @@ final class Model: ObservableObject {
                 return nil
             }
             if metric == "smart" {
-                // Keep the strip compact: an exhausted group shows the latest
-                // required reset; otherwise show its tightest real window.
-                if let reset = g.resets.max() { return (up, [countdown(reset)]) }
-                if let tightest = g.pcts.min() { return (up, ["\(tightest)%"]) }
-                return nil
+                return g.accounts.isEmpty ? nil : (up, g.accounts.map(\.smartLine))
             }
-            // Percent mode: ONLY provider-reported quotas render at all —
-            // groups without a real denominator are omitted (icon disabled).
-            // A mark with no number invites the question "why?" every time.
-            guard !g.pcts.isEmpty else { return nil }
-            if g.pcts.allSatisfy({ $0 == 0 }) {
-                switch exhaustedBehavior {
-                case "hide": return nil
-                case "reset":
-                    // The last exhausted window governs when this provider is
-                    // usable again: if day and week are both empty, the week
-                    // reset wins over the earlier day reset.
-                    if let reset = g.resets.max() {
-                        return (up, [countdown(reset)])
-                    }
-                default: break
-                }
-            }
-            return (up, g.pcts.prefix(3).map { "\($0)%" })
+            // Percent mode keeps one line per real account. This prevents a
+            // second Codex login from disappearing behind a provider-level
+            // window limit and lets an exhausted session show its own next
+            // unblocking reset even when another account remains healthy.
+            guard !g.accounts.isEmpty else { return nil }
+            return (up, g.accounts.flatMap(\.percentLines))
         }
+    }
+
+    /// Return the reset that makes an account usable again. If another quota
+    /// window still has headroom, the earliest exhausted-window reset is the
+    /// useful answer. If every reported window is exhausted, all constraints
+    /// must clear, so the latest reset governs.
+    private static func nextUnblockingReset(
+        pcts: [Int],
+        resets: [Date],
+        exhaustedBehavior: String,
+    ) -> Date? {
+        guard exhaustedBehavior == "reset", pcts.contains(0), !resets.isEmpty else { return nil }
+        return pcts.allSatisfy({ $0 == 0 }) ? resets.max() : resets.min()
     }
 
     /// Context-menu visibility items grouped by UPSTREAM provider.

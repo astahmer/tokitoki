@@ -41,6 +41,8 @@ export interface LimitWindow {
 export interface AccountLimits {
   provider: string;
   accountKey: string;
+  /** Stable provider account id when the quota source exposes one. */
+  accountId?: string;
   /** Best-effort logged-in email for disambiguating multiple accounts. */
   email?: string;
   /** Plan badge when derivable (account suffix after ':' or config match). */
@@ -77,6 +79,7 @@ export function dedupeAccountLimits(limits: AccountLimits[]): AccountLimits[] {
     out.set(id, {
       ...existing,
       ...incoming,
+      accountId: incoming.accountId ?? existing.accountId,
       email: incoming.email ?? existing.email,
       planLabel: incoming.planLabel ?? existing.planLabel,
       credential: incoming.credential ?? existing.credential,
@@ -205,6 +208,8 @@ export function computeLimits(
 
     // --- Embedded snapshots (real data wins) -----------------------------
     const snaps = cache.latestQuotaSnapshots(provider, accountKey);
+    const quotaAccountIds = cache.quotaAccountIds(provider, accountKey);
+    const accountId = quotaAccountIds.size === 1 ? quotaAccountIds.values().next().value : undefined;
     const embeddedKinds = new Set<string>();
     for (const s of snaps) {
       const kind = embeddedKind(s.windowMinutes);
@@ -332,6 +337,7 @@ export function computeLimits(
     out.push({
       provider,
       accountKey,
+      ...(accountId !== undefined ? { accountId } : {}),
       email,
       planLabel,
       windows,
@@ -343,12 +349,12 @@ export function computeLimits(
 }
 
 /**
- * Display-level alias merge. Same provider + same embedded-quota signature =
- * the same real account seen through different extraction eras (e.g. codex
- * rollouts before/after rate_limits.plan_type existed produce both "codex"
- * and "openai:plus" keys for one login). The signature is the set of
- * (windowMinutes, resetsAt) pairs from embedded windows — identical limits
- * share identical resets.
+ * Display-level alias merge. Same provider + same stable account id + same
+ * embedded-quota signature = the same real account seen through different
+ * extraction eras. When a provider has no stable id, the account key is part
+ * of the fallback identity. Reset timestamps alone are deliberately not an
+ * identity: two real logins can have identical windows, and merging them
+ * would leak the active login's email onto the other card.
  *
  * Accounts WITHOUT embedded windows are never merged: provider-level email
  * attribution comes from the CURRENT auth store, so it cannot distinguish
@@ -363,7 +369,8 @@ export function mergeAliasLimits(limits: AccountLimits[]): AccountLimits[] {
       out.push(l);
       continue;
     }
-    const key = `${l.provider}|${sig}`;
+    const identity = l.accountId !== undefined ? `id:${l.accountId}` : `legacy:${l.accountKey}`;
+    const key = `${l.provider}|${identity}|${sig}`;
     const g = bySignature.get(key);
     if (g === undefined) bySignature.set(key, [l]);
     else g.push(l);

@@ -95,6 +95,25 @@ import Testing
         #expect(groups.first?.lines == ["94%", "100%"])
     }
 
+    @Test func percentModeKeepsEachAccountAndShowsPartialExhaustionReset() {
+        let sessionReset = ISO8601DateFormatter().string(from: Date().addingTimeInterval(86 * 60))
+        let limits = [
+            account(provider: "codex", accountKey: "personal", windows: [
+                window(kind: "day", source: "polled", tokens: 0, usedPct: 100, resetsAt: sessionReset),
+                window(kind: "week", source: "polled", tokens: 0, usedPct: 23),
+            ]),
+            account(provider: "codex", accountKey: "work", windows: [
+                window(kind: "day", source: "polled", tokens: 0, usedPct: 23),
+                window(kind: "week", source: "polled", tokens: 0, usedPct: 44),
+            ]),
+        ]
+        let groups = Model.stripGroups(from: limits, metric: "percent", previewHidden: [], exhaustedBehavior: "reset")
+        #expect(groups.count == 1)
+        #expect(groups.first?.lines.count == 3)
+        #expect(groups.first?.lines.first?.contains("h") == true)
+        #expect(Array(groups.first?.lines.dropFirst() ?? []) == ["77%", "56%"])
+    }
+
     // MARK: tokens mode (uniform)
 
     @Test func tokensModeShowsUsageForEveryGroup() {

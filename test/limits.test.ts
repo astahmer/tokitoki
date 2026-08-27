@@ -10,6 +10,7 @@ import {
   computeLimits,
   dedupeAccountLimits,
   groupBySharedCredential,
+  mergeAliasLimits,
   nextLocalMidnight,
   nextMonthStart,
   nextWeekStart,
@@ -103,6 +104,21 @@ function limitsCache(): EventCache {
 }
 
 describe("computeLimits", () => {
+  it("never merges distinct stable Codex accounts with identical quota windows", () => {
+    const reset = new Date("2026-08-31T12:00:00.000Z").toISOString();
+    const base = {
+      provider: "codex",
+      windows: [{ kind: "week", source: "embedded" as const, tokens: 0, cost: 0, requests: 0, usedPct: 40, resetsAt: reset }],
+    };
+    const limits = mergeAliasLimits([
+      { ...base, accountKey: "openai:plus", accountId: "personal-account", email: "personal@example.com" },
+      { ...base, accountKey: "codex:work", accountId: "work-account", email: "work@example.com" },
+    ]);
+
+    expect(limits).toHaveLength(2);
+    expect(limits.map((l) => l.email).sort()).toEqual(["personal@example.com", "work@example.com"]);
+  });
+
   it("dedupes repeated Copilot account identities without dropping metadata", () => {
     const limits = dedupeAccountLimits([
       {
