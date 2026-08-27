@@ -50,6 +50,8 @@ export interface TokitokiConfig {
     enabled?: boolean;
     /** Menubar background poll cadence in minutes (default 15). */
     intervalMinutes?: number;
+    /** Adapt the cadence to upcoming quota resets (bounded 5–30 minutes). */
+    adaptive?: boolean;
     /**
      * Manually registered provider API keys (multi-account): each is polled
      * as its own synthetic account and gets a card even with zero scanned

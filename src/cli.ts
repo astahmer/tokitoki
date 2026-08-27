@@ -772,7 +772,7 @@ function runReport(parsed: ParsedInvocation): void {
       if (opts.json) {
         // Enriched shape: totals + burn + previous-window cost so the
         // menu-bar app needs a single spawn per period.
-        const total = cache.totals(sinceIso, opts.providers);
+        const total = cache.totals(sinceIso, opts.providers, untilIso);
         let prevTotalCost: number | undefined;
         if (opts.delta && w.period !== undefined) {
           const prev = previousWindow(w.period);
@@ -795,7 +795,7 @@ function runReport(parsed: ParsedInvocation): void {
       }
 
       const ctx: TableContext = {};
-      ctx.total = cache.totals(sinceIso, opts.providers);
+      ctx.total = cache.totals(sinceIso, opts.providers, untilIso);
       if (opts.delta && w.period !== undefined) {
         const prev = previousWindow(w.period);
         const prevRows = cache.aggregate(prev.sinceIso, opts.groupBy, opts.providers, prev.untilIso);
@@ -2161,6 +2161,7 @@ function runMenubarPayload(parsed: ParsedInvocation): void {
           syncHandle: config.sync?.handle,
           pollAuto: config.poll?.enabled === true,
           pollIntervalMinutes: config.poll?.intervalMinutes ?? 15,
+          pollAdaptive: config.poll?.adaptive === true,
         }),
       );
     });

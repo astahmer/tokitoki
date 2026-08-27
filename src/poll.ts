@@ -1022,6 +1022,7 @@ export async function pollQuotas(opts: PollOptions = {}): Promise<PollResult> {
   const pooled = opencodexQuotas(opts.opencodexCachePath);
   const poolIdentities = opencodexAccountIdentities(opts.opencodexAccountsPath);
   const seenResets = new Set<number>();
+  const seenPoolIds = new Set<string>();
   for (const [poolKey, q] of providerEnabled("codex") ? Object.entries(pooled) : []) {
     if (typeof q.weeklyPercent !== "number" || typeof q.weeklyResetAt !== "number") continue;
     const weeklyResetAt = q.weeklyResetAt;
@@ -1030,12 +1031,17 @@ export async function pollQuotas(opts: PollOptions = {}): Promise<PollResult> {
     // The live OAuth poll is the canonical source for the active login.
     // Never materialize the same account a second time through __main__.
     if (poolAccountId !== undefined && poolAccountId === ownCodex?.accountId) continue;
-    // Identical reset epochs are the same login mirrored by multiple pool
-    // aliases. Also suppress the pool's __main__ mirror of the live OAuth
-    // account when the reset is within the provider's normal clock skew.
-    if (seenResets.has(weeklyResetAt)) continue;
-    if ([...ownWeeklyResets].some((reset) => Math.abs(reset - weeklyResetAt) <= 15 * 60)) continue;
-    seenResets.add(weeklyResetAt);
+    // Reset epochs are quota data, not identity. Two real accounts can reset
+    // at the same instant, so stable pool account IDs always win. Legacy
+    // pool entries without IDs retain the old reset-based mirror guard.
+    if (poolAccountId !== undefined) {
+      if (seenPoolIds.has(poolAccountId)) continue;
+      seenPoolIds.add(poolAccountId);
+    } else {
+      if (seenResets.has(weeklyResetAt)) continue;
+      if ([...ownWeeklyResets].some((reset) => Math.abs(reset - weeklyResetAt) <= 15 * 60)) continue;
+      seenResets.add(weeklyResetAt);
+    }
     let accountKey = poolKey === "__main__" ? "codex" : `codex:${poolKey}`;
     // Reuse the scan-era account key when its embedded weekly reset matches
     // this pool entry. This is what keeps an existing work-account card

@@ -152,6 +152,7 @@ struct UiPreviewConfig: Codable {
     // Opt-in background quota polling (menubar runs `tokitoki poll`).
     let pollAuto: Bool?
     let pollIntervalMinutes: Int?
+    var pollAdaptive: Bool? = nil
     // Upstream provider ids hidden from the STATUS-BAR STRIP only.
     let previewHidden: [String]?
     // Uniform strip display: "percent" (default) | "tokens" | "smart".
@@ -223,6 +224,7 @@ final class Model: ObservableObject {
     /// Opt-in background quota polling (`tokitoki poll` every ~15 min).
     @Published var pollAuto = false
     @Published var pollIntervalMinutes = 15
+    @Published var pollAdaptive = false
     @Published var pollInFlight = false
     @Published var pollStatus: String?
     @Published var pollLastResult: String?
@@ -258,6 +260,8 @@ final class Model: ObservableObject {
     private var invocation: CLIInvocation = CLIInvocation(executable: URL(fileURLWithPath: "/usr/bin/false"), prefixArgs: [])
     private var lastLevels: [String: Int] = [:]
     private var notifiedKeys: Set<String> = []
+    private var payloadInFlight = false
+    private var payloadRefreshPending = false
 
     private static let debug = ProcessInfo.processInfo.environment["TOKITOKI_MENUBAR_DEBUG"] == "1"
 
@@ -354,6 +358,12 @@ final class Model: ObservableObject {
         }
     }
 
+    func setPollingAdaptive(_ enabled: Bool) {
+        pollAdaptive = enabled
+        updatePollSchedule()
+        persistUISetting(path: "poll.adaptive", json: enabled ? "true" : "false")
+    }
+
     func setTabOrder(_ order: [PopoverSubview]) {
         let normalized = PopoverSubview.normalizedOrder(order.map(\.rawValue))
         tabOrder = normalized
@@ -422,6 +432,10 @@ final class Model: ObservableObject {
     /// Refresh provider quotas and expose progress in the popover.
     func pollNow(background: Bool = false) {
         guard !pollInFlight else { return }
+        guard !payloadInFlight else {
+            pollStatus = "Data refresh in progress · quotas will refresh next"
+            return
+        }
         pollInFlight = true
         if !background { pollStatus = "refreshing provider quotas…" }
         let cli = invocation
@@ -439,7 +453,7 @@ final class Model: ObservableObject {
             self.pollInFlight = false
             self.lastPollAt = Date()
             self.nextPollAt = self.pollAuto
-                ? Date().addingTimeInterval(Double(max(1, self.pollIntervalMinutes)) * 60)
+                ? Date().addingTimeInterval(Double(self.effectivePollIntervalMinutes) * 60)
                 : nil
             if succeeded { self.pollLastResult = "Updated successfully" }
             self.refresh()
@@ -485,7 +499,9 @@ final class Model: ObservableObject {
 
     var pollScheduleDescription: String {
         guard pollAuto else { return "Off · quota refreshes happen only when you ask." }
-        let cadence = "Every \(max(1, pollIntervalMinutes)) minutes"
+        let cadence = pollAdaptive
+            ? "Adaptive · every \(effectivePollIntervalMinutes)–30 minutes"
+            : "Every \(max(1, pollIntervalMinutes)) minutes"
         guard let nextPollAt else { return "On · \(cadence) · waiting for the first check." }
         return "On · \(cadence) · next check \(nextPollAt.formatted(date: .omitted, time: .shortened))"
     }
@@ -498,8 +514,26 @@ final class Model: ObservableObject {
 
     private func updatePollSchedule() {
         nextPollAt = pollAuto && lastPollAt != nil
-            ? lastPollAt!.addingTimeInterval(Double(max(1, pollIntervalMinutes)) * 60)
+            ? lastPollAt!.addingTimeInterval(Double(effectivePollIntervalMinutes) * 60)
             : nil
+    }
+
+    /// Poll faster when a provider is close to a reset, but never more often
+    /// than once per five minutes or less often than once per thirty minutes.
+    /// This keeps the idle menu cheap while making a near-term unblock visible.
+    private var effectivePollIntervalMinutes: Int {
+        guard pollAdaptive else { return max(1, pollIntervalMinutes) }
+        let now = Date()
+        let nearestReset = limits
+            .flatMap { $0.windows }
+            .compactMap { $0.resetsAt.flatMap(parseISO) }
+            .filter { $0 > now }
+            .min()
+        guard let nearestReset else { return 30 }
+        let seconds = nearestReset.timeIntervalSince(now)
+        if seconds <= 15 * 60 { return 5 }
+        if seconds <= 2 * 60 * 60 { return 10 }
+        return 30
     }
 
     /// Invalidate payload requests already in flight before a config mutation.
@@ -508,11 +542,28 @@ final class Model: ObservableObject {
     func refresh() {
         refreshGeneration += 1
         let generation = refreshGeneration
-        if pollAuto, lastPollAt.map({ Date().timeIntervalSince($0) >= Double(max(1, pollIntervalMinutes)) * 60 }) ?? true {
+        if payloadInFlight {
+            payloadRefreshPending = true
+            return
+        }
+        if pollInFlight {
+            payloadRefreshPending = true
+            return
+        }
+        if pollAuto, lastPollAt.map({ Date().timeIntervalSince($0) >= Double(effectivePollIntervalMinutes) * 60 }) ?? true {
             lastPollAt = Date()
             runBackgroundPoll()
+            return
         }
+        payloadInFlight = true
         Task { @MainActor in
+            defer {
+                self.payloadInFlight = false
+                if self.payloadRefreshPending {
+                    self.payloadRefreshPending = false
+                    self.refresh()
+                }
+            }
             do {
                 let p = try await Self.runJSON(MenubarPayload.self, invocation, ["menubar-payload", "--json"])!
                 guard generation == self.refreshGeneration else {
@@ -527,6 +578,7 @@ final class Model: ObservableObject {
                     self.cardLayout = (ui.cards ?? []).map { ($0.id, $0.hidden) }
                     self.pollAuto = ui.pollAuto ?? false
                     self.pollIntervalMinutes = max(1, ui.pollIntervalMinutes ?? 15)
+                    self.pollAdaptive = ui.pollAdaptive ?? false
                     self.previewHidden = Set(ui.previewHidden ?? [])
                     self.stripMetric = ui.stripMetric ?? "percent"
                     self.stripExhausted = ui.stripExhausted ?? "reset"
@@ -1042,12 +1094,30 @@ final class Model: ObservableObject {
                 cont.resume(returning: String(data: data, encoding: .utf8) ?? "")
             } else {
                 let err = errPipe.fileHandleForReading.readDataToEndOfFile()
-                let msg = String(data: err, encoding: .utf8) ?? "exit \(proc.terminationStatus)"
+                let raw = String(data: err, encoding: .utf8) ?? "exit \(proc.terminationStatus)"
+                let msg = Self.conciseCLIError(raw)
                 cont.resume(throwing: NSError(domain: "tokitoki", code: 1, userInfo: [NSLocalizedDescriptionKey: msg]))
             }
         } catch {
             cont.resume(throwing: error)
         }
+    }
+
+    /// CLI stderr may contain a Bun/SQLite stack trace. Menubar status rows
+    /// need one actionable sentence, not hundreds of implementation lines.
+    nonisolated static func conciseCLIError(_ raw: String) -> String {
+        let oneLine = raw
+            .split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        if oneLine.contains(where: { $0.contains("SQLITE_BUSY") || $0.contains("database is locked") }) {
+            return "database busy; the next refresh will retry automatically"
+        }
+        if let error = oneLine.first(where: { $0.hasPrefix("error:") }) {
+            return String(error.dropFirst("error:".count)).trimmingCharacters(in: .whitespaces)
+        }
+        if let sqlite = oneLine.first(where: { $0.hasPrefix("SQLiteError") }) { return sqlite }
+        return oneLine.first ?? "CLI failed (exit status unknown)"
     }
 
 }
@@ -1424,29 +1494,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let menu = NSMenu()
         menu.autoenablesItems = false
 
-        // Quick console links per upstream provider.
-        for item in (model?.providerVisibilityItems() ?? []).sorted(by: { $0.display < $1.display }) {
-            if let url = upstreamConsoleURL(item.display) {
-                let mi = NSMenuItem(title: "Open \(item.display) Console", action: #selector(openUpstreamConsole(_:)), keyEquivalent: "")
-                mi.representedObject = url.absoluteString
-                mi.target = self
-                menu.addItem(mi)
-            }
-        }
-        if !(model?.providerVisibilityItems() ?? []).isEmpty { menu.addItem(.separator()) }
-
+        // Keep the context menu scannable: one primary browser action and
+        // grouped maintenance/preferences submenus. The full destinations are
+        // also available as tabs in the popover.
         let dashboard = NSMenuItem(title: "Open Dashboard", action: #selector(openDashboard), keyEquivalent: "o")
         dashboard.target = self
         menu.addItem(dashboard)
-        let reports = NSMenuItem(title: "Open Reports", action: #selector(openReports), keyEquivalent: "")
-        reports.target = self
-        menu.addItem(reports)
-        let sources = NSMenuItem(title: "Open Sources", action: #selector(openSources), keyEquivalent: "")
-        sources.target = self
-        menu.addItem(sources)
         let refresh = NSMenuItem(title: "Refresh Now", action: #selector(refreshNow), keyEquivalent: "r")
         refresh.target = self
         menu.addItem(refresh)
+
+        let browser = NSMenuItem(title: "Open in Browser", action: nil, keyEquivalent: "")
+        let browserSub = NSMenu()
+        browserSub.autoenablesItems = false
+        let reports = NSMenuItem(title: "Reports", action: #selector(openReports), keyEquivalent: "")
+        reports.target = self
+        browserSub.addItem(reports)
+        let sources = NSMenuItem(title: "Sources", action: #selector(openSources), keyEquivalent: "")
+        sources.target = self
+        browserSub.addItem(sources)
+        browserSub.addItem(.separator())
+        for item in (model?.providerVisibilityItems() ?? []).sorted(by: { $0.display < $1.display }) {
+            if let url = upstreamConsoleURL(item.display) {
+                let mi = NSMenuItem(title: "\(item.display) Console", action: #selector(openUpstreamConsole(_:)), keyEquivalent: "")
+                mi.representedObject = url.absoluteString
+                mi.target = self
+                browserSub.addItem(mi)
+            }
+        }
+        browser.submenu = browserSub
+        menu.addItem(browser)
 
         let actions = NSMenuItem(title: "Actions", action: nil, keyEquivalent: "")
         let actionSub = NSMenu()
@@ -1477,11 +1554,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         actionSub.addItem(mcp)
         actions.submenu = actionSub
         menu.addItem(actions)
-        menu.addItem(.separator())
 
-        // Settings ▸ menubar visibility per UPSTREAM provider (openai,
-        // claude, opencode…), not harness ids. Each item hides every
-        // harness/account pair belonging to that provider.
+        // Settings ▸ menubar visibility per UPSTREAM provider plus login.
         if let items = model?.providerVisibilityItems() {
             let settings = NSMenuItem(title: "Menubar Providers", action: nil, keyEquivalent: "")
             let sub = NSMenu()
@@ -1495,13 +1569,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             settings.submenu = sub
             menu.addItem(settings)
-            menu.addItem(.separator())
         }
 
+        let preferences = NSMenuItem(title: "Preferences", action: nil, keyEquivalent: "")
+        let preferenceSub = NSMenu()
+        preferenceSub.autoenablesItems = false
         let login = NSMenuItem(title: "Start at Login", action: #selector(toggleStartAtLogin), keyEquivalent: "")
         login.state = isStartAtLogin ? .on : .off
         login.target = self
-        menu.addItem(login)
+        preferenceSub.addItem(login)
+        preferences.submenu = preferenceSub
+        menu.addItem(preferences)
         menu.addItem(.separator())
 
         let quit = NSMenuItem(title: "Quit tokitoki", action: #selector(quit), keyEquivalent: "q")
@@ -2613,42 +2691,59 @@ struct HoverPreviewView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Label("Usage preview", systemImage: "gauge.with.dots.needle.67percent")
-                    .font(.caption.weight(.semibold))
-                Spacer()
-                Text("click for details")
-                    .font(.caption2).foregroundStyle(.tertiary)
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Label("Quota snapshot", systemImage: "gauge.with.dots.needle.67percent")
+                        .font(.subheadline.weight(.semibold))
+                    Text(model.lastUpdatedAt.map { "Updated \(relativeDateEnglish($0))" } ?? "Loading latest data…")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 8)
+                Text("Click for details")
+                    .font(.caption2.weight(.medium)).foregroundStyle(.tertiary)
             }
-            Divider()
             if entries.isEmpty {
-                Text("No provider quota data")
+                Label("No provider quota data", systemImage: "checkmark.circle")
                     .font(.caption).foregroundStyle(.secondary)
             } else {
                 ForEach(entries) { entry in
-                    HStack(spacing: 7) {
-                        ProviderLogo(provider: entry.provider)
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(entry.account).font(.caption).lineLimit(1)
-                            Text("\(entry.provider) · \(entry.window)")
-                                .font(.caption2).foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 5) {
+                        HStack(spacing: 7) {
+                            ProviderLogo(provider: entry.provider)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(entry.account).font(.caption.weight(.medium)).lineLimit(1)
+                                Text("\(entry.provider) · \(entry.window)")
+                                    .font(.caption2).foregroundStyle(.secondary)
+                            }
+                            Spacer(minLength: 8)
+                            VStack(alignment: .trailing, spacing: 1) {
+                                Text(entry.value)
+                                    .font(.caption2.monospacedDigit().weight(.semibold))
+                                    .foregroundStyle(entry.remaining.map(barTint) ?? .secondary)
+                                Text(entry.reset == "now" ? "Available now" : "Resets in \(entry.reset)")
+                                    .font(.caption2).foregroundStyle(.tertiary)
+                            }
                         }
-                        Spacer(minLength: 8)
-                        VStack(alignment: .trailing, spacing: 1) {
-                            Text(entry.value)
-                                .font(.caption2.monospacedDigit().weight(.semibold))
-                                .foregroundStyle(entry.remaining.map(barTint) ?? .secondary)
-                            Text(entry.reset == "now" ? "Available now" : "Resets in \(entry.reset)")
-                                .font(.caption2).foregroundStyle(.tertiary)
+                        if let remaining = entry.remaining {
+                            GeometryReader { proxy in
+                                ZStack(alignment: .leading) {
+                                    Capsule().fill(.quaternary.opacity(0.65))
+                                    Capsule()
+                                        .fill(barTint(remaining))
+                                        .frame(width: proxy.size.width * remaining / 100)
+                                }
+                            }
+                            .frame(height: 4)
                         }
                     }
+                    .padding(.vertical, 2)
                 }
             }
         }
-        .padding(11)
-        .frame(width: 310, alignment: .leading)
-        .background(.thickMaterial)
+        .padding(13)
+        .frame(width: 340, alignment: .leading)
+        .background(.thickMaterial, in: RoundedRectangle(cornerRadius: 12))
     }
 }
 
@@ -2949,8 +3044,7 @@ struct ContentView: View {
                 Label("Share", systemImage: "square.and.arrow.up")
             }
             .menuStyle(.borderlessButton)
-            .padding(.horizontal, 8).padding(.vertical, 5)
-            .background(.quaternary.opacity(0.55), in: RoundedRectangle(cornerRadius: 6))
+            .buttonStyle(.bordered).controlSize(.small)
             .accessibilityIdentifier("share-menu")
             Button(action: { showCustomize = true }) {
                 Label("Layout", systemImage: "rectangle.3.group")
@@ -3049,6 +3143,10 @@ struct ContentView: View {
                     metric("sessions", "\(totals.sessions)")
                     metric("cost", String(format: "$%.2f", totals.cost))
                 }
+            }
+            if totals.tokens == 0 && totals.requests == 0 && tokenPeriodKey == "today" {
+                Label("No usage recorded for this local calendar day", systemImage: "calendar")
+                    .font(.caption2).foregroundStyle(.secondary)
             }
             tokenPeriodPicker
         }
@@ -3254,6 +3352,16 @@ struct ContentView: View {
                     }
                     .pickerStyle(.menu)
                     .disabled(!model.pollAuto)
+                    Toggle("Adapt cadence near a reset", isOn: Binding(
+                        get: { model.pollAdaptive },
+                        set: { model.setPollingAdaptive($0) },
+                    ))
+                    .font(.caption)
+                    .disabled(!model.pollAuto)
+                    Text(model.pollAdaptive
+                         ? "Adaptive mode checks every 5–30 minutes based on the nearest reset."
+                         : "Fixed cadence is used while automatic polling is on.")
+                        .font(.caption2).foregroundStyle(.tertiary)
                     if let status = model.pollStatus {
                         Text(status).font(.caption2).foregroundStyle(.secondary)
                     }

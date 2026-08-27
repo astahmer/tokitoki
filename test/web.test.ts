@@ -62,6 +62,20 @@ describe("web api + server", () => {
     expect(body.projectedMonthEnd).toBeGreaterThan(0);
   });
 
+  test("versioned usage API and Prometheus metrics stay local and machine-readable", async () => {
+    const usage = await fetch(`http://localhost:${server.port}/v1/usage?last=week&days=7`);
+    const body = (await usage.json()) as { summary: { requests: number }; timeseries: { days: string[] } };
+    expect(usage.status).toBe(200);
+    expect(body.summary.requests).toBeGreaterThanOrEqual(3);
+    expect(Array.isArray(body.timeseries.days)).toBe(true);
+
+    const metrics = await fetch(`http://localhost:${server.port}/metrics`);
+    const text = await metrics.text();
+    expect(metrics.status).toBe(200);
+    expect(text).toContain("tokitoki_tokens_total");
+    expect(text).toContain("tokitoki_requests_total");
+  });
+
   test("/api/table groups and exposes account tabs", async () => {
     const res = await fetch(`http://localhost:${server.port}/api/table?by=model&period=week`);
     const body = (await res.json()) as {

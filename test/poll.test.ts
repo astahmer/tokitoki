@@ -529,4 +529,36 @@ describe("pollQuotas", () => {
       cache.close();
     }
   });
+
+  it("keeps two pooled Codex accounts even when their reset epochs match", async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "tk-poll-pool-same-reset-"));
+    const cache = new EventCache(path.join(dir, "cache.db"));
+    try {
+      const ocCache = path.join(dir, "codex-quota-cache.json");
+      const ocAccounts = path.join(dir, "codex-accounts.json");
+      writeFileSync(ocCache, JSON.stringify({ quotas: {
+        "chatgpt-personal": { weeklyPercent: 0, weeklyResetAt: 1_800_000_000 },
+        "chatgpt-work": { weeklyPercent: 44, weeklyResetAt: 1_800_000_000 },
+      }}));
+      writeFileSync(ocAccounts, JSON.stringify({
+        "chatgpt-personal": { credential: { chatgptAccountId: "personal-id", email: "personal@example.com" } },
+        "chatgpt-work": { credential: { chatgptAccountId: "work-id", email: "work@example.com" } },
+      }));
+      const fetcher = (async () => new Response("{}", { status: 200 })) as unknown as typeof fetch;
+      const result = await pollQuotas({
+        ...hermeticPaths(),
+        authPath: path.join(os.tmpdir(), `missing-${Date.now()}.json`),
+        piAuthPath: path.join(os.tmpdir(), `missing-pi-${Date.now()}.json`),
+        opencodexCachePath: ocCache,
+        opencodexAccountsPath: ocAccounts,
+        fetcher,
+        cache,
+      });
+      const pooled = result.accounts.filter((a) => a.accountKey.startsWith("codex:"));
+      expect(pooled.map((a) => a.accountKey).sort()).toEqual(["codex:chatgpt-personal", "codex:chatgpt-work"]);
+      expect(pooled.map((a) => a.accountId).sort()).toEqual(["personal-id", "work-id"]);
+    } finally {
+      cache.close();
+    }
+  });
 });

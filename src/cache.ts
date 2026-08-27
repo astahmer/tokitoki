@@ -9,6 +9,26 @@ import { partitionBlocks, type BlockRow } from "./blocks.ts";import { resolveRep
 import { ensureSessionFts } from "./sessionIndex.ts";
 import { EXTRACTION_VERSION } from "./scan.ts";
 
+/** SQLite can briefly reject a new connection while another process is
+ * recovering a WAL. Retry only that transient class; programming/schema
+ * errors must still fail immediately. */
+function sqliteRetry<T>(operation: () => T): T {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    try {
+      return operation();
+    } catch (error) {
+      lastError = error;
+      const message = String(error);
+      const transient = message.includes("SQLITE_BUSY") || message.includes("database is locked");
+      if (!transient || attempt === 7) throw error;
+      const delayMs = 20 * 2 ** attempt;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, delayMs);
+    }
+  }
+  throw lastError;
+}
+
 /**
  * SQLite cache over the merged event logs. Rebuildable at any time: it is a
  * pure projection of (local + extra) JSONL files deduped on event id.
@@ -40,11 +60,11 @@ export class EventCache {
 
   constructor(dbPath?: string, repoNameFor?: (dir: string) => string) {
     const p = dbPath ?? path.join(dataDir(), "cache.db");
-    this.db = new Database(p, { create: true });
+    this.db = sqliteRetry(() => new Database(p, { create: true }));
     // Concurrent invocations are normal (menubar polls every 5 min, web serves
     // on demand, users run CLI in parallel): WAL + busy timeout so writers
     // queue instead of failing with SQLITE_BUSY.
-    this.db.exec("PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 10000;");
+    sqliteRetry(() => this.db.exec("PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 10000;"));
     this.repoNameFor = repoNameFor ?? ((dir: string) => resolveRepo(dir).name);
     this.migrate();
     this.repoStmtInsert = this.db.prepare(

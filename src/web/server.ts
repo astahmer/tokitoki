@@ -79,7 +79,28 @@ export function startWebServer(options: WebServerOptions = {}): Bun.Server<undef
         if (pathname === "/api/healthz") {
           return json({ ok: true, app: "tokitoki" });
         }
-        if (pathname.startsWith("/api/")) {
+        // Small, stable local API aliases for statuslines/widgets. Keep the
+        // browser API intact while offering a versioned surface that does not
+        // require clients to understand the dashboard's route structure.
+        if (pathname === "/v1/health") {
+          return json({ ok: true, app: "tokitoki" });
+        }
+        if (pathname === "/metrics") {
+          const summary = apiSummary({ last: "day" });
+          return new Response([
+            "# HELP tokitoki_tokens_total Tokens recorded in the selected window",
+            "# TYPE tokitoki_tokens_total gauge",
+            `tokitoki_tokens_total ${summary.tokens}`,
+            "# HELP tokitoki_requests_total Requests recorded in the selected window",
+            "# TYPE tokitoki_requests_total gauge",
+            `tokitoki_requests_total ${summary.requests}`,
+            "# HELP tokitoki_cost_usd_total Cost recorded in the selected window",
+            "# TYPE tokitoki_cost_usd_total gauge",
+            `tokitoki_cost_usd_total ${summary.cost}`,
+            "",
+          ].join("\n"), { headers: { "content-type": "text/plain; version=0.0.4" } });
+        }
+        if (pathname.startsWith("/api/") || pathname.startsWith("/v1/")) {
           // await (not return) so rejections hit the catch below → 400s stay 400s
           return await api(request, pathname, url);
         }
@@ -123,6 +144,19 @@ export function startWebServer(options: WebServerOptions = {}): Bun.Server<undef
     switch (pathname) {
       case "/api/summary":
         return json(apiSummary(win()));
+      case "/api/usage":
+      case "/v1/usage": {
+        const by = url.searchParams.get("by") ?? "provider";
+        const days = Number(url.searchParams.get("days") ?? "30");
+        return json({
+          summary: apiSummary(win()),
+          timeseries: apiTimeseries(by, {
+            ...win(),
+            days: Number.isFinite(days) ? days : 30,
+            metric: url.searchParams.get("metric") === "cost" ? "cost" : "tokens",
+          }),
+        });
+      }
       case "/api/timeseries": {
         const by = url.searchParams.get("by") ?? "provider";
         const days = Number(url.searchParams.get("days") ?? "30");

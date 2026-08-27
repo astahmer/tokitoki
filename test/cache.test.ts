@@ -377,6 +377,22 @@ describe("hybrid rollup reads", () => {
     }
   });
 
+  it("totals honors an upper bound for calendar-day reports", () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "tk-bounded-total-"));
+    const cache = new EventCache(path.join(dir, "cache.db"));
+    try {
+      cache.insert([
+        mk("before", "2026-08-27T08:00:00.000Z", 2),
+        mk("after", "2026-08-28T08:00:00.000Z", 3),
+      ]);
+      const total = cache.totals("2026-08-27T00:00:00.000Z", undefined, "2026-08-28T00:00:00.000Z");
+      expect(total.requests).toBe(1);
+      expect(total.costUsd).toBe(2);
+    } finally {
+      cache.close();
+    }
+  });
+
   it("hybridAggregate matches aggregate() per bucket for rollup dimensions", () => {
     const dir = mkdtempSync(path.join(os.tmpdir(), "tk-hybrid-agg-"));
     process.env.TOKITOKI_DATA_DIR = dir;

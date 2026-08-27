@@ -200,6 +200,11 @@ import Testing
         #expect(relativeDateEnglish(now.addingTimeInterval(-60), relativeTo: now) == "1 minute ago")
     }
 
+    @Test func cliErrorsAreSafeForThePopover() {
+        #expect(Model.conciseCLIError("SQLiteError: database is locked\n at bun:sqlite\n at cache.ts:47") == "database busy; the next refresh will retry automatically")
+        #expect(Model.conciseCLIError("error: provider is not configured\n at cli.ts:1") == "provider is not configured")
+    }
+
     @Test func hoverPreviewLabelsQuotaWindows() {
         let limits = [
             account(provider: "codex", accountKey: "openai:plus", windows: [
