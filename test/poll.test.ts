@@ -417,6 +417,32 @@ describe("pollQuotas", () => {
     }
   });
 
+  it("keeps legacy Copilot reset snapshots as one visible quota window", () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "tk-pilot-legacy-"));
+    const cache = new EventCache(path.join(dir, "cache.db"));
+    try {
+      cache.insertPolledSnapshots({
+        provider: "copilot",
+        accountKey: "default",
+        windows: [{ windowMinutes: 7_656, usedPct: 95, resetsAtEpoch: 1_800_000_000 }],
+        capturedAtIso: "2026-08-27T10:00:00.000Z",
+        eventId: "poll:legacy-1:copilot",
+      });
+      cache.insertPolledSnapshots({
+        provider: "copilot",
+        accountKey: "default",
+        windows: [{ windowMinutes: 43_200, usedPct: 94, resetsAtEpoch: 1_800_000_100 }],
+        capturedAtIso: "2026-08-27T11:00:00.000Z",
+        eventId: "poll:current:copilot",
+      });
+      const snapshots = cache.latestQuotaSnapshots("copilot", "default");
+      expect(snapshots).toHaveLength(1);
+      expect(snapshots[0]!.windowMinutes).toBe(43_200);
+    } finally {
+      cache.close();
+    }
+  });
+
   it("persists manual gateway keys under pi/<id> and opencode/<id>", async () => {
     const dir = mkdtempSync(path.join(os.tmpdir(), "tk-poll-manual-"));
     const cache = new EventCache(path.join(dir, "cache.db"));

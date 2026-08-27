@@ -625,11 +625,10 @@ async function pollCopilotQuotas(opts: PollOptions, fetcher: typeof fetch, now: 
 
   const resetMs = typeof body.quota_reset_date === "string" ? Date.parse(body.quota_reset_date) : NaN;
   const resetsAtEpoch = Number.isFinite(resetMs) ? Math.round(resetMs / 1000) : 0;
-  // Minutes until reset clamps to a sane window length for the snapshot row.
-  const windowMinutes =
-    Number.isFinite(resetMs)
-      ? Math.max(60, Math.min(43_200, Math.round((resetMs - now) / 60_000)))
-      : 43_200;
+  // Copilot exposes one rolling quota bucket, but its reset timestamp changes
+  // every poll. Keep the storage key stable or every poll becomes a new
+  // `NNNNMin` row in the popover (and old rows never age out of the view).
+  const windowMinutes = 43_200;
 
   const windows: PolledWindow[] = [];
   for (const [label, snapshot] of Object.entries(body.quota_snapshots ?? {})) {

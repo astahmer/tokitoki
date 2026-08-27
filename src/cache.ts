@@ -564,6 +564,25 @@ export class EventCache {
 
   latestQuotaSnapshots(provider: string, accountKey: string): QuotaSnapshotRow[] {
     try {
+      // Copilot's API has one representative meter whose reset timestamp
+      // moves on every poll. Older versions encoded time-until-reset as the
+      // window length, leaving dozens of historical `NNNNMin` windows. Keep
+      // only the newest Copilot snapshot while those legacy rows remain in a
+      // user's rebuildable cache.
+      if (provider === "copilot") {
+        return this.db
+          .query(
+            `SELECT account_key AS accountKey, account_id AS accountId,
+                    window_minutes AS windowMinutes,
+                    used_pct AS usedPct, resets_at AS resetsAt,
+                    credits_json AS creditsJson, captured_at AS capturedAt
+             FROM quota_snapshots
+             WHERE provider = ? AND account_key = ?
+             ORDER BY captured_at DESC, window_minutes DESC
+             LIMIT 1`,
+          )
+          .all(provider, accountKey) as QuotaSnapshotRow[];
+      }
       return this.db
       .query(
           `SELECT qs.account_key AS accountKey, qs.account_id AS accountId,
