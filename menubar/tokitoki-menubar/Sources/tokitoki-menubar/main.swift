@@ -402,6 +402,7 @@ final class Model: ObservableObject {
     /// nil = no budgets configured; "ok" | "warn" | "exceeded"
     @Published var worstState: String?
     @Published var errorText: String?
+    @Published var errorDetails: String?
     @Published var refreshingAccounts: Set<String> = []
 
     private var timer: Timer?
@@ -1065,6 +1066,7 @@ final class Model: ObservableObject {
                 let newTitle = composeTitle(today: p.today, preview: Self.previewText(p.limits ?? [], cfg: p.uiPreview, labeled: self.previewMode == "hover"), hovering: isHovering, mode: self.previewMode)
                 setTitleIfChanged(newTitle)
                 self.errorText = nil
+                self.errorDetails = nil
                 self.lastUpdatedAt = Date()
                 self.loadingCompleted = 1
                 applyAnomalies(p.anomalies)
@@ -1074,7 +1076,8 @@ final class Model: ObservableObject {
                     AppDelegate.shared?.writeTestProof()
                 }
             } catch {
-                self.errorText = "\(error.localizedDescription)"
+                self.errorText = "Couldn’t refresh latest data"
+                self.errorDetails = error.localizedDescription
                 setTitleIfChanged("tokitoki ⚠️")
                 dbg("refresh failed: \(error.localizedDescription)")
             }
@@ -1638,7 +1641,7 @@ final class Model: ObservableObject {
     var currentPreviewCfg: UiPreviewConfig?
     var trackingArea: NSTrackingArea?
 
-    static func runJSON<T: Decodable>(_ type: T.Type, _ cli: CLIInvocation, _ args: [String]) async throws -> T? {
+    nonisolated static func runJSON<T: Decodable>(_ type: T.Type, _ cli: CLIInvocation, _ args: [String]) async throws -> T? {
         let out = try await runCLI(cli, args)
         guard !out.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
         guard let data = out.data(using: .utf8) else { return nil }
@@ -1740,6 +1743,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let hoverPopover = NSPopover()
     private let hoverActivationDelay: TimeInterval = 0.15
     private var hoverWorkItem: DispatchWorkItem?
+    private var popoverContentLoaded = false
     var model: Model?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -1762,8 +1766,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         FileHandle.standardError.write(Data(
             "[tokitoki-menubar] statusItem created · button=\(item.button != nil ? "ok" : "NIL") title=[\(model.title)]\n".utf8))
 
-        let content = ContentView(model: model)
-        popover.contentViewController = NSHostingController(rootView: content)
+        // Keep the first AppKit layout tiny. ContentView contains charts,
+        // lists, and several SwiftUI sheets; constructing it before the first
+        // frame made an otherwise idle click occasionally wait for a full
+        // main-actor layout pass.
+        popover.contentViewController = NSHostingController(rootView: PopoverLaunchView(model: model))
         hoverPopover.behavior = .transient
         hoverPopover.animates = false
         hoverPopover.contentViewController = NSHostingController(rootView: HoverPreviewView(model: model))
@@ -2038,7 +2045,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             FileHandle.standardError.write(Data("[tokitoki-menubar] popover.show called · shown=\(popover.isShown)\n".utf8))
             popover.contentViewController?.view.window?.makeKey()
+            loadPopoverContentIfNeeded()
             writePopoverProof()
+        }
+    }
+
+    private func loadPopoverContentIfNeeded() {
+        guard !popoverContentLoaded, let model else { return }
+        popoverContentLoaded = true
+        // Let WindowServer paint the lightweight launch state before asking
+        // SwiftUI to build the full view tree.
+        DispatchQueue.main.async { [weak self, weak model] in
+            guard let self, let model, self.popover.isShown else { return }
+            self.popover.contentViewController = NSHostingController(rootView: ContentView(model: model))
+            self.popover.contentViewController?.view.window?.makeKey()
         }
     }
 
@@ -3492,6 +3512,21 @@ struct TokenRangeSheet: View {
     }
 }
 
+struct PopoverLaunchView: View {
+    @ObservedObject var model: Model
+
+    var body: some View {
+        VStack(spacing: 10) {
+            ProgressView()
+            Text(model.isLoading ? "Loading latest data…" : "Preparing dashboard…")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .frame(width: 400, height: 700)
+        .background(.thinMaterial)
+    }
+}
+
 struct ContentView: View {
     @ObservedObject var model: Model
     /// Card filter — matches harness/account names, repo paths, tools.
@@ -3671,10 +3706,31 @@ struct ContentView: View {
         ScrollView(.vertical) {
             VStack(alignment: .leading, spacing: 10) {
                 if let e = model.errorText {
-                    Label(e, systemImage: "exclamationmark.triangle.fill")
-                        .font(.caption).foregroundStyle(.red)
-                        .padding(8).frame(maxWidth: .infinity, alignment: .leading)
-                        .background(.red.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack(spacing: 7) {
+                            Label(e, systemImage: "exclamationmark.triangle.fill")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.red)
+                            Spacer(minLength: 4)
+                            Button("Retry") { model.refresh() }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+                        }
+                        if let details = model.errorDetails, !details.isEmpty {
+                            DisclosureGroup("Details") {
+                                Text(details)
+                                    .font(.caption2.monospaced())
+                                    .foregroundStyle(.secondary)
+                                    .textSelection(.enabled)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        }
+                    }
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(.red.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
                 }
                 freshnessRow
                 if model.isLoading && model.today == nil {
