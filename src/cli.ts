@@ -258,8 +258,8 @@ Rows always show every configured scope×pattern; state is ok | warn (≥80%)
     example: "tokitoki config set ui.stripMetric \"tokens\"",
   },
   "menubar-payload": {
-    usage: "tokitoki menubar-payload --json",
-    flags: "  internal: combined json snapshot consumed by the menu-bar app",
+    usage: "tokitoki menubar-payload [--cached] --json",
+    flags: "  internal: combined json snapshot consumed by the menu-bar app\n  --cached              read the persisted snapshot without scanning harness stores",
     example: "tokitoki menubar-payload --json",
   },
   ui: {
@@ -454,7 +454,7 @@ export async function main(argv: string[]): Promise<void> {
 
 /** Flags each command accepts — anything else is a typo we can suggest around. */
 const KNOWN_FLAGS: Record<string, string[]> = {
-  "menubar-payload": ["json"],
+  "menubar-payload": ["cached", "json"],
   ui: ["list", "hide", "show", "surface", "menubar-only", "card-set", "account-order", "tabs"],
   scan: ["provider"],
   sources: [],
@@ -546,6 +546,14 @@ function withCache<T>(fn: (cache: EventCache) => T): T {
   } finally {
     cache.close();
   }
+}
+
+// A cached menubar read is intentionally a pure SQLite projection. The
+// regular CLI keeps syncing by default; only the short-lived payload process
+// opts into this flag so the popover can paint from the last snapshot first.
+let menubarReadOnly = false;
+function syncCache(cache: EventCache, files: string[]): void {
+  if (!menubarReadOnly) cache.sync(files);
 }
 
 // ---------------------------------------------------------------- scan
@@ -689,7 +697,7 @@ function budgetBanners(): string[] {
 function runSources(parsed: ParsedInvocation): void {
   try {
     const out = withCache((cache) => {
-      cache.sync(resolveExtraFiles(loadConfig()));
+      syncCache(cache, resolveExtraFiles(loadConfig()));
       return renderSources(collectSources(cache));
     });
     console.log(out);
@@ -767,7 +775,7 @@ function runReport(parsed: ParsedInvocation): void {
   const showEmail = flagBool(parsed, "show-email") || flagBool(parsed, "show-emails");
   try {
     const out = withCache((cache) => {
-      cache.sync(resolveExtraFiles(loadConfig()));
+      syncCache(cache, resolveExtraFiles(loadConfig()));
       const w = opts.window;
       const sinceIso = w.sinceIso;
       const untilIso = w.untilIso;
@@ -911,7 +919,7 @@ function runExport(parsed: ParsedInvocation): void {
   }
   try {
     const out = withCache((cache) => {
-      cache.sync(resolveExtraFiles(loadConfig()));
+      syncCache(cache, resolveExtraFiles(loadConfig()));
       const w = opts.window;
       const rows = sortRows(
         cache.aggregate(w.sinceIso, opts.groupBy, opts.providers, w.untilIso),
@@ -970,7 +978,7 @@ function runToday(parsed: ParsedInvocation): void {
   try {
     const w = calendarDayWindow();
     const out = withCache((cache) => {
-      cache.sync(resolveExtraFiles(loadConfig()));
+      syncCache(cache, resolveExtraFiles(loadConfig()));
       const sinceIso = w.sinceIso;
       const rows = cache.aggregate(sinceIso, "model", flagStrings(parsed, "provider"));
       const total = cache.totals(sinceIso, flagStrings(parsed, "provider"));
@@ -1014,7 +1022,7 @@ function runChart(parsed: ParsedInvocation): void {
     }
 
     const out = withCache((cache) => {
-      cache.sync(resolveExtraFiles(loadConfig()));
+      syncCache(cache, resolveExtraFiles(loadConfig()));
       if (spark) return `${windowLine(w)}\n${sparkSection(cache, w, by)}`;
       const sinceIso = w.sinceIso;
       const days = cache.dailyTotals(sinceIso, w.untilIso);
@@ -1057,7 +1065,7 @@ function runPie(parsed: ParsedInvocation): void {
     }
 
     const out = withCache((cache) => {
-      cache.sync(resolveExtraFiles(loadConfig()));
+      syncCache(cache, resolveExtraFiles(loadConfig()));
       const rows = cache.aggregate(w.sinceIso, groupBy, flagStrings(parsed, "provider"), w.untilIso);
       return `${windowLine(w)}\n${renderPie(rows)}`;
     });
@@ -1109,7 +1117,7 @@ function runGrid(parsed: ParsedInvocation): void {
       );
     }
     const out = withCache((cache) => {
-      cache.sync(resolveExtraFiles(loadConfig()));
+      syncCache(cache, resolveExtraFiles(loadConfig()));
       const daily = cache.dailyTotals(w.sinceIso, w.untilIso);
       if (daily.length === 0) return `${windowLine(w)}\nno usage recorded — run \`tokitoki scan\` first`;
       const start = new Date(new Date(w.sinceIso).getTime());
@@ -1142,7 +1150,7 @@ function runSessions(parsed: ParsedInvocation): void {
     const cached = flagBool(parsed, "cached");
 
     const out = withCache((cache) => {
-      if (!cached) cache.sync(resolveExtraFiles(loadConfig()));
+      if (!cached) syncCache(cache, resolveExtraFiles(loadConfig()));
       const w = resolveTimeWindow({ last: flagString(parsed, "last"), from: flagString(parsed, "from"), to: flagString(parsed, "to"), fallbackPeriod: "week" });
       const sinceIso = w.sinceIso;
       const filter = { sinceIso, untilIso: w.untilIso, providers: providers.length > 0 ? providers : undefined };
@@ -1389,7 +1397,7 @@ function runAnomalies(parsed: ParsedInvocation): void {
     }
     const json = flagBool(parsed, "json");
     const out = withCache((cache) => {
-      cache.sync(resolveExtraFiles(loadConfig()));
+      syncCache(cache, resolveExtraFiles(loadConfig()));
       const daily = cache.dailyTotals(w.sinceIso, w.untilIso);
       const found = detectAnomalies(daily, { metric: metricRaw as "tokens" | "cost" | "requests" });
       if (json) return JSON.stringify({ window: { since: w.sinceIso, until: w.untilIso ?? null, label: w.label }, metric: metricRaw, anomalies: found }, null, 2);
@@ -1427,7 +1435,7 @@ function runBudgets(parsed: ParsedInvocation): void {
     }
     const json = flagBool(parsed, "json");
     const out = withCache((cache) => {
-      cache.sync(resolveExtraFiles(loadConfig()));
+      syncCache(cache, resolveExtraFiles(loadConfig()));
       const payload = computeBudgetStatus(cache, loadConfig().budgets);
       if (json) return JSON.stringify(gaugesForMenubar(payload), null, 2);
       if (!payload.configured) {
@@ -1532,7 +1540,7 @@ function runTools(parsed: ParsedInvocation): void {
     const topRaw = flagString(parsed, "top");
     const providers = flagStrings(parsed, "provider");
     const out = withCache((cache) => {
-      cache.sync(resolveExtraFiles(loadConfig()));
+      syncCache(cache, resolveExtraFiles(loadConfig()));
       const rows = cache.aggregate(w.sinceIso, "tool", providers, w.untilIso);
       rows.sort((a, b) => b.costUsd - a.costUsd || b.requests - a.requests || b.inputTokens - a.inputTokens);
       const limited = topRaw !== undefined ? rows.slice(0, Math.max(1, Number.parseInt(topRaw, 10) || 5)) : rows;
@@ -1585,7 +1593,7 @@ function runRepos(parsed: ParsedInvocation): void {
     const worst = Math.max(1, Math.min(Number(flagString(parsed, "worst") ?? "0") || 0, 100));
     const providers = flagStrings(parsed, "provider");
     const out = withCache((cache) => {
-      cache.sync(resolveExtraFiles(loadConfig()));
+      syncCache(cache, resolveExtraFiles(loadConfig()));
       const w = resolveTimeWindow({ last: flagString(parsed, "last"), from: flagString(parsed, "from"), to: flagString(parsed, "to"), fallbackPeriod: "week" });
       const rows = cache.aggregate(w.sinceIso, "repo", providers.length > 0 ? providers : undefined, w.untilIso);
       if (rows.length === 0) return `${windowLine(w)}\nno usage recorded in this window — run \`tokitoki scan\` first`;
@@ -1635,7 +1643,7 @@ function runRepos(parsed: ParsedInvocation): void {
 function runReindex(_parsed: ParsedInvocation): void {
   try {
     const out = withCache((cache) => {
-      cache.sync(resolveExtraFiles(loadConfig()));
+      syncCache(cache, resolveExtraFiles(loadConfig()));
       const stats = rebuildSessionIndex(cache.database);
       return [
         `reindexed ${stats.docsIndexed} session(s) from ${stats.filesIndexed} file(s) in ${stats.durationMs}ms`,
@@ -1679,7 +1687,7 @@ function runImport(parsed: ParsedInvocation): void {
     }
     // Insert into the append-log so cursors/cache treat them like any event.
     const written = appendEvents(result.events);
-    withCache((cache) => cache.sync(resolveExtraFiles(loadConfig())));
+    withCache((cache) => syncCache(cache, resolveExtraFiles(loadConfig())));
     console.log(`imported ${written} events from ${file} as ${label} (${result.skipped} rows skipped)`);
   } catch (err) {
     handleError(err);
@@ -1840,7 +1848,7 @@ async function runBlocks(parsed: ParsedInvocation): Promise<void> {
   );
   const account = flagString(parsed, "account");
   const out = withCache((cache) => {
-    cache.sync(resolveExtraFiles(loadConfig()));
+    syncCache(cache, resolveExtraFiles(loadConfig()));
     return renderBlocks(cache.blockWindows(w.sinceIso, w.untilIso, account));
   });
   console.log(`${windowLine(w)}\n${out}`);
@@ -1856,7 +1864,7 @@ async function runStatusline(_parsed: ParsedInvocation): Promise<void> {
   const input = parseStatuslineStdin(raw);
   const cache = new EventCache();
   try {
-    cache.sync(resolveExtraFiles(loadConfig()));
+    syncCache(cache, resolveExtraFiles(loadConfig()));
     const line = await renderStatusline(input, cache);
     if (line.length > 0) console.log(line);
   } finally {
@@ -2170,24 +2178,27 @@ function localDateKey(offsetDays = 0): string {
 }
 
 function runMenubarPayload(parsed: ParsedInvocation): void {
+  menubarReadOnly = flagBool(parsed, "cached");
   // Sequential single-process composition: the menu bar previously spawned
   // 7 CLIs at once (~1GB RSS each) and thrashed memory.
   // Ingest changed harness stores before any report is composed. This is
   // incremental (provider cursors make unchanged files cheap) and prevents
   // the popover from showing a stale/zero token period after a session ends.
-  const machineId = localMachineId();
-  for (const provider of PROVIDERS) {
-    scanProviderCore(provider, machineId, {
-      onEvents: (events) => appendEvents(events),
-      onSaveCursors: (cursors) => saveProviderCursors(provider.id, cursors),
-    });
+  if (!menubarReadOnly) {
+    const machineId = localMachineId();
+    for (const provider of PROVIDERS) {
+      scanProviderCore(provider, machineId, {
+        onEvents: (events) => appendEvents(events),
+        onSaveCursors: (cursors) => saveProviderCursors(provider.id, cursors),
+      });
+    }
   }
   // Build the searchable conversation index once as part of the payload
   // refresh. The popover can then use `sessions --cached` without paying the
   // raw-store walk on every search or detail navigation.
   withCache((cache) => {
-    cache.sync(resolveExtraFiles(loadConfig()));
-    updateSessionIndex(cache.database);
+    syncCache(cache, resolveExtraFiles(loadConfig()));
+    if (!menubarReadOnly) updateSessionIndex(cache.database);
   });
   const parts: Record<string, unknown> = {};
   const capture = (key: string, fn: () => void): void => {
@@ -2218,14 +2229,14 @@ function runMenubarPayload(parsed: ParsedInvocation): void {
   capture("activityGrid", () => {
     const config = loadConfig();
     withCache((cache) => {
-      cache.sync(resolveExtraFiles(config));
+      syncCache(cache, resolveExtraFiles(config));
       console.log(JSON.stringify({ metric: "tokens", cells: cache.dailyTotals(sinceIsoForDays(365)) }));
     });
   });
   capture("repoHistory", () => {
     const config = loadConfig();
     withCache((cache) => {
-      cache.sync(resolveExtraFiles(config));
+      syncCache(cache, resolveExtraFiles(config));
       const sinceIso = sinceIsoForDays(30);
       const rows = cache.database.query(`
         SELECT COALESCE(r.name, '(no repo)') AS bucket,
@@ -2257,7 +2268,7 @@ function runMenubarPayload(parsed: ParsedInvocation): void {
   capture("spendHealth", () => {
     const config = loadConfig();
     withCache((cache) => {
-      cache.sync(resolveExtraFiles(config));
+      syncCache(cache, resolveExtraFiles(config));
       const mtd = cache.hybridUsage(monthStartIso());
       console.log(JSON.stringify(computeSpendHealth(mtd, new Date(), config.budgets?.monthly, config.notifications?.burnWarningRatio ?? 0.8)));
     });
@@ -2269,7 +2280,7 @@ function runMenubarPayload(parsed: ParsedInvocation): void {
   capture("history", () => {
     const config = loadConfig();
     withCache((cache) => {
-      cache.sync(config.extraEventFiles ?? []);
+      syncCache(cache, config.extraEventFiles ?? []);
       const sinceIso = new Date(Date.now() - 29 * 86_400_000).toISOString();
       const buckets = cache.seriesDaily(sinceIso, "provider", 6, "tokens");
       const days = [...new Set(buckets.flatMap((bucket) => bucket.days))].sort();
@@ -2288,14 +2299,14 @@ function runMenubarPayload(parsed: ParsedInvocation): void {
   capture("blocks", () => {
     const config = loadConfig();
     withCache((cache) => {
-      cache.sync(resolveExtraFiles(config));
+      syncCache(cache, resolveExtraFiles(config));
       console.log(JSON.stringify({ rows: cache.blockWindows(sinceIsoForDays(1), undefined) }));
     });
   });
   capture("statuslinePreview", () => {
     const config = loadConfig();
     withCache((cache) => {
-      cache.sync(resolveExtraFiles(config));
+      syncCache(cache, resolveExtraFiles(config));
       const todayStart = new Date(`${todayKey}T00:00:00`).toISOString();
       const tomorrowKey = localDateKey(-1);
       const tomorrowStart = new Date(`${tomorrowKey}T00:00:00`).toISOString();
@@ -2360,7 +2371,7 @@ function runMenubarPayload(parsed: ParsedInvocation): void {
   capture("limits", () => {
     const config = loadConfig();
     withCache((cache) => {
-      cache.sync(config.extraEventFiles ?? []);
+      syncCache(cache, config.extraEventFiles ?? []);
       // FULL limits go over the wire — the app filters popover cards via
       // hidden.menubar and strip marks via previewHidden independently.
       const limits = computeLimits(cache, config);
@@ -2595,7 +2606,7 @@ function runMenubarPayload(parsed: ParsedInvocation): void {
       ["year", { last: "year" }],
     ];
     withCache((cache) => {
-      cache.sync(resolveExtraFiles(config));
+      syncCache(cache, resolveExtraFiles(config));
       const collect = (groupBy: "provider" | "model", flags: Record<string, FlagValue>): Array<Record<string, unknown>> =>
         periodFlags.map(([key, defaultFlags]) => {
           const mergedFlags = { ...defaultFlags, ...flags };
