@@ -9,6 +9,7 @@ import {
   escapeFtsQuery,
   rebuildSessionIndex,
   searchSessions,
+  sessionConversation,
   updateSessionIndex,
 } from "../src/sessionIndex.ts";
 import type { Provider } from "../src/providers/types.ts";
@@ -91,6 +92,10 @@ describe("session index", () => {
     expect(hit.rows.length).toBe(1);
     expect(hit.rows[0]!.sessionId).toBe("sess-a");
     expect(hit.rows[0]!.snippet).toContain("[[cirrus]]");
+    expect(sessionConversation(db, "fake", "sess-a")).toEqual({
+      title: "migrate the pds to cirrus",
+      body: "migrate the pds to cirrus",
+    });
 
     // Unchanged files are skipped on the next incremental pass.
     stats = updateSessionIndex(db, [fakeProvider(dir)], { force: true });

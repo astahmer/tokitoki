@@ -108,6 +108,29 @@ describe("web api + server", () => {
     for (const s of body.series) expect(s.values).toHaveLength(days_len(body));
   });
 
+  test("/api/breakdown supports model/provider dimensions and absolute ranges", async () => {
+    const model = await fetch(`http://localhost:${server.port}/api/breakdown?by=model&from=2026-01-01&to=2099-01-01`);
+    const modelBody = (await model.json()) as { by: string; rows: Array<{ bucket: string; costUsd: number }> };
+    expect(model.status).toBe(200);
+    expect(modelBody.by).toBe("model");
+    expect(modelBody.rows.some((row) => row.bucket === "m1")).toBe(true);
+
+    const provider = await fetch(`http://localhost:${server.port}/api/breakdown?by=provider&from=2026-01-01&to=2099-01-01`);
+    const providerBody = (await provider.json()) as { by: string; rows: Array<{ bucket: string }> };
+    expect(provider.status).toBe(200);
+    expect(providerBody.by).toBe("provider");
+    // The fixture model has no gateway prefix, so provider inference is
+    // intentionally conservative; it still returns an attributed bucket.
+    expect(providerBody.rows.length).toBeGreaterThan(0);
+  });
+
+  test("/api/notifications stays machine-readable when no journal exists", async () => {
+    const res = await fetch(`http://localhost:${server.port}/api/notifications`);
+    const body = (await res.json()) as { records: unknown[] };
+    expect(res.status).toBe(200);
+    expect(Array.isArray(body.records)).toBe(true);
+  });
+
   function days_len(b: { days: string[] }): number {
     return b.days.length;
   }

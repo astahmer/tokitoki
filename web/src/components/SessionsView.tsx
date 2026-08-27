@@ -376,7 +376,19 @@ function SessionDetail({ provider, sessionId }: { provider: string; sessionId: s
       ) : detail.state === "error" ? (
         <p className="text-xs text-kumo-danger">{detail.error}</p>
       ) : (
-        <Timeline payload={detail.data} />
+        <div className="space-y-4">
+          {detail.data.conversation !== null && detail.data.conversation.body.length > 0 && (
+            <details open className="rounded-md border border-kumo-border/60 bg-kumo-surface p-3">
+              <summary className="cursor-pointer text-xs font-medium">
+                conversation{detail.data.conversation.title.length > 0 ? ` · ${detail.data.conversation.title}` : ""}
+              </summary>
+              <pre className="mt-3 max-h-80 overflow-auto whitespace-pre-wrap break-words text-[11px] leading-relaxed text-kumo-subtle">
+                {detail.data.conversation.body}
+              </pre>
+            </details>
+          )}
+          <Timeline payload={detail.data} />
+        </div>
       )}
     </>
   );

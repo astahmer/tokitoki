@@ -65,6 +65,13 @@ export interface TimeseriesPayload {
   series: Array<{ bucket: string; values: number[] }>;
 }
 
+export type BreakdownDimension = "harness" | "provider" | "model";
+export interface BreakdownPayload {
+  by: BreakdownDimension;
+  window: ApiWindow;
+  rows: AggRow[];
+}
+
 export interface GridCell {
   day: string;
   tokens: number;
@@ -134,6 +141,17 @@ export function fetchTimeseries(
   return get<TimeseriesPayload>(`/api/timeseries?${q.toString()}`);
 }
 
+export function fetchBreakdown(
+  by: BreakdownDimension,
+  win: WindowSelection,
+  providers: string[] = [],
+): Promise<BreakdownPayload> {
+  const q = windowQuery(win);
+  q.set("by", by);
+  for (const provider of providers) q.append("provider", provider);
+  return get<BreakdownPayload>(`/api/breakdown?${q.toString()}`);
+}
+
 export function fetchGrid(days: number, metric: string): Promise<{ metric: string; cells: GridCell[] }> {
   return get(`/api/grid?days=${days}&metric=${metric}`);
 }
@@ -172,6 +190,7 @@ export interface SessionEvent {
 export interface SessionDetailPayload {
   provider: string;
   sessionId: string;
+  conversation: { title: string; body: string } | null;
   events: SessionEvent[];
 }
 
@@ -301,6 +320,18 @@ export interface BudgetAlertInfo {
 
 export function fetchBudgets(): Promise<{ configured: boolean; rows: BudgetRow[]; alerts: BudgetAlertInfo[] }> {
   return get("/api/budgets");
+}
+
+export interface NotificationRecord {
+  id: string;
+  at: string;
+  title: string;
+  body: string;
+  reason: string;
+}
+
+export function fetchNotificationHistory(): Promise<{ records: NotificationRecord[] }> {
+  return get("/api/notifications");
 }
 
 // ---------------------------------------------------------------- export

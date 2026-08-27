@@ -4,7 +4,7 @@ import { scaleOrdinal } from "@tanstack/charts/scales/ordinal";
 import { Chart } from "@tanstack/charts/react";
 
 import { formatCost, humanCount } from "../lib/fmt";
-import type { Row } from "../lib/api";
+import type { AggRow } from "../lib/api";
 
 // Palette readable on both light and dark backgrounds.
 const COLORS = ["#3b82f6", "#10b981", "#f59e0b", "#f43f5e", "#06b6d4", "#8b5cf6", "#84cc16"];
@@ -16,9 +16,13 @@ const COLORS = ["#3b82f6", "#10b981", "#f59e0b", "#f43f5e", "#06b6d4", "#8b5cf6"
 export function DonutShare({
   rows,
   metric = "tokens",
+  selected,
+  onSelect,
 }: {
-  rows: Row[];
+  rows: AggRow[];
   metric?: "tokens" | "cost";
+  selected?: string;
+  onSelect?: (bucket: string) => void;
 }) {
   const ranked = rows
     .map((r) => ({
@@ -80,7 +84,16 @@ export function DonutShare({
               className="inline-block size-2.5 rounded-sm"
               style={{ background: COLORS[i % COLORS.length] }}
             />
-            <span className="text-ink">{d.name}</span>
+            {onSelect === undefined ? <span className="text-ink">{d.name}</span> : (
+              <button
+                type="button"
+                onClick={() => onSelect(d.name)}
+                className={`text-left hover:text-kumo-default ${selected === d.name ? "font-semibold text-kumo-default" : "text-ink"}`}
+                aria-pressed={selected === d.name}
+              >
+                {d.name}
+              </button>
+            )}
             <span className="text-muted">
               {Math.round((d[metric] / total) * 100)}% ·{" "}
               {metric === "cost"

@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import { apiAnomalies, apiBudgets, apiExport, apiGrid, apiSessionDetail, apiSessionSearch, apiSessions, apiSources, apiSummary, apiTable, apiTimeseries, type WindowParams } from "./api.ts";
+import { apiAnomalies, apiBreakdown, apiBudgets, apiExport, apiGrid, apiNotificationHistory, apiSessionDetail, apiSessionSearch, apiSessions, apiSources, apiSummary, apiTable, apiTimeseries, type WindowParams } from "./api.ts";
 import { atprotoConfig, buildSharePayload, describePayload, publishShare, readShareState } from "../share.ts";
 
 export interface WebServerOptions {
@@ -162,6 +162,11 @@ export function startWebServer(options: WebServerOptions = {}): Bun.Server<undef
         const days = Number(url.searchParams.get("days") ?? "30");
         return json(apiTimeseries(by, { ...win(), days: Number.isFinite(days) ? days : 30, metric: url.searchParams.get("metric") === "cost" ? "cost" : "tokens" }));
       }
+      case "/api/breakdown": {
+        const by = url.searchParams.get("by") ?? "model";
+        const providers = url.searchParams.getAll("provider").filter((p) => p.length > 0);
+        return json(apiBreakdown(by, win(), providers));
+      }
       case "/api/table": {
         const by = url.searchParams.get("by") ?? "model";
         const period = url.searchParams.get("period") ?? "week";
@@ -189,6 +194,8 @@ export function startWebServer(options: WebServerOptions = {}): Bun.Server<undef
       }
       case "/api/budgets":
         return json(apiBudgets());
+      case "/api/notifications":
+        return json(apiNotificationHistory());
       case "/api/sources":
         return json(apiSources());
       case "/api/share": {

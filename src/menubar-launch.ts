@@ -323,7 +323,10 @@ async function findAppPid(): Promise<number | null> {
 }
 
 async function waitForAppPid(findPid: () => number | null | Promise<number | null>): Promise<number | null> {
-  for (let i = 0; i < 30; i++) {
+  // SwiftUI/AppKit startup can take several seconds while the first payload
+  // is loaded. Keep `bun run menubar` deterministic instead of reporting a
+  // false failure during launchd's asynchronous hand-off.
+  for (let i = 0; i < 100; i++) {
     const pid = await findPid();
     if (pid !== null) return pid;
     await new Promise((resolve) => setTimeout(resolve, 100));

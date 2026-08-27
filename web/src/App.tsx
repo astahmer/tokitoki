@@ -27,6 +27,7 @@ import { MultiSelect } from "./components/MultiSelect";
 import { SourcesView } from "./components/SourcesView";
 import { AnomaliesView } from "./components/AnomaliesView";
 import { BudgetsView } from "./components/BudgetsView";
+import { ReportsView } from "./components/ReportsView";
 import { ShareButton } from "./components/ShareButton";
 import { EmptyState, Panel, Pill, SkeletonBlock, SummaryCardsSkeleton, TableSkeleton, Toggle } from "./ui";
 import { applyMode, effectiveMode, persistMode, resolveInitialMode, watchSystemMode, type ThemeMode } from "./theme";
@@ -44,7 +45,7 @@ const RANGE_PRESETS: Array<{ label: string; value: string }> = [
   { label: "90d", value: "90d" },
   { label: "year", value: "year" },
 ];
-const VIEWS = ["dashboard", "tools", "sessions", "anomalies", "budgets", "sources"] as const;
+const VIEWS = ["dashboard", "reports", "tools", "sessions", "anomalies", "budgets", "sources"] as const;
 type View = (typeof VIEWS)[number];
 
 // ---------------------------------------------------------------- url state
@@ -63,7 +64,7 @@ interface AppState {
 function readStateFromUrl(): AppState {
   const p = new URLSearchParams(window.location.search);
   const viewRaw = p.get("view");
-  const view: View = VIEWS.includes(viewRaw as View) ? (viewRaw as View) : "sessions";
+  const view: View = VIEWS.includes(viewRaw as View) ? (viewRaw as View) : "dashboard";
   let range: WindowSelection = { last: "week" };
   if (p.get("from") !== null) {
     range = { from: p.get("from") ?? "", to: p.get("to") ?? undefined };
@@ -265,6 +266,22 @@ export function App() {
           />
           <SessionsView win={win} providers={providers} account={account} />
         </>
+      ) : view === "reports" ? (
+        <>
+          <FilterBar
+            range={range}
+            setRange={(r) => patch({ range: r })}
+            providers={providers}
+            setProviders={(p) => patch({ providers: p })}
+            providerChips={providerChips}
+            showEmail={showEmail}
+            setShowEmail={(v) => patch({ showEmail: v })}
+            account={account}
+            accounts={table.state === "ok" ? table.data.accounts.map((a) => a.key) : []}
+            setAccount={(a) => patch({ account: a })}
+          />
+          <ReportsView win={win} providers={providers} refreshTick={refreshTick} />
+        </>
       ) : view === "tools" ? (
         <ToolsView win={win} providers={providers} />
       ) : view === "sources" ? (
@@ -347,7 +364,7 @@ export function App() {
             </Panel>
             <Panel>
               <Heading>usage distribution</Heading>
-              <SpendDistribution />
+              <SpendDistribution win={win} providers={providers} />
             </Panel>
           </div>
 

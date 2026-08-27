@@ -68,7 +68,7 @@ import {
   type TimeWindow,
 } from "./period.ts";
 import { collectSources, renderSources } from "./sources.ts";
-import { rebuildSessionIndex, searchSessions, updateSessionIndex } from "./sessionIndex.ts";
+import { rebuildSessionIndex, searchSessions, sessionConversation, updateSessionIndex } from "./sessionIndex.ts";
 
 export { UserError } from "./errors.ts";
 
@@ -1300,7 +1300,8 @@ function renderSessionDrill(cache: EventCache, sessionId: string, json: boolean)
     return { n: i + 1, ...e, runningTokens };
   });
   if (json) {
-    return JSON.stringify({ provider: matches[0], sessionId, events: detailRows }, null, 2);
+    updateSessionIndex(cache.database);
+    return JSON.stringify({ provider: matches[0], sessionId, conversation: sessionConversation(cache.database, matches[0]!, sessionId), events: detailRows }, null, 2);
   }
   const header = `session ${sessionId} · ${matches[0]} · ${events.length} requests`;
   const widths = [4, 9, 22, 10, 10, 10, 8, 9, 11];

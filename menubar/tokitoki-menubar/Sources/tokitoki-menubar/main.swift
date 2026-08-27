@@ -100,6 +100,19 @@ struct NotificationConfigPayload: Codable {
     let burnWarningRatio: Double?
 }
 
+struct NotificationRecord: Codable, Identifiable {
+    let id: String
+    let at: String
+    let title: String
+    let body: String
+    let reason: String
+}
+
+private struct NotificationState: Codable {
+    let keys: [String]
+    let history: [NotificationRecord]
+}
+
 struct MachineHeartbeat: Codable {
     let machineId: String
     let host: String
@@ -207,6 +220,38 @@ struct DailyUsageHistory: Codable {
     let series: [DailyUsageSeries]
 }
 
+struct PopoverSessionRow: Codable, Identifiable {
+    let sessionId: String
+    let provider: String
+    let accountKey: String
+    let startedAt: String
+    let lastRequestAt: String
+    let title: String?
+    let snippet: String?
+    let requests: Int
+    let models: [String]
+    let repos: [String]
+    let totalTokens: Double
+    let cachePct: Int
+    let costUsd: Double
+    var id: String { "\(provider)/\(sessionId)" }
+}
+
+struct PopoverSessionsPayload: Codable {
+    let rows: [PopoverSessionRow]
+}
+
+struct PopoverSessionDetail: Codable {
+    let provider: String
+    let sessionId: String
+    let conversation: Conversation?
+
+    struct Conversation: Codable {
+        let title: String
+        let body: String
+    }
+}
+
 struct MenubarPayload: Codable {
     let today: ReportPayload
     let rollingDay: ReportPayload?
@@ -283,6 +328,14 @@ final class Model: ObservableObject {
     @Published var burnWarnings = true
     @Published var burnWarningRatio = 0.8
     @Published var notificationStatus: String?
+    @Published var notificationHistory: [NotificationRecord] = []
+    @Published var sessionRows: [PopoverSessionRow] = []
+    @Published var sessionQuery = ""
+    @Published var selectedSession: PopoverSessionDetail?
+    @Published var sessionStatus: String?
+    @Published var customHarnessRows: [ReportRow] = []
+    @Published var customModelRows: [ReportRow] = []
+    @Published var customProviderRows: [ReportRow] = []
     /// nil = no budgets configured; "ok" | "warn" | "exceeded"
     @Published var worstState: String?
     @Published var errorText: String?
@@ -324,6 +377,70 @@ final class Model: ObservableObject {
             }
             self?.refreshingAccounts.remove(id)
             self?.refresh()
+        }
+    }
+
+    /// Load a small, bounded session list without blocking the popover's main
+    /// actor. An empty query shows the recent leaderboard; a query uses the
+    /// same indexed full-text search as the CLI and web dashboard.
+    func searchPopoverSessions(_ query: String) {
+        sessionQuery = query
+        let cli = invocation
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        sessionStatus = "Searching sessions…"
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                var args = ["sessions", "--last", "month", "--top", "12", "--json"]
+                if !trimmed.isEmpty { args += ["--search", trimmed] }
+                let payload = try await Self.runJSON(PopoverSessionsPayload.self, cli, args)
+                self.sessionRows = payload?.rows ?? []
+                self.sessionStatus = self.sessionRows.isEmpty ? "No sessions found" : "\(self.sessionRows.count) recent session\(self.sessionRows.count == 1 ? "" : "s")"
+            } catch {
+                self.sessionRows = []
+                self.sessionStatus = "Session search failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    func loadPopoverSession(_ row: PopoverSessionRow) {
+        let cli = invocation
+        sessionStatus = "Loading conversation…"
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                let detail = try await Self.runJSON(PopoverSessionDetail.self, cli, ["sessions", "--session", row.sessionId, "--json"])
+                self.selectedSession = detail
+                self.sessionStatus = detail?.conversation == nil ? "No conversation body indexed" : nil
+            } catch {
+                self.sessionStatus = "Could not load conversation: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    func loadCustomTokenBreakdowns(from: Date, to: Date) {
+        let calendar = Calendar.current
+        func day(_ date: Date) -> String {
+            let c = calendar.dateComponents([.year, .month, .day], from: date)
+            return String(format: "%04d-%02d-%02d", c.year ?? 0, c.month ?? 0, c.day ?? 0)
+        }
+        let cli = invocation
+        let fromKey = day(from)
+        let toKey = day(to)
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                async let harness = Self.runJSON(ReportPayload.self, cli, ["report", "--by", "provider", "--from", fromKey, "--to", toKey, "--json"])
+                async let models = Self.runJSON(ReportPayload.self, cli, ["report", "--by", "model", "--from", fromKey, "--to", toKey, "--json"])
+                self.customHarnessRows = (try await harness)?.rows ?? []
+                self.customModelRows = (try await models)?.rows ?? []
+                // Upstream provider attribution is not exposed by the report
+                // command, so retain the last cached attribution and make the
+                // custom provider chart use the provider-grouped report rows.
+                self.customProviderRows = self.customHarnessRows
+            } catch {
+                self.pollStatus = "Custom token range failed: \(error.localizedDescription)"
+            }
         }
     }
 
@@ -578,6 +695,7 @@ final class Model: ObservableObject {
         self.invocation = invocation
         dbg("start · exec=\(invocation.executable.path) prefix=\(invocation.prefixArgs)")
         notifiedKeys = Self.loadNotifiedKeys()
+        notificationHistory = Self.loadNotificationHistory()
         quotaObservations = Self.loadQuotaObservations()
         dbg("loaded \(notifiedKeys.count) notified keys from \(Self.stateFileURL.path)")
         refresh()
@@ -803,6 +921,7 @@ final class Model: ObservableObject {
                 key: key,
                 title: "tokitoki budget \(level)%",
                 body: "\(label): $\(String(format: "%.2f", row?.used ?? 0)) / $\(String(format: "%.2f", row?.cap ?? 0))",
+                reason: "This budget crossed its \(level)% warning threshold.",
             )
         }
         lastLevels = current
@@ -833,6 +952,7 @@ final class Model: ObservableObject {
                         key: key,
                         title: "tokitoki quota critical",
                         body: "\(name): \(Int(remaining.rounded()))% left · resets in \(reset)",
+                        reason: "The reported \(windowDisplayName(window.kind, provider: account.provider).lowercased()) quota reached your configured critical threshold of \(quotaCriticalPercent)% remaining.",
                     )
                 }
                 if notificationsEnabled && resetAwareNotifications && (resetChanged || recovered) {
@@ -841,6 +961,7 @@ final class Model: ObservableObject {
                         key: key,
                         title: "tokitoki quota available",
                         body: "\(name) is available again · \(Int(remaining.rounded()))% left",
+                        reason: "This quota was previously exhausted or critical and its provider now reports usable capacity again.",
                     )
                 }
 
@@ -865,6 +986,7 @@ final class Model: ObservableObject {
             key: key,
             title: "tokitoki burn-rate warning",
             body: "Projected $\(String(format: "%.0f", health.projected)) by month end vs $\(String(format: "%.0f", cap)) cap · $\(String(format: "%.2f", health.perDay))/day",
+            reason: "Your current month-to-date spend pace projects above the configured warning threshold.",
         )
     }
 
@@ -905,15 +1027,23 @@ final class Model: ObservableObject {
     }
 
     private static func loadNotifiedKeys() -> Set<String> {
+        guard let data = try? Data(contentsOf: stateFileURL) else { return [] }
+        if let state = try? JSONDecoder().decode(NotificationState.self, from: data) { return Set(state.keys) }
+        if let keys = try? JSONDecoder().decode([String].self, from: data) { return Set(keys) }
+        return []
+    }
+
+    private static func loadNotificationHistory() -> [NotificationRecord] {
         guard let data = try? Data(contentsOf: stateFileURL),
-              let keys = try? JSONDecoder().decode([String].self, from: data) else { return [] }
-        return Set(keys)
+              let state = try? JSONDecoder().decode(NotificationState.self, from: data) else { return [] }
+        return state.history
     }
 
     private func saveNotifiedKeys() {
         let url = Self.stateFileURL
         try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        if let data = try? JSONEncoder().encode(Array(notifiedKeys).sorted()) {
+        let state = NotificationState(keys: Array(notifiedKeys).sorted(), history: notificationHistory)
+        if let data = try? JSONEncoder().encode(state) {
             try? data.write(to: url)
         }
     }
@@ -932,9 +1062,17 @@ final class Model: ObservableObject {
         }
     }
 
-    private func notifyOnce(key: String, title: String, body: String) {
+    private func notifyOnce(key: String, title: String, body: String, reason: String) {
         guard !notifiedKeys.contains(key) else { return }
         notifiedKeys.insert(key)
+        let record = NotificationRecord(
+            id: key,
+            at: ISO8601DateFormatter().string(from: Date()),
+            title: title,
+            body: body,
+            reason: reason,
+        )
+        notificationHistory = Array(([record] + notificationHistory).prefix(50))
         saveNotifiedKeys()
         dbg("notification · \(key) · state-file=\(Self.stateFileURL.path)")
         deliverNotification(title: title, body: body)
@@ -1891,7 +2029,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func openReports() {
-        openLocalDashboard(path: "/?view=dashboard&range=month")
+        openLocalDashboard(path: "/?view=reports&last=month")
     }
 
     func refreshDashboardStatus() {
@@ -2667,6 +2805,7 @@ enum PopoverSubview: String, CaseIterable, Hashable {
     case reports
     case sources
     case mcp
+    case sessions
     case settings
 
     var title: String {
@@ -2677,6 +2816,7 @@ enum PopoverSubview: String, CaseIterable, Hashable {
         case .reports: return "Reports"
         case .sources: return "Sources"
         case .mcp: return "MCP"
+        case .sessions: return "Sessions"
         case .settings: return "Settings"
         }
     }
@@ -2689,11 +2829,12 @@ enum PopoverSubview: String, CaseIterable, Hashable {
         case .reports: return "doc.text"
         case .sources: return "doc.text.magnifyingglass"
         case .mcp: return "point.3.connected.trianglepath.dotted"
+        case .sessions: return "text.bubble"
         case .settings: return "gearshape"
         }
     }
 
-    static let defaultOrder: [PopoverSubview] = [.overview, .quotas, .tokens, .reports, .sources, .mcp, .settings]
+    static let defaultOrder: [PopoverSubview] = [.overview, .quotas, .tokens, .reports, .sessions, .sources, .mcp, .settings]
 
     static func normalizedOrder(_ raw: [String]?) -> [PopoverSubview] {
         var result: [PopoverSubview] = []
@@ -3082,6 +3223,7 @@ struct ContentView: View {
     @State private var activeSubview: PopoverSubview = .overview
     /// Token-report period selection is local to the lightweight native view.
     @State private var tokenPeriodKey = "today"
+    @State private var tokenMetric: SpendMetric = .tokens
     @State private var customTokenFrom = Calendar.current.date(byAdding: .month, value: -1, to: Date()) ?? Date()
     @State private var customTokenTo = Date()
     @State private var mcpIntegration: MCPIntegration = .claudeDesktop
@@ -3145,6 +3287,7 @@ struct ContentView: View {
                 case .quotas: quotasBody
                 case .tokens: tokensBody
                 case .reports: reportsBody
+                case .sessions: sessionsBody
                 case .sources: sourcesBody
                 case .mcp: mcpBody
                 case .settings: settingsBody
@@ -3171,6 +3314,8 @@ struct ContentView: View {
                 customTokenFrom = from
                 customTokenTo = to
                 tokenPeriodKey = "custom"
+                tokenMetric = .tokens
+                model.loadCustomTokenBreakdowns(from: from, to: to)
             })
         }
     }
@@ -3391,56 +3536,57 @@ struct ContentView: View {
                 Label("No usage recorded for this local calendar day", systemImage: "calendar")
                     .font(.caption2).foregroundStyle(.secondary)
             }
-            tokenPeriodPicker
+                tokenPeriodPicker
+                tokenMetricPicker
         }
     }
 
     private var tokenProviderCard: some View {
-        let slices = tokenSlices(for: tokenPeriodKey)
+        let slices = tokenSlices(for: tokenPeriodKey, metric: tokenMetric)
         let total = slices.reduce(0) { $0 + $1.value }
-        return card(title: "tokens by harness", icon: "chart.pie.fill") {
+        return card(title: "by harness · \(tokenMetric.rawValue)", icon: "chart.pie.fill") {
             if slices.isEmpty {
                 emptyState("No tokens recorded", detail: "Run a scan or widen the selected period.", icon: "number")
             } else {
                 HStack(spacing: 14) {
-                    DonutChart(slices: slices, centerLabel: humanCount(total), centerUnit: "tokens")
+                    DonutChart(slices: slices, centerLabel: tokenMetric == .cost ? String(format: "$%.2f", total) : humanCount(total), centerUnit: tokenMetric.rawValue)
                         .frame(width: 112, height: 112)
-                        .accessibilityLabel("tokens by provider donut chart")
-                    SpendLegend(slices: Array(slices.prefix(6)), metric: .tokens)
+                        .accessibilityLabel("harness breakdown donut chart")
+                    SpendLegend(slices: Array(slices.prefix(6)), metric: tokenMetric)
                 }
             }
         }
     }
 
     private var tokenUpstreamProviderCard: some View {
-        let slices = breakdownSlices(from: model.providerPeriods, key: tokenPeriodKey)
+        let slices = breakdownSlices(from: model.providerPeriods, key: tokenPeriodKey, metric: tokenMetric, customProvider: true)
         let total = slices.reduce(0) { $0 + $1.value }
-        return card(title: "tokens by provider", icon: "building.2.fill") {
+        return card(title: "by provider · \(tokenMetric.rawValue)", icon: "building.2.fill") {
             if slices.isEmpty {
                 emptyState("No provider attribution", detail: "Provider attribution appears when model or account routing identifies it.", icon: "questionmark.circle")
             } else {
                 HStack(spacing: 14) {
-                    DonutChart(slices: slices, centerLabel: humanCount(total), centerUnit: "tokens")
+                    DonutChart(slices: slices, centerLabel: tokenMetric == .cost ? String(format: "$%.2f", total) : humanCount(total), centerUnit: tokenMetric.rawValue)
                         .frame(width: 112, height: 112)
-                        .accessibilityLabel("tokens by upstream provider donut chart")
-                    SpendLegend(slices: Array(slices.prefix(6)), metric: .tokens)
+                        .accessibilityLabel("provider breakdown donut chart")
+                    SpendLegend(slices: Array(slices.prefix(6)), metric: tokenMetric)
                 }
             }
         }
     }
 
     private var tokenModelCard: some View {
-        let slices = breakdownSlices(from: model.modelPeriods, key: tokenPeriodKey)
+        let slices = breakdownSlices(from: model.modelPeriods, key: tokenPeriodKey, metric: tokenMetric)
         let total = slices.reduce(0) { $0 + $1.value }
-        return card(title: "tokens by model", icon: "cube.fill") {
+        return card(title: "by model · \(tokenMetric.rawValue)", icon: "cube.fill") {
             if slices.isEmpty {
                 emptyState("No model usage recorded", detail: "Run a scan or widen the selected period.", icon: "number")
             } else {
                 HStack(spacing: 14) {
-                    DonutChart(slices: slices, centerLabel: humanCount(total), centerUnit: "tokens")
+                    DonutChart(slices: slices, centerLabel: tokenMetric == .cost ? String(format: "$%.2f", total) : humanCount(total), centerUnit: tokenMetric.rawValue)
                         .frame(width: 112, height: 112)
-                        .accessibilityLabel("tokens by model donut chart")
-                    SpendLegend(slices: Array(slices.prefix(6)), metric: .tokens)
+                        .accessibilityLabel("model breakdown donut chart")
+                    SpendLegend(slices: Array(slices.prefix(6)), metric: tokenMetric)
                 }
             }
         }
@@ -3569,7 +3715,80 @@ struct ContentView: View {
                 heroCard
                 if !(model.today?.rows ?? []).isEmpty { pieCard() }
                 if !model.repos.isEmpty { reposCard }
+                if !model.topTools.isEmpty { toolsCard }
+                if let anomalyLine = model.anomalyLine {
+                    card(title: "anomalies", icon: "waveform.path.ecg") {
+                        Text(anomalyLine).font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                if !model.budgets.isEmpty {
+                    card(title: "budget status", icon: "gauge.with.dots.needle.67percent") {
+                        ForEach(model.budgets.prefix(5), id: \.label) { budget in
+                            HStack(spacing: 6) {
+                                Circle().fill(color(for: budget.state)).frame(width: 6, height: 6)
+                                Text(budget.label).font(.caption).lineLimit(1)
+                                Spacer()
+                                Text(String(format: "$%.2f / $%.2f", budget.used, budget.cap))
+                                    .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
             }.padding(12)
+        }
+    }
+
+    private var sessionsBody: some View {
+        ScrollView(.vertical) {
+            VStack(alignment: .leading, spacing: 10) {
+                freshnessRow
+                card(title: "find conversations", icon: "text.bubble") {
+                    HStack(spacing: 6) {
+                        TextField("search titles and conversation text…", text: $model.sessionQuery)
+                            .textFieldStyle(.roundedBorder)
+                            .font(.caption)
+                            .onSubmit { model.searchPopoverSessions(model.sessionQuery) }
+                        Button("Search") { model.searchPopoverSessions(model.sessionQuery) }
+                            .buttonStyle(.bordered).controlSize(.small)
+                    }
+                    if let status = model.sessionStatus {
+                        Text(status).font(.caption2).foregroundStyle(.secondary)
+                    }
+                    ForEach(model.sessionRows) { row in
+                        Button { model.loadPopoverSession(row) } label: {
+                            VStack(alignment: .leading, spacing: 2) {
+                                HStack(spacing: 5) {
+                                    Text(row.title?.isEmpty == false ? row.title! : "(no title)")
+                                        .font(.caption.weight(.semibold)).lineLimit(1)
+                                    Spacer()
+                                    Text("\(row.requests) req · \(humanCount(row.totalTokens))")
+                                        .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                                }
+                                Text(row.snippet ?? "No indexed conversation text for this session.")
+                                    .font(.caption2).foregroundStyle(.secondary).lineLimit(2)
+                                Text("\(row.provider) · \(row.accountKey) · \(row.startedAt.prefix(16).replacingOccurrences(of: "T", with: " "))")
+                                    .font(.caption2).foregroundStyle(.tertiary).lineLimit(1)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.vertical, 4)
+                        }
+                        .buttonStyle(.plain)
+                        .contentShape(Rectangle())
+                        .overlay(alignment: .bottom) { Divider().opacity(0.3) }
+                    }
+                }
+                if let conversation = model.selectedSession?.conversation {
+                    card(title: conversation.title.isEmpty ? "conversation" : conversation.title, icon: "doc.text") {
+                        Text(conversation.body.isEmpty ? "No conversation body indexed." : conversation.body)
+                            .font(.caption2)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+            }.padding(12)
+        }
+        .onAppear {
+            if model.sessionRows.isEmpty { model.searchPopoverSessions("") }
         }
     }
 
@@ -3675,6 +3894,27 @@ struct ContentView: View {
                     }
                     if let status = model.notificationStatus {
                         Text(status).font(.caption2).foregroundStyle(.secondary)
+                    }
+                }
+                card(title: "recent alerts", icon: "bell.fill") {
+                    if model.notificationHistory.isEmpty {
+                        Text("No alerts have been emitted yet.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    } else {
+                        ForEach(model.notificationHistory.prefix(5)) { alert in
+                            VStack(alignment: .leading, spacing: 2) {
+                                HStack(spacing: 5) {
+                                    Text(alert.title).font(.caption.weight(.semibold))
+                                    Spacer()
+                                    Text(relativeDateEnglish(parseISO(alert.at) ?? Date()))
+                                        .font(.caption2).foregroundStyle(.tertiary)
+                                }
+                                Text(alert.body).font(.caption2).foregroundStyle(.secondary)
+                                Text("Why: \(alert.reason)").font(.caption2).foregroundStyle(.tertiary)
+                            }
+                            .padding(.vertical, 3)
+                            .overlay(alignment: .bottom) { Divider().opacity(0.3) }
+                        }
                     }
                 }
                 card(title: "background quota polling", icon: "clock.arrow.circlepath") {
@@ -3921,7 +4161,7 @@ struct ContentView: View {
                 .help("Show tracked sources inside the popover")
             Menu {
                 Button("Open full dashboard") { openWebDashboard("/") }
-                Button("Open web reports") { openWebDashboard("/?view=dashboard&range=month") }
+                Button("Open web reports") { openWebDashboard("/?view=reports&last=month") }
                 Button("Open web sources") { openWebDashboard("/?view=sources") }
             } label: {
                 Image(systemName: "arrow.up.right.square")
@@ -4082,6 +4322,26 @@ struct ContentView: View {
         .accessibilityIdentifier("token-period-picker")
     }
 
+    private var tokenMetricPicker: some View {
+        HStack(spacing: 0) {
+            ForEach([SpendMetric.tokens, SpendMetric.cost], id: \.self) { metric in
+                Button {
+                    if tokenPeriodKey != "custom" || metric == .tokens { tokenMetric = metric }
+                } label: {
+                    Text(metric.rawValue)
+                        .font(.caption2.weight(tokenMetric == metric ? .semibold : .regular))
+                        .padding(.horizontal, 8).padding(.vertical, 3)
+                        .background(tokenMetric == metric ? AnyShapeStyle(.quaternary.opacity(0.9)) : AnyShapeStyle(.clear))
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(tokenPeriodKey == "custom" && metric == .cost)
+            }
+        }
+        .background(.quaternary.opacity(0.35), in: Capsule())
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
     private func tokenPeriodLabel(_ key: String) -> String {
         Self.spendPeriodLabels[key] ?? key
     }
@@ -4093,10 +4353,17 @@ struct ContentView: View {
         return spendPeriodRows(for: key)
     }
 
-    private func breakdownSlices(from periods: [SpendPeriod], key: String) -> [(name: String, value: Double, color: Color)] {
-        guard key != "custom", let period = periods.first(where: { $0.key == key }) else { return [] }
-        return period.rows
-            .map { (name: $0.bucket, value: $0.totalTokens, color: bucketColor($0.bucket)) }
+    private func breakdownSlices(from periods: [SpendPeriod], key: String, metric: SpendMetric = .tokens, customProvider: Bool = false) -> [(name: String, value: Double, color: Color)] {
+        let rows: [ReportRow]
+        if key == "custom" {
+            rows = customProvider ? model.customProviderRows : model.customModelRows
+        } else if let period = periods.first(where: { $0.key == key }) {
+            rows = period.rows
+        } else {
+            return []
+        }
+        return rows
+            .map { (name: $0.bucket, value: metric == .cost ? $0.costUsd : $0.totalTokens, color: bucketColor($0.bucket)) }
             .filter { $0.value > 0 }
             .sorted { $0.value > $1.value }
     }
@@ -4121,15 +4388,21 @@ struct ContentView: View {
         )
     }
 
-    private func tokenSlices(for key: String) -> [(name: String, value: Double, color: Color)] {
-        if key == "custom" { return customTokenSlices }
+    private func tokenSlices(for key: String, metric: SpendMetric = .tokens) -> [(name: String, value: Double, color: Color)] {
+        if key == "custom" { return metric == .tokens ? customTokenSlices : [] }
         return tokenRows(for: key)
-            .map { (name: $0.bucket, value: $0.totalTokens, color: bucketColor($0.bucket)) }
+            .map { (name: $0.bucket, value: metric == .cost ? $0.costUsd : $0.totalTokens, color: bucketColor($0.bucket)) }
             .filter { $0.value > 0 }
             .sorted { $0.value > $1.value }
     }
 
     private var customTokenSlices: [(name: String, value: Double, color: Color)] {
+        if !model.customHarnessRows.isEmpty {
+            return model.customHarnessRows
+                .map { (name: $0.bucket, value: $0.totalTokens, color: bucketColor($0.bucket)) }
+                .filter { $0.value > 0 }
+                .sorted { $0.value > $1.value }
+        }
         guard let history = model.history else { return [] }
         let from = localDayKey(customTokenFrom)
         let to = localDayKey(customTokenTo)

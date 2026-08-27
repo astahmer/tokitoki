@@ -1,4 +1,7 @@
 import { EventCache, type AggRow } from "../cache.ts";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { loadConfig, type TokitokiConfig } from "../config.ts";
 import { accountEmailMap } from "../accounts.ts";
 import type { BudgetsConfig } from "../budgets.ts";
@@ -28,7 +31,7 @@ import {
 } from "../period.ts";
 import { collectSources } from "../sources.ts";
 import { collectMachines } from "../presence.ts";
-import { searchSessions, updateSessionIndex } from "../sessionIndex.ts";
+import { searchSessions, sessionConversation, updateSessionIndex } from "../sessionIndex.ts";
 import { detectAnomalies, type AnomalyMetric } from "../anomalies.ts";
 
 /** JSON responses reuse the exact CLI aggregation — no duplicated SQL. */
@@ -143,6 +146,31 @@ export function apiTimeseries(
         }),
       })),
     };
+  });
+}
+
+export type BreakdownDimension = "harness" | "provider" | "model";
+
+export interface BreakdownPayload {
+  by: BreakdownDimension;
+  window: ApiWindow;
+  rows: AggRow[];
+}
+
+/** Token/cost slices for the interactive dashboard and popover-inspired UI. */
+export function apiBreakdown(by: string, wp: WindowParams, providers: string[] = []): BreakdownPayload {
+  if (!["harness", "provider", "model"].includes(by)) {
+    throw new Error(`invalid breakdown: ${by} (valid: harness, provider, model)`);
+  }
+  const w = resolveTimeWindow({ ...wp, fallbackPeriod: "month" });
+  const filter = providers.length > 0 ? providers : undefined;
+  return withCache((cache) => {
+    const rows = by === "harness"
+      ? cache.aggregate(w.sinceIso, "provider", filter, w.untilIso)
+      : by === "model"
+        ? cache.aggregate(w.sinceIso, "model", filter, w.untilIso)
+        : cache.aggregateModelProviders(w.sinceIso, filter, w.untilIso);
+    return { by: by as BreakdownDimension, window: toApiWindow(w), rows: sortRowsByCost(rows) };
   });
 }
 
@@ -386,6 +414,7 @@ export function apiSessions(
 export interface SessionDetailPayload {
   provider: string;
   sessionId: string;
+  conversation: { title: string; body: string } | null;
   events: Array<{
     ts: string;
     model: string;
@@ -399,8 +428,9 @@ export interface SessionDetailPayload {
 /** Request timeline for one session (provider required to disambiguate). */
 export function apiSessionDetail(provider: string, sessionId: string): SessionDetailPayload {
   return withCache((cache) => {
+    updateSessionIndex(cache.database);
     const events = cache.sessionDetail(provider, sessionId);
-    return { provider, sessionId, events };
+    return { provider, sessionId, conversation: sessionConversation(cache.database, provider, sessionId), events };
   });
 }
 
@@ -480,6 +510,27 @@ export type { BudgetStatusRow } from "../budget-status.ts";
 /** Budget gauges + currently-firing alerts (no notification side effects). */
 export function apiBudgets(): BudgetsPayload {
   return withCache((cache) => computeBudgetStatus(cache, loadConfig().budgets));
+}
+
+export interface NotificationHistoryPayload {
+  records: Array<{ id: string; at: string; title: string; body: string; reason: string }>;
+}
+
+/** Read-only view of the local menubar alert journal. Older array-only state
+ * files are treated as an empty history for backwards compatibility. */
+export function apiNotificationHistory(): NotificationHistoryPayload {
+  const xdg = process.env.XDG_DATA_HOME;
+  const base = xdg !== undefined && xdg.length > 0
+    ? path.join(xdg, "tokitoki")
+    : path.join(os.homedir(), ".local", "share", "tokitoki");
+  try {
+    const parsed = JSON.parse(fs.readFileSync(path.join(base, "menubar-state.json"), "utf8")) as {
+      history?: Array<{ id: string; at: string; title: string; body: string; reason: string }>;
+    };
+    return { records: Array.isArray(parsed.history) ? parsed.history.slice(0, 50) : [] };
+  } catch {
+    return { records: [] };
+  }
 }
 
 // ---------------------------------------------------------------- sources

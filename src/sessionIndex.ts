@@ -316,6 +316,24 @@ export function searchSessions(db: Database, opts: SessionSearchOptions): Sessio
   return { rows, hasMore, searchMs };
 }
 
+/** Return the indexed conversation body for a session, bounded for UI use. */
+export function sessionConversation(
+  db: Database,
+  provider: string,
+  sessionId: string,
+): { title: string; body: string } | null {
+  ensureSessionFts(db);
+  const row = db
+    .query(
+      `SELECT title, body FROM sessions_fts
+       WHERE provider = ? AND session_id = ?
+       ORDER BY length(body) DESC LIMIT 1`,
+    )
+    .get(provider, sessionId) as { title?: string | null; body?: string | null } | undefined;
+  if (row === undefined) return null;
+  return { title: row.title ?? "", body: String(row.body ?? "").slice(0, 12_000) };
+}
+
 /**
  * Bun's sqlite build ships a broken snippet(), so we cut our own window:
  * find the earliest occurrence of any query term and mark every term hit
