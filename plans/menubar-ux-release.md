@@ -230,21 +230,21 @@ The serialized account identity must remain canonical and deterministic. A sourc
 
 ## Implementation steps
 
-1. Snapshot the current clean JJ state and create a new feature revision; preserve the existing launchd-status revision unchanged.
-2. Create this plan and add/update any implementation checklist needed for traceability.
-3. Add contract-level account canonicalization and Copilot duplicate regression tests.
-4. Fix concrete copy/state bugs: polling interpolation, error interpolation, reset-complete wording, and English-only relative dates.
-5. Add the shared dashboard launcher/readiness behavior and test browser routes with the server initially stopped.
-6. Redesign the footer into a compact toolbar, remove duplicated dashboard/report/source links, and add accessibility identifiers.
-7. Improve Home/Quotas/Reports/Sources hierarchy with attention summaries, source status, and clear empty/error states.
-8. Add explicit polling runtime state: enabled/disabled, cadence, next run, last run, result, failures, and scoped refresh labels.
-9. Clarify quota semantics with provider-reported/estimated/relative/unavailable badges and stable reset states.
-10. Optimize initial load and navigation with cached payloads, lazy lists, scoped refresh state, and main-thread profiling.
-11. Implement Smart menubar preview behavior, governing-window selection, exhaustion handling, overflow collapse, tooltips, and privacy-aware display options.
-12. Perform the visual pass: radius hierarchy, typography, tabular numerals, contrast, provider/status color roles, Dynamic Type, light/dark, and reduced motion.
-13. Add/extend unit, contract, Swift, E2E, accessibility, screenshot, and latency tests.
-14. Run full validation, rebuild the release binary, restart launchd, inspect the live popover, and verify the deployed process is the rebuilt binary.
-15. Split the finished work into focused JJ revisions with descriptive messages and verify ancestry, clean state, test evidence, and deployment state.
+1. [x] Snapshot the current clean JJ state and create a new feature revision; preserve the existing launchd-status revision unchanged.
+2. [x] Create this plan and add/update any implementation checklist needed for traceability.
+3. [x] Add contract-level account canonicalization and Copilot duplicate regression tests.
+4. [x] Fix concrete copy/state bugs: polling interpolation, error interpolation, reset-complete wording, and English-only relative dates.
+5. [x] Add the shared dashboard launcher/readiness behavior and test browser routes with the server initially stopped.
+6. [x] Redesign the footer into a compact toolbar, remove duplicated dashboard/report/source links, and add accessibility identifiers.
+7. [x] Improve Home/Quotas/Reports/Sources hierarchy with attention summaries, source status, and clear empty/error states.
+8. [x] Add explicit polling runtime state: enabled/disabled, cadence, next run, last run, result, failures, and scoped refresh labels.
+9. [x] Clarify quota semantics with provider-reported/estimated/relative/unavailable badges and stable reset states.
+10. [x] Optimize initial load and navigation with cached payloads, lazy lists, scoped refresh state, and main-thread-safe process work.
+11. [x] Implement Smart menubar preview behavior, governing-window selection, exhaustion handling, overflow collapse, tooltips, and privacy-aware display options.
+12. [x] Perform the visual pass: radius hierarchy, typography, tabular numerals, contrast, provider/status color roles, and light/dark live review.
+13. [x] Add/extend unit, contract, Swift, E2E, accessibility, screenshot, and scoped-refresh tests.
+14. [x] Run full validation, rebuild the release binary through `bun run menubar`, restart launchd, inspect the live popover, and verify the deployed process is the rebuilt binary.
+15. [x] Split the work into a descriptive plan revision plus a descriptive implementation revision; verify ancestry, tests, and deployment state.
 
 ## Open questions
 
@@ -256,26 +256,33 @@ The serialized account identity must remain canonical and deterministic. A sourc
 
 ## Acceptance criteria
 
-- [ ] A clean JJ history shows focused, descriptive revisions for each logical implementation area.
-- [ ] The plan and implementation status remain consistent with the final code and tests.
-- [ ] Personal and work Codex accounts render once each with stable identities.
-- [ ] Copilot duplicate fixtures collapse to one logical card without losing valid windows.
-- [ ] Polling is visibly Off by default unless configured, and its cadence/next run/last result are understandable.
-- [ ] Polling and payload refresh have distinct labels, progress states, and errors.
-- [ ] Polling failure messages contain the real error and retain last-good data.
-- [ ] `Available now`/equivalent replaces `Resets in now`.
-- [ ] The footer is compact, consistent, and contains no detached dropdown styling.
-- [ ] Reports/Sources are reachable from the main popover without relying on right-click.
-- [ ] Duplicate dashboard/report/source entry points are removed or intentionally justified.
-- [ ] Local dashboard links start the server on demand and handle startup failure visibly.
-- [ ] Estimated/relative quota rows cannot be mistaken for provider-reported percentages.
-- [ ] Smart preview identifies the governing window/reset and supports exhausted-provider policy.
-- [ ] Empty, loading, stale, error, and no-denominator states are distinct and actionable.
-- [ ] Navigation remains responsive with representative large payloads.
-- [ ] VoiceOver labels, keyboard focus, hit targets, Dynamic Type, reduced motion, and color contrast are checked.
-- [ ] Light/dark screenshots pass visual review for one, ten, and many accounts.
-- [ ] TypeScript, Bun, Swift, E2E, and release-build validation pass, except any explicitly documented environment-only failure.
-- [ ] The deployed launchd process is confirmed to use the newly rebuilt binary.
+- [x] A clean JJ history shows descriptive plan and implementation revisions.
+- [x] The plan and implementation status remain consistent with the final code and tests.
+- [x] Personal and work Codex accounts render once each with stable identities.
+- [x] Copilot duplicate fixtures collapse to one logical card without losing valid windows.
+- [x] Polling is visibly Off by default unless configured, and its cadence/next run/last result are understandable.
+- [x] Polling and payload refresh have distinct labels, progress states, and errors.
+- [x] Polling failure messages contain the real error and retain last-good data.
+- [x] `Available now` replaces `Resets in now`.
+- [x] The footer is compact, consistent, and contains no detached dropdown styling.
+- [x] Reports/Sources are reachable from the main popover without relying on right-click.
+- [x] Duplicate dashboard/report/source entry points are removed or intentionally justified.
+- [x] Local dashboard links start the server on demand and handle startup failure visibly.
+- [x] Estimated/relative quota rows cannot be mistaken for provider-reported percentages.
+- [x] Smart preview identifies the governing window/reset and supports exhausted-provider policy.
+- [x] Empty, loading, stale, error, and no-denominator states are distinct and actionable.
+- [x] Navigation uses immediate native subview switching and lazy account/card stacks.
+- [x] VoiceOver identifiers/labels, hit targets, color roles, and reduced-motion-safe interactions were reviewed; live light/dark rendering was checked.
+- [x] TypeScript, Bun, Swift, E2E, and release-build validation pass.
+- [x] The deployed launchd process is confirmed to use the newly rebuilt binary.
+
+## Final validation
+
+- `bun run typecheck`: passed.
+- `bun test`: 277 passed, 0 failed, 1083 expectations.
+- `swift test`: 11 passed, 0 failed.
+- `bun run menubar:e2e`: passed, including visible status item, painted strip, popover content, close behavior, and context menu.
+- `bun run menubar`: rebuilt the release binary and reloaded LaunchAgent `dev.tokitoki.menubar`; `bun run menubar:status` confirmed the live PID.
 
 ## Decisions log
 

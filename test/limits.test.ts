@@ -8,6 +8,7 @@ import { EventCache } from "../src/cache.ts";
 import type { UsageEvent } from "../src/types.ts";
 import {
   computeLimits,
+  dedupeAccountLimits,
   groupBySharedCredential,
   nextLocalMidnight,
   nextMonthStart,
@@ -102,6 +103,28 @@ function limitsCache(): EventCache {
 }
 
 describe("computeLimits", () => {
+  it("dedupes repeated Copilot account identities without dropping metadata", () => {
+    const limits = dedupeAccountLimits([
+      {
+        provider: "copilot",
+        accountKey: "default",
+        email: "github@example.com",
+        windows: [{ kind: "month", source: "derived", tokens: 1, cost: 0, requests: 1 }],
+      },
+      {
+        provider: "copilot",
+        accountKey: "default",
+        windows: [{ kind: "month", source: "embedded", tokens: 2, cost: 0, requests: 2, usedPct: 40 }],
+        origin: "polled",
+      },
+    ]);
+    expect(limits).toHaveLength(1);
+    expect(limits[0]?.email).toBe("github@example.com");
+    expect(limits[0]?.origin).toBe("polled");
+    expect(limits[0]?.windows[0]?.source).toBe("embedded");
+    expect(limits[0]?.windows[0]?.usedPct).toBe(40);
+  });
+
   it("attributes Codex email only to the matching stable account id", () => {
     const dir = mkdtempSync(path.join(os.tmpdir(), "tk-limits-identity-"));
     const oldCodexHome = process.env.CODEX_HOME;

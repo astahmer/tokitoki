@@ -93,9 +93,10 @@ export interface TokitokiConfig {
     /**
      * Uniform status-strip metric: "percent" (default) shows real
      * provider-reported remaining % and nothing when unknown; "tokens"
-     * shows a compact usage estimate (~764M) for every group.
+     * shows a compact usage estimate (~764M); "smart" favors the governing
+     * quota window or its next reset.
      */
-    stripMetric?: "percent" | "tokens";
+    stripMetric?: "percent" | "tokens" | "smart";
     /** When every visible quota is exhausted: keep %, hide the mark, or show the governing reset countdown. */
     stripExhausted?: "show" | "hide" | "reset";
     /** Max provider percentages shown in the status-item preview line. */

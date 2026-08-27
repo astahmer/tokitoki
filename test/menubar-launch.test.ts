@@ -247,13 +247,14 @@ describe("darwin launchctl branch", () => {
         envBin: "", // resolution must not matter on this branch
         cwd: "/nonexistent",
         identity: () => null,
+        findPid: () => 4242,
       });
       expect(result.mode).toBe("launchd");
       const bootstrapCall = recordedCalls.find((c) => c.args[0] === "bootstrap");
       expect(bootstrapCall?.args[1]).toMatch(/^gui\/\d+$/);
       expect(bootstrapCall?.args[2]).toContain("dev.tokitoki.menubar.plist");
       expect(recordedCalls.some((c) => c.args[0] === "print")).toBe(true);
-      // No raw spawn happened — pgrep would only find a real app; assert pidfile untouched or empty
+      expect(result.pid).toBe(4242);
     } finally {
       delete process.env.TOKITOKI_DATA_DIR;
     }

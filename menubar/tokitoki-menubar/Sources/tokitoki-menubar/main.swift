@@ -152,7 +152,7 @@ struct UiPreviewConfig: Codable {
     let pollIntervalMinutes: Int?
     // Upstream provider ids hidden from the STATUS-BAR STRIP only.
     let previewHidden: [String]?
-    // Uniform strip display: "percent" (default) | "tokens".
+    // Uniform strip display: "percent" (default) | "tokens" | "smart".
     let stripMetric: String?
     // Exhausted providers: "show" percentages | "hide" mark | "reset" countdown.
     let stripExhausted: String?
@@ -205,6 +205,9 @@ final class Model: ObservableObject {
     @Published var pollIntervalMinutes = 15
     @Published var pollInFlight = false
     @Published var pollStatus: String?
+    @Published var pollLastResult: String?
+    @Published var nextPollAt: Date?
+    @Published var dashboardStatus: String?
     @Published var lastUpdatedAt: Date?
     /// Account-card order override applied immediately after customize saves.
     @Published var accountOrderOverride: [String]? = nil
@@ -235,9 +238,10 @@ final class Model: ObservableObject {
         guard !refreshingAccounts.contains(id) else { return }
         refreshingAccounts.insert(id)
         let cli = invocation
+        let provider = refreshProvider(for: account)
         let args = account.origin == "scan"
             ? ["scan", "--provider", account.provider]
-            : ["poll", "--json"]
+            : ["poll", "--json", "--provider", provider]
         Task { [weak self] in
             do {
                 _ = try await Self.runCLI(cli, args)
@@ -247,6 +251,17 @@ final class Model: ObservableObject {
             self?.refreshingAccounts.remove(id)
             self?.refresh()
         }
+    }
+
+    private func refreshProvider(for account: AccountLimits) -> String {
+        if account.provider == "codex" { return "codex" }
+        if account.provider == "copilot" { return "copilot" }
+        if account.provider == "claude-code" { return "claude-code" }
+        if account.provider == "commandcode" { return "commandcode" }
+        if account.provider == "pi" || account.provider == "opencode" {
+            return account.accountKey.lowercased().contains("openrouter") ? "openrouter" : "opencode-go"
+        }
+        return account.provider
     }
 
     /// Env-gated stderr tracing (`TOKITOKI_MENUBAR_DEBUG=1`) — no-op normally.
@@ -259,7 +274,7 @@ final class Model: ObservableObject {
 
     func setPolling(enabled: Bool) {
         pollAuto = enabled
-        if !enabled { lastPollAt = nil }
+        if !enabled { lastPollAt = nil; nextPollAt = nil }
         let cli = invocation
         Task { @MainActor [weak self] in
             guard let self else { return }
@@ -269,7 +284,7 @@ final class Model: ObservableObject {
                 self.refresh()
             } catch {
                 self.pollAuto = !enabled
-                self.pollStatus = "Could not save polling setting: (error.localizedDescription)"
+                self.pollStatus = "Could not save polling setting: \(error.localizedDescription)"
             }
         }
     }
@@ -277,6 +292,7 @@ final class Model: ObservableObject {
     func setPollingInterval(minutes: Int) {
         let value = max(1, minutes)
         pollIntervalMinutes = value
+        updatePollSchedule()
         let cli = invocation
         Task { @MainActor [weak self] in
             guard let self else { return }
@@ -284,7 +300,7 @@ final class Model: ObservableObject {
                 _ = try await Self.runConfigCLI(cli, ["config", "set", "poll.intervalMinutes", String(value)])
                 self.pollStatus = "Polling interval saved"
             } catch {
-                self.pollStatus = "Could not save polling interval: (error.localizedDescription)"
+                self.pollStatus = "Could not save polling interval: \(error.localizedDescription)"
             }
         }
     }
@@ -297,14 +313,21 @@ final class Model: ObservableObject {
         let cli = invocation
         Task { @MainActor [weak self] in
             guard let self else { return }
+            var succeeded = false
             do {
                 _ = try await Self.runCLI(cli, ["poll", "--json"])
+                succeeded = true
                 self.pollStatus = background ? nil : "provider quotas refreshed"
             } catch {
-                self.pollStatus = "quota refresh failed: (error.localizedDescription)"
+                self.pollStatus = "Quota refresh failed: \(error.localizedDescription)"
+                self.pollLastResult = "Failed · \(error.localizedDescription)"
             }
             self.pollInFlight = false
             self.lastPollAt = Date()
+            self.nextPollAt = self.pollAuto
+                ? Date().addingTimeInterval(Double(max(1, self.pollIntervalMinutes)) * 60)
+                : nil
+            if succeeded { self.pollLastResult = "Updated successfully" }
             self.refresh()
         }
     }
@@ -346,6 +369,25 @@ final class Model: ObservableObject {
 
     private var lastPollAt: Date?
 
+    var pollScheduleDescription: String {
+        guard pollAuto else { return "Off · quota refreshes happen only when you ask." }
+        let cadence = "Every \(max(1, pollIntervalMinutes)) minutes"
+        guard let nextPollAt else { return "On · \(cadence) · waiting for the first check." }
+        return "On · \(cadence) · next check \(nextPollAt.formatted(date: .omitted, time: .shortened))"
+    }
+
+    var pollLastResultDescription: String? {
+        guard let pollLastResult else { return nil }
+        guard let lastPollAt else { return pollLastResult }
+        return "Last check \(relativeDateEnglish(lastPollAt)) · \(pollLastResult)"
+    }
+
+    private func updatePollSchedule() {
+        nextPollAt = pollAuto && lastPollAt != nil
+            ? lastPollAt!.addingTimeInterval(Double(max(1, pollIntervalMinutes)) * 60)
+            : nil
+    }
+
     /// Invalidate payload requests already in flight before a config mutation.
     func invalidateRefreshes() { refreshGeneration += 1 }
 
@@ -375,6 +417,7 @@ final class Model: ObservableObject {
                     self.stripMetric = ui.stripMetric ?? "percent"
                     self.stripExhausted = ui.stripExhausted ?? "reset"
                 }
+                self.updatePollSchedule()
                 self.spendPeriods = p.spendPeriods ?? []
                 self.today = p.today
                 self.week = p.week
@@ -610,6 +653,13 @@ final class Model: ObservableObject {
                 }
                 return nil
             }
+            if metric == "smart" {
+                // Keep the strip compact: an exhausted group shows the latest
+                // required reset; otherwise show its tightest real window.
+                if let reset = g.resets.max() { return (up, [countdown(reset)]) }
+                if let tightest = g.pcts.min() { return (up, ["\(tightest)%"]) }
+                return nil
+            }
             // Percent mode: ONLY provider-reported quotas render at all —
             // groups without a real denominator are omitted (icon disabled).
             // A mark with no number invites the question "why?" every time.
@@ -713,7 +763,7 @@ final class Model: ObservableObject {
     }
 
     func setStripMetric(_ value: String) {
-        stripMetric = value == "tokens" ? "tokens" : "percent"
+        stripMetric = ["tokens", "smart"].contains(value) ? value : "percent"
         rebuildStripPreview()
         persistUISetting(path: "ui.stripMetric", json: "\"\(stripMetric)\"")
     }
@@ -823,7 +873,7 @@ final class Model: ObservableObject {
         }
     }
 
-    private static func runCLIProcess(
+    nonisolated private static func runCLIProcess(
         _ cli: CLIInvocation,
         _ args: [String],
         continuation cont: CheckedContinuation<String, Error>,
@@ -917,8 +967,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             testContextObserver = DistributedNotificationCenter.default.addObserver(
                 forName: Notification.Name("dev.tokitoki.menubar.context"), object: nil, queue: .main
             ) { [weak self] _ in
-                guard let self, let button = self.statusItem?.button else { return }
-                self.showContextMenu(for: button, event: nil)
+                Task { @MainActor [weak self] in
+                    guard let self, let button = self.statusItem?.button else { return }
+                    self.showContextMenu(for: button, event: nil)
+                }
             }
         }
     }
@@ -1328,29 +1380,58 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// does not already have one running. A single launcher keeps Dashboard,
     /// Reports, and Sources consistent from both the popover and context menu.
     func openLocalDashboard(path: String) {
-        if dashboardProcess?.isRunning != true {
-            guard let cli = model?.currentInvocation() else {
-                NSSound.beep()
-                return
-            }
-            let proc = Process()
-            proc.executableURL = cli.executable
-            proc.arguments = cli.prefixArgs + ["web"]
-            do {
-                try proc.run()
-                dashboardProcess = proc
-            } catch {
-                NSSound.beep()
-                return
-            }
-        }
-
         guard let url = Self.localDashboardURL(path: path) else { return }
-        // Bun.serve binds asynchronously; give a cold launch a moment before
-        // handing the route to the browser.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
+        model?.dashboardStatus = "Checking local dashboard…"
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            var ready = await Self.dashboardIsReady()
+            if !ready, self.dashboardProcess?.isRunning != true {
+                guard let cli = self.model?.currentInvocation() else {
+                    self.model?.dashboardStatus = "Dashboard unavailable"
+                    NSSound.beep()
+                    return
+                }
+                let proc = Process()
+                proc.executableURL = cli.executable
+                proc.arguments = cli.prefixArgs + ["web"]
+                do {
+                    try proc.run()
+                    self.dashboardProcess = proc
+                } catch {
+                    self.model?.dashboardStatus = "Could not start dashboard: \(error.localizedDescription)"
+                    NSSound.beep()
+                    return
+                }
+                ready = await Self.waitForDashboard()
+            }
+            guard ready else {
+                self.model?.dashboardStatus = "Dashboard did not become ready"
+                NSSound.beep()
+                return
+            }
+            self.model?.dashboardStatus = "Dashboard ready"
             NSWorkspace.shared.open(url)
         }
+    }
+
+    private static func dashboardIsReady() async -> Bool {
+        guard let url = localDashboardURL(path: "/") else { return false }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 1
+        do {
+            let (_, response) = try await URLSession.shared.data(for: request)
+            return (response as? HTTPURLResponse)?.statusCode == 200
+        } catch {
+            return false
+        }
+    }
+
+    private static func waitForDashboard() async -> Bool {
+        for _ in 0..<30 {
+            if await dashboardIsReady() { return true }
+            try? await Task.sleep(for: .milliseconds(200))
+        }
+        return false
     }
 
     static func localDashboardURL(path: String) -> URL? {
@@ -1892,6 +1973,7 @@ struct PreviewSettingsSheet: View {
                     )) {
                         Text("Remaining percent").tag("percent")
                         Text("Usage tokens").tag("tokens")
+                        Text("Smart constraint").tag("smart")
                     }
                     Picker("When a provider is exhausted", selection: Binding(
                         get: { model.stripExhausted },
@@ -1904,7 +1986,7 @@ struct PreviewSettingsSheet: View {
                 } header: {
                     Text("Display")
                 } footer: {
-                    Text("Show next reset uses the longest exhausted window, so a weekly limit still blocks after a daily reset.")
+                    Text("Smart constraint favors the window that limits availability; exhausted providers show the latest required reset.")
                 }
                 Section {
                     ForEach($rows) { $row in
@@ -2009,6 +2091,10 @@ struct ContentView: View {
 
     private var searchActive: Bool { !trimmedQuery.lowercased().isEmpty }
     private var query: String { trimmedQuery.lowercased() }
+    private var dataIsStale: Bool {
+        guard let updated = model.lastUpdatedAt else { return false }
+        return Date().timeIntervalSince(updated) > 10 * 60
+    }
 
     private func matches(_ text: String) -> Bool {
         !searchActive || text.lowercased().contains(query)
@@ -2052,6 +2138,7 @@ struct ContentView: View {
                 case .settings: settingsBody
                 }
             }
+            popoverFooter
         }
         .frame(width: 380, height: 620)
         .background(.thinMaterial)
@@ -2089,68 +2176,115 @@ struct ContentView: View {
     }
 
     private var overviewBody: some View {
-        VStack(spacing: 0) {
-            ScrollView(.vertical) {
-                VStack(alignment: .leading, spacing: 10) {
-                    if let e = model.errorText {
-                        Label(e, systemImage: "exclamationmark.triangle.fill")
-                            .font(.caption).foregroundStyle(.red)
-                            .padding(8).frame(maxWidth: .infinity, alignment: .leading)
-                            .background(.red.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
-                    }
-                    freshnessRow
-                    searchBar
-                    webDashboardLinks
-                    ForEach(orderedVisibleCards(), id: \.self) { id in
-                        Group {
-                            if cardSurvives(id) { cardBody(id) }
-                        }
-                        .onDrag {
-                            draggingCard = id
-                            return NSItemProvider(object: id as NSString)
-                        }
-                        .onDrop(of: [UTType.plainText], delegate: PopoverCardDrop(
-                            target: id,
-                            getLayout: { effectiveLayout() },
-                            setLayout: { localLayout = $0 },
-                            dragging: $draggingCard,
-                            onCommit: { persistCardLayout($0) }
-                        ))
-                    }
+        ScrollView(.vertical) {
+            VStack(alignment: .leading, spacing: 10) {
+                if let e = model.errorText {
+                    Label(e, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption).foregroundStyle(.red)
+                        .padding(8).frame(maxWidth: .infinity, alignment: .leading)
+                        .background(.red.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
                 }
-                .padding(12)
+                freshnessRow
+                attentionSummary
+                searchBar
+                webDashboardLinks
+                LazyVStack(alignment: .leading, spacing: 10) {
+                    ForEach(orderedVisibleCards(), id: \.self) { id in
+                    Group {
+                        if cardSurvives(id) { cardBody(id) }
+                    }
+                    .onDrag {
+                        draggingCard = id
+                        return NSItemProvider(object: id as NSString)
+                    }
+                    .onDrop(of: [UTType.plainText], delegate: PopoverCardDrop(
+                        target: id,
+                        getLayout: { effectiveLayout() },
+                        setLayout: { localLayout = $0 },
+                        dragging: $draggingCard,
+                        onCommit: { persistCardLayout($0) }
+                    ))
+                }
+                }
             }
-            .scrollIndicators(.automatic)
-            overviewFooter
+            .padding(12)
         }
     }
 
-    private var overviewFooter: some View {
-        VStack(spacing: 6) {
-            Divider()
-            Button(action: openDashboard) {
-                Label("Open dashboard", systemImage: "safari")
-                    .frame(maxWidth: .infinity)
+    private var popoverFooter: some View {
+        HStack(spacing: 6) {
+            Button(action: { model.refresh() }) {
+                Label("Refresh", systemImage: "arrow.clockwise")
             }
-            .buttonStyle(.borderedProminent).controlSize(.small)
-            HStack(spacing: 7) {
-                Button(action: { model.refresh() }) {
-                    Label("Refresh", systemImage: "arrow.clockwise")
-                }
-                .buttonStyle(.bordered).controlSize(.small)
-                Menu {
-                    Button("Save Screenshot to Desktop") { saveScreenshot() }
-                    Button("Copy Summary as Markdown") { copyMarkdownSummary() }
-                } label: {
+            .buttonStyle(.bordered).controlSize(.small)
+            .accessibilityLabel("Refresh all data")
+            .accessibilityIdentifier("refresh-all")
+            Menu {
+                Button("Save screenshot to Desktop") { saveScreenshot() }
+                Button("Copy summary as Markdown") { copyMarkdownSummary() }
+            } label: {
+                HStack(spacing: 5) {
                     Label("Share", systemImage: "square.and.arrow.up")
-                }.buttonStyle(.bordered).controlSize(.small)
-                Button(action: { showCustomize = true }) {
-                    Label("Popover layout", systemImage: "rectangle.3.group")
-                }.buttonStyle(.bordered).controlSize(.small)
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 8, weight: .semibold))
+                }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 10)
+            .menuStyle(.borderlessButton)
+            .padding(.horizontal, 8).padding(.vertical, 5)
+            .background(.quaternary.opacity(0.65), in: RoundedRectangle(cornerRadius: 6))
+            .accessibilityIdentifier("share-menu")
+            Button(action: { showCustomize = true }) {
+                Label("Layout", systemImage: "rectangle.3.group")
+            }
+            .buttonStyle(.bordered).controlSize(.small)
+            .accessibilityIdentifier("popover-layout")
+            Spacer(minLength: 0)
+            Button(action: openDashboard) {
+                Image(systemName: "arrow.up.right.square")
+            }
+            .buttonStyle(.bordered).controlSize(.small)
+            .accessibilityLabel("Open full dashboard in browser")
+            .accessibilityIdentifier("open-dashboard")
+            .help("Open full dashboard in your browser")
         }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(.thinMaterial)
+        .overlay(alignment: .top) { Divider() }
+    }
+
+    private var attentionSummary: some View {
+        let attention = model.limits.compactMap { limit -> (String, String)? in
+            guard let window = limit.windows.compactMap({ window -> (LimitWindow, Double)? in
+                guard let used = window.usedPct else { return nil }
+                return (window, max(0, min(100, 100 - used)))
+            }).min(by: { $0.1 < $1.1 }), window.1 <= 10 else { return nil }
+            let reset = window.0.resetsAt.map(countdown) ?? "—"
+            let timing = reset == "now" ? "available now" : "resets in \(reset)"
+            let identity = limit.email ?? "\(limit.provider) · \(limit.accountKey)"
+            return (identity, "\(windowDisplayName(window.0.kind, provider: limit.provider)) · \(Int(window.1.rounded()))% left · \(timing)")
+        }.prefix(2)
+        if attention.isEmpty { return AnyView(EmptyView()) }
+        return AnyView(
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Needs attention")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.orange)
+                ForEach(Array(attention.enumerated()), id: \.offset) { _, row in
+                    HStack(spacing: 5) {
+                        Image(systemName: "exclamationmark.circle.fill")
+                            .foregroundStyle(.orange)
+                        Text(row.0).lineLimit(1)
+                        Spacer(minLength: 4)
+                        Text(row.1).foregroundStyle(.secondary).lineLimit(1)
+                    }
+                    .font(.caption2)
+                }
+            }
+            .padding(8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 9))
+        )
     }
 
     private var quotasBody: some View {
@@ -2173,7 +2307,6 @@ struct ContentView: View {
                 heroCard
                 if !(model.today?.rows ?? []).isEmpty { pieCard() }
                 if !model.repos.isEmpty { reposCard }
-                webDashboardLinks
             }.padding(12)
         }
     }
@@ -2185,6 +2318,14 @@ struct ContentView: View {
                 card(title: "tracked sources", icon: "doc.text.magnifyingglass") {
                     Text("tokitoki reads local harness logs and keeps the dashboard projection in sync.")
                         .font(.caption).foregroundStyle(.secondary)
+                    HStack(spacing: 5) {
+                        Circle().fill(model.errorText == nil && !dataIsStale ? .green : .orange).frame(width: 6, height: 6)
+                        Text(model.lastUpdatedAt.map { "Payload updated \(relativeDate($0))" } ?? "Payload is loading")
+                            .font(.caption2).foregroundStyle(.secondary)
+                    }
+                    if let result = model.pollLastResultDescription {
+                        Text(result).font(.caption2).foregroundStyle(.secondary)
+                    }
                     ForEach(model.knownProviders, id: \.self) { provider in
                         HStack(spacing: 6) {
                             ProviderLogo(provider: provider)
@@ -2199,7 +2340,6 @@ struct ContentView: View {
                         Label("Re-scan sources", systemImage: "arrow.triangle.2.circlepath")
                     }.buttonStyle(.bordered).controlSize(.small)
                 }
-                webDashboardLinks
             }.padding(12)
         }
     }
@@ -2214,9 +2354,7 @@ struct ContentView: View {
                         set: { model.setPolling(enabled: $0) },
                     ))
                     .font(.caption)
-                    Text(model.pollAuto
-                         ? "Enabled · checks every (model.pollIntervalMinutes) minutes while the app is running."
-                         : "Off · quota refreshes happen only when you ask.")
+                    Text(model.pollScheduleDescription)
                         .font(.caption2).foregroundStyle(.secondary)
                     Picker("Check every", selection: Binding(
                         get: { model.pollIntervalMinutes },
@@ -2231,6 +2369,9 @@ struct ContentView: View {
                     .disabled(!model.pollAuto)
                     if let status = model.pollStatus {
                         Text(status).font(.caption2).foregroundStyle(.secondary)
+                    }
+                    if let result = model.pollLastResultDescription {
+                        Text(result).font(.caption2).foregroundStyle(.secondary)
                     }
                     Button {
                         model.pollNow()
@@ -2255,6 +2396,9 @@ struct ContentView: View {
                 card(title: "local dashboard", icon: "safari") {
                     Text("The browser dashboard is started on demand when you open it; it stays separate from the native popover.")
                         .font(.caption).foregroundStyle(.secondary)
+                    if let status = model.dashboardStatus {
+                        Text(status).font(.caption2).foregroundStyle(.secondary)
+                    }
                     Button("Open full dashboard") { openDashboard() }
                         .buttonStyle(.bordered).controlSize(.small)
                 }
@@ -2264,13 +2408,17 @@ struct ContentView: View {
 
     private var freshnessRow: some View {
         HStack(spacing: 5) {
-            Circle().fill(model.errorText == nil ? .green : .orange).frame(width: 6, height: 6)
-            Text(model.lastUpdatedAt.map { "Updated \(relativeDate($0))" } ?? "Loading latest data…")
+            Circle().fill(model.errorText == nil && !dataIsStale ? .green : .orange).frame(width: 6, height: 6)
+            Text(model.lastUpdatedAt.map {
+                dataIsStale ? "Stale · updated \(relativeDate($0))" : "Updated \(relativeDate($0))"
+            } ?? "Loading latest data…")
                 .font(.caption2).foregroundStyle(.secondary)
             Spacer()
             if model.pollInFlight { ProgressView().controlSize(.small) }
         }
-        .accessibilityLabel(model.lastUpdatedAt.map { "Updated \(relativeDate($0))" } ?? "Loading latest data")
+        .accessibilityLabel(model.lastUpdatedAt.map {
+            dataIsStale ? "Stale data, updated \(relativeDate($0))" : "Updated \(relativeDate($0))"
+        } ?? "Loading latest data")
     }
 
     private func relativeDate(_ date: Date) -> String {
@@ -2366,7 +2514,7 @@ struct ContentView: View {
     /// popover, instead of being discoverable only through right-click.
     private var webDashboardLinks: some View {
         HStack(spacing: 7) {
-            Label("dashboard", systemImage: "safari")
+            Label("Browser dashboard", systemImage: "safari")
                 .font(.caption2.weight(.medium))
                 .foregroundStyle(.secondary)
             Spacer(minLength: 4)
@@ -2574,6 +2722,7 @@ struct ContentView: View {
         // its own container; no extra wrapping card.
         let visible = orderedAccounts().filter { accountMatches($0) }
         VStack(alignment: .leading, spacing: 8) {
+            LazyVStack(alignment: .leading, spacing: 8) {
             ForEach(Array(visible.enumerated()), id: \.element.id) { idx, l in
                 let accountId = "\(l.provider)@\(l.accountKey)"
                 AccountLimitCard(
@@ -2604,6 +2753,7 @@ struct ContentView: View {
                             persistAccountOrder(ids)
                         }
                     ))
+            }
             }
             consoleLinksRow
             unmatchedBudgetsRow
@@ -3272,7 +3422,7 @@ struct AccountLimitCard: View {
                     Image(systemName: "chevron.right")
                         .font(.system(size: 8, weight: .bold))
                         .rotationEffect(.degrees(showDetails ? 90 : 0))
-                    Text("details")
+                        Text("Details · source and reset dates")
                         .font(.caption2)
                     Spacer()
                 }
@@ -3339,11 +3489,16 @@ struct AccountLimitCard: View {
                 Spacer()
                 if let pct = w.usedPct {
                     let remaining = max(0, min(100, 100 - pct))
-                    Text("\(Int(remaining.rounded()))% left")
-                        .font(.caption2.monospacedDigit().weight(.semibold))
-                        .foregroundStyle(barTint(remaining))
+                    HStack(spacing: 4) {
+                        Text(w.source == "embedded" ? "Reported" : "Estimated")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        Text("\(Int(remaining.rounded()))% left")
+                            .font(.caption2.monospacedDigit().weight(.semibold))
+                            .foregroundStyle(barTint(remaining))
+                    }
                 } else if w.tokens > 0 {
-                    Text("relative · \(humanCount(w.tokens)) tokens")
+                    Text("Estimated · \(humanCount(w.tokens)) tokens")
                         .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
                 }
             }
@@ -3351,7 +3506,8 @@ struct AccountLimitCard: View {
             HStack {
                 Spacer()
                 if let r = w.resetsAt {
-                    Text("Resets in " + countdown(r))
+                    let reset = countdown(r)
+                    Text(reset == "now" ? "Available now" : "Resets in " + reset)
                         .font(.caption2).foregroundStyle(.tertiary)
                 }
             }
@@ -3439,7 +3595,7 @@ struct AccountLimitCard: View {
             .foregroundStyle(.secondary)
             .disabled(isRefreshing)
             .accessibilityIdentifier("refresh-limit-\(limits.provider)-\(limits.accountKey)")
-            .help(limits.origin == "scan" ? "Re-scan \(limits.provider)" : "Refresh quota from provider")
+            .help(limits.origin == "scan" ? "Re-scan \(limits.provider)" : "Refresh quotas for \(limits.provider)")
             planBadge
         }
     }

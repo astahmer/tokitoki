@@ -57,6 +57,37 @@ export interface AccountLimits {
   bankedExpiresAt?: string;
 }
 
+/** Keep the payload invariant: one visible card per provider/account identity. */
+export function dedupeAccountLimits(limits: AccountLimits[]): AccountLimits[] {
+  const out = new Map<string, AccountLimits>();
+  const rank = (source: string) =>
+    source === "embedded" || source === "polled" ? 2 : source === "derived" ? 1 : 0;
+  for (const incoming of limits) {
+    const id = `${incoming.provider}@${incoming.accountKey}`;
+    const existing = out.get(id);
+    if (existing === undefined) {
+      out.set(id, incoming);
+      continue;
+    }
+    const windows = new Map<string, LimitWindow>();
+    for (const w of [...existing.windows, ...incoming.windows]) {
+      const previous = windows.get(w.kind);
+      if (previous === undefined || rank(w.source) >= rank(previous.source)) windows.set(w.kind, w);
+    }
+    out.set(id, {
+      ...existing,
+      ...incoming,
+      email: incoming.email ?? existing.email,
+      planLabel: incoming.planLabel ?? existing.planLabel,
+      credential: incoming.credential ?? existing.credential,
+      origin: incoming.origin ?? existing.origin,
+      windows: [...windows.values()],
+      alsoOn: [...new Set([...(existing.alsoOn ?? []), ...(incoming.alsoOn ?? [])])],
+    });
+  }
+  return [...out.values()];
+}
+
 /** Local midnight following `now`. DST-safe: arithmetic on local date parts. */
 export function nextLocalMidnight(now: Date): Date {
   const d = new Date(now);
@@ -156,8 +187,15 @@ export function computeLimits(
   now: Date = new Date(),
   accounts?: Array<{ provider: string; accountKey: string }>,
 ): AccountLimits[] {
-  const list =
+  const rawList =
     accounts ?? cache.detectedAccounts().map((a) => ({ provider: a.provider, accountKey: a.accountKey }));
+  const seen = new Set<string>();
+  const list = rawList.filter(({ provider, accountKey }) => {
+    const id = `${provider}@${accountKey}`;
+    if (seen.has(id)) return false;
+    seen.add(id);
+    return true;
+  });
   const out: AccountLimits[] = [];
 
   for (const { provider, accountKey } of list) {

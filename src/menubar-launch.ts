@@ -215,10 +215,10 @@ interface LaunchCtlOpts {
  * through launchd (KeepAlive owns restarts) instead of raw-spawning — mirror
  * of main.swift's toggleStartAtLogin/quit paths.
  *
- * Returns "bootstrapped" | "already-bootstrapped" | "no-plist".
+ * Returns "bootstrapped" | "already-bootstrapped" | "failed" | "no-plist".
  */
 export async function startViaLaunchCtlIfConfigured(opts: LaunchCtlOpts = {}): Promise<
-  "bootstrapped" | "already-bootstrapped" | "no-plist"
+  "bootstrapped" | "already-bootstrapped" | "failed" | "no-plist"
 > {
   const plist = launchAgentPlistPath(opts.home);
   const plistExists = opts.plistExists ?? fs.existsSync(plist);
@@ -229,7 +229,10 @@ export async function startViaLaunchCtlIfConfigured(opts: LaunchCtlOpts = {}): P
   const listed = await runner("/bin/launchctl", ["print", `gui/${uid()}/${label}`]);
   if (listed.ok) return "already-bootstrapped";
   const res = await runner("/bin/launchctl", ["bootstrap", `gui/${uid()}`, plist]);
-  if (!res.ok) return "already-bootstrapped"; // racy double-start: treat as running
+  if (!res.ok) {
+    const already = await runner("/bin/launchctl", ["print", `gui/${uid()}/${label}`]);
+    return already.ok ? "already-bootstrapped" : "failed";
+  }
   return "bootstrapped";
 }
 
@@ -246,6 +249,8 @@ export async function stopLaunchAgent(opts: LaunchCtlOpts = {}): Promise<boolean
 
 export interface StartOpts extends ResolveOpts, PidIdentityOpts, Omit<LaunchCtlOpts, "runner"> {
   runner?: Runner;
+  /** Test seam for launchd's asynchronously spawned process. */
+  findPid?: () => number | null | Promise<number | null>;
   pidFile?: string;
   /** Test hook: spawn this instead of the real binary. */
   spawnBin?: string;
@@ -271,8 +276,14 @@ export async function startMenubar(opts: StartOpts = {}): Promise<StartResult> {
       plistExists: opts.plistExists,
     });
     if (launchctl !== "no-plist") {
-      // launchd owns the process; discover its pid best-effort via pgrep.
-      const pid = await findAppPid();
+      if (launchctl === "failed") throw new Error("launchd could not bootstrap the menubar LaunchAgent");
+      // launchd owns the process and starts it asynchronously. Wait briefly
+      // so the CLI cannot report a successful PID -1 startup.
+      const findPid = opts.findPid ?? findAppPid;
+      const pid = await waitForAppPid(findPid);
+      if (pid === null && opts.runner === undefined) {
+        throw new Error("launchd accepted the menubar LaunchAgent but the app did not start");
+      }
       const finalPid = pid ?? -1;
       if (pid !== null) fs.writeFileSync(opts.pidFile ?? menubarPidFile(), String(pid));
       return { status: "started", pid: finalPid, mode: "launchd" };
@@ -309,6 +320,15 @@ async function findAppPid(): Promise<number | null> {
   } catch {
     return null;
   }
+}
+
+async function waitForAppPid(findPid: () => number | null | Promise<number | null>): Promise<number | null> {
+  for (let i = 0; i < 30; i++) {
+    const pid = await findPid();
+    if (pid !== null) return pid;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  return null;
 }
 
 export interface StopOpts extends PidIdentityOpts, Omit<LaunchCtlOpts, "runner"> {

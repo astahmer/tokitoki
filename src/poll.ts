@@ -67,6 +67,8 @@ export interface PollResult {
 }
 
 export interface PollOptions {
+  /** Limit the run to one upstream provider (used by card-level refresh). */
+  providers?: string[];
   /** Injectable fetch (tests). Defaults to globalThis.fetch. */
   fetcher?: typeof fetch;
   /** Absolute path to a codex auth.json fixture (tests). */
@@ -853,14 +855,19 @@ export async function pollQuotas(opts: PollOptions = {}): Promise<PollResult> {
   const capturedAtIso = new Date(opts.now ?? Date.now()).toISOString();
   const cache = opts.cache;
   let now = opts.now ?? Date.now();
+  const selectedProviders = new Set(opts.providers ?? []);
+  const providerEnabled = (provider: string): boolean =>
+    selectedProviders.size === 0 || selectedProviders.has(provider);
 
   // --- codex (ChatGPT wham/usage, OAuth) --------------------------------
-  try {
-    const codex = await pollCodexQuotas(opts);
-    if (typeof codex === "string") reasons.push(`codex: ${codex}`);
-    else accounts.push(codex);
-  } catch (e) {
-    reasons.push(`codex: ${String(e)}`);
+  if (providerEnabled("codex")) {
+    try {
+      const codex = await pollCodexQuotas(opts);
+      if (typeof codex === "string") reasons.push(`codex: ${codex}`);
+      else accounts.push(codex);
+    } catch (e) {
+      reasons.push(`codex: ${String(e)}`);
+    }
   }
 
   // --- openrouter + opencode-go (pi auth store keys) ---------------------
@@ -884,80 +891,92 @@ export async function pollQuotas(opts: PollOptions = {}): Promise<PollResult> {
     return inserted;
   };
 
-  const orKey = piKeys["openrouter"];
-  if (orKey === undefined || orKey.length === 0) {
-    reasons.push("openrouter: no key in pi auth store");
-  } else {
-    const r = await pollOpenRouter(orKey, fetcher);
-    if (r.error !== undefined) {
-      reasons.push(`openrouter: ${r.error}`);
-    } else if (r.skip !== undefined) {
-      reasons.push(`openrouter: ${r.skip}`);
+  if (providerEnabled("openrouter")) {
+    const orKey = piKeys["openrouter"];
+    if (orKey === undefined || orKey.length === 0) {
+      reasons.push("openrouter: no key in pi auth store");
     } else {
-      accounts.push({
-        accountKey: "openrouter",
-        harnesses: ["pi"],
-        windows: r.windows.map((w) => ({ ...w, resetsAtEpoch: w.resetsAtEpoch || Math.round(now / 1000) })),
-        inserted: persistWindows(r.windows, [["pi", "openrouter"]], ["pi"]),
-      });
+      const r = await pollOpenRouter(orKey, fetcher);
+      if (r.error !== undefined) {
+        reasons.push(`openrouter: ${r.error}`);
+      } else if (r.skip !== undefined) {
+        reasons.push(`openrouter: ${r.skip}`);
+      } else {
+        accounts.push({
+          accountKey: "openrouter",
+          harnesses: ["pi"],
+          windows: r.windows.map((w) => ({ ...w, resetsAtEpoch: w.resetsAtEpoch || Math.round(now / 1000) })),
+          inserted: persistWindows(r.windows, [["pi", "openrouter"]], ["pi"]),
+        });
+      }
     }
   }
 
-  const ocKey = piKeys["opencode-go"] ?? Object.values(opencodeCredentials(opts.opencodeAuthPath))[0] ?? "";
-  if (ocKey === undefined || ocKey.length === 0) {
-    reasons.push("opencode-go: no key in pi/opencode auth stores");
-  } else {
-    const r = await pollOpencodeGo(ocKey, fetcher);
-    if (r.error !== undefined) {
-      reasons.push(`opencode-go: ${r.error}`);
+  if (providerEnabled("opencode-go")) {
+    const ocKey = piKeys["opencode-go"] ?? Object.values(opencodeCredentials(opts.opencodeAuthPath))[0] ?? "";
+    if (ocKey === undefined || ocKey.length === 0) {
+      reasons.push("opencode-go: no key in pi/opencode auth stores");
     } else {
-      accounts.push({
-        accountKey: "opencode-go",
-        harnesses: ["pi", "opencode"],
-        windows: r.windows,
-        inserted: persistWindows(r.windows, [
-          ["pi", "opencode-go"],
-          ["opencode", "opencode-go"],
-        ], ["pi", "opencode"]),
-      });
+      const r = await pollOpencodeGo(ocKey, fetcher);
+      if (r.error !== undefined) {
+        reasons.push(`opencode-go: ${r.error}`);
+      } else {
+        accounts.push({
+          accountKey: "opencode-go",
+          harnesses: ["pi", "opencode"],
+          windows: r.windows,
+          inserted: persistWindows(r.windows, [
+            ["pi", "opencode-go"],
+            ["opencode", "opencode-go"],
+          ], ["pi", "opencode"]),
+        });
+      }
     }
   }
 
   // --- claude / copilot / cursor (each independent) ---------------------
-  try {
-    const claude = await pollClaudeQuotas(opts, fetcher);
-    if (typeof claude === "string") reasons.push(`claude-code: ${claude}`);
-    else accounts.push(claude);
-  } catch (e) {
-    reasons.push(`claude-code: ${String(e)}`);
+  if (providerEnabled("claude-code")) {
+    try {
+      const claude = await pollClaudeQuotas(opts, fetcher);
+      if (typeof claude === "string") reasons.push(`claude-code: ${claude}`);
+      else accounts.push(claude);
+    } catch (e) {
+      reasons.push(`claude-code: ${String(e)}`);
+    }
   }
 
-  try {
-    const copilot = await pollCopilotQuotas(opts, fetcher, now);
-    if (typeof copilot === "string") reasons.push(`copilot: ${copilot}`);
-    else accounts.push(copilot);
-  } catch (e) {
-    reasons.push(`copilot: ${String(e)}`);
+  if (providerEnabled("copilot")) {
+    try {
+      const copilot = await pollCopilotQuotas(opts, fetcher, now);
+      if (typeof copilot === "string") reasons.push(`copilot: ${copilot}`);
+      else accounts.push(copilot);
+    } catch (e) {
+      reasons.push(`copilot: ${String(e)}`);
+    }
   }
 
-  try {
-    const cursor = await pollCursorQuotas(opts, fetcher, now);
-    if (typeof cursor === "string") reasons.push(`cursor: ${cursor}`);
-    else accounts.push(cursor);
-  } catch (e) {
-    reasons.push(`cursor: ${String(e)}`);
+  if (providerEnabled("cursor")) {
+    try {
+      const cursor = await pollCursorQuotas(opts, fetcher, now);
+      if (typeof cursor === "string") reasons.push(`cursor: ${cursor}`);
+      else accounts.push(cursor);
+    } catch (e) {
+      reasons.push(`cursor: ${String(e)}`);
+    }
   }
 
-  try {
-    const commandcode = await pollCommandCodeQuotas(opts, fetcher, now);
-    if (typeof commandcode === "string") reasons.push(`commandcode: ${commandcode}`);
-    else accounts.push(commandcode);
-  } catch (e) {
-    reasons.push(`commandcode: ${String(e)}`);
+  if (providerEnabled("commandcode")) {
+    try {
+      const commandcode = await pollCommandCodeQuotas(opts, fetcher, now);
+      if (typeof commandcode === "string") reasons.push(`commandcode: ${commandcode}`);
+      else accounts.push(commandcode);
+    } catch (e) {
+      reasons.push(`commandcode: ${String(e)}`);
+    }
   }
 
   // --- manual gateway keys (config.poll.extraKeys) -----------------------
-  for (const mk of opts.manualKeys ?? []) {
+  for (const mk of providerEnabled("opencode-go") ? opts.manualKeys ?? [] : []) {
     const r = await pollOpencodeGo(mk.key, fetcher);
     if (r.error !== undefined) {
       reasons.push(`${mk.id}: ${r.error}`);
@@ -986,7 +1005,7 @@ export async function pollQuotas(opts: PollOptions = {}): Promise<PollResult> {
   const pooled = opencodexQuotas(opts.opencodexCachePath);
   const poolIdentities = opencodexAccountIdentities(opts.opencodexAccountsPath);
   const seenResets = new Set<number>();
-  for (const [poolKey, q] of Object.entries(pooled)) {
+  for (const [poolKey, q] of providerEnabled("codex") ? Object.entries(pooled) : []) {
     if (typeof q.weeklyPercent !== "number" || typeof q.weeklyResetAt !== "number") continue;
     const weeklyResetAt = q.weeklyResetAt;
     const weeklyPercent = q.weeklyPercent;

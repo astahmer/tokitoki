@@ -10,7 +10,7 @@ import type { UsageEvent } from "./types.ts";
 import { DIMENSIONS, EventCache, type AggRow, type Dimension, type SeriesBucket, type SessionSummary } from "./cache.ts";
 import { renderTable, renderMiniProjects, renderMarkdownTable, resolveExtraFiles, resolveSortColumn, sinceIsoFor, sinceIsoForDays, previousWindow, monthStartIso, sortRows, formatDelta, deltaInfo, totalRow, totalTokens, planGaugeFn, renderBurnLine, burnProjection, type TableContext } from "./report.ts";
 import { accountEmailMap } from "./accounts.ts";
-import { computeLimits, embeddedKind, groupBySharedCredential, mergeAliasLimits, type AccountLimits } from "./limits.ts";
+import { computeLimits, dedupeAccountLimits, embeddedKind, groupBySharedCredential, mergeAliasLimits, type AccountLimits } from "./limits.ts";
 import { accountIdentityFor } from "./accounts.ts";
 import { opencodexAccountIdentities, opencodeCredentials, opencodexQuotas, piCredentials, pollQuotas, redactCredential } from "./poll.ts";
 import {
@@ -289,11 +289,12 @@ Rows always show every configured scope×pattern; state is ok | warn (≥80%)
     example: "tokitoki statusline",
   },
   poll: {
-    usage: "tokitoki poll [--json]",
+    usage: "tokitoki poll [--json] [--provider <id>]",
     flags: `  opt-in: fetch provider-reported rate-limit windows from local auth stores
   (Codex, Claude, Copilot, OpenRouter, OpenCode Go, Cursor and Command Code).
   Results land in quota_snapshots and surface in limits,
   budgets and the menubar like embedded data.
+  --provider <id>           only refresh this provider (repeatable)
   --json                    machine-readable result`,
     example: "tokitoki poll",
   },
@@ -468,7 +469,7 @@ const KNOWN_FLAGS: Record<string, string[]> = {
   statusline: [],
   mcp: [],
   menubar: ["stop", "status", "foreground", "rebuild"],
-  poll: ["json", "enable", "disable"],
+  poll: ["json", "enable", "disable", "provider"],
   config: ["set"],
   share: ["enable", "disable", "status", "publish", "scope", "include-repos"],
   export: ["last", "by", "format", "out", "sort", "asc", "provider", "since", "until", "show-email", "show-emails"],
@@ -1744,6 +1745,7 @@ async function runPoll(parsed: ParsedInvocation): Promise<void> {
     const config = loadConfig();
     const result = await pollQuotas({
       cache,
+      providers: flagStrings(parsed, "provider"),
       // Manually registered opencode gateway keys (multi-account).
       manualKeys: (config.poll?.extraKeys ?? [])
         .filter((k) => k.provider === "opencode-go" && k.key.length > 0)
@@ -2190,7 +2192,7 @@ function runMenubarPayload(parsed: ParsedInvocation): void {
       const grouped = groupBySharedCredential(withCreds);
       // Origin provenance for the details disclosure: where did this
       // account's quota data come from? One tiny indexed query per account.
-      const withOrigin = grouped.map((l) => {
+      const withOrigin = dedupeAccountLimits(grouped.map((l) => {
         try {
           const row = cache.database
             .query(
@@ -2205,7 +2207,7 @@ function runMenubarPayload(parsed: ParsedInvocation): void {
         } catch {
           return { ...l, origin: "scan" };
         }
-      });
+      }));
       // Detected-but-empty harnesses still deserve a card (commandcode etc.)
       // so users can see the harness is known — zero windows until data lands.
       if (config.experimental?.zeroStateCards !== false) {

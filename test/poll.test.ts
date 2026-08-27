@@ -312,6 +312,7 @@ describe("pollQuotas", () => {
 
       const res = await pollQuotas({
         ...hermeticPaths(),
+        providers: ["claude-code"],
         authPath: path.join(os.tmpdir(), `missing-${Date.now()}.json`),
         piAuthPath: path.join(os.tmpdir(), `missing-pi-${Date.now()}.json`),
         claudeCredentialsPath: path.join(dir, "claude.json"),
@@ -400,6 +401,7 @@ describe("pollQuotas", () => {
 
       const res = await pollQuotas({
         ...hermeticPaths(),
+        providers: ["copilot"],
         authPath: path.join(os.tmpdir(), `missing-${Date.now()}.json`),
         piAuthPath: path.join(os.tmpdir(), `missing-pi-${Date.now()}.json`),
         copilotAuthPath: copilotAuth,
@@ -408,6 +410,7 @@ describe("pollQuotas", () => {
       });
       const acc = res.accounts.find((a) => a.accountKey === "default" && a.harnesses?.includes("copilot"));
       expect(acc).toBeDefined();
+      expect(res.accounts.every((a) => a.harnesses?.includes("copilot"))).toBe(true);
       // chat bucket only — unlimited and zero-entitlement buckets suppressed
       expect(acc!.windows).toHaveLength(1);
       expect(acc!.windows[0]!.usedPct).toBeCloseTo(50);

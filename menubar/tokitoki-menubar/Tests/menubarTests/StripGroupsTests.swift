@@ -159,6 +159,23 @@ import Testing
         #expect(Model.stripGroups(from: limits, metric: "percent", previewHidden: [], exhaustedBehavior: "hide").isEmpty)
     }
 
+    @Test func smartModeShowsTheGoverningResetOrTightestWindow() {
+        let dayReset = ISO8601DateFormatter().string(from: Date().addingTimeInterval(3_600))
+        let weekReset = ISO8601DateFormatter().string(from: Date().addingTimeInterval(5 * 86_400))
+        let exhausted = account(provider: "codex", accountKey: "default", windows: [
+            window(kind: "day", source: "polled", tokens: 0, usedPct: 100, resetsAt: dayReset),
+            window(kind: "week", source: "polled", tokens: 0, usedPct: 100, resetsAt: weekReset),
+        ])
+        let exhaustedGroups = Model.stripGroups(from: [exhausted], metric: "smart", previewHidden: [])
+        #expect(exhaustedGroups.first?.lines.first?.contains("d") == true)
+
+        let constrained = account(provider: "codex", accountKey: "default", windows: [
+            window(kind: "day", source: "polled", tokens: 0, usedPct: 10),
+            window(kind: "week", source: "polled", tokens: 0, usedPct: 65),
+        ])
+        #expect(Model.stripGroups(from: [constrained], metric: "smart", previewHidden: []).first?.lines == ["35%"])
+    }
+
     @Test func freshnessCopyStaysEnglish() {
         let now = Date()
         #expect(relativeDateEnglish(now.addingTimeInterval(-60), relativeTo: now) == "1 minute ago")
