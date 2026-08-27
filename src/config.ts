@@ -17,6 +17,8 @@ export interface NotificationsConfig {
   /** Warn when the month-end spend projection reaches this fraction of cap. */
   burnWarnings?: boolean;
   burnWarningRatio?: number;
+  /** Notification categories disabled by the user (kept as stable ids for Nix). */
+  disabled?: string[];
 }
 
 export interface ProviderConfig {

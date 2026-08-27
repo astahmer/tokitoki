@@ -56,6 +56,7 @@ export interface PollAccountResult {
   email?: string;
   planType?: string;
   windows: PolledWindow[];
+  credits?: { hasCredits: boolean; unlimited: boolean; balance: string; expiresAt?: string };
   inserted: number;
   error?: string;
 }
@@ -149,7 +150,26 @@ interface WhamUsageResponse {
   account_id?: string;
   accountId?: string;
   plan_type?: string;
-  rate_limit?: { primary_window?: WhamWindow; secondary_window?: WhamWindow };
+  rate_limit?: {
+    primary_window?: WhamWindow;
+    secondary_window?: WhamWindow;
+    credits?: Record<string, unknown>;
+  };
+}
+
+function parsePolledCredits(raw: unknown): { hasCredits: boolean; unlimited: boolean; balance: string; expiresAt?: string } | undefined {
+  if (raw === null || typeof raw !== "object") return undefined;
+  const value = raw as Record<string, unknown>;
+  const hasCredits = value.has_credits === true || value.hasCredits === true;
+  const unlimited = value.unlimited === true;
+  const balance = typeof value.balance === "string" || typeof value.balance === "number" ? String(value.balance) : "0";
+  const expiry = value.expires_at ?? value.expiration_date ?? value.expiresAt ?? value.expirationDate;
+  const expiresAt = typeof expiry === "number" && Number.isFinite(expiry)
+    ? new Date(expiry * 1000).toISOString()
+    : typeof expiry === "string" && !Number.isNaN(Date.parse(expiry))
+      ? new Date(expiry).toISOString()
+      : undefined;
+  return { hasCredits, unlimited, balance, ...(expiresAt !== undefined ? { expiresAt } : {}) };
 }
 
 function parseWindows(rateLimit: WhamUsageResponse["rate_limit"]): PolledWindow[] {
@@ -1139,6 +1159,7 @@ async function pollCodexQuotas(opts: PollOptions): Promise<PollAccountResult | s
   // login maps to model_provider "openai".
   const accountKey = `openai:${planType}`;
   const windows = parseWindows(res.body.rate_limit);
+  const credits = parsePolledCredits(res.body.rate_limit?.credits);
 
   const result: PollAccountResult = {
     accountKey,
@@ -1146,6 +1167,7 @@ async function pollCodexQuotas(opts: PollOptions): Promise<PollAccountResult | s
     ...(email !== undefined ? { email } : {}),
     planType,
     windows,
+    ...(credits !== undefined ? { credits } : {}),
     inserted: 0,
   };
   if (windows.length === 0) {
@@ -1160,6 +1182,7 @@ async function pollCodexQuotas(opts: PollOptions): Promise<PollAccountResult | s
       accountKey,
       accountId,
       windows,
+      credits,
       capturedAtIso,
       eventId: `poll:${capturedAtIso}`,
     });

@@ -6,6 +6,7 @@ import { providerConfig } from "../config.ts";
 import { eventId } from "../machine.ts";
 import { estimateCost } from "../pricing.ts";
 import { extractCodexToolName, shellToolName } from "../tools.ts";
+import { sessionSnippet, sessionTitle } from "../sessionText.ts";
 import { homePath, type EntryContext, type Provider, type SessionDoc } from "./types.ts";
 
 interface CodexTokenUsage {
@@ -225,11 +226,11 @@ export function extractCodexSessionDocs(file: string): SessionDoc[] {
   }
   let sessionId = path.basename(file).replace(/^rollout-|\.jsonl$/g, "").split("-").slice(-1)[0] ?? "unknown";
   let startedAt: string | undefined;
-  let title = "";
+  const userTexts: string[] = [];
   let body = "";
   const push = (text: string): void => {
     if (body.length + text.length > BODY_CAP) return;
-    body += text.replace(/\s+/g, " ").slice(0, 2000) + "\n";
+    body += sessionSnippet(text) + "\n";
   };
   for (const line of raw.split("\n")) {
     if (line.length === 0) continue;
@@ -259,7 +260,7 @@ export function extractCodexSessionDocs(file: string): SessionDoc[] {
         const b = block as Record<string, unknown>;
         if (typeof b.text !== "string" || b.text.length === 0) continue;
         if ((b.type === "input_text" && role === "user") || (b.type === "output_text" && role === "assistant")) {
-          if (role === "user" && title.length === 0) title = b.text.replace(/\s+/g, " ").trim().slice(0, 200);
+          if (role === "user") userTexts.push(b.text);
           push(b.text);
         }
       }
@@ -271,7 +272,7 @@ export function extractCodexSessionDocs(file: string): SessionDoc[] {
     if (body.length >= BODY_CAP) break;
   }
   if (body.length === 0) return [];
-  return [{ sessionId, startedAt, title, body }];
+  return [{ sessionId, startedAt, title: sessionTitle(userTexts.at(-1) ?? body), body: sessionSnippet(body) }];
 }
 
 function walkRollouts(root: string): string[] {

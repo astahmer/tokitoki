@@ -5,6 +5,7 @@ import { providerConfig } from "../config.ts";
 import { eventId } from "../machine.ts";
 import { estimateCost } from "../pricing.ts";
 import { shellToolName } from "../tools.ts";
+import { sessionSnippet, sessionTitle } from "../sessionText.ts";
 import { homePath, type EntryContext, type Provider, type SessionDoc } from "./types.ts";
 import { walkJsonl } from "./claude-code.ts";
 
@@ -156,7 +157,7 @@ export function extractPiSessionDocs(file: string): SessionDoc[] {
   }
   let sessionId: string | undefined;
   let startedAt: string | undefined;
-  let title = "";
+  const userTexts: string[] = [];
   let body = "";
   for (const line of raw.split("\n")) {
     if (line.length === 0) continue;
@@ -176,16 +177,16 @@ export function extractPiSessionDocs(file: string): SessionDoc[] {
     const role = typeof message?.role === "string" ? message.role : "";
     if (role !== "user" && role !== "assistant") continue;
     for (const text of piTextBlocks(message?.content, role)) {
-      if (role === "user" && title.length === 0) {
-        title = text.replace(/\s+/g, " ").trim().slice(0, 200);
+      if (role === "user") {
+        userTexts.push(text);
       }
       if (body.length + text.length > BODY_CAP) break;
-      body += text.replace(/\s+/g, " ").slice(0, 2000) + "\n";
+      body += sessionSnippet(text) + "\n";
     }
     if (body.length >= BODY_CAP) break;
   }
   if (sessionId === undefined || body.length === 0) return [];
-  return [{ sessionId, startedAt, title, body }];
+  return [{ sessionId, startedAt, title: sessionTitle(userTexts[0] ?? body), body: sessionSnippet(body) }];
 }
 
 /** Deterministic fallback when an entry lacks an id. */

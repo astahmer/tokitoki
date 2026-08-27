@@ -1160,8 +1160,17 @@ function runSessions(parsed: ParsedInvocation): void {
         });
         const header = `${windowLine(w)} · indexed ${stats.filesIndexed} changed file(s) in ${stats.durationMs}ms · search ${res.searchMs}ms`;
         if (json) {
+          // Keep search JSON compatible with the recent-session payload used
+          // by the native popover. Search rows do not need a second usage
+          // query for models/lastRequestAt, but the UI contract does require
+          // those fields to be present.
+          const rows = res.rows.map((row) => ({
+            ...row,
+            lastRequestAt: row.startedAt,
+            models: [],
+          }));
           return JSON.stringify(
-            { window: { since: w.sinceIso, until: w.untilIso ?? null, label: w.label }, query: searchQuery, page, hasMore: res.hasMore, rows: res.rows },
+            { window: { since: w.sinceIso, until: w.untilIso ?? null, label: w.label }, query: searchQuery, page, hasMore: res.hasMore, rows },
             null,
             2,
           );
@@ -2200,6 +2209,7 @@ function runMenubarPayload(parsed: ParsedInvocation): void {
           quotaCriticalPercent: Math.max(0, Math.min(100, config.notifications?.quotaCriticalPercent ?? 10)),
           burnWarnings: config.notifications?.burnWarnings !== false,
           burnWarningRatio: Math.max(0, Math.min(1, config.notifications?.burnWarningRatio ?? 0.8)),
+          disabledNotifications: config.notifications?.disabled ?? [],
         }),
       );
     });
@@ -2211,6 +2221,7 @@ function runMenubarPayload(parsed: ParsedInvocation): void {
     quotaCriticalPercent: Math.max(0, Math.min(100, notifications?.quotaCriticalPercent ?? 10)),
     burnWarnings: notifications?.burnWarnings !== false,
     burnWarningRatio: Math.max(0, Math.min(1, notifications?.burnWarningRatio ?? 0.8)),
+    disabledNotifications: notifications?.disabled ?? [],
   };
   capture("limits", () => {
     const config = loadConfig();

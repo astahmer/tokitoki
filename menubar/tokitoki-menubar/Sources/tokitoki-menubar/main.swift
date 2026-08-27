@@ -98,6 +98,7 @@ struct NotificationConfigPayload: Codable {
     let quotaCriticalPercent: Int?
     let burnWarnings: Bool?
     let burnWarningRatio: Double?
+    let disabledNotifications: [String]?
 }
 
 struct NotificationRecord: Codable, Identifiable {
@@ -106,6 +107,7 @@ struct NotificationRecord: Codable, Identifiable {
     let title: String
     let body: String
     let reason: String
+    let kind: String?
 }
 
 private struct NotificationState: Codable {
@@ -327,6 +329,7 @@ final class Model: ObservableObject {
     @Published var quotaCriticalPercent = 10
     @Published var burnWarnings = true
     @Published var burnWarningRatio = 0.8
+    @Published var disabledNotifications: Set<String> = []
     @Published var notificationStatus: String?
     @Published var notificationHistory: [NotificationRecord] = []
     @Published var sessionRows: [PopoverSessionRow] = []
@@ -590,6 +593,23 @@ final class Model: ObservableObject {
         persistUISetting(path: "notifications.burnWarningRatio", json: String(format: "%.2f", burnWarningRatio))
     }
 
+    func setNotificationKindEnabled(_ kind: String, enabled: Bool) {
+        if enabled { disabledNotifications.remove(kind) } else { disabledNotifications.insert(kind) }
+        notificationStatus = enabled ? "\(notificationKindLabel(kind)) alerts enabled" : "\(notificationKindLabel(kind)) alerts disabled"
+        let json = "[" + disabledNotifications.sorted().map { "\"\($0)\"" }.joined(separator: ",") + "]"
+        persistUISetting(path: "notifications.disabled", json: json)
+    }
+
+    func notificationKindLabel(_ kind: String) -> String {
+        switch kind {
+        case "quotaCritical": return "Critical quota"
+        case "quotaReset": return "Quota reset"
+        case "burnRate": return "Burn-rate"
+        case "budget": return "Budget"
+        default: return kind
+        }
+    }
+
     func setTabOrder(_ order: [PopoverSubview]) {
         let normalized = PopoverSubview.normalizedOrder(order.map(\.rawValue))
         tabOrder = normalized
@@ -805,6 +825,7 @@ final class Model: ObservableObject {
                     self.quotaCriticalPercent = max(0, min(100, notifications.quotaCriticalPercent ?? 10))
                     self.burnWarnings = notifications.burnWarnings ?? true
                     self.burnWarningRatio = max(0, min(1, notifications.burnWarningRatio ?? 0.8))
+                    self.disabledNotifications = Set(notifications.disabledNotifications ?? [])
                 }
                 if let ui = p.uiPreview {
                     self.previewMode = ui.previewMode ?? "inline"
@@ -918,6 +939,7 @@ final class Model: ObservableObject {
             let row = rows.first { $0.label == label }
             let key = "budget|\(label)|\(level)|\(Self.notificationPeriodKey(label: label))"
             notifyOnce(
+                kind: "budget",
                 key: key,
                 title: "tokitoki budget \(level)%",
                 body: "\(label): $\(String(format: "%.2f", row?.used ?? 0)) / $\(String(format: "%.2f", row?.cap ?? 0))",
@@ -949,6 +971,7 @@ final class Model: ObservableObject {
                 if notificationsEnabled && remaining <= Double(quotaCriticalPercent) {
                     let key = "quota-critical|\(identity)|\(window.resetsAt ?? "unknown")"
                     notifyOnce(
+                        kind: "quotaCritical",
                         key: key,
                         title: "tokitoki quota critical",
                         body: "\(name): \(Int(remaining.rounded()))% left · resets in \(reset)",
@@ -958,6 +981,7 @@ final class Model: ObservableObject {
                 if notificationsEnabled && resetAwareNotifications && (resetChanged || recovered) {
                     let key = "quota-reset|\(identity)|\(window.resetsAt ?? "unknown")"
                     notifyOnce(
+                        kind: "quotaReset",
                         key: key,
                         title: "tokitoki quota available",
                         body: "\(name) is available again · \(Int(remaining.rounded()))% left",
@@ -983,6 +1007,7 @@ final class Model: ObservableObject {
         let level = ratio >= 1 ? 100 : 80
         let key = "burn|\(Self.notificationPeriodKey(label: "monthly"))|\(level)"
         notifyOnce(
+            kind: "burnRate",
             key: key,
             title: "tokitoki burn-rate warning",
             body: "Projected $\(String(format: "%.0f", health.projected)) by month end vs $\(String(format: "%.0f", cap)) cap · $\(String(format: "%.2f", health.perDay))/day",
@@ -1062,7 +1087,8 @@ final class Model: ObservableObject {
         }
     }
 
-    private func notifyOnce(key: String, title: String, body: String, reason: String) {
+    private func notifyOnce(kind: String, key: String, title: String, body: String, reason: String) {
+        guard !disabledNotifications.contains(kind) else { return }
         guard !notifiedKeys.contains(key) else { return }
         notifiedKeys.insert(key)
         let record = NotificationRecord(
@@ -1071,6 +1097,7 @@ final class Model: ObservableObject {
             title: title,
             body: body,
             reason: reason,
+            kind: kind,
         )
         notificationHistory = Array(([record] + notificationHistory).prefix(50))
         saveNotifiedKeys()
@@ -3895,6 +3922,16 @@ struct ContentView: View {
                     if let status = model.notificationStatus {
                         Text(status).font(.caption2).foregroundStyle(.secondary)
                     }
+                    Divider().opacity(0.35)
+                    Text("Alert categories").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                    ForEach([("quotaCritical", "Critical quota"), ("quotaReset", "Quota reset / recovery"), ("burnRate", "Burn-rate"), ("budget", "Budget threshold")], id: \.0) { kind, label in
+                        Toggle(label, isOn: Binding(
+                            get: { !model.disabledNotifications.contains(kind) },
+                            set: { model.setNotificationKindEnabled(kind, enabled: $0) },
+                        ))
+                        .font(.caption)
+                        .disabled(!model.notificationsEnabled)
+                    }
                 }
                 card(title: "recent alerts", icon: "bell.fill") {
                     if model.notificationHistory.isEmpty {
@@ -3911,6 +3948,13 @@ struct ContentView: View {
                                 }
                                 Text(alert.body).font(.caption2).foregroundStyle(.secondary)
                                 Text("Why: \(alert.reason)").font(.caption2).foregroundStyle(.tertiary)
+                                if let kind = alert.kind {
+                                    Button(model.disabledNotifications.contains(kind) ? "Enable \(model.notificationKindLabel(kind)) alerts" : "Disable \(model.notificationKindLabel(kind)) alerts") {
+                                        model.setNotificationKindEnabled(kind, enabled: model.disabledNotifications.contains(kind))
+                                    }
+                                    .buttonStyle(.link)
+                                    .font(.caption2)
+                                }
                             }
                             .padding(.vertical, 3)
                             .overlay(alignment: .bottom) { Divider().opacity(0.3) }

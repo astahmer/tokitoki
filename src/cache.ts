@@ -246,6 +246,7 @@ export class EventCache {
     accountKey: string;
     accountId?: string;
     windows: Array<{ windowMinutes: number; usedPct: number; resetsAtEpoch: number }>;
+    credits?: { hasCredits: boolean; unlimited: boolean; balance: string; expiresAt?: string };
     capturedAtIso: string;
     eventId: string;
   }): number {
@@ -253,7 +254,7 @@ export class EventCache {
       INSERT OR REPLACE INTO quota_snapshots (
         provider, account_key, account_id, window_minutes, used_pct, resets_at,
         captured_at, event_id, credits_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const tx = this.db.transaction(() => {
       for (const w of input.windows) {
@@ -266,6 +267,7 @@ export class EventCache {
           Math.round(w.resetsAtEpoch),
           input.capturedAtIso,
           `${input.eventId}:${w.windowMinutes}`,
+          input.credits !== undefined ? JSON.stringify(input.credits) : null,
         );
       }
     });
