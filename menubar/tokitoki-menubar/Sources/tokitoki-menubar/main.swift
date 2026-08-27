@@ -1744,6 +1744,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let hoverActivationDelay: TimeInterval = 0.15
     private var hoverWorkItem: DispatchWorkItem?
     private var popoverContentLoaded = false
+    private var popoverContentLoadScheduled = false
     var model: Model?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -2051,12 +2052,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func loadPopoverContentIfNeeded() {
-        guard !popoverContentLoaded, let model else { return }
-        popoverContentLoaded = true
+        guard !popoverContentLoaded, !popoverContentLoadScheduled, let model else { return }
+        popoverContentLoadScheduled = true
         // Let WindowServer paint the lightweight launch state before asking
         // SwiftUI to build the full view tree.
         DispatchQueue.main.async { [weak self, weak model] in
-            guard let self, let model, self.popover.isShown else { return }
+            guard let self, let model else { return }
+            guard self.popover.isShown else {
+                self.popoverContentLoadScheduled = false
+                return
+            }
+            self.popoverContentLoadScheduled = false
+            self.popoverContentLoaded = true
             self.popover.contentViewController = NSHostingController(rootView: ContentView(model: model))
             self.popover.contentViewController?.view.window?.makeKey()
         }
