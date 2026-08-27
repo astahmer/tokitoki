@@ -25,6 +25,7 @@
     "web:dev": "cd web && vite",
     "build": "bun run web:build && bun build --target=bun src/cli.ts --outfile dist/cli.js",
     "menubar": "bun src/cli.ts menubar --rebuild",
+    "menubar:restart": "bun src/cli.ts menubar --rebuild",
     "menubar:status": "bun src/cli.ts menubar --status",
     "menubar:stop": "bun src/cli.ts menubar --stop",
     "menubar:e2e": "bun menubar/e2e.mjs",

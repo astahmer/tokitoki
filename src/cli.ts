@@ -2113,6 +2113,25 @@ function runMenubarPayload(parsed: ParsedInvocation): void {
   capture("anomalies", () => runAnomalies(inv("anomalies", { json: true })));
   capture("topTools", () => runTools(inv("tools", { last: "day", top: "3", json: true })));
   capture("presence", () => runPresence(inv("presence", { json: true })));
+  capture("history", () => {
+    const config = loadConfig();
+    withCache((cache) => {
+      cache.sync(config.extraEventFiles ?? []);
+      const sinceIso = new Date(Date.now() - 29 * 86_400_000).toISOString();
+      const buckets = cache.seriesDaily(sinceIso, "provider", 6, "tokens");
+      const days = [...new Set(buckets.flatMap((bucket) => bucket.days))].sort();
+      console.log(JSON.stringify({
+        days,
+        series: buckets.map((bucket) => ({
+          bucket: bucket.bucket,
+          values: days.map((day) => {
+            const index = bucket.days.indexOf(day);
+            return index >= 0 ? bucket.values[index] ?? 0 : 0;
+          }),
+        })),
+      }));
+    });
+  });
   capture("uiPreview", () => {
     const config = loadConfig();
     withCache((cache) => {

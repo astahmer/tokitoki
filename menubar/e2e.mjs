@@ -284,8 +284,9 @@ end tell`;
         await sleepMs(300);
     }
     const proofHasExpectedData = proof && (proof.hasPie === true || proof.todayRows === 0);
-    if (proof && proofHasExpectedData && proof.limitCards >= 1 && Array.isArray(proof.accounts) && proof.accounts.length >= 1) {
-        pass(`popover content proof: limitCards=${proof.limitCards} accounts=[${proof.accounts.join(", ")}] hasPie=${proof.hasPie}`);
+    const hasNativeViews = Array.isArray(proof?.views) && ["Home", "Quotas", "Tokens", "Reports", "Sources", "MCP", "Settings"].every((v) => proof.views.includes(v));
+    if (proof && proofHasExpectedData && proof.limitCards >= 1 && Array.isArray(proof.accounts) && proof.accounts.length >= 1 && hasNativeViews) {
+        pass(`popover content proof: limitCards=${proof.limitCards} accounts=[${proof.accounts.join(", ")}] hasPie=${proof.hasPie} views=${proof.views.join(", ")}`);
     } else {
         fail(`popover content proof missing/incomplete: ${JSON.stringify(proof)}`);
     }

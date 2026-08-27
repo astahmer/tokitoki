@@ -283,6 +283,8 @@ port tracked in plans/linux-menubar.md):
 
 ```sh
 tokitoki menubar            # start (idempotent; launchctl-aware on macOS)
+bun run menubar             # rebuild Swift + restart the launchd app from this checkout
+bun run menubar:restart     # explicit alias for the same source-first flow
 tokitoki menubar --status   # pid + running state
 tokitoki menubar --stop     # stop (launchctl bootout when plist present)
 tokitoki menubar --foreground   # attached, logs to stdout

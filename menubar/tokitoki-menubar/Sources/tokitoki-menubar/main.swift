@@ -120,7 +120,7 @@ struct AccountLimits: Codable, Identifiable {
     let provider: String
     let accountKey: String
     /// Stable provider account id; never use reset timestamps as identity.
-    let accountId: String? = nil
+    var accountId: String? = nil
     let email: String?
     /** Redacted api-key/credential hint ("sk-x…12ab") when key-based. */
     let credential: String?
@@ -169,6 +169,17 @@ struct SpendPeriod: Codable {
     let rows: [ReportRow]
 }
 
+struct DailyUsageSeries: Codable, Identifiable {
+    let bucket: String
+    let values: [Double]
+    var id: String { bucket }
+}
+
+struct DailyUsageHistory: Codable {
+    let days: [String]
+    let series: [DailyUsageSeries]
+}
+
 struct MenubarPayload: Codable {
     let today: ReportPayload
     let week: ReportPayload
@@ -180,6 +191,7 @@ struct MenubarPayload: Codable {
     let limits: [AccountLimits]?
     let uiPreview: UiPreviewConfig?
     let spendPeriods: [SpendPeriod]?
+    let history: DailyUsageHistory?
 }
 
 @MainActor
@@ -219,6 +231,7 @@ final class Model: ObservableObject {
     @Published var stripMetric: String = "percent"
     @Published var stripExhausted: String = "reset"
     @Published var spendPeriods: [SpendPeriod] = []
+    @Published var history: DailyUsageHistory?
     /// nil = no budgets configured; "ok" | "warn" | "exceeded"
     @Published var worstState: String?
     @Published var errorText: String?
@@ -441,6 +454,7 @@ final class Model: ObservableObject {
                 }
                 self.updatePollSchedule()
                 self.spendPeriods = p.spendPeriods ?? []
+                self.history = p.history
                 self.today = p.today
                 self.week = p.week
                 self.currentPayloadForTitle = p
@@ -1292,11 +1306,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Payload may not have completed its first fetch yet — never trap.
         let hasPie = (model.today?.rows.isEmpty == false)
         let proof: [String: Any] = [
-            "sections": ["limits", "pie", "providers", "budgets"],
+            "sections": ["limits", "pie", "tokens", "history", "providers", "budgets", "mcp"],
+            "views": PopoverSubview.allCases.map(\.title),
 
             "accounts": model.limits.map { "\($0.provider)@\($0.accountKey)" },
             "todayRows": model.today?.rows.count ?? 0,
             "hasPie": hasPie,
+            "hasHistory": model.history?.days.isEmpty == false,
+            "previewGroups": model.previewGroups.map { ["provider": $0.provider, "lines": $0.lines] },
             "limitCards": model.limits.count,
             // Diagnostics: what each card actually renders for its primary window.
             "countdowns": model.limits.reduce(into: [:]) { acc, l in
@@ -2196,16 +2213,20 @@ struct PreviewSettingsSheet: View {
 enum PopoverSubview: String, CaseIterable, Hashable {
     case overview
     case quotas
+    case tokens
     case reports
     case sources
+    case mcp
     case settings
 
     var title: String {
         switch self {
         case .overview: return "Home"
         case .quotas: return "Quotas"
+        case .tokens: return "Tokens"
         case .reports: return "Reports"
         case .sources: return "Sources"
+        case .mcp: return "MCP"
         case .settings: return "Settings"
         }
     }
@@ -2214,10 +2235,174 @@ enum PopoverSubview: String, CaseIterable, Hashable {
         switch self {
         case .overview: return "house"
         case .quotas: return "chart.bar.xaxis"
+        case .tokens: return "circle.hexagongrid.circle"
         case .reports: return "doc.text"
         case .sources: return "doc.text.magnifyingglass"
+        case .mcp: return "point.3.connected.trianglepath.dotted"
         case .settings: return "gearshape"
         }
+    }
+
+    static let primary: [PopoverSubview] = [.overview, .quotas, .tokens, .reports]
+    static let secondary: [PopoverSubview] = [.sources, .mcp, .settings]
+}
+
+enum MCPIntegration: String, CaseIterable, Identifiable {
+    case claudeDesktop
+    case claudeCode
+    case codex
+    case cursor
+    case windsurf
+    case vscode
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .claudeDesktop: return "Claude Desktop"
+        case .claudeCode: return "Claude Code"
+        case .codex: return "Codex"
+        case .cursor: return "Cursor"
+        case .windsurf: return "Windsurf"
+        case .vscode: return "VS Code"
+        }
+    }
+
+    var location: String {
+        switch self {
+        case .claudeDesktop: return "Claude Desktop settings → Developer → Edit Config"
+        case .claudeCode: return "Claude Code terminal"
+        case .codex: return "~/.codex/config.toml"
+        case .cursor: return "Cursor → Settings → MCP"
+        case .windsurf: return "Windsurf → Settings → MCP"
+        case .vscode: return ".vscode/mcp.json"
+        }
+    }
+
+    var snippet: String {
+        switch self {
+        case .claudeDesktop:
+            return "{\n  \"mcpServers\": {\n    \"tokitoki\": {\n      \"command\": \"tokitoki\",\n      \"args\": [\"mcp\"]\n    }\n  }\n}"
+        case .claudeCode:
+            return "claude mcp add tokitoki -- tokitoki mcp"
+        case .codex:
+            return "[mcp_servers.tokitoki]\ncommand = \"tokitoki\"\nargs = [\"mcp\"]"
+        case .cursor:
+            return "{\n  \"mcpServers\": {\n    \"tokitoki\": {\n      \"command\": \"tokitoki\",\n      \"args\": [\"mcp\"]\n    }\n  }\n}"
+        case .windsurf:
+            return "{\n  \"mcpServers\": {\n    \"tokitoki\": {\n      \"command\": \"tokitoki\",\n      \"args\": [\"mcp\"]\n    }\n  }\n}"
+        case .vscode:
+            return "{\n  \"servers\": {\n    \"tokitoki\": {\n      \"type\": \"stdio\",\n      \"command\": \"tokitoki\",\n      \"args\": [\"mcp\"]\n    }\n  }\n}"
+        }
+    }
+
+    var steps: [String] {
+        switch self {
+        case .claudeCode: return ["Run the command below in a terminal.", "Restart Claude Code or reconnect MCP."]
+        default: return ["Open the integration settings at the location below.", "Paste the snippet into the MCP configuration.", "Restart or reconnect the integration."]
+        }
+    }
+}
+
+/// Small, bounded stacked-bar history for the native Tokens view. The CLI
+/// sends only the top six providers and one 30-day vector per provider, so
+/// rendering never requires a second query or a large Swift-side data set.
+struct UsageHistoryChart: View {
+    let history: DailyUsageHistory
+
+    private var dayTotals: [Double] {
+        history.days.indices.map { index in
+            history.series.reduce(0) { total, series in
+                total + (index < series.values.count ? series.values[index] : 0)
+            }
+        }
+    }
+
+    var body: some View {
+        let maximum = dayTotals.max() ?? 0
+        VStack(alignment: .leading, spacing: 5) {
+            GeometryReader { proxy in
+                HStack(alignment: .bottom, spacing: 2) {
+                    ForEach(history.days.indices, id: \.self) { index in
+                        VStack(alignment: .center, spacing: 0) {
+                            ForEach(Array(history.series.enumerated()).reversed(), id: \.offset) { _, series in
+                                let value = index < series.values.count ? series.values[index] : 0
+                                Rectangle()
+                                    .fill(bucketColor(series.bucket))
+                                    .frame(height: maximum > 0 ? max(1, proxy.size.height * value / maximum) : 1)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                    }
+                }
+            }
+            .frame(height: 92)
+            if let first = history.days.first, let last = history.days.last {
+                HStack {
+                    Text(first).font(.caption2.monospacedDigit()).foregroundStyle(.tertiary)
+                    Spacer()
+                    Text(last).font(.caption2.monospacedDigit()).foregroundStyle(.tertiary)
+                }
+            }
+            HStack(spacing: 8) {
+                ForEach(history.series.prefix(4)) { series in
+                    HStack(spacing: 3) {
+                        Circle().fill(bucketColor(series.bucket)).frame(width: 6, height: 6)
+                        Text(series.bucket).font(.caption2).lineLimit(1)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Shared collapsible surface for every secondary card in the popover. The
+/// disclosure is local UI state: it never mutates account visibility/order
+/// preferences and therefore stays instant even while a refresh is running.
+struct CollapsibleCard<Content: View>: View {
+    let title: String
+    let icon: String
+    let content: () -> Content
+    @State private var isExpanded = true
+
+    init(title: String, icon: String, @ViewBuilder content: @escaping () -> Content) {
+        self.title = title
+        self.icon = icon
+        self.content = content
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: isExpanded ? 7 : 0) {
+            HStack(spacing: 4) {
+                Image(systemName: "line.3.horizontal")
+                    .font(.system(size: 8, weight: .semibold))
+                    .foregroundStyle(.quaternary)
+                    .help("drag to reorder")
+                Button {
+                    withAnimation(.easeInOut(duration: 0.15)) { isExpanded.toggle() }
+                } label: {
+                    HStack(spacing: 4) {
+                        Label(title.uppercased(), systemImage: icon)
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        Spacer(minLength: 4)
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 8, weight: .bold))
+                            .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                            .foregroundStyle(.tertiary)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("\(isExpanded ? "Collapse" : "Expand") \(title)")
+            }
+            if isExpanded {
+                content()
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+        .padding(10)
+        .background(.quaternary.opacity(0.28), in: RoundedRectangle(cornerRadius: 12))
     }
 }
 
@@ -2320,6 +2505,9 @@ struct ContentView: View {
     @State private var draggingAccount: String?
     /// Native popover subview, inspired by CodexBar's provider/account drill-in.
     @State private var activeSubview: PopoverSubview = .overview
+    /// Token-report period selection is local to the lightweight native view.
+    @State private var tokenPeriodKey = "today"
+    @State private var mcpIntegration: MCPIntegration = .claudeDesktop
 
     /// Default card order when the payload carries no layout yet.
     static let defaultCardOrder = ["limits", "usage", "spend", "harness", "activity", "anomalies", "repos", "tools"]
@@ -2378,8 +2566,10 @@ struct ContentView: View {
                 switch activeSubview {
                 case .overview: overviewBody
                 case .quotas: quotasBody
+                case .tokens: tokensBody
                 case .reports: reportsBody
                 case .sources: sourcesBody
+                case .mcp: mcpBody
                 case .settings: settingsBody
                 }
             }
@@ -2400,28 +2590,56 @@ struct ContentView: View {
 
     private var navigationHeader: some View {
         HStack(spacing: 4) {
-            ForEach(PopoverSubview.allCases, id: \.self) { view in
-                Button {
-                    // Navigation should switch immediately; a large quota
-                    // payload must never make a tab tap feel queued.
-                    activeSubview = view
-                } label: {
-                    Label(view.title, systemImage: view.icon)
-                        .font(.caption2.weight(activeSubview == view ? .semibold : .regular))
-                        .lineLimit(1)
-                        .frame(maxWidth: .infinity)
-                        .padding(.horizontal, 3).padding(.vertical, 5)
-                        .background(activeSubview == view ? AnyShapeStyle(.quaternary.opacity(0.9)) : AnyShapeStyle(.clear), in: RoundedRectangle(cornerRadius: 6))
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(activeSubview == view ? .primary : .secondary)
-                .accessibilityLabel(view.title)
+            ForEach(PopoverSubview.primary, id: \.self) { view in
+                navigationButton(view)
             }
+            Menu {
+                Section("More") {
+                    ForEach(PopoverSubview.secondary, id: \.self) { view in
+                        Button {
+                            activeSubview = view
+                        } label: {
+                            Label(view.title, systemImage: view.icon)
+                        }
+                    }
+                }
+            } label: {
+                HStack(spacing: 3) {
+                    Image(systemName: "ellipsis.circle")
+                    Text("More")
+                }
+                .font(.caption2.weight(PopoverSubview.secondary.contains(activeSubview) ? .semibold : .regular))
+                .frame(maxWidth: .infinity, minHeight: 30)
+                .background(PopoverSubview.secondary.contains(activeSubview) ? AnyShapeStyle(.quaternary.opacity(0.9)) : AnyShapeStyle(.clear), in: RoundedRectangle(cornerRadius: 6))
+                .contentShape(Rectangle())
+            }
+            .menuStyle(.borderlessButton)
+            .foregroundStyle(PopoverSubview.secondary.contains(activeSubview) ? .primary : .secondary)
+            .accessibilityLabel("More views")
         }
         .padding(.horizontal, 8).padding(.vertical, 7)
         .background(.thinMaterial)
         .overlay(alignment: .bottom) { Divider() }
+    }
+
+    private func navigationButton(_ view: PopoverSubview) -> some View {
+        Button {
+            // Switch synchronously; view data is already in the model/cache.
+            activeSubview = view
+        } label: {
+            HStack(spacing: 3) {
+                Image(systemName: view.icon)
+                Text(view.title)
+            }
+            .font(.caption2.weight(activeSubview == view ? .semibold : .regular))
+            .lineLimit(1)
+            .frame(maxWidth: .infinity, minHeight: 30)
+            .background(activeSubview == view ? AnyShapeStyle(.quaternary.opacity(0.9)) : AnyShapeStyle(.clear), in: RoundedRectangle(cornerRadius: 6))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(activeSubview == view ? .primary : .secondary)
+        .accessibilityLabel(view.title)
     }
 
     private var overviewBody: some View {
@@ -2463,33 +2681,29 @@ struct ContentView: View {
     private var popoverFooter: some View {
         HStack(spacing: 6) {
             Button(action: { model.refresh() }) {
-                Label("Refresh", systemImage: "arrow.clockwise")
+                Label("Refresh all", systemImage: "arrow.clockwise")
             }
             .buttonStyle(.bordered).controlSize(.small)
             .accessibilityLabel("Refresh all data")
             .accessibilityIdentifier("refresh-all")
+            Spacer(minLength: 0)
             Menu {
                 Button("Save screenshot to Desktop") { saveScreenshot() }
                 Button("Copy summary as Markdown") { copyMarkdownSummary() }
             } label: {
-                HStack(spacing: 5) {
-                    Label("Share", systemImage: "square.and.arrow.up")
-                    Image(systemName: "chevron.down")
-                        .font(.system(size: 8, weight: .semibold))
-                }
+                Label("Share", systemImage: "square.and.arrow.up")
             }
             .menuStyle(.borderlessButton)
             .padding(.horizontal, 8).padding(.vertical, 5)
-            .background(.quaternary.opacity(0.65), in: RoundedRectangle(cornerRadius: 6))
+            .background(.quaternary.opacity(0.55), in: RoundedRectangle(cornerRadius: 6))
             .accessibilityIdentifier("share-menu")
             Button(action: { showCustomize = true }) {
                 Label("Layout", systemImage: "rectangle.3.group")
             }
             .buttonStyle(.bordered).controlSize(.small)
             .accessibilityIdentifier("popover-layout")
-            Spacer(minLength: 0)
             Button(action: openDashboard) {
-                Image(systemName: "arrow.up.right.square")
+                Label("Open", systemImage: "arrow.up.right.square")
             }
             .buttonStyle(.bordered).controlSize(.small)
             .accessibilityLabel("Open full dashboard in browser")
@@ -2497,8 +2711,9 @@ struct ContentView: View {
             .help("Open full dashboard in your browser")
         }
         .padding(.horizontal, 10)
-        .padding(.vertical, 7)
-        .background(.thinMaterial)
+        .padding(.vertical, 8)
+        .frame(minHeight: 44)
+        .background(.regularMaterial)
         .overlay(alignment: .top) { Divider() }
     }
 
@@ -2546,6 +2761,153 @@ struct ContentView: View {
                     limitsSection
                 }
             }.padding(12)
+        }
+    }
+
+    private var tokensBody: some View {
+        ScrollView(.vertical) {
+            VStack(alignment: .leading, spacing: 10) {
+                freshnessRow
+                tokenPulseCard
+                tokenProviderCard
+                tokenMixCard
+                historyCard
+            }
+            .padding(12)
+        }
+    }
+
+    private var tokenPulseCard: some View {
+        let totals = tokenTotals(for: tokenPeriodKey)
+        return card(title: "token pulse", icon: "number") {
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(humanCount(totals.tokens))
+                        .font(.system(size: 28, weight: .bold, design: .rounded))
+                        .monospacedDigit()
+                    Text("tokens · \(tokenPeriodLabel(tokenPeriodKey))")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+                Spacer()
+                VStack(alignment: .trailing, spacing: 3) {
+                    metric("requests", humanCount(Double(totals.requests)))
+                    metric("sessions", "\(totals.sessions)")
+                    metric("cost", String(format: "$%.2f", totals.cost))
+                }
+            }
+            tokenPeriodPicker
+        }
+    }
+
+    private var tokenProviderCard: some View {
+        let slices = tokenSlices(for: tokenPeriodKey)
+        let total = slices.reduce(0) { $0 + $1.value }
+        return card(title: "tokens by provider", icon: "chart.pie.fill") {
+            if slices.isEmpty {
+                emptyState("No tokens recorded", detail: "Run a scan or widen the selected period.", icon: "number")
+            } else {
+                HStack(spacing: 14) {
+                    DonutChart(slices: slices, centerLabel: humanCount(total), centerUnit: "tokens")
+                        .frame(width: 112, height: 112)
+                        .accessibilityLabel("tokens by provider donut chart")
+                    SpendLegend(slices: Array(slices.prefix(6)), metric: .tokens)
+                }
+            }
+        }
+    }
+
+    private var tokenMixCard: some View {
+        let slices = tokenMixSlices
+        let total = slices.reduce(0) { $0 + $1.value }
+        return card(title: "token composition", icon: "circle.hexagongrid.circle") {
+            if slices.isEmpty {
+                Text("No token composition recorded yet.")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else {
+                HStack(spacing: 14) {
+                    DonutChart(slices: slices, centerLabel: humanCount(total), centerUnit: "today")
+                        .frame(width: 112, height: 112)
+                        .accessibilityLabel("today token composition donut chart")
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(Array(slices.enumerated()), id: \.offset) { _, slice in
+                            HStack(spacing: 5) {
+                                Circle().fill(slice.color).frame(width: 7, height: 7)
+                                Text(slice.name).font(.caption2)
+                                Spacer()
+                                Text(humanCount(slice.value))
+                                    .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private var historyCard: some View {
+        card(title: "usage history · 30 days", icon: "chart.bar.xaxis") {
+            if let history = model.history, !history.days.isEmpty, !history.series.isEmpty {
+                UsageHistoryChart(history: history)
+                    .frame(height: 128)
+                    .accessibilityLabel("30 day token usage history")
+            } else {
+                Text("History appears after the first scan.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var mcpBody: some View {
+        ScrollView(.vertical) {
+            VStack(alignment: .leading, spacing: 10) {
+                freshnessRow
+                card(title: "connect tokitoki to your agent", icon: "point.3.connected.trianglepath.dotted") {
+                    Text("TokiToki exposes local usage, reports, and source tools through MCP. Nothing is uploaded by this setup.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Picker("Integration", selection: $mcpIntegration) {
+                        ForEach(MCPIntegration.allCases) { integration in
+                            Text(integration.title).tag(integration)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .accessibilityIdentifier("mcp-integration-picker")
+                    Text(mcpIntegration.location)
+                        .font(.caption2).foregroundStyle(.tertiary)
+                    ForEach(Array(mcpIntegration.steps.enumerated()), id: \.offset) { index, step in
+                        HStack(alignment: .top, spacing: 7) {
+                            Text("\(index + 1)")
+                                .font(.caption2.weight(.semibold).monospacedDigit())
+                                .foregroundStyle(.secondary)
+                                .frame(width: 15)
+                            Text(step).font(.caption2)
+                        }
+                    }
+                    Text(mcpIntegration.snippet)
+                        .font(.system(size: 10, design: .monospaced))
+                        .textSelection(.enabled)
+                        .padding(8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(.black.opacity(0.16), in: RoundedRectangle(cornerRadius: 7))
+                    Button {
+                        let board = NSPasteboard.general
+                        board.clearContents()
+                        board.setString(mcpIntegration.snippet, forType: .string)
+                        model.pollStatus = "Copied MCP setup for \(mcpIntegration.title)"
+                    } label: {
+                        Label("Copy setup", systemImage: "doc.on.doc")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .accessibilityIdentifier("copy-mcp-setup")
+                }
+                card(title: "available tools", icon: "wrench.and.screwdriver.fill") {
+                    Text("The MCP server provides local summaries, reports, sessions, sources, and exports to the connected agent.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Text("Run `tokitoki mcp` over stdio. Credentials and raw event transcripts are not included in the setup snippet.")
+                        .font(.caption2).foregroundStyle(.tertiary)
+                }
+            }
+            .padding(12)
         }
     }
 
@@ -2897,16 +3259,77 @@ struct ContentView: View {
     }
 
     /// Legend rows for the usage donut, honoring the search filter.
-    private func spendPeriodRows() -> [ReportRow] {
+    private func spendPeriodRows(for requestedKey: String? = nil) -> [ReportRow] {
+        let selectedKey = requestedKey ?? spendPeriodKey
         let rows: [ReportRow]
-        if let period = model.spendPeriods.first(where: { $0.key == spendPeriodKey }) {
+        if let period = model.spendPeriods.first(where: { $0.key == selectedKey }) {
             rows = period.rows
-        } else if spendPeriodKey == "today", let today = model.today {
+        } else if selectedKey == "today", let today = model.today {
             rows = today.rows
         } else {
             rows = []
         }
         return rows.filter { matches($0.bucket) }
+    }
+
+    private var tokenPeriodPicker: some View {
+        HStack(spacing: 0) {
+            ForEach(Self.spendPeriodOrder, id: \.self) { key in
+                Button {
+                    tokenPeriodKey = key
+                } label: {
+                    Text(Self.spendPeriodLabels[key] ?? key)
+                        .font(.caption2.weight(tokenPeriodKey == key ? .semibold : .regular))
+                        .padding(.horizontal, 8).padding(.vertical, 3)
+                        .background(tokenPeriodKey == key ? AnyShapeStyle(.quaternary.opacity(0.9)) : AnyShapeStyle(.clear))
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .background(.quaternary.opacity(0.35), in: Capsule())
+        .accessibilityIdentifier("token-period-picker")
+    }
+
+    private func tokenPeriodLabel(_ key: String) -> String {
+        Self.spendPeriodLabels[key] ?? key
+    }
+
+    private func tokenRows(for key: String) -> [ReportRow] {
+        spendPeriodRows(for: key)
+    }
+
+    private func tokenTotals(for key: String) -> (tokens: Double, cost: Double, requests: Int, sessions: Int) {
+        if key == "today", let p = model.today {
+            return (p.total.totalTokens, p.total.costUsd, p.total.requests, p.total.sessions)
+        }
+        if key == "week", let p = model.week {
+            return (p.total.totalTokens, p.total.costUsd, p.total.requests, p.total.sessions)
+        }
+        let rows = tokenRows(for: key)
+        return (
+            rows.reduce(0) { $0 + $1.totalTokens },
+            rows.reduce(0) { $0 + $1.costUsd },
+            rows.reduce(0) { $0 + $1.requests },
+            rows.reduce(0) { $0 + $1.sessions }
+        )
+    }
+
+    private func tokenSlices(for key: String) -> [(name: String, value: Double, color: Color)] {
+        tokenRows(for: key)
+            .map { ($0.bucket, $0.totalTokens, bucketColor($0.bucket)) }
+            .filter { $0.value > 0 }
+            .sorted { $0.value > $1.value }
+    }
+
+    private var tokenMixSlices: [(name: String, value: Double, color: Color)] {
+        guard let total = model.today?.total else { return [] }
+        return [
+            ("input", total.inputTokens ?? 0, Color(red: 0.30, green: 0.64, blue: 0.98)),
+            ("output", total.outputTokens ?? 0, Color(red: 0.95, green: 0.44, blue: 0.30)),
+            ("cache read", total.cacheReadTokens ?? 0, Color(red: 0.22, green: 0.78, blue: 0.48)),
+            ("cache write", total.cacheWriteTokens ?? 0, Color(red: 0.66, green: 0.45, blue: 0.90)),
+        ].filter { $0.value > 0 }
     }
 
     private var heroCard: some View {
@@ -3111,17 +3534,21 @@ struct ContentView: View {
     private var spendPeriodPicker: some View {
         HStack(spacing: 0) {
             ForEach(Self.spendPeriodOrder, id: \.self) { key in
-                Text(Self.spendPeriodLabels[key] ?? key)
-                    .font(.caption2.weight(spendPeriodKey == key ? .semibold : .regular))
-                    .monospacedDigit()
-                    .padding(.horizontal, 8).padding(.vertical, 2)
-                    .background(
-                        spendPeriodKey == key
-                            ? AnyShapeStyle(.quaternary.opacity(0.9))
-                            : AnyShapeStyle(.clear)
-                    )
-                    .contentShape(Rectangle())
-                    .onTapGesture { spendPeriodKey = key }
+                Button {
+                    spendPeriodKey = key
+                } label: {
+                    Text(Self.spendPeriodLabels[key] ?? key)
+                        .font(.caption2.weight(spendPeriodKey == key ? .semibold : .regular))
+                        .monospacedDigit()
+                        .padding(.horizontal, 8).padding(.vertical, 3)
+                        .background(
+                            spendPeriodKey == key
+                                ? AnyShapeStyle(.quaternary.opacity(0.9))
+                                : AnyShapeStyle(.clear)
+                        )
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
             }
         }
         .background(.quaternary.opacity(0.35), in: Capsule())
@@ -3163,26 +3590,20 @@ struct ContentView: View {
 
     private func metricOption(_ m: SpendMetric) -> some View {
         let selected = spendMetric == m
-        return Text(m.rawValue)
-            .font(.caption2.weight(selected ? .semibold : .regular))
-            .padding(.horizontal, 8).padding(.vertical, 2)
-            .background(selected ? AnyShapeStyle(.quaternary.opacity(0.9)) : AnyShapeStyle(.clear))
-            .contentShape(Rectangle())
-            .onTapGesture { spendMetric = m }
+        return Button {
+            spendMetric = m
+        } label: {
+            Text(m.rawValue)
+                .font(.caption2.weight(selected ? .semibold : .regular))
+                .padding(.horizontal, 8).padding(.vertical, 3)
+                .background(selected ? AnyShapeStyle(.quaternary.opacity(0.9)) : AnyShapeStyle(.clear))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 
-    @ViewBuilder private func card<Content: View>(title: String, icon: String, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 7) {
-            HStack(spacing: 4) {
-                Image(systemName: "line.3.horizontal")
-                    .font(.system(size: 8, weight: .semibold))
-                    .foregroundStyle(.quaternary)
-                    .help("drag to reorder")
-                Label(title.uppercased(), systemImage: icon).font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
-                Spacer()
-            }
-            content()
-        }.padding(10).background(.quaternary.opacity(0.28), in: RoundedRectangle(cornerRadius: 12))
+    @ViewBuilder private func card<Content: View>(title: String, icon: String, @ViewBuilder content: @escaping () -> Content) -> some View {
+        CollapsibleCard(title: title, icon: icon, content: content)
     }
 
     /// CodexBar-style per-repo usage: name + $cost · tokens on one line,
@@ -3648,6 +4069,8 @@ struct AccountLimitCard: View {
     var tokenScale: [String: Double] = [:]
     /// openusage-style collapsible "details" disclosure.
     @State private var showDetails = false
+    /// Account cards default open but can be collapsed independently.
+    @State private var isExpanded = true
 
     private var orderedWindows: [LimitWindow] {
         let order = ["day": 0, "week": 1, "month": 2]
@@ -3657,15 +4080,17 @@ struct AccountLimitCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             headerRow
-            ForEach(Array(orderedWindows.enumerated()), id: \.offset) { _, w in
-                windowBarRow(w)
+            if isExpanded {
+                ForEach(Array(orderedWindows.enumerated()), id: \.offset) { _, w in
+                    windowBarRow(w)
+                }
+                if orderedWindows.isEmpty {
+                    Text("no usage recorded").font(.caption2).foregroundStyle(.tertiary)
+                }
+                bankedRow
+                if !budgets.isEmpty { budgetFooter }
+                detailsDisclosure
             }
-            if orderedWindows.isEmpty {
-                Text("no usage recorded").font(.caption2).foregroundStyle(.tertiary)
-            }
-            bankedRow
-            if !budgets.isEmpty { budgetFooter }
-            detailsDisclosure
         }
         .padding(.vertical, 2)
     }
@@ -3828,6 +4253,18 @@ struct AccountLimitCard: View {
 
     private var headerRow: some View {
         HStack(spacing: 5) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.15)) { isExpanded.toggle() }
+            } label: {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 9, weight: .bold))
+                    .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 18, height: 24)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("\(isExpanded ? "Collapse" : "Expand") account card")
             Image(systemName: "line.3.horizontal")
                 .font(.system(size: 9, weight: .semibold))
                 .foregroundStyle(.quaternary)
