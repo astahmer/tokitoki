@@ -114,6 +114,31 @@ export const MENUBAR_CARDS = [
   "tools",
 ] as const;
 
+/** Native popover destinations. The first four are shown in the header; the
+ * remainder are grouped under More. Keeping this list here gives the CLI and
+ * Swift client one canonical validation boundary. */
+export const MENUBAR_TABS = [
+  "overview",
+  "quotas",
+  "tokens",
+  "reports",
+  "sources",
+  "mcp",
+  "settings",
+] as const;
+
+export function setMenubarTabs(ids: string[]): void {
+  const order: string[] = [];
+  for (const id of ids) {
+    if ((MENUBAR_TABS as readonly string[]).includes(id) && !order.includes(id)) order.push(id);
+  }
+  for (const id of MENUBAR_TABS) if (!order.includes(id)) order.push(id);
+  saveUiMutator((cfg) => {
+    cfg.ui ??= {};
+    cfg.ui.menubarTabs = order;
+  });
+}
+
 /**
  * Persist the popover card layout from a Customize-sheet save:
  * "limits:1,tools:0,..." — argument order = display order, value = visible.

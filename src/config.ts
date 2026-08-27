@@ -111,6 +111,8 @@ export interface TokitokiConfig {
     menubarCards?: string[];
     /** Account-card display order ("provider@accountKey" ids), menubar popover. */
     menubarAccountOrder?: string[];
+    /** Popover tabs in display order; the first four stay in the header. */
+    menubarTabs?: string[];
   };
 }
 

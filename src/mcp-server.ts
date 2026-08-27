@@ -28,14 +28,14 @@ import { appendEvents, eventsFile, saveProviderCursors } from "./store.ts";
 import { resolveTimeWindow, type TimeWindow } from "./period.ts";
 
 const WINDOW_SHAPE = {
-  last: z.string().optional().describe("rolling window: day|week|month or a duration like 24h/2days/150m"),
+  last: z.string().optional().describe("rolling window: day|week|month|year or a duration like 24h/2days/150m"),
   from: z.string().optional().describe("window start: YYYY-MM-DD or ISO timestamp (exclusive with last)"),
   to: z.string().optional().describe("window end: YYYY-MM-DD or ISO timestamp (default now)"),
 } as const;
 
 type WindowArgs = { last?: string; from?: string; to?: string };
 
-function windowFrom(args: WindowArgs, fallbackPeriod: "day" | "week" | "month" = "week"): TimeWindow {
+function windowFrom(args: WindowArgs, fallbackPeriod: "day" | "week" | "month" | "year" = "week"): TimeWindow {
   return resolveTimeWindow({ last: args.last, from: args.from, to: args.to, fallbackPeriod });
 }
 

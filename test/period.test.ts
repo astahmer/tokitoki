@@ -47,6 +47,13 @@ describe("resolveTimeWindow", () => {
     expect(w.period).toBeUndefined();
   });
 
+  it("supports a rolling year preset", () => {
+    const now = new Date(2026, 7, 27, 14, 0);
+    const w = rollingWindow("year", now);
+    expect(w.period).toBe("year");
+    expect(new Date(w.sinceIso).getTime()).toBe(now.getTime() - 365 * 86_400_000);
+  });
+
   it("--from/--to are mutually exclusive with --last", () => {
     expect(() => resolveTimeWindow({ last: "week", from: "2026-08-20" })).toThrow(UserError);
   });

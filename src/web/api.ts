@@ -35,7 +35,7 @@ import { detectAnomalies, type AnomalyMetric } from "../anomalies.ts";
 
 /** Query-window params shared by every time-based endpoint. */
 export interface WindowParams {
-  /** day|week|month or a duration like 24h / 2days / 150m */
+  /** day|week|month|year or a duration like 24h / 2days / 150m */
   last?: string;
   from?: string;
   to?: string;
@@ -147,7 +147,7 @@ export function apiTimeseries(
 }
 
 const TABLE_DIMS = ["provider", "model", "account", "machine", "project", "repo", "tool"] as const;
-const PERIODS = ["day", "week", "month"] as const;
+const PERIODS = ["day", "week", "month", "year"] as const;
 
 export interface GaugeInfo {
   frac: number;

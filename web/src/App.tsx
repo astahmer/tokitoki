@@ -42,6 +42,7 @@ const RANGE_PRESETS: Array<{ label: string; value: string }> = [
   { label: "7d", value: "7d" },
   { label: "30d", value: "30d" },
   { label: "90d", value: "90d" },
+  { label: "year", value: "year" },
 ];
 const VIEWS = ["dashboard", "tools", "sessions", "anomalies", "budgets", "sources"] as const;
 type View = (typeof VIEWS)[number];

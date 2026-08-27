@@ -19,6 +19,8 @@ import {
   setMenubarProviders,
   setMenubarCards,
   setMenubarAccountOrder,
+  setMenubarTabs,
+  MENUBAR_TABS,
   setPollEnabled,
   setSurfaceVisibility,
   menubarCardLayout,
@@ -112,7 +114,7 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
   },
   report: {
     usage: "tokitoki report [--last <window>] [--from <date>] [--to <date>] [--by <dimension>]",
-    flags: `  --last day|week|month     ROLLING window ending now (day = last 24h).
+    flags: `  --last day|week|month|year ROLLING window ending now (day = last 24h).
                             Also accepts durations: 24h, 2days, 150m, 1w
   --from <date>             absolute start (YYYY-MM-DD or ISO timestamp)
   --to <date>               absolute end, defaults to now; mutually exclusive
@@ -144,14 +146,14 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
   week: { usage: "tokitoki week", flags: "  shortcut for report --last week", example: "tokitoki week" },
   month: { usage: "tokitoki month", flags: "  shortcut for report --last month", example: "tokitoki month" },
   chart: {
-    usage: "tokitoki chart [--last day|week|month|<duration>]",
+    usage: "tokitoki chart [--last day|week|month|year|<duration>]",
     flags: `  --by provider|model   one sparkline row per bucket
   --spark               compact inline sparklines
   (rolling windows like report; default period: week)`,
     example: "tokitoki chart --last month --spark",
   },
   pie: {
-    usage: "tokitoki pie [--last day|week|month|<duration>] [--by provider|model]",
+    usage: "tokitoki pie [--last day|week|month|year|<duration>] [--by provider|model]",
     flags: "  share-of-tokens legend bars with cost (default period: week)",
     example: "tokitoki pie --last week",
   },
@@ -173,7 +175,7 @@ A day is flagged when its metric exceeds 3× the trailing 14-day average
     example: "tokitoki anomalies --last quarter",
   },
   tools: {
-    usage: "tokitoki tools [--last day|week|month|<duration>] [--top N] [--provider <id>] [--json]",
+    usage: "tokitoki tools [--last day|week|month|year|<duration>] [--top N] [--provider <id>] [--json]",
     flags: `  top tools by spend — which tool/command put the tokens in context.
   Names are provider-qualified; MCP servers roll up to mcp:<server>;
   shell commands collapse to their first word (shell:rg). Turns without a
@@ -196,7 +198,7 @@ Rows always show every configured scope×pattern; state is ok | warn (≥80%)
     example: 'tokitoki budgets --json · tokitoki budgets init',
   },
   repos: {
-    usage: "tokitoki repos [--last day|week|month|<duration>] [--worst N] [--provider <id>]",
+    usage: "tokitoki repos [--last day|week|month|year|<duration>] [--worst N] [--provider <id>]",
     flags: `  efficiency ranking per repo. Score = avg cost/request ×
   (1 − cache%). High score = expensive AND cache-hostile.
   --worst N                 show only the N worst (default: all)`,
@@ -210,11 +212,11 @@ Rows always show every configured scope×pattern; state is ok | warn (≥80%)
     example: "tokitoki import ~/Downloads/anthropic-usage.csv",
   },
   sessions: {
-    usage: "tokitoki sessions [--search \"query\"] [--last day|week|month|<duration>] [--top N] [--by provider|repo]",
+    usage: "tokitoki sessions [--search \"query\"] [--last day|week|month|year|<duration>] [--top N] [--by provider|repo]",
     flags: `  --search "query"          full-text search across ALL conversation content
                             (terms AND together; results ranked by relevance)
   --page N                  result page for --search (default 1, 50 per page)
-  --last day|week|month     rolling window (default: week); durations ok
+  --last day|week|month|year rolling window (default: week); durations ok
   --top N                   leaderboard size (default: 10)
   --by provider|repo        group the leaderboard under section headers
   --session <id>            drill into one session: request timeline + running total
@@ -257,13 +259,14 @@ Rows always show every configured scope×pattern; state is ok | warn (≥80%)
     example: "tokitoki menubar-payload --json",
   },
   ui: {
-    usage: "tokitoki ui [--list] [--hide <provider[:account]>] [--show <provider[:account]>]\n                  [--menubar-only <provider>...] [--surface menubar|dashboard]",
+    usage: "tokitoki ui [--list] [--hide <provider[:account]>] [--show <provider[:account]>]\n                  [--menubar-only <provider>...] [--tabs <id,...>] [--surface menubar|dashboard]",
     flags:
       "  --list                show current visibility state\n" +
       "  --hide <target>       hide a provider or provider:account pair\n" +
       "  --show <target>       un-hide a previously hidden target\n" +
       "  --surface <s>         which surface (default: menubar)\n" +
-      "  --menubar-only <p>    restrict menubar preview to these providers (repeatable; none = all)",
+      "  --menubar-only <p>    restrict menubar preview to these providers (repeatable; none = all)\n" +
+      "  --tabs <id,...>       order popover tabs; first four stay visible, rest go under More",
     example: "tokitoki ui --hide codex:codex:plus --surface dashboard",
   },
   web: {
@@ -348,7 +351,7 @@ Usage: tokitoki <command> [options]
 Commands:
   scan       incrementally scan harness stores into the local cache
   sources    where each provider's data comes from (roots, cursors, freshness)
-  report     aggregate a rolling window (--last day|week|month|24h, default week)
+  report     aggregate a rolling window (--last day|week|month|year|24h, default week)
   today      shortcut for report --last day (+ top projects MTD)
   week       shortcut for report --last week
   month      shortcut for report --last month
@@ -377,7 +380,7 @@ Commands:
 
 Run 'tokitoki help <command>' or 'tokitoki <command> --help' for details.
 
-Window semantics: --last day|week|month are ROLLING (end at now); durations
+Window semantics: --last day|week|month|year are ROLLING (end at now); durations
 like 24h/2days/150m/1w work too; --from/--to pin absolute ranges.
 
 Version: tokitoki v${VERSION} (-v/--version)
@@ -448,7 +451,7 @@ export async function main(argv: string[]): Promise<void> {
 /** Flags each command accepts — anything else is a typo we can suggest around. */
 const KNOWN_FLAGS: Record<string, string[]> = {
   "menubar-payload": ["json"],
-  ui: ["list", "hide", "show", "surface", "menubar-only", "card-set", "account-order"],
+  ui: ["list", "hide", "show", "surface", "menubar-only", "card-set", "account-order", "tabs"],
   scan: ["provider"],
   sources: [],
   report: ["last", "by", "json", "sort", "asc", "provider", "delta", "no-delta", "show-email", "show-emails", "since", "until", "from", "to"],
@@ -1882,7 +1885,7 @@ function runConfigSet(parsed: ParsedInvocation): void {
     if (pathArg === undefined || pathArg.length === 0 || valueArg === undefined) {
       throw new UserError("usage: tokitoki config set <dot.path> <json>", 'tokitoki config set ui.stripMetric "tokens"');
     }
-    const allowed = new Set(["ui", "poll", "hidden", "plans", "budgets", "extraEventFiles", "experimental"]);
+  const allowed = new Set(["ui", "poll", "sync", "hidden", "plans", "budgets", "extraEventFiles", "experimental"]);
     const top = pathArg.split(".")[0]!;
     if (!allowed.has(top)) {
       throw new UserError(`unknown config section '${top}'`, "sections: ui, poll, plans, budgets");
@@ -2139,12 +2142,23 @@ function runMenubarPayload(parsed: ParsedInvocation): void {
         JSON.stringify({
           previewLines: config.ui?.menubarPreviewLines ?? 3,
           previewMode: config.ui?.menubarPreviewMode ?? "inline",
-          providers: [...cache.providerStats().keys()].sort(),
+          providers: [...new Set([
+            ...cache.providerStats().keys(),
+            // Cursor is a binary-store/search provider: it can be present
+            // without token rows, so providerStats() alone would hide it.
+            ...PROVIDERS.filter((provider) => provider.id === "cursor" && provider.discoverRoots().some((root) => provider.listFiles(root).length > 0)).map((provider) => provider.id),
+          ])].sort(),
           menubarHidden: config.ui?.hidden?.menubar ?? [],
           previewHidden: config.ui?.previewHidden ?? [],
           stripMetric: config.ui?.stripMetric ?? "percent",
           stripExhausted: config.ui?.stripExhausted ?? "reset",
           cards: menubarCardLayout(config),
+          tabs: config.ui?.menubarTabs ?? [...MENUBAR_TABS],
+          syncBackend: config.sync?.backend,
+          syncConfigured: config.sync?.backend !== undefined,
+          syncPath: config.sync?.path,
+          syncUrl: config.sync?.url,
+          syncHandle: config.sync?.handle,
           pollAuto: config.poll?.enabled === true,
           pollIntervalMinutes: config.poll?.intervalMinutes ?? 15,
         }),
@@ -2361,6 +2375,7 @@ function runMenubarPayload(parsed: ParsedInvocation): void {
     grab("yesterday", { from: yKey, to: yKey });
     grab("week", { last: "week" });
     grab("month", { last: "month" });
+    grab("year", { last: "year" });
     console.log(JSON.stringify(periods));
   });
   console.log(JSON.stringify(parts));
@@ -2372,6 +2387,7 @@ function runUi(parsed: ParsedInvocation): void {
   const hide = flagString(parsed, "hide");
   const show = flagString(parsed, "show");
   const menubarOnly = parsed.flags["menubar-only"];
+  const tabs = flagString(parsed, "tabs");
   const cardSet = flagString(parsed, "card-set");
   if (cardSet !== undefined) {
     setMenubarCards(cardSet);
@@ -2382,6 +2398,15 @@ function runUi(parsed: ParsedInvocation): void {
   if (accountOrder !== undefined) {
     setMenubarAccountOrder(accountOrder.split(",").map((s) => s.trim()).filter(Boolean));
     console.log("account order saved");
+    return;
+  }
+  if (tabs !== undefined) {
+    const ids = tabs.split(",").map((s) => s.trim()).filter(Boolean);
+    if (ids.length === 0 || ids.some((id) => !(MENUBAR_TABS as readonly string[]).includes(id))) {
+      throw new UserError(`invalid tab id (valid: ${MENUBAR_TABS.join(", ")})`, "tokitoki ui --tabs overview,quotas,tokens,reports,sources,mcp,settings");
+    }
+    setMenubarTabs(ids);
+    console.log("tab layout saved");
     return;
   }
 

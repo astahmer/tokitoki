@@ -24,7 +24,7 @@ afterEach(() => {
 });
 
 describe("menubar config persistence", () => {
-  it("preserves preview, card visibility, and account order across writes", () => {
+  it("preserves preview, card visibility, tab order, sync, and account order across writes", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tokitoki-config-e2e-"));
     const configPath = path.join(dir, "config.json");
     configs.push(configPath);
@@ -34,6 +34,8 @@ describe("menubar config persistence", () => {
     expect(run(["ui", "--account-order", "codex@openai:plus,pi@opencode-go"], configPath).status).toBe(0);
     expect(run(["config", "set", "ui.stripMetric", '"smart"'], configPath).status).toBe(0);
     expect(run(["config", "set", "ui.stripExhausted", '"hide"'], configPath).status).toBe(0);
+    expect(run(["ui", "--tabs", "tokens,overview,quotas,reports,mcp,sources,settings"], configPath).status).toBe(0);
+    expect(run(["config", "set", "sync.backend", '"dir"'], configPath).status).toBe(0);
 
     const cfg = JSON.parse(fs.readFileSync(configPath, "utf8")) as {
       ui?: {
@@ -42,13 +44,17 @@ describe("menubar config persistence", () => {
         stripExhausted?: string;
         menubarAccountOrder?: string[];
         hidden?: { menubar?: string[] };
+        menubarTabs?: string[];
       };
+      sync?: { backend?: string };
     };
     expect(cfg.ui?.previewHidden).toEqual(["claude", "openrouter"]);
     expect(cfg.ui?.stripMetric).toBe("smart");
     expect(cfg.ui?.stripExhausted).toBe("hide");
     expect(cfg.ui?.menubarAccountOrder).toEqual(["codex@openai:plus", "pi@opencode-go"]);
     expect(cfg.ui?.hidden?.menubar).toEqual(["codex:openai:plus"]);
+    expect(cfg.ui?.menubarTabs).toEqual(["tokens", "overview", "quotas", "reports", "mcp", "sources", "settings"]);
+    expect(cfg.sync?.backend).toBe("dir");
   });
 
   it("rejects a foreign config section without touching the file", () => {

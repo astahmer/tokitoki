@@ -2,7 +2,7 @@
  * Time-window resolution shared by the CLI and the web API.
  *
  * Semantics (documented everywhere a window is shown):
- * - `--last day|week|month` are ROLLING windows ending at "now"
+ * - `--last day|week|month|year` are ROLLING windows ending at "now"
  *   (now−24h, now−7d, now−30d). Only `today` uses a calendar day.
  * - `--last` also accepts durations: 24h, 2days, 150m, 30min, 90s, 1w
  * - `--from`/`--to` accept YYYY-MM-DD or full ISO timestamps; --to defaults
@@ -10,9 +10,9 @@
  */
 import { UserError } from "./errors.ts";
 
-export type Period = "day" | "week" | "month";
+export type Period = "day" | "week" | "month" | "year";
 
-export const PERIODS: Period[] = ["day", "week", "month"];
+export const PERIODS: Period[] = ["day", "week", "month", "year"];
 
 /** A resolved query window in UTC ISO bounds + a human label. */
 export interface TimeWindow {
@@ -60,7 +60,7 @@ export function parseDuration(raw: string): number | null {
   return Number(match[1]!) * unit;
 }
 
-/** True when raw is one of day|week|month. */
+/** True when raw is one of day|week|month|year. */
 export function isNamedPeriod(raw: string): raw is Period {
   return PERIODS.includes(raw as Period);
 }
@@ -127,7 +127,7 @@ export function resolveTimeWindow(opts: ResolveOptions): TimeWindow {
     const ms = parseDuration(opts.last!);
     if (ms === null) {
       throw new UserError(
-        `invalid --last: '${opts.last}' (valid: day|week|month, or durations like 24h, 2days, 150m, 1w)`,
+        `invalid --last: '${opts.last}' (valid: day|week|month|year, or durations like 24h, 2days, 150m, 1w)`,
         "tokitoki report --last 24h",
       );
     }
@@ -143,7 +143,13 @@ export function resolveTimeWindow(opts: ResolveOptions): TimeWindow {
 
 /** Rolling named-period window: now − N·24h (day = 24h, NOT calendar day). */
 export function rollingWindow(period: Period, now: Date = new Date()): TimeWindow {
-  const ms = period === "day" ? 86_400_000 : period === "week" ? 7 * 86_400_000 : 30 * 86_400_000;
+  const ms = period === "day"
+    ? 86_400_000
+    : period === "week"
+      ? 7 * 86_400_000
+      : period === "month"
+        ? 30 * 86_400_000
+        : 365 * 86_400_000;
   return {
     sinceIso: new Date(now.getTime() - ms).toISOString(),
     label: `rolling ${period}`,

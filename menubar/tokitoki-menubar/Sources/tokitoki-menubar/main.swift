@@ -158,6 +158,12 @@ struct UiPreviewConfig: Codable {
     let stripMetric: String?
     // Exhausted providers: "show" percentages | "hide" mark | "reset" countdown.
     let stripExhausted: String?
+    var tabs: [String]? = nil
+    var syncBackend: String? = nil
+    var syncConfigured: Bool? = nil
+    var syncPath: String? = nil
+    var syncUrl: String? = nil
+    var syncHandle: String? = nil
 }
 
 // Combined snapshot from `tokitoki menubar-payload --json` (single CLI
@@ -232,6 +238,14 @@ final class Model: ObservableObject {
     @Published var stripExhausted: String = "reset"
     @Published var spendPeriods: [SpendPeriod] = []
     @Published var history: DailyUsageHistory?
+    @Published var tabOrder: [PopoverSubview] = PopoverSubview.defaultOrder
+    @Published var syncBackend: String?
+    @Published var syncConfigured = false
+    @Published var syncStatus: String?
+    @Published var syncPath = ""
+    @Published var syncUrl = ""
+    @Published var syncHandle = ""
+    @Published var mcpStatus = "Ready · stdio is agent-owned"
     /// nil = no budgets configured; "ok" | "warn" | "exceeded"
     @Published var worstState: String?
     @Published var errorText: String?
@@ -336,6 +350,71 @@ final class Model: ObservableObject {
                 self.pollStatus = "Polling interval saved"
             } catch {
                 self.pollStatus = "Could not save polling interval: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    func setTabOrder(_ order: [PopoverSubview]) {
+        let normalized = PopoverSubview.normalizedOrder(order.map(\.rawValue))
+        tabOrder = normalized
+        let json = "[" + normalized.map { "\"\($0.rawValue)\"" }.joined(separator: ",") + "]"
+        persistUISetting(path: "ui.menubarTabs", json: json)
+    }
+
+    func setSyncBackend(_ backend: String) {
+        let value = "\"\(backend)\""
+        syncBackend = backend == "none" ? nil : backend
+        syncConfigured = backend != "none"
+        syncStatus = "Saving sync backend…"
+        let cli = invocation
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                _ = try await Self.runConfigCLI(cli, ["config", "set", "sync.backend", value])
+                self.syncStatus = backend == "none" ? "Sync disabled" : "Sync backend saved"
+                self.refresh()
+            } catch {
+                self.syncStatus = "Could not save sync setting: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    func setSyncValue(path: String, value: String) {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        switch path {
+        case "sync.path": syncPath = trimmed
+        case "sync.url": syncUrl = trimmed
+        case "sync.handle": syncHandle = trimmed
+        default: break
+        }
+        let cli = invocation
+        let json = "\"\(trimmed.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\""))\""
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                _ = try await Self.runConfigCLI(cli, ["config", "set", path, json])
+                self.syncStatus = "Sync setting saved"
+            } catch {
+                self.syncStatus = "Could not save sync setting: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    func syncNow() {
+        guard syncConfigured else {
+            syncStatus = "Choose a backend and finish its path/remote in config first"
+            return
+        }
+        syncStatus = "Syncing events…"
+        let cli = invocation
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                let output = try await Self.runCLI(cli, ["sync"])
+                self.syncStatus = output.split(separator: "\n").last.map(String.init) ?? "Sync complete"
+                self.refresh()
+            } catch {
+                self.syncStatus = "Sync failed: \(error.localizedDescription)"
             }
         }
     }
@@ -451,6 +530,12 @@ final class Model: ObservableObject {
                     self.previewHidden = Set(ui.previewHidden ?? [])
                     self.stripMetric = ui.stripMetric ?? "percent"
                     self.stripExhausted = ui.stripExhausted ?? "reset"
+                    self.tabOrder = PopoverSubview.normalizedOrder(ui.tabs)
+                    self.syncBackend = ui.syncBackend
+                    self.syncConfigured = ui.syncConfigured ?? (ui.syncBackend != nil)
+                    self.syncPath = ui.syncPath ?? ""
+                    self.syncUrl = ui.syncUrl ?? ""
+                    self.syncHandle = ui.syncHandle ?? ""
                 }
                 self.updatePollSchedule()
                 self.spendPeriods = p.spendPeriods ?? []
@@ -987,6 +1072,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var monitors: [Any] = []
     private var testContextObserver: NSObjectProtocol?
     private var dashboardProcess: Process?
+    /// A detached stdio MCP process is only a health/lifecycle indicator;
+    /// real agents own their own stdio connection.
+    private var mcpProcess: Process?
+    private var mcpInput: Pipe?
     private let hoverPopover = NSPopover()
     private let hoverActivationDelay: TimeInterval = 0.15
     private var hoverWorkItem: DispatchWorkItem?
@@ -1052,6 +1141,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if dashboardProcess?.isRunning == true {
             dashboardProcess?.terminate()
         }
+        if mcpProcess?.isRunning == true { mcpProcess?.terminate() }
     }
 
     func showTestContextMenu() {
@@ -1485,6 +1575,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func openReports() {
         openLocalDashboard(path: "/?view=dashboard&range=month")
+    }
+
+    func refreshDashboardStatus() {
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            self.model?.dashboardStatus = await Self.dashboardIsReady()
+                ? (self.dashboardProcess?.isRunning == true ? "Running · owned by tokitoki" : "Running · external process")
+                : "Stopped"
+        }
+    }
+
+    func stopDashboard() {
+        guard dashboardProcess?.isRunning == true else {
+            model?.dashboardStatus = "Stopped · no server owned by tokitoki"
+            return
+        }
+        dashboardProcess?.terminate()
+        dashboardProcess = nil
+        model?.dashboardStatus = "Stopped"
+    }
+
+    func toggleMCP() {
+        if mcpProcess?.isRunning == true {
+            mcpProcess?.terminate()
+            mcpProcess = nil
+            mcpInput = nil
+            model?.mcpStatus = "Stopped · agents start their own stdio connection"
+            return
+        }
+        guard let cli = model?.currentInvocation() else { return }
+        let proc = Process()
+        proc.executableURL = cli.executable
+        proc.arguments = cli.prefixArgs + ["mcp"]
+        let input = Pipe()
+        proc.standardInput = input
+        proc.standardOutput = FileHandle.nullDevice
+        proc.standardError = FileHandle.nullDevice
+        do {
+            try proc.run()
+            mcpInput = input
+            mcpProcess = proc
+            model?.mcpStatus = "Running · stdio health process (agent connections stay client-owned)"
+        } catch {
+            model?.mcpStatus = "Could not start MCP: \(error.localizedDescription)"
+        }
     }
 
     /// Open a local dashboard route, starting the web server when the user
@@ -2243,8 +2378,17 @@ enum PopoverSubview: String, CaseIterable, Hashable {
         }
     }
 
-    static let primary: [PopoverSubview] = [.overview, .quotas, .tokens, .reports]
-    static let secondary: [PopoverSubview] = [.sources, .mcp, .settings]
+    static let defaultOrder: [PopoverSubview] = [.overview, .quotas, .tokens, .reports, .sources, .mcp, .settings]
+
+    static func normalizedOrder(_ raw: [String]?) -> [PopoverSubview] {
+        var result: [PopoverSubview] = []
+        for id in raw ?? [] {
+            guard let view = PopoverSubview(rawValue: id), !result.contains(view) else { continue }
+            result.append(view)
+        }
+        for view in defaultOrder where !result.contains(view) { result.append(view) }
+        return result
+    }
 }
 
 enum MCPIntegration: String, CaseIterable, Identifiable {
@@ -2302,6 +2446,29 @@ enum MCPIntegration: String, CaseIterable, Identifiable {
         default: return ["Open the integration settings at the location below.", "Paste the snippet into the MCP configuration.", "Restart or reconnect the integration."]
         }
     }
+}
+
+struct MCPToolInfo: Identifiable {
+    let id: String
+    let summary: String
+    let inputs: String
+
+    static let all: [MCPToolInfo] = [
+        .init(id: "usage_report", summary: "Aggregate tokens, requests, sessions, cache, and cost by model, provider, account, project, repo, machine, or tool.", inputs: "window · dimension · optional provider"),
+        .init(id: "usage_totals", summary: "Return only totals for a window when you need a compact budget or activity check.", inputs: "window · optional provider"),
+        .init(id: "sessions_top", summary: "Find the most expensive or token-heavy sessions, with provider and time-window context.", inputs: "window · limit 1–100 · optional provider"),
+        .init(id: "session_detail", summary: "Expand one session into its per-request timeline and provider attribution.", inputs: "session_id"),
+        .init(id: "tool_spend", summary: "Rank spend by the tool that caused each request; MCP server calls are rolled up as mcp:server.", inputs: "window"),
+        .init(id: "repo_efficiency", summary: "Rank repositories by cost/request/session and expose cache-hostility signals.", inputs: "window"),
+        .init(id: "budgets_status", summary: "Read configured spending caps and their current usage gauges.", inputs: "none"),
+        .init(id: "quota_snapshot", summary: "Read the latest provider-reported quota windows for one account.", inputs: "provider · account_key"),
+        .init(id: "anomalies", summary: "Detect unusual activity days against the trailing baseline.", inputs: "window"),
+        .init(id: "sources", summary: "Explain provider provenance: roots, files, scan freshness, accounts, and models.", inputs: "none"),
+        .init(id: "scan_now", summary: "Incrementally scan all registered harness stores and update the local cache; safe to repeat.", inputs: "none"),
+        .init(id: "search_sessions", summary: "Full-text search indexed session titles and conversation summaries, returning snippets and usage context.", inputs: "query · limit 1–50 · optional provider"),
+        .init(id: "usage_chart", summary: "Return one row per day with tokens, cost, and requests for charting or trend analysis.", inputs: "window · metric tokens|cost|requests"),
+        .init(id: "export_report", summary: "Export a grouped report as JSON, CSV, or Markdown for handoff or archival.", inputs: "window · format · dimension · optional provider"),
+    ]
 }
 
 /// Small, bounded stacked-bar history for the native Tokens view. The CLI
@@ -2485,6 +2652,80 @@ struct HoverPreviewView: View {
     }
 }
 
+struct TabSettingsSheet: View {
+    @ObservedObject var model: Model
+    @Binding var isPresented: Bool
+    @State private var tabs: [PopoverSubview] = PopoverSubview.defaultOrder
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Button("Cancel") { isPresented = false }
+                    .buttonStyle(.plain).foregroundStyle(.secondary)
+                Spacer()
+                Text("Popover tabs").font(.system(size: 13, weight: .semibold))
+                Spacer()
+                Button("Done") {
+                    model.setTabOrder(tabs)
+                    isPresented = false
+                }
+                .buttonStyle(.plain).fontWeight(.semibold)
+            }
+            .padding(.horizontal, 14).padding(.vertical, 10)
+            Divider()
+            Text("Drag to reorder. The first four tabs stay visible; the rest appear under More.")
+                .font(.caption).foregroundStyle(.secondary)
+                .multilineTextAlignment(.leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(12)
+            List {
+                ForEach(tabs, id: \.self) { tab in
+                    HStack(spacing: 8) {
+                        Image(systemName: "line.3.horizontal")
+                            .foregroundStyle(.tertiary)
+                        Label(tab.title, systemImage: tab.icon)
+                        Spacer()
+                        Text(tabs.firstIndex(of: tab)! < 4 ? "header" : "More")
+                            .font(.caption2).foregroundStyle(.tertiary)
+                    }
+                }
+                .onMove { tabs.move(fromOffsets: $0, toOffset: $1) }
+            }
+            .listStyle(.inset)
+        }
+        .frame(width: 340, height: 390)
+        .onAppear { tabs = model.tabOrder }
+    }
+}
+
+struct TokenRangeSheet: View {
+    @Binding var isPresented: Bool
+    let onSave: (Date, Date) -> Void
+    @State private var from = Calendar.current.date(byAdding: .month, value: -1, to: Date()) ?? Date()
+    @State private var to = Date()
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Custom token range").font(.system(size: 13, weight: .semibold))
+            DatePicker("From", selection: $from, displayedComponents: .date)
+            DatePicker("To", selection: $to, in: from..., displayedComponents: .date)
+            Text("Custom token totals use the history currently available to the menubar.")
+                .font(.caption2).foregroundStyle(.secondary)
+            HStack {
+                Spacer()
+                Button("Cancel") { isPresented = false }.keyboardShortcut(.cancelAction)
+                Button("Apply") {
+                    onSave(from, to)
+                    isPresented = false
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(16)
+        .frame(width: 300)
+    }
+}
+
 struct ContentView: View {
     @ObservedObject var model: Model
     /// Card filter — matches harness/account names, repo paths, tools.
@@ -2495,6 +2736,8 @@ struct ContentView: View {
     @State private var showPreviewSettings = false
     /// Provider API-key manager, kept separate from card layout editing.
     @State private var showAPIKeys = false
+    @State private var showTabSettings = false
+    @State private var showTokenRange = false
     /// Repo row currently expanded in the repos card.
     @State private var expandedRepo: String?
     /// Card order override while a drag session is in flight.
@@ -2507,6 +2750,8 @@ struct ContentView: View {
     @State private var activeSubview: PopoverSubview = .overview
     /// Token-report period selection is local to the lightweight native view.
     @State private var tokenPeriodKey = "today"
+    @State private var customTokenFrom = Calendar.current.date(byAdding: .month, value: -1, to: Date()) ?? Date()
+    @State private var customTokenTo = Date()
     @State private var mcpIntegration: MCPIntegration = .claudeDesktop
 
     /// Default card order when the payload carries no layout yet.
@@ -2575,7 +2820,7 @@ struct ContentView: View {
             }
             popoverFooter
         }
-        .frame(width: 380, height: 620)
+        .frame(width: 400, height: 700)
         .background(.thinMaterial)
         .sheet(isPresented: $showCustomize) {
             CustomizeSheet(model: model, isPresented: $showCustomize)
@@ -2586,16 +2831,26 @@ struct ContentView: View {
         .sheet(isPresented: $showAPIKeys) {
             ApiKeysSheet(model: model, isPresented: $showAPIKeys)
         }
+        .sheet(isPresented: $showTabSettings) {
+            TabSettingsSheet(model: model, isPresented: $showTabSettings)
+        }
+        .sheet(isPresented: $showTokenRange) {
+            TokenRangeSheet(isPresented: $showTokenRange, onSave: { from, to in
+                customTokenFrom = from
+                customTokenTo = to
+                tokenPeriodKey = "custom"
+            })
+        }
     }
 
     private var navigationHeader: some View {
         HStack(spacing: 4) {
-            ForEach(PopoverSubview.primary, id: \.self) { view in
+            ForEach(Array(model.tabOrder.prefix(4)), id: \.self) { view in
                 navigationButton(view)
             }
             Menu {
                 Section("More") {
-                    ForEach(PopoverSubview.secondary, id: \.self) { view in
+                    ForEach(Array(model.tabOrder.dropFirst(4)), id: \.self) { view in
                         Button {
                             activeSubview = view
                         } label: {
@@ -2608,13 +2863,13 @@ struct ContentView: View {
                     Image(systemName: "ellipsis.circle")
                     Text("More")
                 }
-                .font(.caption2.weight(PopoverSubview.secondary.contains(activeSubview) ? .semibold : .regular))
+                .font(.caption2.weight(model.tabOrder.dropFirst(4).contains(activeSubview) ? .semibold : .regular))
                 .frame(maxWidth: .infinity, minHeight: 30)
-                .background(PopoverSubview.secondary.contains(activeSubview) ? AnyShapeStyle(.quaternary.opacity(0.9)) : AnyShapeStyle(.clear), in: RoundedRectangle(cornerRadius: 6))
+            .background(model.tabOrder.dropFirst(4).contains(activeSubview) ? AnyShapeStyle(.quaternary.opacity(0.9)) : AnyShapeStyle(.clear), in: RoundedRectangle(cornerRadius: 6))
                 .contentShape(Rectangle())
             }
             .menuStyle(.borderlessButton)
-            .foregroundStyle(PopoverSubview.secondary.contains(activeSubview) ? .primary : .secondary)
+            .foregroundStyle(model.tabOrder.dropFirst(4).contains(activeSubview) ? .primary : .secondary)
             .accessibilityLabel("More views")
         }
         .padding(.horizontal, 8).padding(.vertical, 7)
@@ -2864,6 +3119,17 @@ struct ContentView: View {
                 card(title: "connect tokitoki to your agent", icon: "point.3.connected.trianglepath.dotted") {
                     Text("TokiToki exposes local usage, reports, and source tools through MCP. Nothing is uploaded by this setup.")
                         .font(.caption).foregroundStyle(.secondary)
+                    HStack(spacing: 7) {
+                        Circle().fill(model.mcpStatus.hasPrefix("Running") ? .green : .secondary).frame(width: 7, height: 7)
+                        Text(model.mcpStatus).font(.caption2).foregroundStyle(.secondary)
+                        Spacer()
+                        Button(model.mcpStatus.hasPrefix("Running") ? "Stop" : "Start") {
+                            AppDelegate.shared?.toggleMCP()
+                        }
+                        .buttonStyle(.bordered).controlSize(.mini)
+                    }
+                    Text("MCP uses stdio: connected agents normally start their own process. The button starts a local health process so its lifecycle is visible here.")
+                        .font(.caption2).foregroundStyle(.tertiary)
                     Picker("Integration", selection: $mcpIntegration) {
                         ForEach(MCPIntegration.allCases) { integration in
                             Text(integration.title).tag(integration)
@@ -2901,8 +3167,18 @@ struct ContentView: View {
                     .accessibilityIdentifier("copy-mcp-setup")
                 }
                 card(title: "available tools", icon: "wrench.and.screwdriver.fill") {
-                    Text("The MCP server provides local summaries, reports, sessions, sources, and exports to the connected agent.")
+                    Text("14 local tools · read-only by default; scan_now is the only mutating operation.")
                         .font(.caption).foregroundStyle(.secondary)
+                    ForEach(MCPToolInfo.all) { tool in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(tool.id).font(.caption2.monospaced().weight(.semibold))
+                            Text(tool.summary).font(.caption2).foregroundStyle(.secondary)
+                            Text("Inputs: \(tool.inputs)").font(.caption2).foregroundStyle(.tertiary)
+                        }
+                        .padding(.vertical, 3)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .overlay(alignment: .bottom) { Divider().opacity(0.35) }
+                    }
                     Text("Run `tokitoki mcp` over stdio. Credentials and raw event transcripts are not included in the setup snippet.")
                         .font(.caption2).foregroundStyle(.tertiary)
                 }
@@ -2940,7 +3216,7 @@ struct ContentView: View {
                     ForEach(model.knownProviders, id: \.self) { provider in
                         HStack(spacing: 6) {
                             ProviderLogo(provider: provider)
-                            Text(provider).font(.caption)
+                            Text(provider == "cursor" ? "cursor · searchable sessions" : provider).font(.caption)
                             Spacer()
                             Text("detected").font(.caption2).foregroundStyle(.secondary)
                         }
@@ -2997,6 +3273,8 @@ struct ContentView: View {
                         .font(.caption).foregroundStyle(.secondary)
                     Button("Customize popover…") { showCustomize = true }
                         .buttonStyle(.bordered).controlSize(.small)
+                    Button("Customize tabs…") { showTabSettings = true }
+                        .buttonStyle(.bordered).controlSize(.small)
                 }
                 card(title: "menubar preview", icon: "menubar.dock.rectangle") {
                     Text("Choose how the status item shows provider marks, percentages, and reset countdowns.")
@@ -3010,16 +3288,64 @@ struct ContentView: View {
                     Button("Manage API keys…") { showAPIKeys = true }
                         .buttonStyle(.bordered).controlSize(.small)
                 }
+                card(title: "sync", icon: "arrow.triangle.2.circlepath") {
+                    Picker("Backend", selection: Binding(
+                        get: { model.syncBackend ?? "none" },
+                        set: { model.setSyncBackend($0) },
+                    )) {
+                        Text("Off").tag("none")
+                        Text("Shared folder").tag("dir")
+                        Text("Private Git repo").tag("git")
+                        Text("AT Protocol").tag("atproto")
+                    }
+                    .pickerStyle(.menu)
+                    if model.syncBackend == "dir" {
+                        syncField("Shared folder", value: Binding(get: { model.syncPath }, set: { model.syncPath = $0 }), path: "sync.path")
+                    } else if model.syncBackend == "git" {
+                        syncField("Private Git URL", value: Binding(get: { model.syncUrl }, set: { model.syncUrl = $0 }), path: "sync.url")
+                    } else if model.syncBackend == "atproto" {
+                        syncField("Bluesky handle", value: Binding(get: { model.syncHandle }, set: { model.syncHandle = $0 }), path: "sync.handle")
+                    }
+                    Text(model.syncConfigured
+                         ? "Backend \(model.syncBackend ?? "configured") is selected. Add its path/URL/handle in config, then sync here."
+                         : "Sync is off. Choose a backend, then finish its non-secret settings in config.")
+                        .font(.caption2).foregroundStyle(.secondary)
+                    HStack(spacing: 7) {
+                        Button("Sync now") { model.syncNow() }
+                            .buttonStyle(.bordered).controlSize(.small)
+                            .disabled(!model.syncConfigured)
+                        if let status = model.syncStatus {
+                            Text(status).font(.caption2).foregroundStyle(.secondary).lineLimit(2)
+                        }
+                    }
+                }
                 card(title: "local dashboard", icon: "safari") {
-                    Text("The browser dashboard is started on demand when you open it; it stays separate from the native popover.")
+                    Text("The browser dashboard is local-only and starts on demand. Stopping it only affects a server launched by this app.")
                         .font(.caption).foregroundStyle(.secondary)
                     if let status = model.dashboardStatus {
                         Text(status).font(.caption2).foregroundStyle(.secondary)
                     }
-                    Button("Open full dashboard") { openDashboard() }
-                        .buttonStyle(.bordered).controlSize(.small)
+                    HStack(spacing: 7) {
+                        Button("Start / open") { openDashboard() }
+                            .buttonStyle(.bordered).controlSize(.small)
+                        Button("Stop") { AppDelegate.shared?.stopDashboard() }
+                            .buttonStyle(.bordered).controlSize(.small)
+                            .disabled(model.dashboardStatus?.contains("owned") != true)
+                    }
                 }
-            }.padding(12)
+            }
+            .padding(12)
+            .onAppear { AppDelegate.shared?.refreshDashboardStatus() }
+        }
+    }
+
+    private func syncField(_ label: String, value: Binding<String>, path: String) -> some View {
+        HStack(spacing: 6) {
+            TextField(label, text: value)
+                .textFieldStyle(.roundedBorder)
+                .font(.caption)
+            Button("Save") { model.setSyncValue(path: path, value: value.wrappedValue) }
+                .buttonStyle(.bordered).controlSize(.mini)
         }
     }
 
@@ -3275,16 +3601,29 @@ struct ContentView: View {
     private var tokenPeriodPicker: some View {
         HStack(spacing: 0) {
             ForEach(Self.spendPeriodOrder, id: \.self) { key in
-                Button {
-                    tokenPeriodKey = key
-                } label: {
-                    Text(Self.spendPeriodLabels[key] ?? key)
-                        .font(.caption2.weight(tokenPeriodKey == key ? .semibold : .regular))
-                        .padding(.horizontal, 8).padding(.vertical, 3)
-                        .background(tokenPeriodKey == key ? AnyShapeStyle(.quaternary.opacity(0.9)) : AnyShapeStyle(.clear))
-                        .contentShape(Rectangle())
+                if key == "custom" {
+                    Button {
+                        showTokenRange = true
+                    } label: {
+                        Text(Self.spendPeriodLabels[key] ?? key)
+                            .font(.caption2.weight(tokenPeriodKey == key ? .semibold : .regular))
+                            .padding(.horizontal, 8).padding(.vertical, 3)
+                            .background(tokenPeriodKey == key ? AnyShapeStyle(.quaternary.opacity(0.9)) : AnyShapeStyle(.clear))
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                } else {
+                    Button {
+                        tokenPeriodKey = key
+                    } label: {
+                        Text(Self.spendPeriodLabels[key] ?? key)
+                            .font(.caption2.weight(tokenPeriodKey == key ? .semibold : .regular))
+                            .padding(.horizontal, 8).padding(.vertical, 3)
+                            .background(tokenPeriodKey == key ? AnyShapeStyle(.quaternary.opacity(0.9)) : AnyShapeStyle(.clear))
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
             }
         }
         .background(.quaternary.opacity(0.35), in: Capsule())
@@ -3306,6 +3645,10 @@ struct ContentView: View {
         if key == "week", let p = model.week {
             return (p.total.totalTokens, p.total.costUsd, p.total.requests, p.total.sessions)
         }
+        if key == "custom" {
+            let tokens = customTokenSlices.reduce(0) { $0 + $1.value }
+            return (tokens, 0, 0, 0)
+        }
         let rows = tokenRows(for: key)
         return (
             rows.reduce(0) { $0 + $1.totalTokens },
@@ -3316,10 +3659,30 @@ struct ContentView: View {
     }
 
     private func tokenSlices(for key: String) -> [(name: String, value: Double, color: Color)] {
-        tokenRows(for: key)
-            .map { ($0.bucket, $0.totalTokens, bucketColor($0.bucket)) }
+        if key == "custom" { return customTokenSlices }
+        return tokenRows(for: key)
+            .map { (name: $0.bucket, value: $0.totalTokens, color: bucketColor($0.bucket)) }
             .filter { $0.value > 0 }
             .sorted { $0.value > $1.value }
+    }
+
+    private var customTokenSlices: [(name: String, value: Double, color: Color)] {
+        guard let history = model.history else { return [] }
+        let from = localDayKey(customTokenFrom)
+        let to = localDayKey(customTokenTo)
+        return history.series.map { series in
+            let value = history.days.indices.reduce(0) { total, index in
+                let day = history.days[index]
+                guard day >= from && day <= to else { return total }
+                return total + (index < series.values.count ? series.values[index] : 0)
+            }
+            return (series.bucket, value, bucketColor(series.bucket))
+        }.filter { $0.value > 0 }.sorted { $0.value > $1.value }
+    }
+
+    private func localDayKey(_ date: Date) -> String {
+        let c = Calendar.current.dateComponents([.year, .month, .day], from: date)
+        return String(format: "%04d-%02d-%02d", c.year ?? 0, c.month ?? 0, c.day ?? 0)
     }
 
     private var tokenMixSlices: [(name: String, value: Double, color: Color)] {
@@ -3507,8 +3870,8 @@ struct ContentView: View {
     /// Donut sizing metric: USD cost or total tokens.
     @State private var spendMetric: SpendMetric = .cost
 
-    private static let spendPeriodOrder = ["today", "yesterday", "week", "month"]
-    private static let spendPeriodLabels = ["today": "Today", "yesterday": "Yest", "week": "Week", "month": "Month"]
+    private static let spendPeriodOrder = ["today", "yesterday", "week", "month", "year", "custom"]
+    private static let spendPeriodLabels = ["today": "Today", "yesterday": "Yest", "week": "Week", "month": "Month", "year": "Year", "custom": "Custom…"]
 
     /// Slices for the selected spend period + metric. Falls back to today's
     /// report when the payload predates the spendPeriods field.

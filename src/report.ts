@@ -5,13 +5,17 @@ import type { AggRow } from "./cache.ts";
 import { syncedExtraFiles } from "./sync/index.ts";
 
 /** Rolling window boundaries in ISO-8601 UTC. */
-export function sinceIsoFor(period: "day" | "week" | "month", now: Date = new Date()): string {
+export function sinceIsoFor(period: "day" | "week" | "month" | "year", now: Date = new Date()): string {
   if (period === "day") {
     // Local calendar day start
     const d = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     return d.toISOString();
   }
-  const ms = period === "week" ? 7 * 24 * 3600_000 : 30 * 24 * 3600_000;
+  const ms = period === "week"
+    ? 7 * 24 * 3600_000
+    : period === "month"
+      ? 30 * 24 * 3600_000
+      : 365 * 24 * 3600_000;
   return new Date(now.getTime() - ms).toISOString();
 }
 
@@ -26,7 +30,7 @@ export function sinceIsoForDays(days: number, now: Date = new Date()): string {
  * `day` uses local calendar days; week/month roll back by their length.
  */
 export function previousWindow(
-  period: "day" | "week" | "month",
+  period: "day" | "week" | "month" | "year",
   now: Date = new Date(),
 ): { sinceIso: string; untilIso: string } {
   if (period === "day") {
@@ -34,7 +38,11 @@ export function previousWindow(
     const prevStart = new Date(dayStart.getTime() - 24 * 3600_000);
     return { sinceIso: prevStart.toISOString(), untilIso: dayStart.toISOString() };
   }
-  const ms = period === "week" ? 7 * 24 * 3600_000 : 30 * 24 * 3600_000;
+  const ms = period === "week"
+    ? 7 * 24 * 3600_000
+    : period === "month"
+      ? 30 * 24 * 3600_000
+      : 365 * 24 * 3600_000;
   const until = now.getTime();
   return {
     sinceIso: new Date(until - 2 * ms).toISOString(),

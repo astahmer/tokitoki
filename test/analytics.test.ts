@@ -92,6 +92,11 @@ describe("previousWindow", () => {
     expect(new Date(sinceIso).getTime()).toBe(now.getTime() - 14 * 24 * 3600_000);
     expect(new Date(untilIso).getTime() - new Date(sinceIso).getTime()).toBe(7 * 24 * 3600_000);
   });
+  it("year windows are exactly 365 days wide", () => {
+    const now = new Date(Date.UTC(2024, 5, 20, 12));
+    const { sinceIso, untilIso } = previousWindow("year", now);
+    expect(new Date(untilIso).getTime() - new Date(sinceIso).getTime()).toBe(365 * 24 * 3600_000);
+  });
   it("monthStartIso lands on the 1st local midnight", () => {
     expect(monthStartIso(new Date(2024, 2, 17))).toBe(new Date(2024, 2, 1).toISOString());
   });
