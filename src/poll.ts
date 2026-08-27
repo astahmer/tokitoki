@@ -19,6 +19,7 @@ import type { EventCache } from "./cache.ts";
  */
 
 const WHAM_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
+const CODEX_RESET_CREDITS_URL = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits";
 const TOKEN_REFRESH_URL = "https://auth.openai.com/oauth/token";
 /** codex CLI's public OAuth client id (same value Codex CLI itself ships). */
 const OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
@@ -237,6 +238,44 @@ async function fetchUsage(
     // non-JSON error body — status code carries the signal
   }
   return { status: res.status, body };
+}
+
+/** Codex keeps optional/banked reset inventory in a supplemental endpoint,
+ * rather than embedding it in every wham/usage response. */
+async function fetchCodexResetCredits(
+  accessToken: string,
+  accountId: string,
+  fetcher: typeof fetch,
+): Promise<{ hasCredits: boolean; unlimited: boolean; balance: string; expiresAt?: string } | undefined> {
+  try {
+    const res = await fetcher(CODEX_RESET_CREDITS_URL, {
+      headers: {
+        authorization: `Bearer ${accessToken}`,
+        "chatgpt-account-id": accountId,
+        "openai-beta": "codex-1",
+        originator: "Codex Desktop",
+        accept: "application/json",
+        "user-agent": USER_AGENT,
+      },
+    });
+    if (!res.ok) return undefined;
+    const body = await res.json() as { credits?: Array<Record<string, unknown>>; available_count?: number };
+    const available = (body.credits ?? []).filter((credit) => credit.status === "available");
+    const count = typeof body.available_count === "number" ? body.available_count : available.length;
+    if (count <= 0) return { hasCredits: false, unlimited: false, balance: "0" };
+    const expiries = available
+      .map((credit) => parsePolledCredits({ has_credits: true, balance: "1", expires_at: credit.expires_at })?.expiresAt)
+      .filter((value): value is string => value !== undefined)
+      .sort();
+    return {
+      hasCredits: true,
+      unlimited: false,
+      balance: String(count),
+      ...(expiries[0] !== undefined ? { expiresAt: expiries[0] } : {}),
+    };
+  } catch {
+    return undefined;
+  }
 }
 
 /** Read pi's auth store (~/.pi/agent/auth.json) → {provider: raw api key}. */
@@ -1159,7 +1198,10 @@ async function pollCodexQuotas(opts: PollOptions): Promise<PollAccountResult | s
   // login maps to model_provider "openai".
   const accountKey = `openai:${planType}`;
   const windows = parseWindows(res.body.rate_limit);
-  const credits = parsePolledCredits(res.body.rate_limit?.credits);
+  let credits = parsePolledCredits(res.body.rate_limit?.credits);
+  if (credits === undefined || !credits.hasCredits || Number(credits.balance) <= 0) {
+    credits = await fetchCodexResetCredits(access, accountId, fetcher) ?? credits;
+  }
 
   const result: PollAccountResult = {
     accountKey,

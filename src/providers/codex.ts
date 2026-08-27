@@ -272,7 +272,8 @@ export function extractCodexSessionDocs(file: string): SessionDoc[] {
     if (body.length >= BODY_CAP) break;
   }
   if (body.length === 0) return [];
-  return [{ sessionId, startedAt, title: sessionTitle(userTexts.at(-1) ?? body), body: sessionSnippet(body) }];
+  const titles = userTexts.map((text) => sessionTitle(text)).filter((text) => text.length > 0);
+  return [{ sessionId, startedAt, title: titles.at(-1) ?? "", body: sessionSnippet(body) }];
 }
 
 function walkRollouts(root: string): string[] {

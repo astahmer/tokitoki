@@ -1787,6 +1787,9 @@ async function runPoll(parsed: ParsedInvocation): Promise<void> {
       for (const w of acc.windows) {
         console.log(`  ${w.windowMinutes}min window · ${w.usedPct}% used · resets ${new Date(w.resetsAtEpoch * 1000).toLocaleString()}`);
       }
+      if (acc.credits?.hasCredits && !acc.credits.unlimited && Number(acc.credits.balance) > 0) {
+        console.log(`  ${acc.credits.balance} banked reset(s)${acc.credits.expiresAt !== undefined ? ` · expires ${new Date(acc.credits.expiresAt).toLocaleString()}` : ""}`);
+      }
       console.log(`  → ${acc.inserted} snapshot(s) stored${acc.error !== undefined ? ` · ${acc.error}` : ""}`);
     }
   } finally {
@@ -2146,6 +2149,45 @@ function runMenubarPayload(parsed: ParsedInvocation): void {
   capture("rollingDay", () => runReport(inv("report", { last: "day", by: "provider", json: true })));
   capture("week", () => runReport(inv("report", { last: "week", by: "provider", json: true })));
   capture("reposMonth", () => runReport(inv("report", { last: "month", by: "repo", json: true })));
+  capture("activityGrid", () => {
+    const config = loadConfig();
+    withCache((cache) => {
+      cache.sync(resolveExtraFiles(config));
+      console.log(JSON.stringify({ metric: "tokens", cells: cache.dailyTotals(sinceIsoForDays(365)) }));
+    });
+  });
+  capture("repoHistory", () => {
+    const config = loadConfig();
+    withCache((cache) => {
+      cache.sync(resolveExtraFiles(config));
+      const sinceIso = sinceIsoForDays(30);
+      const rows = cache.database.query(`
+        SELECT COALESCE(r.name, '(no repo)') AS bucket,
+               date(e.ts, 'localtime') AS day,
+               SUM(e.input_tokens + e.output_tokens + e.cache_read_tokens + e.cache_write_tokens) AS value
+        FROM events e LEFT JOIN repo_dirs r ON e.project_dir = r.dir
+        WHERE e.ts >= ?
+        GROUP BY bucket, day
+        ORDER BY value DESC
+      `).all(sinceIso) as Array<{ bucket: string; day: string; value: number | null }>;
+      const totals = new Map<string, number>();
+      const values = new Map<string, number>();
+      for (const row of rows) {
+        const value = row.value ?? 0;
+        totals.set(row.bucket, (totals.get(row.bucket) ?? 0) + value);
+        values.set(`${row.bucket}\u0000${row.day}`, value);
+      }
+      const days = [...new Set(rows.map((row) => row.day))].sort();
+      const buckets = [...totals.entries()].sort((a, b) => b[1] - a[1]).slice(0, 6).map(([bucket]) => bucket);
+      console.log(JSON.stringify({
+        days,
+        series: buckets.map((bucket) => ({
+          bucket,
+          values: days.map((day) => values.get(`${bucket}\u0000${day}`) ?? 0),
+        })),
+      }));
+    });
+  });
   capture("spendHealth", () => {
     const config = loadConfig();
     withCache((cache) => {
@@ -2371,6 +2413,19 @@ function runMenubarPayload(parsed: ParsedInvocation): void {
           }
           if (mirroredInSharedGateway) continue;
           const snaps = cache.latestQuotaSnapshots(p.provider, p.accountKey);
+          let bankedResets: number | undefined;
+          let bankedExpiresAt: string | undefined;
+          for (const snap of snaps) {
+            if (snap.creditsJson === null) continue;
+            try {
+              const credits = JSON.parse(snap.creditsJson) as { hasCredits?: boolean; unlimited?: boolean; balance?: string; expiresAt?: string };
+              const balance = Number(credits.balance ?? 0);
+              if (credits.hasCredits === true && credits.unlimited !== true && balance > 0) {
+                bankedResets = Math.floor(balance);
+                if (typeof credits.expiresAt === "string") bankedExpiresAt = credits.expiresAt;
+              }
+            } catch { /* malformed provider metadata is ignored */ }
+          }
           const windows = snaps.map((snap) => ({
             kind: embeddedKind(snap.windowMinutes),
             source: "embedded" as const,
@@ -2401,6 +2456,8 @@ function runMenubarPayload(parsed: ParsedInvocation): void {
             ...(poolIdentity?.email !== undefined ? { email: poolIdentity.email } : {}),
             origin: "polled",
             windows,
+            ...(bankedResets !== undefined ? { bankedResets } : {}),
+            ...(bankedExpiresAt !== undefined ? { bankedExpiresAt } : {}),
           });
         }
       } catch {
@@ -2420,9 +2477,11 @@ function runMenubarPayload(parsed: ParsedInvocation): void {
     const config = loadConfig();
     const yFrom = new Date(Date.now() - 86_400_000);
     const yKey = `${yFrom.getFullYear()}-${String(yFrom.getMonth() + 1).padStart(2, "0")}-${String(yFrom.getDate()).padStart(2, "0")}`;
+    const todayKey = localDateKey(0);
+    const tomorrowKey = localDateKey(-1);
     const periodFlags: Array<[string, Record<string, FlagValue>]> = [
-      ["today", { last: "day" }],
-      ["yesterday", { from: yKey, to: yKey }],
+      ["today", { from: todayKey, to: tomorrowKey }],
+      ["yesterday", { from: yKey, to: todayKey }],
       ["week", { last: "week" }],
       ["month", { last: "month" }],
       ["year", { last: "year" }],

@@ -220,6 +220,9 @@ describe("pollQuotas", () => {
         if (url.includes("wham/usage")) {
           return new Response(JSON.stringify(USAGE_BODY), { status: 200 });
         }
+        if (url.includes("rate-limit-reset-credits")) {
+          return new Response(JSON.stringify({ credits: [], available_count: 0 }), { status: 200 });
+        }
         throw new Error(`unexpected fetch: ${url}`);
       }) as unknown as typeof fetch;
 
@@ -233,7 +236,7 @@ describe("pollQuotas", () => {
         }),
       );
       const res = await pollQuotas({ authPath: fixtureAuth(), piAuthPath: piAuth, fetcher, cache, ...hermeticPaths() });
-      expect(called).toBe(3); // codex + openrouter + opencode-go probes
+      expect(called).toBe(4); // codex usage + reset credits + gateway probes
       expect(res.ok).toBe(true);
       const acc = res.accounts[0]!;
       // scan-era key shape: <model_provider>:<plan_type>
@@ -276,6 +279,41 @@ describe("pollQuotas", () => {
       expect(res.ok).toBe(true);
       expect(calls.filter((u) => u.includes("oauth/token")).length).toBe(1);
       expect(res.accounts[0]!.windows.length).toBe(2);
+    } finally {
+      cache.close();
+    }
+  });
+
+  it("persists banked Codex reset credits from live wham polling", async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "tk-poll-credits-"));
+    const cache = new EventCache(path.join(dir, "cache.db"));
+    try {
+      const body = JSON.parse(JSON.stringify(USAGE_BODY)) as typeof USAGE_BODY;
+      (body.rate_limit as typeof body.rate_limit & { credits: Record<string, unknown> }).credits = {
+        has_credits: true,
+        unlimited: false,
+        balance: "1",
+        expires_at: 1_800_000_000,
+      };
+      const fetcher = (async (input: unknown) => {
+        if (String(input).includes("wham/usage")) return new Response(JSON.stringify(body), { status: 200 });
+        if (String(input).includes("rate-limit-reset-credits")) {
+          return new Response(JSON.stringify({
+            credits: [{ status: "available", expires_at: "2026-08-30T12:00:00Z" }],
+            available_count: 1,
+          }), { status: 200 });
+        }
+        throw new Error(`unexpected fetch: ${String(input)}`);
+      }) as unknown as typeof fetch;
+      const result = await pollQuotas({ authPath: fixtureAuth(), fetcher, cache, ...hermeticPaths() });
+      expect(result.accounts[0]!.credits).toEqual({
+        hasCredits: true,
+        unlimited: false,
+        balance: "1",
+        expiresAt: new Date(1_800_000_000 * 1000).toISOString(),
+      });
+      const row = cache.database.query("SELECT credits_json AS creditsJson FROM quota_snapshots WHERE provider = 'codex' LIMIT 1").get() as { creditsJson: string | null };
+      expect(JSON.parse(row.creditsJson!)).toMatchObject({ hasCredits: true, balance: "1" });
     } finally {
       cache.close();
     }

@@ -5,6 +5,7 @@ import type { Database } from "bun:sqlite";
 
 import { PROVIDERS } from "./providers/index.ts";
 import type { Provider, SessionDoc } from "./providers/types.ts";
+import { cleanSessionText, sessionTitle } from "./sessionText.ts";
 
 /**
  * FTS5 full-text index over session conversations. Freshness is keyed per
@@ -50,6 +51,19 @@ export interface SessionIndexStats {
 const MAX_INDEX_FILE_BYTES = 256 * 1024 * 1024;
 /** Minimum interval between full incremental index runs (search-call path). */
 const UPDATE_THROTTLE_MS = 120_000;
+const EXTRACTOR_VERSION = "3";
+
+function ensureExtractorVersion(db: Database): void {
+  try {
+    db.exec("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);");
+    const row = db.query("SELECT value FROM meta WHERE key = 'fts_extractor_version'").get() as { value?: string } | undefined;
+    if (row?.value === EXTRACTOR_VERSION) return;
+    db.exec("DELETE FROM sessions_fts; DELETE FROM fts_files;");
+    db.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES ('fts_extractor_version', ?)").run(EXTRACTOR_VERSION);
+  } catch {
+    // Bare test databases may not expose metadata; normal indexing remains usable.
+  }
+}
 
 function lastIndexRunMs(db: Database): number {
   try {
@@ -76,6 +90,7 @@ function markIndexRun(db: Database, t0Ms: number): void {
 export function rebuildSessionIndex(db: Database, providers: Provider[] = PROVIDERS): SessionIndexStats {
   const t0 = performance.now();
   ensureSessionFts(db);
+  ensureExtractorVersion(db);
   db.exec("DELETE FROM sessions_fts; DELETE FROM fts_files;");
   const stats = updateSessionIndex(db, providers, { force: true });
   markIndexRun(db, Date.now());
@@ -296,6 +311,12 @@ export function searchSessions(db: Database, opts: SessionSearchOptions): Sessio
     const totalTokens = Number(agg.tokens ?? 0);
     const cached = Number(agg.cached ?? 0);
     const startedAt = meta.started_at ?? "";
+    const rawTitle = meta.title ?? "";
+    const displayTitle = rawTitle.includes("recommended_plugins") || rawTitle.trim().startsWith("<")
+      || rawTitle.toLowerCase().includes("here is a list of plugins")
+      || (rawTitle.trim().startsWith("-") && meta.body.toLowerCase().includes("here is a list of plugins"))
+      ? sessionTitle(meta.body)
+      : sessionTitle(rawTitle);
     // Window filters apply to the session start (post-MATCH, cheap).
     if (opts.sinceIso !== undefined && startedAt !== "" && startedAt < opts.sinceIso) continue;
     if (opts.untilIso !== undefined && startedAt !== "" && startedAt > opts.untilIso) continue;
@@ -304,8 +325,8 @@ export function searchSessions(db: Database, opts: SessionSearchOptions): Sessio
       sessionId: hit.sessionId,
       accountKey: meta.account_key ?? "default",
       startedAt,
-      title: meta.title ?? "",
-      snippet: makeSnippet(`${meta.title}\n${meta.body}`, terms),
+      title: displayTitle,
+      snippet: makeSnippet(`${sessionTitle(meta.title ?? "")}\n${cleanSessionText(meta.body)}`, terms),
       requests: Number(agg.requests ?? 0),
       totalTokens,
       cachePct: totalTokens > 0 ? Math.round((cached / totalTokens) * 100) : 0,
@@ -332,7 +353,8 @@ export function sessionConversation(
     )
     .get(provider, sessionId) as { title?: string | null; body?: string | null } | undefined;
   if (row == null) return null;
-  return { title: row.title ?? "", body: String(row.body ?? "").slice(0, 12_000) };
+  const body = cleanSessionText(String(row.body ?? ""));
+  return { title: sessionTitle(row.title ?? body), body: body.slice(0, 12_000) };
 }
 
 /** Compact metadata for leaderboard rows, backed by the same indexed body as

@@ -13,6 +13,7 @@ import {
   updateSessionIndex,
 } from "../src/sessionIndex.ts";
 import type { Provider } from "../src/providers/types.ts";
+import { cleanSessionText, sessionTitle } from "../src/sessionText.ts";
 
 function tmpDb(): Database {
   return new Database(path.join(os.tmpdir(), `tokitoki-fts-${Date.now()}-${Math.random().toString(36).slice(2)}.db`), {
@@ -43,6 +44,15 @@ describe("escapeFtsQuery", () => {
     const res = searchSessions(db, { query: 'body:password OR NEAR("x"' });
     expect(res.rows).toEqual([]);
     db.close();
+  });
+});
+
+describe("session display text", () => {
+  it("removes injected context and chooses the actual request", () => {
+    const raw = "<app-context>internal metadata</app-context>\n<recommended_plugins>plugin catalog</recommended_plugins>\n## My request:\nindex pi and claude conversations\n<image name=foo>ignored</image>";
+    expect(cleanSessionText(raw)).toContain("index pi and claude conversations");
+    expect(cleanSessionText(raw)).not.toContain("internal metadata");
+    expect(sessionTitle(raw)).toBe("index pi and claude conversations");
   });
 });
 

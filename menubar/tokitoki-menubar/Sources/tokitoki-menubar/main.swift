@@ -222,6 +222,12 @@ struct DailyUsageHistory: Codable {
     let series: [DailyUsageSeries]
 }
 
+struct ActivityGridPayload: Codable {
+    struct Cell: Codable { let day: String; let tokens: Double; let costUsd: Double; let requests: Int }
+    let metric: String
+    let cells: [Cell]
+}
+
 struct PopoverSessionRow: Codable, Identifiable {
     let sessionId: String
     let provider: String
@@ -271,6 +277,8 @@ struct MenubarPayload: Codable {
     let providerPeriods: [SpendPeriod]?
     let modelPeriods: [SpendPeriod]?
     let history: DailyUsageHistory?
+    let activityGrid: ActivityGridPayload?
+    let repoHistory: DailyUsageHistory?
 }
 
 @MainActor
@@ -316,6 +324,8 @@ final class Model: ObservableObject {
     @Published var providerPeriods: [SpendPeriod] = []
     @Published var modelPeriods: [SpendPeriod] = []
     @Published var history: DailyUsageHistory?
+    @Published var activityGrid: ActivityGridPayload?
+    @Published var repoHistory: DailyUsageHistory?
     @Published var tabOrder: [PopoverSubview] = PopoverSubview.defaultOrder
     @Published var syncBackend: String?
     @Published var syncConfigured = false
@@ -850,6 +860,8 @@ final class Model: ObservableObject {
                 self.providerPeriods = p.providerPeriods ?? []
                 self.modelPeriods = p.modelPeriods ?? []
                 self.history = p.history
+                self.activityGrid = p.activityGrid
+                self.repoHistory = p.repoHistory
                 self.spendHealth = p.spendHealth
                 self.today = p.today
                 self.rollingDay = p.rollingDay
@@ -857,7 +869,7 @@ final class Model: ObservableObject {
                 self.currentPayloadForTitle = p
                 self.currentPreviewCfg = p.uiPreview
                 if let rm = p.reposMonth {
-                    self.repos = Array(rm.rows.sorted { $0.requests > $1.requests }.prefix(3))
+                    self.repos = Array(rm.rows.sorted { $0.costUsd > $1.costUsd }.prefix(6))
                 }
                 self.topTools = Array((p.topTools?.tools ?? []).prefix(3))
                 let local = ProcessInfo.processInfo.hostName
@@ -3006,6 +3018,74 @@ struct UsageHistoryChart: View {
     }
 }
 
+/// GitHub-style contribution grid for the local usage calendar. The payload
+/// contains only non-empty days; the view fills the remaining cells locally so
+/// the wire format stays small and the popover remains instant to open.
+struct ActivityGridView: View {
+    let payload: ActivityGridPayload
+
+    private var columns: [[ActivityGridPayload.Cell?]] {
+        var byDay: [String: ActivityGridPayload.Cell] = [:]
+        for cell in payload.cells { byDay[cell.day] = cell }
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        let start = calendar.date(byAdding: .day, value: -364, to: today) ?? today
+        let monday = calendar.date(byAdding: .day, value: -((calendar.component(.weekday, from: start) + 5) % 7), to: start) ?? start
+        let maxValue = payload.cells.map { metricValue($0) }.max() ?? 0
+        var result: [[ActivityGridPayload.Cell?]] = []
+        for column in 0..<53 {
+            var week: [ActivityGridPayload.Cell?] = []
+            for row in 0..<7 {
+                guard let date = calendar.date(byAdding: .day, value: column * 7 + row, to: monday), date <= today else {
+                    week.append(nil)
+                    continue
+                }
+                let key = date.formatted(.iso8601.year().month().day())
+                week.append(byDay[key])
+            }
+            result.append(week)
+        }
+        _ = maxValue
+        return result
+    }
+
+    private func metricValue(_ cell: ActivityGridPayload.Cell) -> Double {
+        switch payload.metric { case "cost": return cell.costUsd; case "requests": return Double(cell.requests); default: return cell.tokens }
+    }
+
+    private func tint(_ cell: ActivityGridPayload.Cell?) -> Color {
+        guard let cell else { return Color.primary.opacity(0.08) }
+        let maxValue = payload.cells.map { metricValue($0) }.max() ?? 0
+        guard maxValue > 0 else { return Color.green.opacity(0.18) }
+        let ratio = metricValue(cell) / maxValue
+        return Color.green.opacity(0.18 + min(0.76, ratio * 0.76))
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(alignment: .top, spacing: 2) {
+                ForEach(Array(columns.enumerated()), id: \.offset) { _, week in
+                    VStack(spacing: 2) {
+                        ForEach(Array(week.enumerated()), id: \.offset) { _, cell in
+                            RoundedRectangle(cornerRadius: 1.5).fill(tint(cell)).frame(width: 5, height: 5)
+                        }
+                    }
+                }
+            }
+            HStack(spacing: 4) {
+                Text("less").font(.caption2).foregroundStyle(.tertiary)
+                ForEach(0..<5, id: \.self) { level in
+                    RoundedRectangle(cornerRadius: 1.5).fill(Color.green.opacity(0.18 + Double(level) * 0.19)).frame(width: 5, height: 5)
+                }
+                Text("more").font(.caption2).foregroundStyle(.tertiary)
+                Spacer()
+                Text("last year · \(payload.metric)").font(.caption2).foregroundStyle(.tertiary)
+            }
+        }
+        .accessibilityLabel("GitHub-style usage activity for the last year")
+    }
+}
+
 /// Shared collapsible surface for every secondary card in the popover. The
 /// disclosure is local UI state: it never mutates account visibility/order
 /// preferences and therefore stays instant even while a refresh is running.
@@ -3549,7 +3629,7 @@ struct ContentView: View {
                     Text(humanCount(totals.tokens))
                         .font(.system(size: 28, weight: .bold, design: .rounded))
                         .monospacedDigit()
-                    Text("tokens · \(tokenPeriodLabel(tokenPeriodKey))\(tokenPeriodKey == "today" ? " · rolling 24h" : "")")
+                Text("tokens · \(tokenPeriodLabel(tokenPeriodKey))")
                         .font(.caption2).foregroundStyle(.secondary)
                 }
                 Spacer()
@@ -3740,8 +3820,16 @@ struct ContentView: View {
             VStack(alignment: .leading, spacing: 10) {
                 freshnessRow
                 heroCard
+                if let grid = model.activityGrid { activityGridCard(grid) }
                 if !(model.today?.rows ?? []).isEmpty { pieCard() }
                 if !model.repos.isEmpty { reposCard }
+                if let repoHistory = model.repoHistory, !repoHistory.series.isEmpty {
+                    card(title: "repo activity · 30 days", icon: "chart.bar.xaxis") {
+                        UsageHistoryChart(history: repoHistory)
+                            .frame(height: 128)
+                            .accessibilityLabel("30 day repository activity history")
+                    }
+                }
                 if !model.topTools.isEmpty { toolsCard }
                 if let anomalyLine = model.anomalyLine {
                     card(title: "anomalies", icon: "waveform.path.ecg") {
@@ -3762,6 +3850,13 @@ struct ContentView: View {
                     }
                 }
             }.padding(12)
+        }
+    }
+
+    private func activityGridCard(_ grid: ActivityGridPayload) -> some View {
+        card(title: "activity · last year", icon: "calendar") {
+            ActivityGridView(payload: grid)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
