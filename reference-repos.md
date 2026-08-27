@@ -7,3 +7,4 @@
 | HerringtonDarkholme/token-cost | ~/.references/token-cost | Local-first token cost report with mosaic/sunburst charts, drill-down hierarchy, model/tool/project breakdowns, and privacy-preserving sharing |
 | lidge-jun/opencodex | ~/.references/opencodex | Multi-account codex proxy: ~/.opencodex file formats (codex-accounts.json pool ledger, codex-quota-cache.json), oauth multiauth store shape |
 | sst/opencode | ~/.references/opencode | Harness we ingest: sqlite store schema + session_usage migration (confirms message.data JSON as usage ground truth), models.dev catalog-driven provider registry (@ai-sdk: bedrock/azure/copilot/vertex), auth.json key store |
+| kcosr/provider-pulse | ~/.references/provider-pulse | Loopback provider monitor patterns: reset-aware state, heartbeat scheduling, stale-data handling, provider adapters, and compact status surfaces |
