@@ -41,14 +41,14 @@ export interface TokitokiConfig {
   /** [budgets] — USD caps per period + optional ntfy topic for push alerts. */
   budgets?: BudgetsConfig;
   /**
-   * [poll] — opt-in provider quota polling (`tokitoki poll`). Reuses locally
-   * stored OAuth credentials to fetch real rate-limit windows. Never runs
-   * automatically; intervalMinutes is reserved for a future scheduler.
+   * [poll] — provider quota polling (`tokitoki poll`). Reuses locally stored
+   * OAuth credentials to fetch real rate-limit windows. The menubar scheduler
+   * runs only when enabled; intervalMinutes controls its cadence.
    */
   poll?: {
     /** Menubar app runs `tokitoki poll` every ~15 minutes when true. */
     enabled?: boolean;
-    /** Reserved for future background scheduling. */
+    /** Menubar background poll cadence in minutes (default 15). */
     intervalMinutes?: number;
     /**
      * Manually registered opencode gateway keys (multi-account): each is

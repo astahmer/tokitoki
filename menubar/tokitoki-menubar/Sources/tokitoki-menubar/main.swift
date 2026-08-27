@@ -149,6 +149,7 @@ struct UiPreviewConfig: Codable {
     let cards: [MenubarCardConfig]?
     // Opt-in background quota polling (menubar runs `tokitoki poll`).
     let pollAuto: Bool?
+    let pollIntervalMinutes: Int?
     // Upstream provider ids hidden from the STATUS-BAR STRIP only.
     let previewHidden: [String]?
     // Uniform strip display: "percent" (default) | "tokens".
@@ -199,6 +200,10 @@ final class Model: ObservableObject {
     @Published var cardLayout: [(id: String, hidden: Bool)] = []
     /// Opt-in background quota polling (`tokitoki poll` every ~15 min).
     @Published var pollAuto = false
+    @Published var pollIntervalMinutes = 15
+    @Published var pollInFlight = false
+    @Published var pollStatus: String?
+    @Published var lastUpdatedAt: Date?
     /// Account-card order override applied immediately after customize saves.
     @Published var accountOrderOverride: [String]? = nil
     /// Upstream provider ids hidden from the status-bar strip (cards unaffected).
@@ -249,15 +254,61 @@ final class Model: ObservableObject {
     /// Accessor for AppDelegate context-menu actions.
     func currentInvocation() -> CLIInvocation { invocation }
 
-    /// Fire-and-forget `tokitoki poll` (opt-in via config.poll.enabled).
-    private func runBackgroundPoll() {
+    func setPolling(enabled: Bool) {
+        pollAuto = enabled
+        if !enabled { lastPollAt = nil }
         let cli = invocation
-        DispatchQueue.global(qos: .utility).async {
-            let task = Process()
-            task.executableURL = cli.executable
-            task.arguments = cli.prefixArgs + ["poll"]
-            try? task.run()
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                _ = try await Self.runConfigCLI(cli, ["poll", enabled ? "--enable" : "--disable"])
+                self.pollStatus = enabled ? "Background polling enabled" : "Background polling disabled"
+                self.refresh()
+            } catch {
+                self.pollAuto = !enabled
+                self.pollStatus = "Could not save polling setting: (error.localizedDescription)"
+            }
         }
+    }
+
+    func setPollingInterval(minutes: Int) {
+        let value = max(1, minutes)
+        pollIntervalMinutes = value
+        let cli = invocation
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                _ = try await Self.runConfigCLI(cli, ["config", "set", "poll.intervalMinutes", String(value)])
+                self.pollStatus = "Polling interval saved"
+            } catch {
+                self.pollStatus = "Could not save polling interval: (error.localizedDescription)"
+            }
+        }
+    }
+
+    /// Refresh provider quotas and expose progress in the popover.
+    func pollNow(background: Bool = false) {
+        guard !pollInFlight else { return }
+        pollInFlight = true
+        if !background { pollStatus = "refreshing provider quotas…" }
+        let cli = invocation
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                _ = try await Self.runCLI(cli, ["poll", "--json"])
+                self.pollStatus = background ? nil : "provider quotas refreshed"
+            } catch {
+                self.pollStatus = "quota refresh failed: (error.localizedDescription)"
+            }
+            self.pollInFlight = false
+            self.lastPollAt = Date()
+            self.refresh()
+        }
+    }
+
+    /// Fire a background quota poll only when enabled and due.
+    private func runBackgroundPoll() {
+        pollNow(background: true)
     }
 
     func start(invocation: CLIInvocation) {
@@ -298,7 +349,7 @@ final class Model: ObservableObject {
     func refresh() {
         refreshGeneration += 1
         let generation = refreshGeneration
-        if pollAuto, let last = lastPollAt, Date().timeIntervalSince(last) > 15 * 60 {
+        if pollAuto, lastPollAt.map({ Date().timeIntervalSince($0) >= Double(max(1, pollIntervalMinutes)) * 60 }) ?? true {
             lastPollAt = Date()
             runBackgroundPoll()
         }
@@ -316,6 +367,7 @@ final class Model: ObservableObject {
                     self.menubarHidden = Set(ui.menubarHidden ?? [])
                     self.cardLayout = (ui.cards ?? []).map { ($0.id, $0.hidden) }
                     self.pollAuto = ui.pollAuto ?? false
+                    self.pollIntervalMinutes = max(1, ui.pollIntervalMinutes ?? 15)
                     self.previewHidden = Set(ui.previewHidden ?? [])
                     self.stripMetric = ui.stripMetric ?? "percent"
                 }
@@ -344,6 +396,7 @@ final class Model: ObservableObject {
                 let newTitle = composeTitle(today: p.today, preview: Self.previewText(p.limits ?? [], cfg: p.uiPreview, labeled: self.previewMode == "hover"), hovering: isHovering, mode: self.previewMode)
                 setTitleIfChanged(newTitle)
                 self.errorText = nil
+                self.lastUpdatedAt = Date()
                 applyAnomalies(p.anomalies)
                 AppDelegate.shared?.refreshProofIfShown()
                 // Test-mode diagnostics don't require the popover to be open.
@@ -1187,7 +1240,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func rescanAll() { runMaintenance(["scan"], label: "scan") }
-    @objc private func pollNow() { runMaintenance(["poll", "--json"], label: "poll") }
+    func rescanForPopover() { rescanAll() }
+    @objc private func pollNow() { model?.pollNow() }
     @objc private func enablePolling() { runMaintenance(["poll", "--enable"], label: "enable polling", config: true); model?.pollAuto = true }
     @objc private func disablePolling() { runMaintenance(["poll", "--disable"], label: "disable polling", config: true); model?.pollAuto = false }
 
@@ -1809,6 +1863,34 @@ struct CustomizeSheet: View {
     }
 }
 
+enum PopoverSubview: String, CaseIterable, Hashable {
+    case overview
+    case quotas
+    case reports
+    case sources
+    case settings
+
+    var title: String {
+        switch self {
+        case .overview: return "Home"
+        case .quotas: return "Quotas"
+        case .reports: return "Reports"
+        case .sources: return "Sources"
+        case .settings: return "Settings"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .overview: return "house"
+        case .quotas: return "chart.bar.xaxis"
+        case .reports: return "doc.text"
+        case .sources: return "doc.text.magnifyingglass"
+        case .settings: return "gearshape"
+        }
+    }
+}
+
 struct ContentView: View {
     @ObservedObject var model: Model
     /// Card filter — matches harness/account names, repo paths, tools.
@@ -1823,6 +1905,8 @@ struct ContentView: View {
     @State private var draggingCard: String?
     /// Account id currently being dragged (limits section reorder).
     @State private var draggingAccount: String?
+    /// Native popover subview, inspired by CodexBar's provider/account drill-in.
+    @State private var activeSubview: PopoverSubview = .overview
 
     /// Default card order when the payload carries no layout yet.
     static let defaultCardOrder = ["limits", "usage", "spend", "harness", "activity", "anomalies", "repos", "tools"]
@@ -1872,6 +1956,50 @@ struct ContentView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            navigationHeader
+            Group {
+                switch activeSubview {
+                case .overview: overviewBody
+                case .quotas: quotasBody
+                case .reports: reportsBody
+                case .sources: sourcesBody
+                case .settings: settingsBody
+                }
+            }
+        }
+        .frame(width: 380, height: 620)
+        .background(.thinMaterial)
+        .onAppear { model.refresh() }
+        .sheet(isPresented: $showCustomize) {
+            CustomizeSheet(model: model, isPresented: $showCustomize)
+        }
+    }
+
+    private var navigationHeader: some View {
+        HStack(spacing: 4) {
+            ForEach(PopoverSubview.allCases, id: \.self) { view in
+                Button {
+                    withAnimation(.easeInOut(duration: 0.15)) { activeSubview = view }
+                } label: {
+                    Label(view.title, systemImage: view.icon)
+                        .font(.caption2.weight(activeSubview == view ? .semibold : .regular))
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity)
+                        .padding(.horizontal, 3).padding(.vertical, 5)
+                        .background(activeSubview == view ? AnyShapeStyle(.quaternary.opacity(0.9)) : AnyShapeStyle(.clear), in: RoundedRectangle(cornerRadius: 6))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(activeSubview == view ? .primary : .secondary)
+                .accessibilityLabel(view.title)
+            }
+        }
+        .padding(.horizontal, 8).padding(.vertical, 7)
+        .background(.thinMaterial)
+        .overlay(alignment: .bottom) { Divider() }
+    }
+
+    private var overviewBody: some View {
+        VStack(spacing: 0) {
             ScrollView(.vertical) {
                 VStack(alignment: .leading, spacing: 10) {
                     if let e = model.errorText {
@@ -1880,13 +2008,12 @@ struct ContentView: View {
                             .padding(8).frame(maxWidth: .infinity, alignment: .leading)
                             .background(.red.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
                     }
+                    freshnessRow
                     searchBar
                     webDashboardLinks
                     ForEach(orderedVisibleCards(), id: \.self) { id in
                         Group {
-                            if cardSurvives(id) {
-                                cardBody(id)
-                            }
+                            if cardSurvives(id) { cardBody(id) }
                         }
                         .onDrag {
                             draggingCard = id
@@ -1903,33 +2030,163 @@ struct ContentView: View {
                 }
                 .padding(12)
             }
-            .scrollIndicators(.hidden)
+            .scrollIndicators(.automatic)
+            overviewFooter
+        }
+    }
 
-            // Sticky footer — always visible regardless of scroll position.
+    private var overviewFooter: some View {
+        VStack(spacing: 6) {
             Divider()
-            HStack(spacing: 8) {
-                Button(action: openDashboard) { Label("Dashboard", systemImage: "safari") }.buttonStyle(.borderedProminent)
-                Button(action: { model.refresh() }) { Label("Refresh", systemImage: "arrow.clockwise") }.buttonStyle(.bordered)
+            HStack(spacing: 7) {
+                Button(action: openDashboard) { Label("Dashboard", systemImage: "safari") }
+                    .buttonStyle(.borderedProminent).controlSize(.small)
+                Button(action: { model.refresh() }) { Label("Refresh", systemImage: "arrow.clockwise") }
+                    .buttonStyle(.bordered).controlSize(.small)
                 Spacer()
+            }
+            HStack(spacing: 7) {
                 Menu {
                     Button("Save Screenshot to Desktop") { saveScreenshot() }
                     Button("Copy Summary as Markdown") { copyMarkdownSummary() }
                 } label: {
-                    Image(systemName: "square.and.arrow.up")
-                }.help("Share: save a screenshot or copy a markdown summary")
+                    Label("Share", systemImage: "square.and.arrow.up")
+                }.buttonStyle(.bordered).controlSize(.small)
                 Button(action: { showCustomize = true }) {
-                    Image(systemName: "slider.horizontal.3")
-                }.buttonStyle(.bordered)
-                    .help("Customize cards")
+                    Label("Customize", systemImage: "slider.horizontal.3")
+                }.buttonStyle(.bordered).controlSize(.small)
+                Spacer()
             }
-            .padding(.horizontal, 12).padding(.vertical, 8)
+            .padding(.horizontal, 10)
         }
-        .frame(width: 340, height: 520)
-        .background(.thinMaterial)
-        .onAppear { model.refresh() }
-        .sheet(isPresented: $showCustomize) {
-            CustomizeSheet(model: model, isPresented: $showCustomize)
+    }
+
+    private var quotasBody: some View {
+        ScrollView(.vertical) {
+            VStack(alignment: .leading, spacing: 10) {
+                freshnessRow
+                if model.limits.isEmpty {
+                    emptyState("No quota accounts detected", detail: "Enable polling in Settings or scan a provider first.", icon: "chart.bar.xaxis")
+                } else {
+                    limitsSection
+                }
+            }.padding(12)
         }
+    }
+
+    private var reportsBody: some View {
+        ScrollView(.vertical) {
+            VStack(alignment: .leading, spacing: 10) {
+                freshnessRow
+                heroCard
+                if !(model.today?.rows ?? []).isEmpty { pieCard() }
+                if !model.repos.isEmpty { reposCard }
+                webDashboardLinks
+            }.padding(12)
+        }
+    }
+
+    private var sourcesBody: some View {
+        ScrollView(.vertical) {
+            VStack(alignment: .leading, spacing: 10) {
+                freshnessRow
+                card(title: "tracked sources", icon: "doc.text.magnifyingglass") {
+                    Text("tokitoki reads local harness logs and keeps the dashboard projection in sync.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    ForEach(model.knownProviders, id: \.self) { provider in
+                        HStack(spacing: 6) {
+                            ProviderLogo(provider: provider)
+                            Text(provider).font(.caption)
+                            Spacer()
+                            Text("detected").font(.caption2).foregroundStyle(.secondary)
+                        }
+                    }
+                    Button {
+                        AppDelegate.shared?.rescanForPopover()
+                    } label: {
+                        Label("Re-scan sources", systemImage: "arrow.triangle.2.circlepath")
+                    }.buttonStyle(.bordered).controlSize(.small)
+                }
+                webDashboardLinks
+            }.padding(12)
+        }
+    }
+
+    private var settingsBody: some View {
+        ScrollView(.vertical) {
+            VStack(alignment: .leading, spacing: 10) {
+                freshnessRow
+                card(title: "background quota polling", icon: "clock.arrow.circlepath") {
+                    Toggle("Poll provider quotas automatically", isOn: Binding(
+                        get: { model.pollAuto },
+                        set: { model.setPolling(enabled: $0) },
+                    ))
+                    .font(.caption)
+                    Text(model.pollAuto
+                         ? "Enabled · checks every (model.pollIntervalMinutes) minutes while the app is running."
+                         : "Off · quota refreshes happen only when you ask.")
+                        .font(.caption2).foregroundStyle(.secondary)
+                    Picker("Check every", selection: Binding(
+                        get: { model.pollIntervalMinutes },
+                        set: { model.setPollingInterval(minutes: $0) },
+                    )) {
+                        Text("5 minutes").tag(5)
+                        Text("15 minutes").tag(15)
+                        Text("30 minutes").tag(30)
+                        Text("60 minutes").tag(60)
+                    }
+                    .pickerStyle(.menu)
+                    .disabled(!model.pollAuto)
+                    if let status = model.pollStatus {
+                        Text(status).font(.caption2).foregroundStyle(.secondary)
+                    }
+                    Button {
+                        model.pollNow()
+                    } label: {
+                        Label(model.pollInFlight ? "Refreshing…" : "Refresh quotas now", systemImage: "arrow.clockwise")
+                    }
+                    .buttonStyle(.bordered).controlSize(.small)
+                    .disabled(model.pollInFlight)
+                }
+                card(title: "popover layout", icon: "rectangle.3.group") {
+                    Text("Choose which cards appear and drag them into your preferred order.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Button("Customize cards…") { showCustomize = true }
+                        .buttonStyle(.bordered).controlSize(.small)
+                }
+                card(title: "local dashboard", icon: "safari") {
+                    Text("The browser dashboard is started on demand when you open it; it stays separate from the native popover.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Button("Open full dashboard") { openDashboard() }
+                        .buttonStyle(.bordered).controlSize(.small)
+                }
+            }.padding(12)
+        }
+    }
+
+    private var freshnessRow: some View {
+        HStack(spacing: 5) {
+            Circle().fill(model.errorText == nil ? .green : .orange).frame(width: 6, height: 6)
+            Text(model.lastUpdatedAt.map { "Updated \(relativeDate($0))" } ?? "Loading latest data…")
+                .font(.caption2).foregroundStyle(.secondary)
+            Spacer()
+            if model.pollInFlight { ProgressView().controlSize(.small) }
+        }
+        .accessibilityLabel(model.lastUpdatedAt.map { "Updated \(relativeDate($0))" } ?? "Loading latest data")
+    }
+
+    private func relativeDate(_ date: Date) -> String {
+        RelativeDateTimeFormatter().localizedString(for: date, relativeTo: Date())
+    }
+
+    private func emptyState(_ title: String, detail: String, icon: String) -> some View {
+        VStack(spacing: 6) {
+            Image(systemName: icon).font(.title3).foregroundStyle(.tertiary)
+            Text(title).font(.caption.weight(.semibold))
+            Text(detail).font(.caption2).foregroundStyle(.secondary).multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity).padding(20)
+        .background(.quaternary.opacity(0.28), in: RoundedRectangle(cornerRadius: 12))
     }
 
     /// Effective card order: payload layout first, defaults appended.
@@ -2011,16 +2268,26 @@ struct ContentView: View {
     /// popover, instead of being discoverable only through right-click.
     private var webDashboardLinks: some View {
         HStack(spacing: 7) {
-            Label("web dashboard", systemImage: "safari")
+            Label("dashboard", systemImage: "safari")
                 .font(.caption2.weight(.medium))
                 .foregroundStyle(.secondary)
             Spacer(minLength: 4)
-            Button("Reports") { openWebDashboard("/?view=dashboard&range=month") }
+            Button("Reports") { activeSubview = .reports }
                 .controlSize(.mini)
-                .help("Open monthly reports in your browser; starts the local dashboard if needed")
-            Button("Sources") { openWebDashboard("/?view=sources") }
+                .help("Show reports inside the popover")
+            Button("Sources") { activeSubview = .sources }
                 .controlSize(.mini)
-                .help("Inspect tracked files and machines in your browser; starts the local dashboard if needed")
+                .help("Show tracked sources inside the popover")
+            Menu {
+                Button("Open full dashboard") { openWebDashboard("/") }
+                Button("Open web reports") { openWebDashboard("/?view=dashboard&range=month") }
+                Button("Open web sources") { openWebDashboard("/?view=sources") }
+            } label: {
+                Image(systemName: "arrow.up.right.square")
+            }
+            .menuStyle(.borderlessButton)
+            .controlSize(.mini)
+            .help("Open the full dashboard in your browser")
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
@@ -2978,7 +3245,7 @@ struct AccountLimitCard: View {
                         .font(.caption2.monospacedDigit().weight(.semibold))
                         .foregroundStyle(barTint(remaining))
                 } else if w.tokens > 0 {
-                    Text("\(humanCount(w.tokens)) tokens")
+                    Text("relative · \(humanCount(w.tokens)) tokens")
                         .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
                 }
             }
@@ -3005,7 +3272,7 @@ struct AccountLimitCard: View {
             // palette default) since there is no % to be low on.
             let frac = min(1.0, max(0.05, w.tokens / scale))
             ProgressView(value: frac)
-                .tint(Color(red: 0.16, green: 0.78, blue: 0.47).opacity(0.8))
+                .tint(Color.secondary.opacity(0.65))
                 .frame(height: 4)
         } else {
             // Zero usage: empty track so every window keeps its row rhythm.
@@ -3043,8 +3310,12 @@ struct AccountLimitCard: View {
                 .foregroundStyle(.quaternary)
                 .help("drag to reorder")
             ProviderLogo(provider: limits.provider)
-            Text(accountLabel)
-                .font(.caption.weight(.medium)).lineLimit(1)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(accountPrimaryLabel)
+                    .font(.caption.weight(.medium)).lineLimit(1)
+                Text(accountSecondaryLabel)
+                    .font(.caption2).foregroundStyle(.tertiary).lineLimit(1)
+            }
             Spacer()
             Button(action: onRefresh) {
                 if isRefreshing {
@@ -3059,29 +3330,18 @@ struct AccountLimitCard: View {
             .disabled(isRefreshing)
             .accessibilityIdentifier("refresh-limit-\(limits.provider)-\(limits.accountKey)")
             .help(limits.origin == "scan" ? "Re-scan \(limits.provider)" : "Refresh quota from provider")
-            if let url = providerConsoleURL(limits.provider) {
-                Button { NSWorkspace.shared.open(url) } label: {
-                    Image(systemName: "arrow.up.right.square")
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
-                .help("Open \(limits.provider) usage dashboard")
-            }
             planBadge
         }
     }
 
-    private var accountLabel: String {
-        var label: String
-        if let email = limits.email, !email.isEmpty {
-            label = "\(email) · \(limits.accountKey)"
-        } else if let cred = limits.credential, !cred.isEmpty {
-            // Key-based accounts (opencode/pi): the redacted key sits where an
-            // email would — same position, same treatment.
-            label = "\(limits.provider) \(cred)"
-        } else {
-            label = "\(limits.provider) · \(limits.accountKey)"
-        }
+    private var accountPrimaryLabel: String {
+        if let email = limits.email, !email.isEmpty { return email }
+        if let cred = limits.credential, !cred.isEmpty { return "\(limits.provider) \(cred)" }
+        return limits.provider
+    }
+
+    private var accountSecondaryLabel: String {
+        var label = limits.accountKey
         if let also = limits.alsoOn, !also.isEmpty {
             label += " · via " + also.joined(separator: ", ")
         }

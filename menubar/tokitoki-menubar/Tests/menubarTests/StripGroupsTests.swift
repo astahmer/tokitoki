@@ -152,7 +152,7 @@ import Testing
         ]
         let preview = Model.previewText(limits, cfg: UiPreviewConfig(
             previewLines: 3, previewMode: "hover", providers: nil, menubarHidden: nil,
-            cards: nil, pollAuto: nil, previewHidden: nil, stripMetric: nil,
+            cards: nil, pollAuto: nil, pollIntervalMinutes: nil, previewHidden: nil, stripMetric: nil,
         ), labeled: true)
         #expect(preview == "session 60% weekly 100% monthly 88%")
     }

@@ -14,8 +14,8 @@ import type { EventCache } from "./cache.ts";
  *   ChatGPT-Account-Id: <account_id>
  *   Accept: application/json
  *
- * Never automatic: only `tokitoki poll` runs this. Tokens are never logged;
- * refreshed tokens stay in-memory for the current process only.
+ * The menubar runs this only when the user enables background polling. Tokens
+ * are never logged; refreshed tokens stay in-memory for the current process.
  */
 
 const WHAM_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
@@ -991,6 +991,10 @@ export async function pollQuotas(opts: PollOptions = {}): Promise<PollResult> {
     if (typeof q.weeklyPercent !== "number" || typeof q.weeklyResetAt !== "number") continue;
     const weeklyResetAt = q.weeklyResetAt;
     const weeklyPercent = q.weeklyPercent;
+    const poolAccountId = poolIdentities[poolKey]?.accountId ?? (poolKey === "__main__" ? ownCodex?.accountId : undefined);
+    // The live OAuth poll is the canonical source for the active login.
+    // Never materialize the same account a second time through __main__.
+    if (poolAccountId !== undefined && poolAccountId === ownCodex?.accountId) continue;
     // Identical reset epochs are the same login mirrored by multiple pool
     // aliases. Also suppress the pool's __main__ mirror of the live OAuth
     // account when the reset is within the provider's normal clock skew.
@@ -1032,15 +1036,15 @@ export async function pollQuotas(opts: PollOptions = {}): Promise<PollResult> {
     }
     accounts.push({
       accountKey,
-      ...(poolIdentities[poolKey]?.accountId !== undefined
-        ? { accountId: poolIdentities[poolKey]!.accountId }
+      ...(poolAccountId !== undefined
+        ? { accountId: poolAccountId }
         : {}),
       harnesses: ["opencodex"],
       windows,
       inserted: cache?.insertPolledSnapshots({
         provider: "codex",
         accountKey,
-        accountId: poolIdentities[poolKey]?.accountId,
+        accountId: poolAccountId,
         windows,
         capturedAtIso,
         eventId: `poll:${capturedAtIso}:opencodex:${poolKey}`,

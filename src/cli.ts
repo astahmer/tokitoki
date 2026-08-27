@@ -11,6 +11,7 @@ import { DIMENSIONS, EventCache, type AggRow, type Dimension, type SeriesBucket,
 import { renderTable, renderMiniProjects, renderMarkdownTable, resolveExtraFiles, resolveSortColumn, sinceIsoFor, sinceIsoForDays, previousWindow, monthStartIso, sortRows, formatDelta, deltaInfo, totalRow, totalTokens, planGaugeFn, renderBurnLine, burnProjection, type TableContext } from "./report.ts";
 import { accountEmailMap } from "./accounts.ts";
 import { computeLimits, embeddedKind, groupBySharedCredential, mergeAliasLimits, type AccountLimits } from "./limits.ts";
+import { accountIdentityFor } from "./accounts.ts";
 import { opencodexAccountIdentities, opencodeCredentials, opencodexQuotas, piCredentials, pollQuotas, redactCredential } from "./poll.ts";
 import {
   assertValidSurface,
@@ -2103,6 +2104,7 @@ function runMenubarPayload(parsed: ParsedInvocation): void {
           stripMetric: config.ui?.stripMetric ?? "percent",
           cards: menubarCardLayout(config),
           pollAuto: config.poll?.enabled === true,
+          pollIntervalMinutes: config.poll?.intervalMinutes ?? 15,
         }),
       );
     });
@@ -2116,6 +2118,7 @@ function runMenubarPayload(parsed: ParsedInvocation): void {
       const limits = computeLimits(cache, config);
       const poolIdentities = opencodexAccountIdentities();
       const poolQuotas = opencodexQuotas();
+      const localCodexAccountId = accountIdentityFor("codex")?.accountId;
       // Attribute pooled Codex cards by the stable provider account ID. Reset
       // timestamps are quota data, not identity, and can drift independently.
       const limitsWithPoolEmails = limits.map((l) => {
@@ -2133,11 +2136,24 @@ function runMenubarPayload(parsed: ParsedInvocation): void {
       const normalizedLimits = limitsWithPoolEmails.filter((l) => {
         if (l.provider !== "codex" || !l.accountKey.startsWith("codex:")) return true;
         const poolKey = l.accountKey.slice("codex:".length);
-        return poolQuotas[poolKey] === undefined;
+        if (poolQuotas[poolKey] === undefined) return true;
+        // Keep a pool-backed card when its stable account ID is known. The
+        // old reset-based rule hid the canonical work card and left its
+        // personal email on the remaining __main__ card.
+        const poolId = poolIdentities[poolKey]?.accountId;
+        return poolId === undefined || cache.quotaAccountIds("codex", l.accountKey).has(poolId);
+      });
+      // Older runs wrote the active login through both openai:plus and the
+      // opencodex codex alias. Once IDs are available, keep the canonical
+      // live-poll key and discard that duplicate permanently.
+      const withoutLocalCodexAliases = normalizedLimits.filter((l) => {
+        if (l.provider !== "codex" || localCodexAccountId === undefined) return true;
+        if (l.accountKey.startsWith("openai:")) return true;
+        return !cache.quotaAccountIds("codex", l.accountKey).has(localCodexAccountId);
       });
       // Same provider + same embedded-quota signature = same underlying
       // account seen through different extraction eras. One card per account.
-      const merged = mergeAliasLimits(normalizedLimits);
+      const merged = mergeAliasLimits(withoutLocalCodexAliases);
       // Key-based harnesses: attach a redacted credential so accounts are
       // distinguishable without emails (pi / opencode auth is API-key only).
       // OpenRouter keys live in pi's auth store — same treatment.
@@ -2225,10 +2241,6 @@ function runMenubarPayload(parsed: ParsedInvocation): void {
           const mirroredInSharedGateway =
             (p.provider === "pi" || p.provider === "opencode") &&
             (known.has(`pi@${p.accountKey}`) || known.has(`opencode@${p.accountKey}`));
-          const staleCodexPoolAlias =
-            p.provider === "codex" &&
-            p.accountKey.startsWith("codex:") &&
-            poolQuotas[p.accountKey.slice("codex:".length)] !== undefined;
           if (known.has(id)) {
             const existingIndex = withOrigin.findIndex((l) => `${l.provider}@${l.accountKey}` === id);
             // Replace the earlier detected-but-empty placeholder once a
@@ -2240,7 +2252,7 @@ function runMenubarPayload(parsed: ParsedInvocation): void {
               continue;
             }
           }
-          if (mirroredInSharedGateway || staleCodexPoolAlias) continue;
+          if (mirroredInSharedGateway) continue;
           const snaps = cache.latestQuotaSnapshots(p.provider, p.accountKey);
           const windows = snaps.map((snap) => ({
             kind: embeddedKind(snap.windowMinutes),
@@ -2251,7 +2263,28 @@ function runMenubarPayload(parsed: ParsedInvocation): void {
             usedPct: Math.max(0, Math.min(100, snap.usedPct)),
             resetsAt: snap.resetsAt > 0 ? new Date(snap.resetsAt * 1000).toISOString() : undefined,
           }));
-          withOrigin.push({ provider: p.provider, accountKey: p.accountKey, origin: "polled", windows });
+          const accountIds = cache.quotaAccountIds(p.provider, p.accountKey);
+          if (
+            p.provider === "codex" &&
+            localCodexAccountId !== undefined &&
+            !p.accountKey.startsWith("openai:") &&
+            accountIds.has(localCodexAccountId)
+          ) {
+            // Already represented by the canonical openai:<plan> card.
+            continue;
+          }
+          const poolIdentity = p.provider === "codex"
+            ? Object.values(poolIdentities).find((identity) =>
+                identity.accountId !== undefined && accountIds.has(identity.accountId),
+              )
+            : undefined;
+          withOrigin.push({
+            provider: p.provider,
+            accountKey: p.accountKey,
+            ...(poolIdentity?.email !== undefined ? { email: poolIdentity.email } : {}),
+            origin: "polled",
+            windows,
+          });
         }
       } catch {
         // pre-migration cache: no quota snapshot table

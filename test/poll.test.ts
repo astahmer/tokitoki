@@ -127,6 +127,38 @@ describe("opencodexAccountIdentities", () => {
 });
 
 describe("pollQuotas", () => {
+  it("keeps a pooled account's stable identity when materializing its quota card", async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "tk-poll-pool-stable-id-"));
+    const cache = new EventCache(path.join(dir, "cache.db"));
+    const ocCache = path.join(dir, "codex-quota-cache.json");
+    const ocAccounts = path.join(dir, "codex-accounts.json");
+    writeFileSync(ocCache, JSON.stringify({
+      quotas: { "chatgpt-work": { weeklyPercent: 41, weeklyResetAt: 1_800_000_001 } },
+    }));
+    writeFileSync(ocAccounts, JSON.stringify({
+      "chatgpt-work": { credential: { chatgptAccountId: "work-account" } },
+    }));
+    try {
+      const fetcher = (async () => new Response("{}", { status: 200 })) as unknown as typeof fetch;
+      const res = await pollQuotas({
+        ...hermeticPaths(),
+        authPath: path.join(dir, "missing-auth.json"),
+        piAuthPath: path.join(dir, "missing-pi.json"),
+        opencodexCachePath: ocCache,
+        opencodexAccountsPath: ocAccounts,
+        fetcher,
+        cache,
+      });
+      const account = res.accounts.find((a) => a.accountKey === "codex:chatgpt-work");
+      expect(account?.accountId).toBe("work-account");
+      expect(cache.database.query(
+        "SELECT DISTINCT account_id FROM quota_snapshots WHERE provider='codex' AND account_key='codex:chatgpt-work'",
+      ).all()).toEqual([{ account_id: "work-account" }]);
+    } finally {
+      cache.close();
+    }
+  });
+
   it("polls Command Code session/week/month meters from its billing API", async () => {
     const dir = mkdtempSync(path.join(os.tmpdir(), "tk-poll-commandcode-"));
     const auth = path.join(dir, "auth.json");
