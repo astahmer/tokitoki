@@ -2118,6 +2118,7 @@ function runMenubarPayload(parsed: ParsedInvocation): void {
           menubarHidden: config.ui?.hidden?.menubar ?? [],
           previewHidden: config.ui?.previewHidden ?? [],
           stripMetric: config.ui?.stripMetric ?? "percent",
+          stripExhausted: config.ui?.stripExhausted ?? "reset",
           cards: menubarCardLayout(config),
           pollAuto: config.poll?.enabled === true,
           pollIntervalMinutes: config.poll?.intervalMinutes ?? 15,

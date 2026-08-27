@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 
 @testable import tokitoki_menubar
@@ -13,6 +14,7 @@ import Testing
         source: String = "derived",
         tokens: Double,
         usedPct: Double? = nil,
+        resetsAt: String? = nil,
     ) -> LimitWindow {
         LimitWindow(
             kind: kind,
@@ -21,7 +23,7 @@ import Testing
             cost: 0,
             requests: 0,
             usedPct: usedPct,
-            resetsAt: nil,
+            resetsAt: resetsAt,
             windowStart: nil,
             windowEnd: nil,
         )
@@ -142,6 +144,26 @@ import Testing
         #expect(groups.first?.lines == ["100%"])
     }
 
+    @Test func exhaustedProviderUsesLongestResetWhenConfigured() {
+        let dayReset = ISO8601DateFormatter().string(from: Date().addingTimeInterval(3_600))
+        let weekReset = ISO8601DateFormatter().string(from: Date().addingTimeInterval(5 * 86_400))
+        let limits = [
+            account(provider: "codex", accountKey: "default", windows: [
+                window(kind: "day", source: "polled", tokens: 0, usedPct: 100, resetsAt: dayReset),
+                window(kind: "week", source: "polled", tokens: 0, usedPct: 100, resetsAt: weekReset),
+            ]),
+        ]
+        let groups = Model.stripGroups(from: limits, metric: "percent", previewHidden: [], exhaustedBehavior: "reset")
+        #expect(groups.first?.lines.count == 1)
+        #expect(groups.first?.lines.first?.contains("d") == true)
+        #expect(Model.stripGroups(from: limits, metric: "percent", previewHidden: [], exhaustedBehavior: "hide").isEmpty)
+    }
+
+    @Test func freshnessCopyStaysEnglish() {
+        let now = Date()
+        #expect(relativeDateEnglish(now.addingTimeInterval(-60), relativeTo: now) == "1 minute ago")
+    }
+
     @Test func hoverPreviewLabelsQuotaWindows() {
         let limits = [
             account(provider: "codex", accountKey: "openai:plus", windows: [
@@ -152,7 +174,7 @@ import Testing
         ]
         let preview = Model.previewText(limits, cfg: UiPreviewConfig(
             previewLines: 3, previewMode: "hover", providers: nil, menubarHidden: nil,
-            cards: nil, pollAuto: nil, pollIntervalMinutes: nil, previewHidden: nil, stripMetric: nil,
+            cards: nil, pollAuto: nil, pollIntervalMinutes: nil, previewHidden: nil, stripMetric: nil, stripExhausted: nil,
         ), labeled: true)
         #expect(preview == "session 60% weekly 100% monthly 88%")
     }

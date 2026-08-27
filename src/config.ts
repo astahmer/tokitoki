@@ -96,6 +96,8 @@ export interface TokitokiConfig {
      * shows a compact usage estimate (~764M) for every group.
      */
     stripMetric?: "percent" | "tokens";
+    /** When every visible quota is exhausted: keep %, hide the mark, or show the governing reset countdown. */
+    stripExhausted?: "show" | "hide" | "reset";
     /** Max provider percentages shown in the status-item preview line. */
     menubarPreviewLines?: number;
     /** "inline" (default): preview always in the status item. "hover": only while pointing at it. */

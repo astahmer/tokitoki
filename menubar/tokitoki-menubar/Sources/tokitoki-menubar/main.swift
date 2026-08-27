@@ -154,6 +154,8 @@ struct UiPreviewConfig: Codable {
     let previewHidden: [String]?
     // Uniform strip display: "percent" (default) | "tokens".
     let stripMetric: String?
+    // Exhausted providers: "show" percentages | "hide" mark | "reset" countdown.
+    let stripExhausted: String?
 }
 
 // Combined snapshot from `tokitoki menubar-payload --json` (single CLI
@@ -210,6 +212,7 @@ final class Model: ObservableObject {
     @Published var previewHidden: Set<String> = []
     /// Uniform strip display: "percent" (default) | "tokens".
     @Published var stripMetric: String = "percent"
+    @Published var stripExhausted: String = "reset"
     @Published var spendPeriods: [SpendPeriod] = []
     /// nil = no budgets configured; "ok" | "warn" | "exceeded"
     @Published var worstState: String?
@@ -370,6 +373,7 @@ final class Model: ObservableObject {
                     self.pollIntervalMinutes = max(1, ui.pollIntervalMinutes ?? 15)
                     self.previewHidden = Set(ui.previewHidden ?? [])
                     self.stripMetric = ui.stripMetric ?? "percent"
+                    self.stripExhausted = ui.stripExhausted ?? "reset"
                 }
                 self.spendPeriods = p.spendPeriods ?? []
                 self.today = p.today
@@ -391,7 +395,8 @@ final class Model: ObservableObject {
                 previewGroups = Self.stripGroups(
                     from: p.limits ?? [],
                     metric: stripMetric,
-                    previewHidden: previewHidden
+                    previewHidden: previewHidden,
+                    exhaustedBehavior: stripExhausted
                 )
                 let newTitle = composeTitle(today: p.today, preview: Self.previewText(p.limits ?? [], cfg: p.uiPreview, labeled: self.previewMode == "hover"), hovering: isHovering, mode: self.previewMode)
                 setTitleIfChanged(newTitle)
@@ -555,7 +560,12 @@ final class Model: ObservableObject {
     /// group reports a quota; otherwise one "~NN%" estimate from the group's
     /// usage relative to the busiest same-kind window across all accounts
     /// (same normalization as the card bars — an ESTIMATE, tilde-marked).
-    static func stripGroups(from limits: [AccountLimits], metric: String, previewHidden: Set<String>) -> [(provider: String, lines: [String])] {
+    static func stripGroups(
+        from limits: [AccountLimits],
+        metric: String,
+        previewHidden: Set<String>,
+        exhaustedBehavior: String = "show",
+    ) -> [(provider: String, lines: [String])] {
         var maxima: [String: Double] = [:]
         for l in limits {
             for w in l.windows { maxima[w.kind] = max(maxima[w.kind] ?? 0, w.tokens) }
@@ -563,6 +573,7 @@ final class Model: ObservableObject {
 
         struct Group {
             var pcts: [Int] = []
+            var resets: [Date] = []
             var estByKind: [String: Double] = [:]
         }
         var order: [String] = []
@@ -576,7 +587,11 @@ final class Model: ObservableObject {
             }
             for w in l.windows {
                 if let pct = w.usedPct {
-                    groups[up]!.pcts.append(Int(max(0, min(100, 100 - pct)).rounded()))
+                    let remaining = Int(max(0, min(100, 100 - pct)).rounded())
+                    groups[up]!.pcts.append(remaining)
+                    if remaining == 0, let reset = w.resetsAt, let date = parseISO(reset) {
+                        groups[up]!.resets.append(date)
+                    }
                 }
                 groups[up]!.estByKind[w.kind, default: 0] += w.tokens
             }
@@ -599,6 +614,19 @@ final class Model: ObservableObject {
             // groups without a real denominator are omitted (icon disabled).
             // A mark with no number invites the question "why?" every time.
             guard !g.pcts.isEmpty else { return nil }
+            if g.pcts.allSatisfy({ $0 == 0 }) {
+                switch exhaustedBehavior {
+                case "hide": return nil
+                case "reset":
+                    // The last exhausted window governs when this provider is
+                    // usable again: if day and week are both empty, the week
+                    // reset wins over the earlier day reset.
+                    if let reset = g.resets.max() {
+                        return (up, [countdown(reset)])
+                    }
+                default: break
+                }
+            }
             return (up, g.pcts.prefix(3).map { "\($0)%" })
         }
     }
@@ -669,7 +697,50 @@ final class Model: ObservableObject {
             from: limits,
             metric: stripMetric,
             previewHidden: previewHidden,
+            exhaustedBehavior: stripExhausted,
         )
+    }
+
+    func setPreviewMode(_ value: String) {
+        previewMode = value == "hover" ? "hover" : "inline"
+        let preview = Self.previewText(
+            currentPayloadForTitle?.limits ?? limits,
+            cfg: currentPreviewCfg,
+            labeled: previewMode == "hover",
+        )
+        setTitleIfChanged(composeTitle(today: currentPayloadForTitle?.today, preview: preview, hovering: isHovering, mode: previewMode))
+        persistUISetting(path: "ui.menubarPreviewMode", json: "\"\(previewMode)\"")
+    }
+
+    func setStripMetric(_ value: String) {
+        stripMetric = value == "tokens" ? "tokens" : "percent"
+        rebuildStripPreview()
+        persistUISetting(path: "ui.stripMetric", json: "\"\(stripMetric)\"")
+    }
+
+    func setStripExhausted(_ value: String) {
+        stripExhausted = ["show", "hide", "reset"].contains(value) ? value : "reset"
+        rebuildStripPreview()
+        persistUISetting(path: "ui.stripExhausted", json: "\"\(stripExhausted)\"")
+    }
+
+    func setPreviewVisible(_ provider: String, visible: Bool) {
+        if visible { previewHidden.remove(provider) } else { previewHidden.insert(provider) }
+        invalidateRefreshes()
+        rebuildStripPreview()
+        let json = "[" + previewHidden.sorted().map { "\"\($0)\"" }.joined(separator: ",") + "]"
+        persistUISetting(path: "ui.previewHidden", json: json)
+    }
+
+    private func persistUISetting(path: String, json: String) {
+        let cli = invocation
+        Task { @MainActor [weak self] in
+            do {
+                _ = try await Self.runConfigCLI(cli, ["config", "set", path, json])
+            } catch {
+                self?.pollStatus = "Could not save setting: \(error.localizedDescription)"
+            }
+        }
     }
 
     static func primaryWindow(_ l: AccountLimits) -> LimitWindow? {
@@ -1503,9 +1574,7 @@ struct CustomizeSheet: View {
     @State private var cards: [CardState] = []
     /// ui.hidden.menubar targets as of load — the save diff baseline.
     @State private var originalHiddenTargets: Set<String> = []
-    /// Section b — menu-bar preview toggles (upstream providers).
-    @State private var previewRows: [PreviewRow] = []
-    /// Section c — manually registered opencode gateway keys.
+    /// Manually registered opencode gateway keys.
     @State private var extraKeys: [ExtraKey] = []
     @State private var showAddKey = false
     @State private var newKeyId = ""
@@ -1518,11 +1587,6 @@ struct CustomizeSheet: View {
         let target: String
         var visible: Bool
         var ident: String { id }
-    }
-
-    struct PreviewRow: Identifiable {
-        let id: String
-        var visible: Bool
     }
 
     struct ExtraKey: Identifiable, Equatable, Codable {
@@ -1555,17 +1619,6 @@ struct CustomizeSheet: View {
                                 return NSItemProvider(object: card.id as NSString)
                             }
                             .onDrop(of: [UTType.plainText], delegate: CardDropDelegate(target: card.id, cards: $cards, dragging: $dragging))
-                    }
-                }
-                Section(header: sectionHeader("Menu-bar preview")) {
-                    ForEach($previewRows) { $row in
-                        PreviewRowView(row: $row, onToggle: { visible in
-                            togglePreview(row.id, visible: visible)
-                        })
-                    }
-                    if previewRows.isEmpty {
-                        Text("no providers detected")
-                            .font(.caption2).foregroundStyle(.tertiary)
                     }
                 }
                 Section(header: sectionHeader("API keys (opencode)")) {
@@ -1669,34 +1722,6 @@ struct CustomizeSheet: View {
         }
     }
 
-    /// Menu-bar preview row (no drag handle; toggle applies immediately).
-    /// `row` is a Binding so the switch flips immediately — the stale-copy
-    /// get-closure variant never re-rendered the control.
-    private struct PreviewRowView: View {
-        @Binding var row: PreviewRow
-        let onToggle: (Bool) -> Void
-
-        var body: some View {
-            HStack(spacing: 10) {
-                MonoMark(provider: row.id)
-                    .frame(width: 11, height: 11)
-                Text(row.id)
-                    .font(.system(size: 13, weight: .medium))
-                Spacer()
-                Toggle("", isOn: Binding(
-                    get: { row.visible },
-                    set: { newValue in
-                        row.visible = newValue // flip the state FIRST so the control animates
-                        onToggle(newValue)
-                    },
-                ))
-                .toggleStyle(.switch)
-                .labelsHidden()
-                .controlSize(.small)
-            }
-        }
-    }
-
     /// Reorder-on-drop for the customize list.
     private struct CardDropDelegate: DropDelegate {
         let target: String
@@ -1734,18 +1759,9 @@ struct CustomizeSheet: View {
             )
         }
         originalHiddenTargets = model.menubarHidden
-        // Section c: manual keys live only in the config file — read it
+        // Manual keys live only in the config file — read it
         // directly (the payload does not carry them).
         loadExtraKeysFromDisk()
-        // Section b: upstream provider groups (same derivation as the strip).
-        var order: [String] = []
-        for l in model.limits {
-            guard let up = Model.upstreamProvider(l) else { continue }
-            if !order.contains(up) { order.append(up) }
-        }
-        previewRows = order.map { up in
-            PreviewRow(id: up, visible: !model.previewHidden.contains(up))
-        }
     }
 
     private func loadExtraKeysFromDisk() {
@@ -1763,31 +1779,6 @@ struct CustomizeSheet: View {
 
     private func move(from source: IndexSet, to destination: Int) {
         cards.move(fromOffsets: source, toOffset: destination)
-    }
-
-    /// Menu-bar preview toggles apply immediately (optimistic). No generic
-    /// config setter exists yet, so persistence lands with the next backend
-    /// round; the flip survives until the payload confirms otherwise.
-    private func togglePreview(_ id: String, visible: Bool) {
-        if visible {
-            model.previewHidden.remove(id)
-        } else {
-            model.previewHidden.insert(id)
-        }
-        // Rebuild the strip NOW — waiting for the next 5-min refresh made
-        // toggles look like no-ops.
-        model.invalidateRefreshes()
-        model.rebuildStripPreview()
-        // Persist via the generic dotted-path config setter.
-        let cli = model.currentInvocation()
-        let json = "[" + model.previewHidden.sorted().map { "\"\($0)\"" }.joined(separator: ",") + "]"
-        Task {
-            do {
-                _ = try await Model.runConfigCLI(cli, ["config", "set", "ui.previewHidden", json])
-            } catch {
-                FileHandle.standardError.write(Data("[tokitoki] preview visibility save failed: \(error)\n".utf8))
-            }
-        }
     }
 
     /// first4…last4 hint — mirrors poll.ts redactCredential.
@@ -1863,6 +1854,99 @@ struct CustomizeSheet: View {
     }
 }
 
+/// Settings dedicated to the status-item strip. Kept separate from the
+/// popover card editor so each screen answers one clear question.
+struct PreviewSettingsSheet: View {
+    @ObservedObject var model: Model
+    @Binding var isPresented: Bool
+    @State private var rows: [ProviderRow] = []
+
+    struct ProviderRow: Identifiable {
+        let id: String
+        var visible: Bool
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("Menubar preview")
+                    .font(.system(size: 13, weight: .semibold))
+                Spacer()
+                Button("Done") { isPresented = false }
+                    .buttonStyle(.plain).fontWeight(.semibold)
+            }
+            .padding(.horizontal, 14).padding(.vertical, 10)
+            Divider()
+            List {
+                Section {
+                    Picker("Display", selection: Binding(
+                        get: { model.previewMode },
+                        set: { model.setPreviewMode($0) },
+                    )) {
+                        Text("Always in the menubar").tag("inline")
+                        Text("Only while hovering").tag("hover")
+                    }
+                    Picker("Metric", selection: Binding(
+                        get: { model.stripMetric },
+                        set: { model.setStripMetric($0) },
+                    )) {
+                        Text("Remaining percent").tag("percent")
+                        Text("Usage tokens").tag("tokens")
+                    }
+                    Picker("When a provider is exhausted", selection: Binding(
+                        get: { model.stripExhausted },
+                        set: { model.setStripExhausted($0) },
+                    )) {
+                        Text("Show next reset").tag("reset")
+                        Text("Hide its mark").tag("hide")
+                        Text("Keep showing 0%").tag("show")
+                    }
+                } header: {
+                    Text("Display")
+                } footer: {
+                    Text("Show next reset uses the longest exhausted window, so a weekly limit still blocks after a daily reset.")
+                }
+                Section {
+                    ForEach($rows) { $row in
+                        Toggle(isOn: Binding(
+                            get: { row.visible },
+                            set: { newValue in
+                                row.visible = newValue
+                                model.setPreviewVisible(row.id, visible: newValue)
+                            },
+                        )) {
+                            HStack(spacing: 9) {
+                                MonoMark(provider: row.id)
+                                Text(row.id).font(.system(size: 13, weight: .medium))
+                            }
+                        }
+                    }
+                    if rows.isEmpty {
+                        Text("No quota providers detected")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                } header: {
+                    Text("Providers")
+                } footer: {
+                    Text("These toggles affect only the compact status-item preview. Popover cards are managed separately.")
+                }
+            }
+            .listStyle(.inset)
+        }
+        .frame(width: 340, height: 430)
+        .onAppear(perform: load)
+    }
+
+    private func load() {
+        var order: [String] = []
+        for l in model.limits {
+            guard let up = Model.upstreamProvider(l), !order.contains(up) else { continue }
+            order.append(up)
+        }
+        rows = order.map { ProviderRow(id: $0, visible: !model.previewHidden.contains($0)) }
+    }
+}
+
 enum PopoverSubview: String, CaseIterable, Hashable {
     case overview
     case quotas
@@ -1897,6 +1981,8 @@ struct ContentView: View {
     @State private var searchText = ""
     /// Customize sheet (card toggles + drag reorder).
     @State private var showCustomize = false
+    /// Separate status-item preview settings (provider marks and display mode).
+    @State private var showPreviewSettings = false
     /// Repo row currently expanded in the repos card.
     @State private var expandedRepo: String?
     /// Card order override while a drag session is in flight.
@@ -1969,9 +2055,11 @@ struct ContentView: View {
         }
         .frame(width: 380, height: 620)
         .background(.thinMaterial)
-        .onAppear { model.refresh() }
         .sheet(isPresented: $showCustomize) {
             CustomizeSheet(model: model, isPresented: $showCustomize)
+        }
+        .sheet(isPresented: $showPreviewSettings) {
+            PreviewSettingsSheet(model: model, isPresented: $showPreviewSettings)
         }
     }
 
@@ -1979,7 +2067,9 @@ struct ContentView: View {
         HStack(spacing: 4) {
             ForEach(PopoverSubview.allCases, id: \.self) { view in
                 Button {
-                    withAnimation(.easeInOut(duration: 0.15)) { activeSubview = view }
+                    // Navigation should switch immediately; a large quota
+                    // payload must never make a tab tap feel queued.
+                    activeSubview = view
                 } label: {
                     Label(view.title, systemImage: view.icon)
                         .font(.caption2.weight(activeSubview == view ? .semibold : .regular))
@@ -2038,14 +2128,16 @@ struct ContentView: View {
     private var overviewFooter: some View {
         VStack(spacing: 6) {
             Divider()
-            HStack(spacing: 7) {
-                Button(action: openDashboard) { Label("Dashboard", systemImage: "safari") }
-                    .buttonStyle(.borderedProminent).controlSize(.small)
-                Button(action: { model.refresh() }) { Label("Refresh", systemImage: "arrow.clockwise") }
-                    .buttonStyle(.bordered).controlSize(.small)
-                Spacer()
+            Button(action: openDashboard) {
+                Label("Open dashboard", systemImage: "safari")
+                    .frame(maxWidth: .infinity)
             }
+            .buttonStyle(.borderedProminent).controlSize(.small)
             HStack(spacing: 7) {
+                Button(action: { model.refresh() }) {
+                    Label("Refresh", systemImage: "arrow.clockwise")
+                }
+                .buttonStyle(.bordered).controlSize(.small)
                 Menu {
                     Button("Save Screenshot to Desktop") { saveScreenshot() }
                     Button("Copy Summary as Markdown") { copyMarkdownSummary() }
@@ -2053,10 +2145,10 @@ struct ContentView: View {
                     Label("Share", systemImage: "square.and.arrow.up")
                 }.buttonStyle(.bordered).controlSize(.small)
                 Button(action: { showCustomize = true }) {
-                    Label("Customize", systemImage: "slider.horizontal.3")
+                    Label("Popover layout", systemImage: "rectangle.3.group")
                 }.buttonStyle(.bordered).controlSize(.small)
-                Spacer()
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 10)
         }
     }
@@ -2151,7 +2243,13 @@ struct ContentView: View {
                 card(title: "popover layout", icon: "rectangle.3.group") {
                     Text("Choose which cards appear and drag them into your preferred order.")
                         .font(.caption).foregroundStyle(.secondary)
-                    Button("Customize cards…") { showCustomize = true }
+                    Button("Customize popover…") { showCustomize = true }
+                        .buttonStyle(.bordered).controlSize(.small)
+                }
+                card(title: "menubar preview", icon: "menubar.dock.rectangle") {
+                    Text("Choose how the status item shows provider marks, percentages, and reset countdowns.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Button("Customize preview…") { showPreviewSettings = true }
                         .buttonStyle(.bordered).controlSize(.small)
                 }
                 card(title: "local dashboard", icon: "safari") {
@@ -2176,7 +2274,7 @@ struct ContentView: View {
     }
 
     private func relativeDate(_ date: Date) -> String {
-        RelativeDateTimeFormatter().localizedString(for: date, relativeTo: Date())
+        relativeDateEnglish(date)
     }
 
     private func emptyState(_ title: String, detail: String, icon: String) -> some View {
@@ -3263,23 +3361,35 @@ struct AccountLimitCard: View {
     @ViewBuilder private func progressBarRow(_ w: LimitWindow) -> some View {
         if let pct = w.usedPct {
             let remaining = max(0, min(100, 100 - pct))
-            ProgressView(value: remaining / 100)
-                .tint(barTint(remaining))
-                .frame(height: 4)
+            explicitProgressBar(fraction: remaining / 100, tint: barTint(remaining))
         } else if w.tokens > 0, let scale = tokenScale[w.kind], scale > 0 {
             // No real quota denominator (estimate window): RELATIVE bar vs the
-            // largest same-kind window — informational only. Emerald (traffic-
-            // palette default) since there is no % to be low on.
+            // largest same-kind window — informational only. Use an explicit
+            // blue tint; semantic secondary colors can resolve to black in a
+            // dark/translucent popover and make a filled bar look broken.
             let frac = min(1.0, max(0.05, w.tokens / scale))
-            ProgressView(value: frac)
-                .tint(Color.secondary.opacity(0.65))
-                .frame(height: 4)
+            explicitProgressBar(fraction: frac, tint: Color(red: 0.33, green: 0.62, blue: 0.96))
         } else {
             // Zero usage: empty track so every window keeps its row rhythm.
             Capsule()
                 .fill(Color.primary.opacity(0.08))
                 .frame(height: 4)
         }
+    }
+
+    /// Native ProgressView tinting varies between macOS control styles. A
+    /// capsule pair keeps the track and fill deterministic on translucent
+    /// popovers, including the dark appearance shown by the menubar app.
+    private func explicitProgressBar(fraction: Double, tint: Color) -> some View {
+        GeometryReader { proxy in
+            ZStack(alignment: .leading) {
+                Capsule().fill(Color.primary.opacity(0.16))
+                Capsule()
+                    .fill(tint)
+                    .frame(width: max(2, proxy.size.width * max(0, min(1, fraction))))
+            }
+        }
+        .frame(height: 6)
     }
 
     private var budgetFooter: some View {
@@ -3400,6 +3510,10 @@ private func shortDate(_ iso: String) -> String {
 /// Humanized time-until-reset ("4h 12m", "3d", "42m").
 func countdown(_ iso: String?) -> String {
     guard let iso, let target = parseISO(iso) else { return "—" }
+    return countdown(target)
+}
+
+func countdown(_ target: Date) -> String {
     let secs = Int(target.timeIntervalSinceNow)
     if secs <= 0 { return "now" }
     let d = secs / 86_400
@@ -3408,6 +3522,16 @@ func countdown(_ iso: String?) -> String {
     if d >= 1 { return "\(d)d \(h)h" }
     if h >= 1 { return "\(h)h \(m)m" }
     return "\(m)m"
+}
+
+/// The app's copy is English even when macOS uses another locale. Keeping the
+/// formatter locale explicit avoids strings such as "Updated il y a 1 minute".
+func relativeDateEnglish(_ date: Date, relativeTo now: Date = Date()) -> String {
+    if abs(date.timeIntervalSince(now)) < 5 { return "just now" }
+    let formatter = RelativeDateTimeFormatter()
+    formatter.locale = Locale(identifier: "en_US")
+    formatter.unitsStyle = .full
+    return formatter.localizedString(for: date, relativeTo: now)
 }
 
 /// Parsers live behind type-level statics: file-scope `let`s declared after

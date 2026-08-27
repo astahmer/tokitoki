@@ -33,17 +33,20 @@ describe("menubar config persistence", () => {
     expect(run(["ui", "--hide", "codex:openai:plus"], configPath).status).toBe(0);
     expect(run(["ui", "--account-order", "codex@openai:plus,pi@opencode-go"], configPath).status).toBe(0);
     expect(run(["config", "set", "ui.stripMetric", '"tokens"'], configPath).status).toBe(0);
+    expect(run(["config", "set", "ui.stripExhausted", '"hide"'], configPath).status).toBe(0);
 
     const cfg = JSON.parse(fs.readFileSync(configPath, "utf8")) as {
       ui?: {
         previewHidden?: string[];
         stripMetric?: string;
+        stripExhausted?: string;
         menubarAccountOrder?: string[];
         hidden?: { menubar?: string[] };
       };
     };
     expect(cfg.ui?.previewHidden).toEqual(["claude", "openrouter"]);
     expect(cfg.ui?.stripMetric).toBe("tokens");
+    expect(cfg.ui?.stripExhausted).toBe("hide");
     expect(cfg.ui?.menubarAccountOrder).toEqual(["codex@openai:plus", "pi@opencode-go"]);
     expect(cfg.ui?.hidden?.menubar).toEqual(["codex:openai:plus"]);
   });
