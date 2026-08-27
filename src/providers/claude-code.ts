@@ -6,7 +6,7 @@ import { providerConfig } from "../config.ts";
 import { eventId } from "../machine.ts";
 import { estimateCost } from "../pricing.ts";
 import { shellToolName } from "../tools.ts";
-import { sessionSnippet, sessionTitle } from "../sessionText.ts";
+import { cleanSessionText, sessionSnippet, sessionTitle } from "../sessionText.ts";
 import { homePath, type EntryContext, type Provider, type SessionDoc } from "./types.ts";
 
 interface ClaudeUsage {
@@ -178,7 +178,7 @@ export function extractClaudeSessionDocs(file: string): SessionDoc[] {
     if (body.length >= BODY_CAP) break;
   }
   if (body.length === 0) return [];
-  return [{ sessionId, startedAt, title: sessionTitle(userTexts[0] ?? body), body: sessionSnippet(body) }];
+  return [{ sessionId, startedAt, title: sessionTitle(userTexts[0] ?? body), body: cleanSessionText(body).slice(0, BODY_CAP) }];
 }
 
 /** Recursive *.jsonl listing, sorted for deterministic cursor behavior. */

@@ -1,16 +1,21 @@
 /** Remove injected agent/app context before showing or indexing conversations. */
 export function cleanSessionText(raw: string): string {
   let text = raw.replaceAll("\r\n", "\n");
-  for (const tag of ["app-context", "environment_context", "skills_instructions"]) {
+  for (const tag of ["app-context", "environment_context", "skills_instructions", "codex_internal_context"]) {
     text = text.replace(new RegExp(`<${tag}>[\\s\\S]*?</${tag}>`, "gi"), "");
   }
-  text = text.replace(/<recommended_plugins>/gi, "");
+  // Codex can persist AGENTS.md and project instructions as ordinary
+  // user-role input, outside the XML context wrappers. They are useful to
+  // the agent but are not part of the conversation a user wants to search.
+  text = text.replace(/# AGENTS\.md instructions[\s\S]*?<\/INSTRUCTIONS>/gi, "");
+  text = text.replace(/<recommended_plugins>[\s\S]*?<\/recommended_plugins>/gi, "");
   text = text.replace(new RegExp("<image[^>]*>" + "[^]*?" + "</image>", "gi"), "");
   text = text.replace(/<[^>]+>/g, "");
   let skipPluginCatalog = false;
   const lines = text.split("\n").map((line) => line.replace(/\s+/g, " ").trim()).filter(Boolean);
   const visible = lines.filter((line) => {
     const lower = line.toLowerCase();
+    if (lower.startsWith("# agents.md instructions")) return false;
     if (lower.includes("here is a list of plugins that are available but not installed")) {
       skipPluginCatalog = true;
       return false;

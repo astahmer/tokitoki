@@ -13,6 +13,9 @@ import {
   updateSessionIndex,
 } from "../src/sessionIndex.ts";
 import type { Provider } from "../src/providers/types.ts";
+import { extractClaudeSessionDocs } from "../src/providers/claude-code.ts";
+import { extractCodexSessionDocs } from "../src/providers/codex.ts";
+import { extractPiSessionDocs } from "../src/providers/pi.ts";
 import { cleanSessionText, sessionTitle } from "../src/sessionText.ts";
 
 function tmpDb(): Database {
@@ -53,6 +56,48 @@ describe("session display text", () => {
     expect(cleanSessionText(raw)).toContain("index pi and claude conversations");
     expect(cleanSessionText(raw)).not.toContain("internal metadata");
     expect(sessionTitle(raw)).toBe("index pi and claude conversations");
+  });
+
+  it("removes unwrapped Codex instructions and keeps the full provider conversation", () => {
+    const file = path.join(os.tmpdir(), `tokitoki-codex-${Date.now()}.jsonl`);
+    fs.writeFileSync(
+      file,
+      [
+        JSON.stringify({ type: "session_meta", payload: { session_id: "codex-sess", timestamp: "2026-08-20T10:00:00Z" } }),
+        JSON.stringify({ type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "# AGENTS.md instructions\n<INSTRUCTIONS>always use jj</INSTRUCTIONS>" }, { type: "input_text", text: "actual Codex request" }] } }),
+        JSON.stringify({ type: "response_item", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "Codex answer" }] } }),
+      ].join("\n"),
+    );
+    const doc = extractCodexSessionDocs(file)[0]!;
+    expect(doc.title).toBe("actual Codex request");
+    expect(doc.body).toContain("actual Codex request");
+    expect(doc.body).toContain("Codex answer");
+    expect(doc.body).not.toContain("AGENTS.md");
+    fs.rmSync(file, { force: true });
+  });
+
+  it("indexes Pi and Claude user plus assistant text instead of no-content sessions", () => {
+    const piFile = path.join(os.tmpdir(), `tokitoki-pi-${Date.now()}.jsonl`);
+    fs.writeFileSync(piFile, [
+      JSON.stringify({ type: "session", id: "pi-sess", timestamp: "2026-08-20T10:00:00Z" }),
+      JSON.stringify({ type: "message", message: { role: "user", content: "Pi request" } }),
+      JSON.stringify({ type: "message", message: { role: "assistant", content: [{ type: "text", text: "Pi answer" }] } }),
+    ].join("\n"));
+    const claudeFile = path.join(os.tmpdir(), `tokitoki-claude-${Date.now()}.jsonl`);
+    fs.writeFileSync(claudeFile, [
+      JSON.stringify({ type: "user", sessionId: "claude-sess", timestamp: "2026-08-20T10:00:00Z", message: { role: "user", content: "Claude request" } }),
+      JSON.stringify({ type: "assistant", sessionId: "claude-sess", message: { role: "assistant", content: [{ type: "text", text: "Claude answer" }] } }),
+    ].join("\n"));
+    const pi = extractPiSessionDocs(piFile)[0]!;
+    const claude = extractClaudeSessionDocs(claudeFile)[0]!;
+    expect(pi.title).toBe("Pi request");
+    expect(pi.body).toContain("Pi request");
+    expect(pi.body).toContain("Pi answer");
+    expect(claude.title).toBe("Claude request");
+    expect(claude.body).toContain("Claude request");
+    expect(claude.body).toContain("Claude answer");
+    fs.rmSync(piFile, { force: true });
+    fs.rmSync(claudeFile, { force: true });
   });
 });
 

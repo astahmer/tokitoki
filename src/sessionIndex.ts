@@ -51,7 +51,9 @@ export interface SessionIndexStats {
 const MAX_INDEX_FILE_BYTES = 256 * 1024 * 1024;
 /** Minimum interval between full incremental index runs (search-call path). */
 const UPDATE_THROTTLE_MS = 120_000;
-const EXTRACTOR_VERSION = "3";
+// Bump whenever extraction changes materially; otherwise an existing local
+// index would keep stale titles/bodies until every source file changes.
+const EXTRACTOR_VERSION = "4";
 
 function ensureExtractorVersion(db: Database): void {
   try {

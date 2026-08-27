@@ -5,7 +5,7 @@ import { providerConfig } from "../config.ts";
 import { eventId } from "../machine.ts";
 import { estimateCost } from "../pricing.ts";
 import { shellToolName } from "../tools.ts";
-import { sessionSnippet, sessionTitle } from "../sessionText.ts";
+import { cleanSessionText, sessionSnippet, sessionTitle } from "../sessionText.ts";
 import { homePath, type EntryContext, type Provider, type SessionDoc } from "./types.ts";
 import { walkJsonl } from "./claude-code.ts";
 
@@ -186,7 +186,7 @@ export function extractPiSessionDocs(file: string): SessionDoc[] {
     if (body.length >= BODY_CAP) break;
   }
   if (sessionId === undefined || body.length === 0) return [];
-  return [{ sessionId, startedAt, title: sessionTitle(userTexts[0] ?? body), body: sessionSnippet(body) }];
+  return [{ sessionId, startedAt, title: sessionTitle(userTexts[0] ?? body), body: cleanSessionText(body).slice(0, BODY_CAP) }];
 }
 
 /** Deterministic fallback when an entry lacks an id. */

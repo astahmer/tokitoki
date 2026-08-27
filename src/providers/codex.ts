@@ -6,7 +6,7 @@ import { providerConfig } from "../config.ts";
 import { eventId } from "../machine.ts";
 import { estimateCost } from "../pricing.ts";
 import { extractCodexToolName, shellToolName } from "../tools.ts";
-import { sessionSnippet, sessionTitle } from "../sessionText.ts";
+import { cleanSessionText, sessionSnippet, sessionTitle } from "../sessionText.ts";
 import { homePath, type EntryContext, type Provider, type SessionDoc } from "./types.ts";
 
 interface CodexTokenUsage {
@@ -273,7 +273,7 @@ export function extractCodexSessionDocs(file: string): SessionDoc[] {
   }
   if (body.length === 0) return [];
   const titles = userTexts.map((text) => sessionTitle(text)).filter((text) => text.length > 0);
-  return [{ sessionId, startedAt, title: titles.at(-1) ?? "", body: sessionSnippet(body) }];
+  return [{ sessionId, startedAt, title: titles.at(-1) ?? "", body: cleanSessionText(body).slice(0, BODY_CAP) }];
 }
 
 function walkRollouts(root: string): string[] {
