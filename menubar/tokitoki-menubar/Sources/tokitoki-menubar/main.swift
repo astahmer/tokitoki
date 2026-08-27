@@ -228,6 +228,20 @@ struct ActivityGridPayload: Codable {
     let cells: [Cell]
 }
 
+struct PopoverBlock: Codable, Identifiable {
+    let accountKey: String
+    let startIso: String
+    let endIso: String
+    let tokens: Double
+    let costUsd: Double
+    let requests: Int
+    let isActive: Bool
+    var id: String { "\(accountKey)/\(startIso)" }
+}
+
+struct BlocksPayload: Codable { let rows: [PopoverBlock] }
+struct StatuslinePreviewPayload: Codable { let command: String; let preview: String }
+
 struct PopoverSessionRow: Codable, Identifiable {
     let sessionId: String
     let provider: String
@@ -247,6 +261,8 @@ struct PopoverSessionRow: Codable, Identifiable {
 
 struct PopoverSessionsPayload: Codable {
     let rows: [PopoverSessionRow]
+    let page: Int?
+    let hasMore: Bool?
 }
 
 struct PopoverSessionDetail: Codable {
@@ -258,6 +274,21 @@ struct PopoverSessionDetail: Codable {
         let title: String
         let body: String
     }
+
+    struct Event: Codable, Identifiable {
+        let n: Int
+        let ts: String
+        let model: String
+        let inputTokens: Double
+        let outputTokens: Double
+        let cacheReadTokens: Double
+        let cacheWriteTokens: Double
+        let costUsd: Double
+        let runningTokens: Double
+        var id: Int { n }
+    }
+
+    let events: [Event]?
 }
 
 struct MenubarPayload: Codable {
@@ -279,6 +310,8 @@ struct MenubarPayload: Codable {
     let history: DailyUsageHistory?
     let activityGrid: ActivityGridPayload?
     let repoHistory: DailyUsageHistory?
+    let blocks: BlocksPayload?
+    let statuslinePreview: StatuslinePreviewPayload?
 }
 
 @MainActor
@@ -326,6 +359,8 @@ final class Model: ObservableObject {
     @Published var history: DailyUsageHistory?
     @Published var activityGrid: ActivityGridPayload?
     @Published var repoHistory: DailyUsageHistory?
+    @Published var blocks: [PopoverBlock] = []
+    @Published var statuslinePreview: StatuslinePreviewPayload?
     @Published var tabOrder: [PopoverSubview] = PopoverSubview.defaultOrder
     @Published var syncBackend: String?
     @Published var syncConfigured = false
@@ -346,6 +381,9 @@ final class Model: ObservableObject {
     @Published var sessionQuery = ""
     @Published var selectedSession: PopoverSessionDetail?
     @Published var sessionStatus: String?
+    @Published var sessionPage = 1
+    @Published var sessionHasMore = false
+    @Published var maintenanceStatus: String?
     @Published var customHarnessRows: [ReportRow] = []
     @Published var customModelRows: [ReportRow] = []
     @Published var customProviderRows: [ReportRow] = []
@@ -398,17 +436,34 @@ final class Model: ObservableObject {
     /// same indexed full-text search as the CLI and web dashboard.
     func searchPopoverSessions(_ query: String) {
         sessionQuery = query
+        sessionPage = 1
+        fetchPopoverSessions(page: 1)
+    }
+
+    func nextPopoverSessionPage() {
+        guard sessionHasMore else { return }
+        fetchPopoverSessions(page: sessionPage + 1)
+    }
+
+    func previousPopoverSessionPage() {
+        guard sessionPage > 1 else { return }
+        fetchPopoverSessions(page: sessionPage - 1)
+    }
+
+    private func fetchPopoverSessions(page: Int) {
         let cli = invocation
-        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = sessionQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         sessionStatus = "Searching sessions…"
         Task { @MainActor [weak self] in
             guard let self else { return }
             do {
-                var args = ["sessions", "--last", "month", "--top", "12", "--json"]
+                var args = ["sessions", "--last", "month", "--top", "50", "--page", String(page), "--json"]
                 if !trimmed.isEmpty { args += ["--search", trimmed] }
                 let payload = try await Self.runJSON(PopoverSessionsPayload.self, cli, args)
                 self.sessionRows = payload?.rows ?? []
-                self.sessionStatus = self.sessionRows.isEmpty ? "No sessions found" : "\(self.sessionRows.count) recent session\(self.sessionRows.count == 1 ? "" : "s")"
+                self.sessionPage = payload?.page ?? page
+                self.sessionHasMore = payload?.hasMore ?? false
+                self.sessionStatus = self.sessionRows.isEmpty ? "No sessions found" : "\(self.sessionRows.count) session\(self.sessionRows.count == 1 ? "" : "s") · page \(self.sessionPage)"
             } catch {
                 self.sessionRows = []
                 self.sessionStatus = "Session search failed: \(error.localizedDescription)"
@@ -685,6 +740,41 @@ final class Model: ObservableObject {
         }
     }
 
+    func reindexSessions() {
+        maintenanceStatus = "Reindexing every harness conversation…"
+        let cli = invocation
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                let output = try await Self.runCLI(cli, ["reindex"])
+                maintenanceStatus = output.split(separator: "\n").first.map(String.init) ?? "Session index rebuilt"
+                refresh()
+            } catch {
+                maintenanceStatus = "Reindex failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    func importUsageCSV() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.commaSeparatedText, .text]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        maintenanceStatus = "Importing \(url.lastPathComponent)…"
+        let cli = invocation
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                let output = try await Self.runCLI(cli, ["import", url.path])
+                maintenanceStatus = output.split(separator: "\n").last.map(String.init) ?? "Import complete"
+                refresh()
+            } catch {
+                maintenanceStatus = "Import failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
     /// Refresh provider quotas and expose progress in the popover.
     func pollNow(background: Bool = false) {
         guard !pollInFlight else { return }
@@ -862,6 +952,8 @@ final class Model: ObservableObject {
                 self.history = p.history
                 self.activityGrid = p.activityGrid
                 self.repoHistory = p.repoHistory
+                self.blocks = p.blocks?.rows ?? []
+                self.statuslinePreview = p.statuslinePreview
                 self.spendHealth = p.spendHealth
                 self.today = p.today
                 self.rollingDay = p.rollingDay
@@ -3830,6 +3922,31 @@ struct ContentView: View {
                             .accessibilityLabel("30 day repository activity history")
                     }
                 }
+                if !model.blocks.isEmpty {
+                    card(title: "billing blocks · active timeline", icon: "clock.arrow.circlepath") {
+                        ForEach(model.blocks.sorted { $0.startIso > $1.startIso }.prefix(6)) { block in
+                            HStack(spacing: 6) {
+                                Circle().fill(block.isActive ? .green : .secondary).frame(width: 6, height: 6)
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(block.isActive ? "\(block.accountKey) · active" : block.accountKey)
+                                        .font(.caption.weight(.medium)).lineLimit(1)
+                                    Text("\(shortDateTime(block.startIso)) → \(shortDateTime(block.endIso)) · \(block.requests) requests")
+                                        .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                                }
+                                Spacer()
+                                Text(block.isActive ? countdown(block.endIso) + " left" : humanCount(block.tokens))
+                                    .font(.caption2.monospacedDigit()).foregroundStyle(block.isActive ? .green : .secondary)
+                            }
+                        }
+                    }
+                }
+                if let statusline = model.statuslinePreview {
+                    card(title: "statusline preview", icon: "rectangle.bottomthird.inset.filled") {
+                        Text(statusline.preview).font(.caption.monospaced()).textSelection(.enabled)
+                        Text("Install in Claude Code with: \(statusline.command)")
+                            .font(.caption2).foregroundStyle(.secondary).textSelection(.enabled)
+                    }
+                }
                 if !model.topTools.isEmpty { toolsCard }
                 if let anomalyLine = model.anomalyLine {
                     card(title: "anomalies", icon: "waveform.path.ecg") {
@@ -3898,21 +4015,110 @@ struct ContentView: View {
                         .contentShape(Rectangle())
                         .overlay(alignment: .bottom) { Divider().opacity(0.3) }
                     }
+                    if model.sessionPage > 1 || model.sessionHasMore {
+                        HStack {
+                            Button("← Previous") { model.previousPopoverSessionPage() }
+                                .buttonStyle(.bordered).controlSize(.mini)
+                                .disabled(model.sessionPage <= 1)
+                            Spacer()
+                            Text("Page \(model.sessionPage)")
+                                .font(.caption2).foregroundStyle(.tertiary)
+                            Spacer()
+                            Button("Next →") { model.nextPopoverSessionPage() }
+                                .buttonStyle(.bordered).controlSize(.mini)
+                                .disabled(!model.sessionHasMore)
+                        }
+                        .padding(.top, 3)
+                    }
                 }
                 if let conversation = model.selectedSession?.conversation {
                     card(title: conversation.title.isEmpty ? "conversation" : conversation.title, icon: "doc.text") {
-                        Text(conversation.body.isEmpty ? "No conversation body indexed." : conversation.body)
-                            .font(.caption2)
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                        ConversationBodyView(rawBody: conversation.body)
+                    }
+                }
+                if let events = model.selectedSession?.events, !events.isEmpty {
+                    card(title: "request timeline · \(events.count)", icon: "timeline.selection") {
+                        ForEach(events.prefix(30)) { event in
+                            let eventCost = String(format: "$%.2f", event.costUsd)
+                            HStack(spacing: 5) {
+                                Text("\(event.n)").font(.caption2.monospacedDigit()).foregroundStyle(.tertiary).frame(width: 22, alignment: .trailing)
+                                Text(String(event.ts.dropFirst(11).prefix(8))).font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                                Text(event.model).font(.caption2).lineLimit(1)
+                                Spacer()
+                                Text("\(humanCount(event.runningTokens)) · \(eventCost)")
+                                    .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                            }
+                        }
+                        if events.count > 30 {
+                            Text("Showing the first 30 requests; the full timeline is available in the dashboard.")
+                                .font(.caption2).foregroundStyle(.tertiary)
+                        }
                     }
                 }
             }.padding(12)
         }
         .onAppear {
             if model.sessionRows.isEmpty { model.searchPopoverSessions("") }
+    }
+}
+
+/// Compact native conversation renderer: markdown gets readable hierarchy and
+/// tool calls are summarized separately so a long transcript is not just a
+/// wall of `[tool:read]` lines.
+private struct ConversationBodyView: View {
+    let rawBody: String
+
+    private var toolCounts: [(name: String, count: Int)] {
+        var counts: [String: Int] = [:]
+        for line in rawBody.split(separator: "\n") {
+            guard line.hasPrefix("[tool:"), let end = line.firstIndex(of: "]") else { continue }
+            let name = String(line[line.index(line.startIndex, offsetBy: 6)..<end])
+            counts[name, default: 0] += 1
+        }
+        return counts.keys.sorted().map { ($0, counts[$0] ?? 0) }
+    }
+
+    private var readableBody: String {
+        rawBody.split(separator: "\n", omittingEmptySubsequences: false)
+            .filter { !$0.hasPrefix("[tool:") }
+            .joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var bodyView: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            if !toolCounts.isEmpty {
+                DisclosureGroup("Tools used · \(toolCounts.reduce(0) { $0 + $1.count })") {
+                    VStack(alignment: .leading, spacing: 3) {
+                        ForEach(toolCounts, id: \.name) { tool in
+                            Text("\(tool.name) · \(tool.count)")
+                                .font(.caption2.monospaced())
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .padding(.top, 3)
+                }
+                .font(.caption2.weight(.semibold))
+            }
+            if readableBody.isEmpty {
+                Text("No conversation body indexed.")
+                    .font(.caption2).foregroundStyle(.secondary)
+            } else if let markdown = try? AttributedString(markdown: readableBody) {
+                Text(markdown)
+                    .font(.caption2)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                Text(readableBody)
+                    .font(.caption2)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
         }
     }
+
+    var body: some View { bodyView }
+}
 
     private var sourcesBody: some View {
         ScrollView(.vertical) {
@@ -4117,7 +4323,20 @@ struct ContentView: View {
                     Text("Add multiple keys for providers that expose quota APIs. Each key gets its own usage card.")
                         .font(.caption).foregroundStyle(.secondary)
                     Button("Manage API keys…") { showAPIKeys = true }
-                        .buttonStyle(.bordered).controlSize(.small)
+                    .buttonStyle(.bordered).controlSize(.small)
+                }
+                card(title: "index & import diagnostics", icon: "stethoscope") {
+                    Text("Rebuild conversation search across Codex, Pi, Claude, Cursor, and other configured harness stores, or import a provider CSV backfill.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    HStack(spacing: 7) {
+                        Button("Reindex conversations") { model.reindexSessions() }
+                            .buttonStyle(.bordered).controlSize(.small)
+                        Button("Import CSV…") { model.importUsageCSV() }
+                            .buttonStyle(.bordered).controlSize(.small)
+                    }
+                    if let status = model.maintenanceStatus {
+                        Text(status).font(.caption2).foregroundStyle(.secondary).lineLimit(2)
+                    }
                 }
                 card(title: "sync", icon: "arrow.triangle.2.circlepath") {
                     Picker("Backend", selection: Binding(

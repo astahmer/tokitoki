@@ -543,7 +543,13 @@ describe("pollQuotas", () => {
         ocCache,
         JSON.stringify({
           quotas: {
-            __main__: { weeklyPercent: 41, weeklyResetAt: 1_800_000_000 },
+            __main__: {
+              weeklyPercent: 41,
+              weeklyResetAt: 1_800_000_000,
+              shortPercent: 12,
+              shortResetAt: 1_800_001_000,
+              shortWindowSeconds: 18_000,
+            },
             "chatgpt-abc": { weeklyPercent: 41, weeklyResetAt: 1_800_000_000 }, // same window → collapses
           },
         }),
@@ -558,10 +564,12 @@ describe("pollQuotas", () => {
         cache,
       });
       const codexRows = cache.database
-        .query("SELECT used_pct, resets_at FROM quota_snapshots WHERE provider='codex' AND account_key='codex'")
-        .all() as Array<{ used_pct: number; resets_at: number }>;
-      expect(codexRows.length).toBe(1); // deduped by identical reset epoch
-      expect(codexRows[0]!.used_pct).toBeCloseTo(41);
+        .query("SELECT window_minutes, used_pct, resets_at FROM quota_snapshots WHERE provider='codex' AND account_key='codex'")
+        .all() as Array<{ window_minutes: number; used_pct: number; resets_at: number }>;
+      expect(codexRows).toHaveLength(2);
+      expect(codexRows.find((row) => row.window_minutes === 10_080)?.used_pct).toBeCloseTo(41);
+      const windows = res.accounts.find((a) => a.accountKey === "codex")?.windows ?? [];
+      expect(windows.map((window) => window.windowMinutes)).toEqual([18_000 / 60, 10_080]);
       void res;
     } finally {
       cache.close();

@@ -21,6 +21,7 @@ export function ShareButton(): React.ReactNode {
   const [status, setStatus] = useState<ShareStatus | null>(null);
   const [preview, setPreview] = useState<SharePreview | null>(null);
   const [scope, setScope] = useState<"week" | "month">("week");
+  const [includeRepos, setIncludeRepos] = useState(false);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -31,7 +32,7 @@ export function ShareButton(): React.ReactNode {
       .then((r) => r.json())
       .then(setStatus)
       .catch(() => setStatus(null));
-    loadPreview("week", false);
+    loadPreview("week", includeRepos);
   }, [open]);
 
   const loadPreview = useCallback((s: "week" | "month", repos: boolean) => {
@@ -49,7 +50,7 @@ export function ShareButton(): React.ReactNode {
     fetch("/api/share/publish", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ confirm: true, scope, includeRepos: false }),
+      body: JSON.stringify({ confirm: true, scope, includeRepos }),
     })
       .then(async (r) => (await r.json()) as { ok?: boolean; error?: string; cid?: string })
       .then((body) => {
@@ -59,6 +60,17 @@ export function ShareButton(): React.ReactNode {
       })
       .catch((err: Error) => setError(err.message))
       .finally(() => setBusy(false));
+  };
+
+  const setSharing = (enabled: boolean): void => {
+    fetch("/api/share", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ enabled }),
+    })
+      .then((r) => r.json())
+      .then(setStatus)
+      .catch((err: Error) => setError(err.message));
   };
 
   return (
@@ -109,13 +121,25 @@ export function ShareButton(): React.ReactNode {
                 variant={scope === s ? "primary" : "secondary"}
                 onClick={() => {
                   setScope(s);
-                  loadPreview(s, false);
+                  loadPreview(s, includeRepos);
                 }}
               >
                 {s}
               </Button>
             ))}
           </div>
+
+          <label className="mb-3 flex items-center gap-2 text-xs">
+            <input
+              type="checkbox"
+              checked={includeRepos}
+              onChange={(e) => {
+                setIncludeRepos(e.target.checked);
+                loadPreview(scope, e.target.checked);
+              }}
+            />
+            include hashed repository shares (never raw names)
+          </label>
 
           <div className="mb-3 rounded-lg bg-kumo-recessed p-3 text-xs">
             <p className="mb-1 font-medium">this will publish:</p>
@@ -138,11 +162,14 @@ export function ShareButton(): React.ReactNode {
           )}
 
           <div className="flex justify-end gap-2">
+            <Button size="sm" variant="secondary" onClick={() => setSharing(status?.enabled !== true)}>
+              {status?.enabled === true ? "disable sharing" : "enable sharing"}
+            </Button>
             <Dialog.Close render={(props) => <Button {...props} variant="secondary" size="sm" />}>
               close
             </Dialog.Close>
-            <Button size="sm" variant="primary" disabled={busy || !status?.atprotoConfigured} onClick={publish}>
-              {busy ? "publishing…" : "enable & publish"}
+            <Button size="sm" variant="primary" disabled={busy || status?.enabled !== true || !status?.atprotoConfigured} onClick={publish}>
+              {busy ? "publishing…" : "publish"}
             </Button>
           </div>
         </Dialog>

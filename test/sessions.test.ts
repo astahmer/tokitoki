@@ -96,6 +96,18 @@ describe("topSessions", () => {
     expect(limited.map((r) => r.sessionId)).toEqual(["a"]);
     cache.close();
   });
+
+  it("supports stable recent pagination with limit and offset", () => {
+    const cache = tmpCache();
+    for (let i = 0; i < 3; i++) {
+      cache.insert([ev({ ts: `2026-08-20T10:0${i}:00Z`, sessionId: `page-${i}` })]);
+    }
+    const first = cache.topSessions({ sinceIso: "2026-08-01T00:00:00Z", sort: "recent", limit: 2, offset: 0 });
+    const second = cache.topSessions({ sinceIso: "2026-08-01T00:00:00Z", sort: "recent", limit: 2, offset: 2 });
+    expect(first.map((r) => r.sessionId)).toEqual(["page-2", "page-1"]);
+    expect(second.map((r) => r.sessionId)).toEqual(["page-0"]);
+    cache.close();
+  });
 });
 
 describe("sessionDetail + sessionProviders", () => {

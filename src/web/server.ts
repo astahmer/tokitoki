@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { apiAnomalies, apiBreakdown, apiBudgets, apiExport, apiGrid, apiNotificationHistory, apiSessionDetail, apiSessionSearch, apiSessions, apiSources, apiSummary, apiTable, apiTimeseries, type WindowParams } from "./api.ts";
-import { atprotoConfig, buildSharePayload, describePayload, publishShare, readShareState } from "../share.ts";
+import { atprotoConfig, buildSharePayload, describePayload, publishShare, readShareState, writeShareState } from "../share.ts";
 
 export interface WebServerOptions {
   port?: number;
@@ -199,6 +199,14 @@ export function startWebServer(options: WebServerOptions = {}): Bun.Server<undef
       case "/api/sources":
         return json(apiSources());
       case "/api/share": {
+        if (request.method === "POST") {
+          const body = (await request.json().catch(() => ({}))) as { enabled?: boolean };
+          if (typeof body.enabled !== "boolean") return text("enabled must be a boolean\n", 400);
+          const state = readShareState();
+          state.enabled = body.enabled;
+          writeShareState(state);
+          return json({ enabled: state.enabled, lastPublished: state.lastPublished ?? null, atprotoConfigured: atprotoConfig() !== null });
+        }
         const state = readShareState();
         return json({
           enabled: state.enabled,

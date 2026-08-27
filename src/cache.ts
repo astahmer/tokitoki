@@ -1265,6 +1265,7 @@ export class EventCache {
     providers?: string[];
     accountKey?: string;
     limit?: number;
+    offset?: number;
     /** "recent" (default) = last_ts DESC so free/unbilled sessions stay
      * visible; "cost" = legacy cost-ordered leaderboard. */
     sort?: "cost" | "recent";
@@ -1292,10 +1293,10 @@ export class EventCache {
         WHERE e.session_id IS NOT NULL AND ${where.sql}
         GROUP BY e.provider, e.session_id
         ORDER BY ${opts.sort === "cost" ? "cost_usd DESC," : "last_ts DESC,"} input_tokens + output_tokens + cache_read_tokens + cache_write_tokens DESC
-        LIMIT ?
+        LIMIT ? OFFSET ?
         `,
       )
-      .all(opts.sinceIso, ...where.params, opts.limit ?? 10) as Array<RawSessionRow>;
+      .all(opts.sinceIso, ...where.params, opts.limit ?? 10, opts.offset ?? 0) as Array<RawSessionRow>;
     return rows.map(sessionFromRaw);
   }
 

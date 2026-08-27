@@ -1195,19 +1195,22 @@ function runSessions(parsed: ParsedInvocation): void {
         return lines.join("\n");
       }
 
-      const rows = cache.topSessions({ ...filter, limit: topN });
+      const page = Math.max(1, Number(flagString(parsed, "page") ?? "1") || 1);
+      const rows = cache.topSessions({ ...filter, limit: topN + 1, offset: (page - 1) * topN, sort: "recent" });
+      const hasMore = rows.length > topN;
+      const visibleRows = rows.slice(0, topN);
       if (json) {
         const stats = updateSessionIndex(cache.database, undefined, { throttleMs: 0 });
-        const enrichedRows = rows.map((row) => ({
+        const enrichedRows = visibleRows.map((row) => ({
           ...row,
           ...(sessionPreview(cache.database, row.provider, row.sessionId) ?? {}),
         }));
-        return JSON.stringify({ window: { since: w.sinceIso, until: w.untilIso ?? null, label: w.label }, top: topN, indexedFiles: stats.filesIndexed, rows: enrichedRows }, null, 2);
+        return JSON.stringify({ window: { since: w.sinceIso, until: w.untilIso ?? null, label: w.label }, top: topN, page, hasMore, indexedFiles: stats.filesIndexed, rows: enrichedRows }, null, 2);
       }
-      if (rows.length === 0) {
+      if (visibleRows.length === 0) {
         return `${windowLine(w)}\nno sessions recorded in this window — run \`tokitoki scan\` first`;
       }
-      return `${windowLine(w)}\n${renderSessionLeaderboard(rows, { by: by as (typeof SESSION_DIMENSIONS)[number] | undefined })}`;
+      return `${windowLine(w)}\n${renderSessionLeaderboard(visibleRows, { by: by as (typeof SESSION_DIMENSIONS)[number] | undefined })}`;
     });
     console.log(out);
   } catch (err) {
@@ -2140,8 +2143,10 @@ function runMenubarPayload(parsed: ParsedInvocation): void {
   // "today" = local CALENDAR day, not a rolling 24h window — a rolling
   // window makes the hero number drift DOWN as yesterday's hours fall out.
   const todayKey = localDateKey(0);
-  const tomorrowKey = localDateKey(-1);
-  capture("today", () => runReport(inv("report", { by: "provider", json: true, from: todayKey, to: tomorrowKey })));
+  // Explicit date ranges are inclusive, so passing tomorrow as `to` would
+  // accidentally include two local calendar days. Same-day bounds are
+  // normalized by resolveTimeWindow to midnight → next midnight.
+  capture("today", () => runReport(inv("report", { by: "provider", json: true, from: todayKey, to: todayKey })));
   // Token Pulse intentionally uses a rolling 24-hour window: people use this
   // view to answer "what have I spent today?" even when yesterday evening's
   // activity is still within the current workday. Keep the calendar-day
@@ -2217,6 +2222,31 @@ function runMenubarPayload(parsed: ParsedInvocation): void {
           }),
         })),
       }));
+    });
+  });
+  capture("blocks", () => {
+    const config = loadConfig();
+    withCache((cache) => {
+      cache.sync(resolveExtraFiles(config));
+      console.log(JSON.stringify({ rows: cache.blockWindows(sinceIsoForDays(1), undefined) }));
+    });
+  });
+  capture("statuslinePreview", () => {
+    const config = loadConfig();
+    withCache((cache) => {
+      cache.sync(resolveExtraFiles(config));
+      const todayStart = new Date(`${todayKey}T00:00:00`).toISOString();
+      const tomorrowKey = localDateKey(-1);
+      const tomorrowStart = new Date(`${tomorrowKey}T00:00:00`).toISOString();
+      const today = cache.totals(todayStart, undefined, tomorrowStart);
+      const month = cache.totals(monthStartIso(), undefined, new Date().toISOString());
+      const active = cache.blockWindows(sinceIsoForDays(1), undefined).find((row) => row.isActive);
+      const parts = [
+        today.costUsd > 0 ? `$${today.costUsd.toFixed(2)} today` : undefined,
+        month.costUsd > 0 ? `$${month.costUsd.toFixed(2)} MTD` : undefined,
+        active !== undefined ? `block ${Math.max(0, Math.round((Date.parse(active.endIso) - Date.now()) / 60000))}m left` : undefined,
+      ].filter((part): part is string => part !== undefined);
+      console.log(JSON.stringify({ command: "tokitoki statusline", preview: parts.join(" · ") || "waiting for usage" }));
     });
   });
   capture("uiPreview", () => {
@@ -2478,9 +2508,8 @@ function runMenubarPayload(parsed: ParsedInvocation): void {
     const yFrom = new Date(Date.now() - 86_400_000);
     const yKey = `${yFrom.getFullYear()}-${String(yFrom.getMonth() + 1).padStart(2, "0")}-${String(yFrom.getDate()).padStart(2, "0")}`;
     const todayKey = localDateKey(0);
-    const tomorrowKey = localDateKey(-1);
     const periodFlags: Array<[string, Record<string, FlagValue>]> = [
-      ["today", { from: todayKey, to: tomorrowKey }],
+      ["today", { from: todayKey, to: todayKey }],
       ["yesterday", { from: yKey, to: todayKey }],
       ["week", { last: "week" }],
       ["month", { last: "month" }],
