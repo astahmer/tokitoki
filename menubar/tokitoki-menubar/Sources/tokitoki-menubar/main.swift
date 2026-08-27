@@ -353,6 +353,7 @@ final class Model: ObservableObject {
     @Published var isLoading = true
     @Published var loadingCompleted = 0
     @Published var loadingTotal = 1
+    @Published var loadingStage = "Loading latest data…"
     @Published var dashboardStatus: String?
     @Published var lastUpdatedAt: Date?
     /// Account-card order override applied immediately after customize saves.
@@ -416,6 +417,9 @@ final class Model: ObservableObject {
     private var payloadInFlight = false
     private var payloadRefreshPending = false
     private var sessionRequestGeneration = 0
+    private var hasHydratedSnapshot = false
+    private var sessionTask: Task<Void, Never>?
+    private var sessionPageCache: [String: PopoverSessionsPayload] = [:]
 
     private struct QuotaObservation: Codable {
         let remaining: Double
@@ -467,10 +471,19 @@ final class Model: ObservableObject {
     private func fetchPopoverSessions(page: Int) {
         let cli = invocation
         let trimmed = sessionQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cacheKey = "\(trimmed.lowercased())|\(page)"
         sessionRequestGeneration += 1
         let requestGeneration = sessionRequestGeneration
+        sessionTask?.cancel()
         sessionStatus = "Searching sessions…"
-        Task { @MainActor [weak self] in
+        if let cached = sessionPageCache[cacheKey] {
+            sessionRows = cached.rows
+            sessionPage = cached.page ?? page
+            sessionHasMore = cached.hasMore ?? false
+            sessionStatus = sessionRows.isEmpty ? "No sessions found" : "\(sessionRows.count) sessions · page \(sessionPage)"
+            return
+        }
+        sessionTask = Task { @MainActor [weak self] in
             guard let self else { return }
             do {
                 // The payload refresh already ingests and indexes local stores.
@@ -480,11 +493,13 @@ final class Model: ObservableObject {
                 if !trimmed.isEmpty { args += ["--search", trimmed] }
                 let payload = try await Self.runJSON(PopoverSessionsPayload.self, cli, args)
                 guard requestGeneration == self.sessionRequestGeneration else { return }
+                if let payload { self.sessionPageCache[cacheKey] = payload }
                 self.sessionRows = payload?.rows ?? []
                 self.sessionPage = payload?.page ?? page
                 self.sessionHasMore = payload?.hasMore ?? false
                 self.sessionStatus = self.sessionRows.isEmpty ? "No sessions found" : "\(self.sessionRows.count) session\(self.sessionRows.count == 1 ? "" : "s") · page \(self.sessionPage)"
             } catch {
+                if Task.isCancelled { return }
                 guard requestGeneration == self.sessionRequestGeneration else { return }
                 self.sessionRows = []
                 self.sessionStatus = "Session search failed: \(error.localizedDescription)"
@@ -494,6 +509,7 @@ final class Model: ObservableObject {
 
     func loadPopoverSession(_ row: PopoverSessionRow) {
         let cli = invocation
+        sessionTask?.cancel()
         sessionRequestGeneration += 1
         selectedSessionRow = row
         selectedSession = nil
@@ -517,6 +533,7 @@ final class Model: ObservableObject {
     }
 
     func clearPopoverSession() {
+        sessionTask?.cancel()
         sessionRequestGeneration += 1
         selectedSession = nil
         selectedSessionRow = nil
@@ -970,7 +987,7 @@ final class Model: ObservableObject {
         let generation = refreshGeneration
         isLoading = true
         loadingCompleted = 0
-        loadingTotal = 1
+        loadingTotal = 4
         if payloadInFlight {
             payloadRefreshPending = true
             return
@@ -984,6 +1001,9 @@ final class Model: ObservableObject {
             runBackgroundPoll()
             return
         }
+        let cached = !hasHydratedSnapshot
+        hasHydratedSnapshot = true
+        loadingStage = cached ? "Reading saved snapshot…" : "Scanning harness stores…"
         payloadInFlight = true
         Task { @MainActor in
             defer {
@@ -995,12 +1015,17 @@ final class Model: ObservableObject {
                 }
             }
             do {
-                let p = try await Self.runJSON(MenubarPayload.self, invocation, ["menubar-payload", "--json"])!
+                let args = cached
+                    ? ["menubar-payload", "--cached", "--json"]
+                    : ["menubar-payload", "--json"]
+                let p = try await Self.runJSON(MenubarPayload.self, invocation, args)!
                 guard generation == self.refreshGeneration else {
                     self.dbg("discarded stale payload generation \(generation)")
                     return
                 }
                 dbg("fetched · budgets=\(p.budgets.count) anomalies=\(p.anomalies?.anomalies.count ?? -1) limits=\(p.limits?.count ?? -1)")
+                self.loadingCompleted = cached ? 1 : 4
+                self.loadingStage = cached ? "Refreshing live data…" : "Reports ready"
                 if let notifications = p.notifications {
                     self.notificationsEnabled = notifications.enabled ?? true
                     self.resetAwareNotifications = notifications.resetAware ?? true
@@ -1074,6 +1099,14 @@ final class Model: ObservableObject {
                 // Test-mode diagnostics don't require the popover to be open.
                 if ProcessInfo.processInfo.environment["TOKITOKI_MENUBAR_TEST"] == "1" {
                     AppDelegate.shared?.writeTestProof()
+                }
+                if cached {
+                    // The persisted snapshot makes the first frame useful;
+                    // the live pass catches up without competing with it.
+                    DispatchQueue.main.async { [weak self] in
+                        guard let self, !self.payloadInFlight, !self.pollInFlight else { return }
+                        self.refresh()
+                    }
                 }
             } catch {
                 self.errorText = "Couldn’t refresh latest data"
@@ -1756,6 +1789,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var statusItem: NSStatusItem?
     private let popover = NSPopover()
+    private var popoverHost: NSHostingController<AnyView>?
     private var monitors: [Any] = []
     private var testContextObserver: NSObjectProtocol?
     private var dashboardProcess: Process?
@@ -1794,7 +1828,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // lists, and several SwiftUI sheets; constructing it before the first
         // frame made an otherwise idle click occasionally wait for a full
         // main-actor layout pass.
-        popover.contentViewController = NSHostingController(rootView: PopoverLaunchView(model: model))
+        let host = NSHostingController(rootView: AnyView(PopoverLaunchView(model: model)))
+        popoverHost = host
+        popover.contentViewController = host
         hoverPopover.behavior = .transient
         hoverPopover.animates = false
         hoverPopover.contentViewController = NSHostingController(rootView: HoverPreviewView(model: model))
@@ -2066,6 +2102,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // never becomes key — synthetic AND real outside clicks/escapes
             // then fail to close it.
             NSApp.activate(ignoringOtherApps: true)
+            updatePopoverSize(for: button)
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             FileHandle.standardError.write(Data("[tokitoki-menubar] popover.show called · shown=\(popover.isShown)\n".utf8))
             popover.contentViewController?.view.window?.makeKey()
@@ -2087,9 +2124,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             self.popoverContentLoadScheduled = false
             self.popoverContentLoaded = true
-            self.popover.contentViewController = NSHostingController(rootView: ContentView(model: model))
+            // Keep the same hosting controller/window. Replacing the view
+            // controller after show made AppKit calculate the first anchor
+            // from the launch shell and then leave the real popover offset.
+            self.popoverHost?.rootView = AnyView(ContentView(model: model))
+            if let button = self.statusItem?.button { self.updatePopoverSize(for: button) }
+            self.popover.contentViewController?.view.layoutSubtreeIfNeeded()
             self.popover.contentViewController?.view.window?.makeKey()
         }
+    }
+
+    /// Keep the popover inside the current screen's usable area while giving
+    /// dense views more room than the old hard-coded 400×700 rectangle.
+    private func updatePopoverSize(for button: NSStatusBarButton) {
+        let visible = button.window?.screen?.visibleFrame ?? NSScreen.main?.visibleFrame
+        let width = min(520, max(400, (visible?.width ?? 1440) * 0.30))
+        let height = min(860, max(560, (visible?.height ?? 900) * 0.80))
+        popover.contentSize = NSSize(width: width, height: height)
     }
 
     /// Deterministic e2e proof of what the popover renders (AX cannot see
@@ -3552,7 +3603,8 @@ struct PopoverLaunchView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
-        .frame(width: 400, height: 700)
+        .frame(minWidth: 400, idealWidth: 420, maxWidth: 520,
+               minHeight: 560, idealHeight: 700, maxHeight: 860)
         .background(.thinMaterial)
     }
 }
@@ -3571,6 +3623,8 @@ struct ContentView: View {
     @State private var showTokenRange = false
     /// Repo row currently expanded in the repos card.
     @State private var expandedRepo: String?
+    /// Quota card targeted by an attention summary click.
+    @State private var quotaScrollTarget: String?
     /// Card order override while a drag session is in flight.
     @State private var localLayout: [(id: String, hidden: Bool)]?
     /// Id currently being dragged (popover card reorder).
@@ -3653,7 +3707,8 @@ struct ContentView: View {
             }
             popoverFooter
         }
-        .frame(width: 400, height: 700)
+        .frame(minWidth: 400, idealWidth: 420, maxWidth: 520,
+               minHeight: 560, idealHeight: 700, maxHeight: 860)
         .background(.thinMaterial)
         .sheet(isPresented: $showCustomize) {
             CustomizeSheet(model: model, isPresented: $showCustomize)
@@ -3832,7 +3887,7 @@ struct ContentView: View {
     }
 
     private var attentionSummary: some View {
-        var attention: [(String, String)] = model.limits.compactMap { limit -> (String, String)? in
+        var attention: [(String, String, String)] = model.limits.compactMap { limit -> (String, String, String)? in
             guard let window = limit.windows.compactMap({ window -> (LimitWindow, Double)? in
                 guard let used = window.usedPct else { return nil }
                 return (window, max(0, min(100, 100 - used)))
@@ -3840,10 +3895,10 @@ struct ContentView: View {
             let reset = window.0.resetsAt.map(countdown) ?? "—"
             let timing = reset == "now" ? "available now" : "resets in \(reset)"
             let identity = limit.email ?? "\(limit.provider) · \(limit.accountKey)"
-            return (identity, "\(windowDisplayName(window.0.kind, provider: limit.provider)) · \(Int(window.1.rounded()))% left · \(timing)")
+            return ("\(limit.provider)@\(limit.accountKey)", identity, "\(windowDisplayName(window.0.kind, provider: limit.provider)) · \(Int(window.1.rounded()))% left · \(timing)")
         }
         if let health = model.spendHealth, health.state != "ok", let cap = health.monthlyCap {
-            attention.append(("Monthly spend pace", "projected $\(String(format: "%.0f", health.projected)) / $\(String(format: "%.0f", cap))"))
+            attention.append(("spend", "Monthly spend pace", "projected $\(String(format: "%.0f", health.projected)) / $\(String(format: "%.0f", cap))"))
         }
         attention = Array(attention.prefix(3))
         if attention.isEmpty { return AnyView(EmptyView()) }
@@ -3853,13 +3908,25 @@ struct ContentView: View {
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.orange)
                 ForEach(Array(attention.enumerated()), id: \.offset) { _, row in
-                    HStack(spacing: 5) {
+                    Button {
+                        if row.0 != "spend" {
+                            quotaScrollTarget = row.0
+                            activeSubview = .quotas
+                        } else {
+                            activeSubview = .reports
+                        }
+                    } label: {
+                        HStack(spacing: 5) {
                         Image(systemName: "exclamationmark.circle.fill")
                             .foregroundStyle(.orange)
-                        Text(row.0).lineLimit(1)
+                        Text(row.1).lineLimit(1)
                         Spacer(minLength: 4)
-                        Text(row.1).foregroundStyle(.secondary).lineLimit(1)
+                        Text(row.2).foregroundStyle(.secondary).lineLimit(1)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     }
+                    .buttonStyle(.plain)
+                    .contentShape(Rectangle())
                     .font(.caption2)
                 }
             }
@@ -3870,17 +3937,26 @@ struct ContentView: View {
     }
 
     private var quotasBody: some View {
-        ScrollView(.vertical) {
-            VStack(alignment: .leading, spacing: 10) {
-                freshnessRow
-                if model.isLoading && model.today == nil {
-                    loadingState
-                } else if model.limits.isEmpty {
-                    emptyState("No quota accounts detected", detail: "Enable polling in Settings or scan a provider first.", icon: "chart.bar.xaxis")
-                } else {
-                    limitsSection
+        ScrollViewReader { proxy in
+            ScrollView(.vertical) {
+                VStack(alignment: .leading, spacing: 10) {
+                    freshnessRow
+                    if model.isLoading && model.today == nil {
+                        loadingState
+                    } else if model.limits.isEmpty {
+                        emptyState("No quota accounts detected", detail: "Enable polling in Settings or scan a provider first.", icon: "chart.bar.xaxis")
+                    } else {
+                        limitsSection
+                    }
                 }
-            }.padding(12)
+                .padding(12)
+            }
+            .onChange(of: quotaScrollTarget) { target in
+                guard let target else { return }
+                DispatchQueue.main.async {
+                    withAnimation(.easeInOut(duration: 0.2)) { proxy.scrollTo(target, anchor: .top) }
+                }
+            }
         }
     }
 
@@ -4190,6 +4266,16 @@ struct ContentView: View {
                             }
                             if let status = model.sessionStatus {
                                 Text(status).font(.caption2).foregroundStyle(.secondary)
+                                if status == "No sessions found" || status.hasPrefix("Session search failed") {
+                                    HStack(spacing: 6) {
+                                        Image(systemName: "info.circle")
+                                        Text("The local conversation index may be missing or stale.")
+                                        Button("Reindex") { model.reindexSessions() }
+                                            .buttonStyle(.bordered).controlSize(.mini)
+                                    }
+                                    .font(.caption2)
+                                    .foregroundStyle(.orange)
+                                }
                             }
                             LazyVStack(alignment: .leading, spacing: 0) {
                                 ForEach(model.sessionRows) { row in
@@ -4720,7 +4806,7 @@ private struct ConversationBodyView: View {
         HStack(spacing: 5) {
             Circle().fill(model.isLoading ? .orange : (model.errorText == nil && !dataIsStale ? .green : .orange)).frame(width: 6, height: 6)
             Text(model.isLoading
-                ? "Loading latest data… \(model.loadingCompleted)/\(model.loadingTotal)"
+                ? "\(model.loadingStage) \(model.loadingCompleted)/\(model.loadingTotal)"
                 : (model.lastUpdatedAt.map {
                     dataIsStale ? "Stale · updated \(relativeDate($0))" : "Updated \(relativeDate($0))"
                 } ?? "Loading latest data…"))
@@ -4742,7 +4828,7 @@ private struct ConversationBodyView: View {
                 Text("Preparing your local usage snapshot")
                     .font(.caption.weight(.semibold))
             }
-            Text("Reading harness stores, quotas, and the conversation index…")
+            Text(model.loadingStage)
                 .font(.caption2).foregroundStyle(.secondary)
             ProgressView(value: Double(model.loadingCompleted), total: Double(max(1, model.loadingTotal)))
                 .tint(.accentColor)
@@ -5041,12 +5127,13 @@ private struct ConversationBodyView: View {
     }
 
     private func tokenPeriodLabel(_ key: String) -> String {
-        Self.spendPeriodLabels[key] ?? key
+        if key == "today" { return "Today · calendar day" }
+        return Self.spendPeriodLabels[key] ?? key
     }
 
     private func tokenRows(for key: String) -> [ReportRow] {
-        if key == "today", let rolling = model.rollingDay {
-            return rolling.rows.filter { matches($0.bucket) }
+        if key == "today", let today = model.today {
+            return today.rows.filter { matches($0.bucket) }
         }
         return spendPeriodRows(for: key)
     }
@@ -5067,7 +5154,7 @@ private struct ConversationBodyView: View {
     }
 
     private func tokenTotals(for key: String) -> (tokens: Double, cost: Double, requests: Int, sessions: Int) {
-        if key == "today", let p = model.rollingDay ?? model.today {
+        if key == "today", let p = model.today {
             return (p.total.totalTokens, p.total.costUsd, p.total.requests, p.total.sessions)
         }
         if key == "week", let p = model.week {
@@ -5213,6 +5300,7 @@ private struct ConversationBodyView: View {
                     .padding(8)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 10))
+                    .id(accountId)
                     .accessibilityLabel("limit-card-\(l.provider)-\(l.accountKey)")
                     .onDrag {
                         draggingAccount = accountId
@@ -5836,12 +5924,24 @@ struct ProviderLogo: View {
     }
 }
 
-/// Bucket color for charts: brand color when known, stable hash palette otherwise.
-func bucketColor(_ name: String) -> Color {
-    if ProviderLogo.symbol(name) != "circle.fill" { return ProviderLogo.brandColor(name) }
-    let colors: [Color] = [.blue, .purple, .orange, .mint, .pink, .teal]
-    return colors[abs(name.hashValue) % colors.count]
+/// One chart palette shared by donut sectors, legends, and history bars.
+/// Swift's `hashValue` is intentionally randomized per process, so use a
+/// tiny deterministic FNV-1a hash for unknown model/tool names instead.
+enum ChartColorRegistry {
+    private static let fallback: [Color] = [.blue, .purple, .orange, .mint, .pink, .teal]
+
+    static func color(for name: String) -> Color {
+        if ProviderLogo.symbol(name) != "circle.fill" { return ProviderLogo.brandColor(name) }
+        var hash: UInt64 = 14695981039346656037
+        for byte in name.utf8 {
+            hash ^= UInt64(byte)
+            hash &*= 1099511628211
+        }
+        return fallback[Int(hash % UInt64(fallback.count))]
+    }
 }
+
+func bucketColor(_ name: String) -> Color { ChartColorRegistry.color(for: name) }
 
 /// CodexBar-style per-account limit card: primary window bar + resets-in
 /// countdown, stacked secondary windows, banked resets. Raw token numbers
