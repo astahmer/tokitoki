@@ -612,7 +612,8 @@ function Timeline({ payload }: { payload: SessionDetailPayload }) {
     <div className="space-y-2">
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-kumo-subtle">
         <span>total cost {formatCost(totalCost)}</span>
-        <span>final tokens {humanCount(running)}</span>
+        <span>loaded tokens {humanCount(running)}</span>
+        <span>requests {events.length.toLocaleString("en-US")} / {payload.eventsTotal.toLocaleString("en-US")}</span>
         <span>
           %cache{" "}
           {cachePct(
