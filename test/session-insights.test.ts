@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 
 import { describeSessionEvent, estimateCacheDuration } from "../src/session-insights.ts";
-import { summarizeToolCall } from "../src/sessionText.ts";
+import { sessionMessage, summarizeToolCall } from "../src/sessionText.ts";
 
 const sample = (second: number, cacheReadTokens: number, inputTokens = 1000) => ({
   ts: `2026-08-28T10:${String(Math.floor(second / 60)).padStart(2, "0")}:${String(second % 60).padStart(2, "0")}.000Z`,
@@ -35,5 +35,12 @@ describe("session insights", () => {
   it("summarizes serialized tool arguments without echoing the payload", () => {
     expect(summarizeToolCall("tools.exec_command", '{"cmd":"rtk rg -n cache src"}')).toBe("exec_command · rtk rg -n cache src");
     expect(summarizeToolCall("read_file", "{\"path\":\"src/cache.ts\"}")).toBe("read_file");
+  });
+
+  it("keeps role timestamps renderable without changing the message body", () => {
+    expect(sessionMessage("assistant", "ready", "2026-08-28T10:11:12.000Z")).toBe(
+      "### Assistant · 2026-08-28 10:11:12\n\nready",
+    );
+    expect(sessionMessage("user", "ready", "not-a-date")).toBe("### User\n\nready");
   });
 });

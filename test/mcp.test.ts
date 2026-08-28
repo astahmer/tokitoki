@@ -1,5 +1,5 @@
 import { describe, expect, it, afterAll } from "bun:test";
-import { mkdtempSync, rmSync, appendFileSync } from "node:fs";
+import { mkdtempSync, rmSync, appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -11,9 +11,18 @@ import type { UsageEvent } from "../src/types.ts";
 
 const DATA_DIR = mkdtempSync(path.join(os.tmpdir(), "tk-mcp-"));
 process.env.TOKITOKI_DATA_DIR = DATA_DIR;
-// Isolate from the real user config: otherwise cache.sync() would pull the
-// machine's synced extra event files into the fixture DB and rebuild over it.
-process.env.TOKITOKI_CONFIG = path.join(DATA_DIR, "does-not-exist.json");
+// Isolate from the real user config and real harness stores. Without explicit
+// provider roots, scan_now would walk the developer's multi-GB live Codex
+// history and turn a deterministic fixture test into a minute-long scan.
+const SOURCE_DIR = path.join(DATA_DIR, "sources");
+mkdirSync(SOURCE_DIR);
+process.env.TOKITOKI_CONFIG = path.join(DATA_DIR, "config.json");
+writeFileSync(process.env.TOKITOKI_CONFIG, JSON.stringify({
+  providers: Object.fromEntries([
+    "claude-code", "pi", "codex", "opencode", "commandcode", "t3-code",
+    "antigravity-cli", "cursor", "grok", "gemini-cli",
+  ].map((id) => [id, { paths: [SOURCE_DIR] }])),
+}));
 
 // Rolling windows resolve against "now", so fixtures must be relative too.
 const NOW_ISO = () => new Date().toISOString();
