@@ -325,7 +325,7 @@ struct PopoverSessionDetail: Codable {
     let eventsHasMore: Bool?
 }
 
-struct MenubarPayload: Codable {
+struct MenubarPayload: Decodable {
     let snapshotAt: String?
     let today: ReportPayload
     let rollingDay: ReportPayload?
