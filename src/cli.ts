@@ -1948,10 +1948,10 @@ function runConfigSet(parsed: ParsedInvocation): void {
     if (pathArg === undefined || pathArg.length === 0 || valueArg === undefined) {
       throw new UserError("usage: tokitoki config set <dot.path> <json>", 'tokitoki config set ui.stripMetric "tokens"');
     }
-    const allowed = new Set(["ui", "poll", "sync", "hidden", "plans", "budgets", "notifications", "extraEventFiles", "experimental"]);
+    const allowed = new Set(["ui", "poll", "sync", "hidden", "plans", "budgets", "notifications", "privacy", "extraEventFiles", "experimental"]);
     const top = pathArg.split(".")[0]!;
     if (!allowed.has(top)) {
-      throw new UserError(`unknown config section '${top}'`, "sections: ui, poll, plans, budgets, notifications");
+      throw new UserError(`unknown config section '${top}'`, "sections: ui, poll, plans, budgets, notifications, privacy");
     }
     let value: unknown;
     try {
