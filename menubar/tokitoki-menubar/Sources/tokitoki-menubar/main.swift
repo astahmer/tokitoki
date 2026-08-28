@@ -1014,6 +1014,7 @@ final class Model: ObservableObject {
         }
         let cached = !hasHydratedSnapshot
         hasHydratedSnapshot = true
+        loadingCompleted = cached ? 0 : 1
         loadingStage = cached ? "Reading saved snapshot…" : "Scanning harness stores…"
         payloadInFlight = true
         Task { @MainActor in
@@ -3831,13 +3832,15 @@ struct ContentView: View {
             }
             .font(.caption2.weight(activeSubview == view ? .semibold : .regular))
             .lineLimit(1)
-            .frame(maxWidth: .infinity, minHeight: 30)
+            .frame(maxWidth: .infinity, minHeight: 34)
             .background(activeSubview == view ? AnyShapeStyle(.quaternary.opacity(0.9)) : AnyShapeStyle(.clear), in: RoundedRectangle(cornerRadius: 6))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .foregroundStyle(activeSubview == view ? .primary : .secondary)
         .accessibilityLabel(view.title)
+        .accessibilityHint("Switch to the (view.title) view")
+        .help("Open (view.title)")
     }
 
     private var overviewBody: some View {
@@ -4341,7 +4344,7 @@ struct ContentView: View {
                                                 Text("\(row.requests) req · \(humanCount(row.totalTokens))")
                                                     .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
                                             }
-                                            Text(row.snippet ?? "No indexed conversation text for this session.")
+                                            HighlightedSnippet(text: row.snippet ?? "No indexed conversation text for this session.")
                                                 .font(.caption2).foregroundStyle(.secondary).lineLimit(2)
                                             Text("\(row.provider) · \(row.accountKey) · \(row.startedAt.prefix(16).replacingOccurrences(of: "T", with: " "))")
                                                 .font(.caption2).foregroundStyle(.tertiary).lineLimit(1)
@@ -4501,7 +4504,11 @@ private struct ConversationBodyView: View {
     private var readableBody: String {
         var lines = rawBody.split(separator: "\n", omittingEmptySubsequences: false)
             .filter { toolName(for: $0) == nil }
-            .map(String.init)
+            .map { line in
+                String(line)
+                    .replacingOccurrences(of: "\\[tool:[^\\]]+\\]", with: "", options: .regularExpression)
+                    .replacingOccurrences(of: "(?<![\\w/])(?:tools|functions)\\.[A-Za-z0-9_./-]+(?:\\([^\\n]*\\))?", with: "", options: .regularExpression)
+            }
         let normalizedTitle = title.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression).trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if !normalizedTitle.isEmpty,
            let first = lines.firstIndex(where: { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }),
@@ -4565,6 +4572,38 @@ private struct ConversationBodyView: View {
     }
 
     var body: some View { bodyView }
+}
+
+/// Search snippets use `[[match]]` markers in the CLI contract. Render those
+/// markers as an accent instead of exposing the implementation syntax in the
+/// native popover.
+private struct HighlightedSnippet: View {
+    let text: String
+
+    private var rendered: Text {
+        let parts = text.split(separator: "[[", omittingEmptySubsequences: false)
+        var result = Text("")
+        for (index, part) in parts.enumerated() {
+            let raw = String(part)
+            if index == 0 {
+                result = result + Text(raw)
+                continue
+            }
+            let pieces = raw.split(separator: "]]", maxSplits: 1, omittingEmptySubsequences: false)
+            if pieces.count == 2 {
+                result = result + Text(String(pieces[0]))
+                    .bold()
+                    .foregroundStyle(.orange)
+                    .background(Color.orange.opacity(0.16))
+                result = result + Text(String(pieces[1]))
+            } else {
+                result = result + Text("[[" + raw)
+            }
+        }
+        return result
+    }
+
+    var body: some View { rendered }
 }
 
     private var sourcesBody: some View {
