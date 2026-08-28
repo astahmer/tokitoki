@@ -316,13 +316,24 @@ struct PopoverSessionDetail: Codable {
         let cacheWriteTokens: Double
         let costUsd: Double
         let runningTokens: Double
+        let tool: String?
+        let description: String?
         var id: Int { n }
+    }
+
+    struct CacheDurationEstimate: Codable {
+        let estimatedSeconds: Double?
+        let confidence: String
+        let samples: Int
+        let busts: Int
+        let lastBustAt: String?
     }
 
     let events: [Event]?
     let eventsTotal: Int?
     let eventsOffset: Int?
     let eventsHasMore: Bool?
+    let cacheDuration: CacheDurationEstimate?
 }
 
 struct MenubarPayload: Decodable {
@@ -599,6 +610,7 @@ final class Model: ObservableObject {
                         eventsTotal: next.eventsTotal,
                         eventsOffset: 0,
                         eventsHasMore: next.eventsHasMore,
+                        cacheDuration: next.cacheDuration,
                     )
                 }
                 self.sessionEventsLoading = false
@@ -4475,19 +4487,7 @@ struct ContentView: View {
                 }
                 if let detail = model.selectedSession, let events = detail.events, !events.isEmpty {
                     card(title: "request timeline · \(detail.eventsTotal ?? events.count)", icon: "timeline.selection") {
-                        LazyVStack(alignment: .leading, spacing: 5) {
-                            ForEach(events) { event in
-                                let eventCost = String(format: "$%.2f", event.costUsd)
-                                HStack(spacing: 5) {
-                                    Text("\(event.n)").font(.caption2.monospacedDigit()).foregroundStyle(.tertiary).frame(width: 28, alignment: .trailing)
-                                    Text(String(event.ts.dropFirst(11).prefix(8))).font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
-                                    Text(event.model).font(.caption2).lineLimit(1)
-                                    Spacer()
-                                    Text("\(humanCount(event.runningTokens)) · \(eventCost)")
-                                        .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
-                                }
-                            }
-                        }
+                        SessionTimelineView(detail: detail)
                         if detail.eventsHasMore == true {
                             Button(model.sessionEventsLoading ? "Loading…" : "Load next 40 requests") {
                                 model.loadMorePopoverSessionEvents()
@@ -4501,8 +4501,90 @@ struct ContentView: View {
                 }
             }
             .padding(12)
+    }
+}
+
+private struct SessionTimelineView: View {
+    let detail: PopoverSessionDetail
+    @State private var hoveredIndex: Int?
+
+    private var events: [PopoverSessionDetail.Event] { detail.events ?? [] }
+    private var maximumTokens: Double {
+        max(1, events.map { $0.inputTokens + $0.outputTokens + $0.cacheReadTokens + $0.cacheWriteTokens }.max() ?? 1)
+    }
+
+    private func intervalText(_ seconds: Double?) -> String {
+        guard let seconds, seconds.isFinite, seconds > 0 else { return "not enough evidence" }
+        let minutes = max(1, Int((seconds / 60).rounded()))
+        if minutes < 60 { return "\(minutes)m" }
+        let hours = max(1, Int((Double(minutes) / 60).rounded()))
+        if hours < 48 { return "\(hours)h" }
+        return "\(max(1, Int((Double(hours) / 24).rounded())))d"
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            if let estimate = detail.cacheDuration {
+                Label("Estimated cache lifetime ≈ \(intervalText(estimate.estimatedSeconds)) · \(estimate.confidence) confidence", systemImage: "bolt.horizontal")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Text("Based on \(estimate.busts) observed cache reset\(estimate.busts == 1 ? "" : "s") across \(estimate.samples) requests; this is an estimate, not a provider guarantee.")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+            if !events.isEmpty {
+                if let index = hoveredIndex, events.indices.contains(index) {
+                    let event = events[index]
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Request \(event.n) · \(String(event.ts.dropFirst(11).prefix(8)))")
+                            .font(.caption2.weight(.semibold))
+                        Text(event.description ?? "model response · \(event.model)")
+                            .font(.caption2)
+                            .lineLimit(2)
+                        Text("\(event.model) · \(humanCount(event.inputTokens + event.outputTokens + event.cacheReadTokens + event.cacheWriteTokens)) tokens · \(String(format: "$%.2f", event.costUsd))")
+                            .font(.caption2.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(7)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 7))
+                }
+                GeometryReader { geometry in
+                    HStack(alignment: .bottom, spacing: 1) {
+                        ForEach(Array(events.enumerated()), id: \.element.id) { index, event in
+                            let tokens = event.inputTokens + event.outputTokens + event.cacheReadTokens + event.cacheWriteTokens
+                            Button {
+                                hoveredIndex = index
+                            } label: {
+                                Rectangle()
+                                    .fill(Color.accentColor.opacity(hoveredIndex == index ? 1 : 0.72))
+                                    .frame(height: max(3, geometry.size.height * CGFloat(tokens / maximumTokens)))
+                            }
+                            .buttonStyle(.plain)
+                            .onHover { isHovering in hoveredIndex = isHovering ? index : nil }
+                            .accessibilityLabel("Request \(event.n), \(String(event.ts.dropFirst(11).prefix(8))), \(event.description ?? event.model)")
+                        }
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                }
+                .frame(height: 54)
+            }
+            LazyVStack(alignment: .leading, spacing: 5) {
+                ForEach(events) { event in
+                    let eventCost = String(format: "$%.2f", event.costUsd)
+                    HStack(spacing: 5) {
+                        Text("\(event.n)").font(.caption2.monospacedDigit()).foregroundStyle(.tertiary).frame(width: 28, alignment: .trailing)
+                        Text(String(event.ts.dropFirst(11).prefix(8))).font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                        Text(event.model).font(.caption2).lineLimit(1)
+                        Spacer()
+                        Text("\(humanCount(event.runningTokens)) · \(eventCost)")
+                            .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                    }
+                }
+            }
         }
     }
+}
 
 /// Compact native conversation renderer: markdown gets readable hierarchy and
 /// tool calls are summarized separately so a long transcript is not just a
@@ -4510,6 +4592,14 @@ struct ContentView: View {
 private struct ConversationBodyView: View {
     let rawBody: String
     let title: String
+
+    private enum MarkdownBlock {
+        case heading(String, Int)
+        case code(String, String?)
+        case quote(String)
+        case list([String], Bool)
+        case paragraph(String)
+    }
 
     private func toolName(for rawLine: Substring) -> String? {
         let line = rawLine.trimmingCharacters(in: .whitespaces)
@@ -4549,8 +4639,70 @@ private struct ConversationBodyView: View {
         return lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private var readableBlocks: [String] {
-        readableBody.components(separatedBy: "\n\n").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+    private var readableBlocks: [MarkdownBlock] {
+        var blocks: [MarkdownBlock] = []
+        var paragraph: [String] = []
+        var list: [String] = []
+        var orderedList = false
+        var code: [String]?
+        var codeLanguage: String?
+        func flushParagraph() {
+            let text = paragraph.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+            if !text.isEmpty { blocks.append(.paragraph(text)) }
+            paragraph.removeAll(keepingCapacity: true)
+        }
+        func flushList() {
+            if !list.isEmpty { blocks.append(.list(list, orderedList)) }
+            list.removeAll(keepingCapacity: true)
+        }
+        func flushAll() { flushParagraph(); flushList() }
+        for line in readableBody.components(separatedBy: "\n") {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if code != nil {
+                if trimmed.range(of: "^```\\s*$", options: .regularExpression) != nil {
+                    blocks.append(.code(code!.joined(separator: "\n"), codeLanguage))
+                    code = nil
+                    codeLanguage = nil
+                } else {
+                    code!.append(line)
+                }
+                continue
+            }
+            if let match = trimmed.range(of: "^```\\s*([A-Za-z0-9_-]+)?\\s*$", options: .regularExpression) {
+                flushAll()
+                let marker = String(trimmed[match])
+                codeLanguage = marker.replacingOccurrences(of: "^```\\s*|\\s*$", with: "", options: .regularExpression)
+                if codeLanguage?.isEmpty == true { codeLanguage = nil }
+                code = []
+                continue
+            }
+            if trimmed.isEmpty { flushAll(); continue }
+            if let heading = trimmed.range(of: "^#{1,6}\\s+.+$", options: .regularExpression) {
+                flushAll()
+                let value = String(trimmed[heading])
+                let level = value.prefix(while: { $0 == "#" }).count
+                blocks.append(.heading(String(value.dropFirst(level)).trimmingCharacters(in: .whitespaces), level))
+                continue
+            }
+            if trimmed.hasPrefix(">") {
+                flushAll()
+                blocks.append(.quote(String(trimmed.dropFirst().trimmingCharacters(in: .whitespaces))))
+                continue
+            }
+            if let item = trimmed.range(of: "^(?:[-*+]\\s+|[0-9]+[.)]\\s+).+$", options: .regularExpression) {
+                let value = String(trimmed[item])
+                let isOrdered = value.first?.isNumber == true
+                if !list.isEmpty && orderedList != isOrdered { flushList() }
+                orderedList = isOrdered
+                list.append(value.replacingOccurrences(of: "^(?:[-*+]\\s+|[0-9]+[.)]\\s+)", with: "", options: .regularExpression))
+                continue
+            }
+            if !list.isEmpty { flushList() }
+            paragraph.append(line)
+        }
+        if let code { blocks.append(.code(code.joined(separator: "\n"), codeLanguage)) }
+        flushAll()
+        return blocks
     }
 
     var bodyView: some View {
@@ -4573,29 +4725,51 @@ private struct ConversationBodyView: View {
                     .font(.caption2).foregroundStyle(.secondary)
             } else {
                 ForEach(Array(readableBlocks.enumerated()), id: \.offset) { _, block in
-                    if block.hasPrefix("```") || block.contains("\n```") {
-                        Text(block.replacingOccurrences(of: "^```[\\w-]*\\n?", with: "", options: .regularExpression).replacingOccurrences(of: "\\n?```$", with: "", options: .regularExpression))
+                    switch block {
+                    case let .code(text, language):
+                        VStack(alignment: .leading, spacing: 4) {
+                            if let language { Text(language).font(.caption2).foregroundStyle(.secondary) }
+                            Text(text)
                             .font(.system(size: 10, design: .monospaced))
                             .textSelection(.enabled)
+                        }
                             .padding(8)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .background(.black.opacity(0.18), in: RoundedRectangle(cornerRadius: 7))
-                    } else if block.hasPrefix("#"), let heading = block.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: true).first {
-                        Text(String(heading.drop(while: { $0 == "#" || $0 == " " })))
-                            .font(.caption.weight(.semibold))
+                    case let .heading(text, level):
+                        Text(text)
+                            .font(level <= 2 ? .headline.weight(.semibold) : .caption.weight(.semibold))
                             .foregroundStyle(.primary)
-                    } else if let markdown = try? AttributedString(markdown: block) {
+                            .padding(.top, level <= 2 ? 3 : 0)
+                    case let .quote(text):
+                        Text(text)
+                            .font(.system(size: 12))
+                            .italic()
+                            .padding(.leading, 8)
+                            .overlay(alignment: .leading) { Rectangle().fill(.tint).frame(width: 2) }
+                    case let .list(items, ordered):
+                        VStack(alignment: .leading, spacing: 4) {
+                            ForEach(Array(items.enumerated()), id: \.offset) { index, item in
+                                HStack(alignment: .firstTextBaseline, spacing: 5) {
+                                    Text(ordered ? "\(index + 1)." : "•").foregroundStyle(.secondary)
+                                    Text(item)
+                                }
+                            }
+                        }
+                    case let .paragraph(text):
+                        if let markdown = try? AttributedString(markdown: text) {
                         Text(markdown)
                             .font(.system(size: 12, weight: .regular))
                             .lineSpacing(2)
                             .textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                    } else {
-                        Text(block)
+                        } else {
+                        Text(text)
                             .font(.system(size: 12, weight: .regular))
                             .lineSpacing(2)
                             .textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading)
+                        }
                     }
                 }
             }

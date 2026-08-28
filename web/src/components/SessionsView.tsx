@@ -626,7 +626,10 @@ function Timeline({ payload }: { payload: SessionDetailPayload }) {
       {/* Token volume per request — the shape of a session at a glance. */}
       <div className="relative pt-8">
         {hovered !== null && events[hovered] !== undefined && (
-          <div className="pointer-events-none absolute left-1/2 top-0 z-10 w-max max-w-[min(24rem,90%)] -translate-x-1/2 rounded-md border border-kumo-border bg-kumo-elevated px-2.5 py-2 text-[11px] shadow-lg">
+          <div
+            className="pointer-events-none absolute top-0 z-10 w-max max-w-[min(24rem,90%)] -translate-x-1/2 rounded-md border border-kumo-border bg-kumo-elevated px-2.5 py-2 text-[11px] shadow-lg"
+            style={{ left: `${((hovered + 0.5) / Math.max(1, events.length)) * 100}%` }}
+          >
             <div className="font-medium text-kumo-default">Request {hovered + 1} · {events[hovered]!.ts.slice(11, 19)}</div>
             <div className="mt-0.5 text-kumo-subtle">{events[hovered]!.description || `model response · ${events[hovered]!.model}`}</div>
             <div className="mt-0.5 text-kumo-faint">{events[hovered]!.model} · {humanCount(events[hovered]!.inputTokens + events[hovered]!.outputTokens + events[hovered]!.cacheReadTokens)} tokens · {formatCost(events[hovered]!.costUsd)}</div>
