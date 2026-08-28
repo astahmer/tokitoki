@@ -533,7 +533,7 @@ final class Model: ObservableObject {
                 // The payload refresh already ingests and indexes local stores.
                 // Session navigation must be a read-only cache query; syncing
                 // here made a 50-row search compete with the full scanner.
-                var args = ["sessions", "--cached", "--last", "month", "--top", "50", "--page", String(page), "--json"]
+                var args = ["sessions", "--cached", "--last", "month", "--top", "25", "--page", String(page), "--json"]
                 if !trimmed.isEmpty { args += ["--search", trimmed] }
                 let payload = try await Self.runJSON(PopoverSessionsPayload.self, cli, args)
                 guard requestGeneration == self.sessionRequestGeneration else { return }
@@ -4481,7 +4481,7 @@ struct ContentView: View {
                     }
                 }
                 if let conversation = model.selectedSession?.conversation {
-                    card(title: conversation.title.isEmpty ? "conversation" : conversation.title, icon: "doc.text") {
+                    card(title: "conversation", icon: "doc.text") {
                         ConversationBodyView(rawBody: conversation.body, title: conversation.title)
                     }
                 }
@@ -4737,12 +4737,23 @@ private struct ConversationBodyView: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .background(.black.opacity(0.18), in: RoundedRectangle(cornerRadius: 7))
                     case let .heading(text, level):
-                        Text(text)
-                            .font(level <= 2 ? .headline.weight(.semibold) : .caption.weight(.semibold))
-                            .foregroundStyle(.primary)
-                            .padding(.top, level <= 2 ? 3 : 0)
+                        let role = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                        if role == "user" || role == "assistant" || role == "tool call" {
+                            HStack(spacing: 5) {
+                                Image(systemName: role == "user" ? "arrow.up.right" : role == "assistant" ? "sparkles" : "wrench.and.screwdriver")
+                                Text(role)
+                            }
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(role == "user" ? .blue : role == "assistant" ? .green : .orange)
+                            .padding(.vertical, 3)
+                        } else {
+                            markdownText(text)
+                                .font(level <= 2 ? .headline.weight(.semibold) : .caption.weight(.semibold))
+                                .foregroundStyle(.primary)
+                                .padding(.top, level <= 2 ? 3 : 0)
+                        }
                     case let .quote(text):
-                        Text(text)
+                        markdownText(text)
                             .font(.system(size: 12))
                             .italic()
                             .padding(.leading, 8)
@@ -4752,7 +4763,7 @@ private struct ConversationBodyView: View {
                             ForEach(Array(items.enumerated()), id: \.offset) { index, item in
                                 HStack(alignment: .firstTextBaseline, spacing: 5) {
                                     Text(ordered ? "\(index + 1)." : "•").foregroundStyle(.secondary)
-                                    Text(item)
+                                    markdownText(item)
                                 }
                             }
                         }
@@ -4774,6 +4785,11 @@ private struct ConversationBodyView: View {
                 }
             }
         }
+    }
+
+    private func markdownText(_ text: String) -> Text {
+        if let markdown = try? AttributedString(markdown: text) { return Text(markdown) }
+        return Text(text)
     }
 
     var body: some View { bodyView }

@@ -12,19 +12,27 @@ export function cleanSessionText(raw: string): string {
   text = text.replace(new RegExp("<image[^>]*>" + "[^]*?" + "</image>", "gi"), "");
   text = text.replace(/<[^>]+>/g, "");
   let skipPluginCatalog = false;
-  const lines = text.split("\n").map((line) => line.replace(/\s+/g, " ").trim()).filter(Boolean);
-  const visible = lines.filter((line) => {
+  const lines = text.split("\n").map((line) => line.replace(/\s+/g, " ").trim());
+  let blankPending = false;
+  const visible: string[] = [];
+  for (const line of lines) {
+    if (line.length === 0) {
+      blankPending = visible.length > 0;
+      continue;
+    }
+    if (blankPending && visible.at(-1) !== "") visible.push("");
+    blankPending = false;
     const lower = line.toLowerCase();
-    if (lower.startsWith("# agents.md instructions")) return false;
+    if (lower.startsWith("# agents.md instructions")) continue;
     if (lower.includes("here is a list of plugins that are available but not installed")) {
       skipPluginCatalog = true;
-      return false;
+      continue;
     }
-    if (skipPluginCatalog && (line.startsWith("-") || lower.includes("@openai-curated-remote"))) return false;
+    if (skipPluginCatalog && (line.startsWith("-") || lower.includes("@openai-curated-remote"))) continue;
     skipPluginCatalog = false;
-    return true;
-  });
-  return visible.join("\n").trim();
+    visible.push(line);
+  }
+  return visible.join("\n").replace(/\n{3,}/g, "\n\n").trim();
 }
 
 export function sessionTitle(raw: string, fallback = ""): string {
@@ -45,4 +53,11 @@ export function sessionTitle(raw: string, fallback = ""): string {
 
 export function sessionSnippet(raw: string, max = 2000): string {
   return cleanSessionText(raw).slice(0, max);
+}
+
+/** Add a stable, renderer-friendly role boundary to indexed transcripts. */
+export function sessionMessage(role: "user" | "assistant" | "tool", text: string): string {
+  const label = role === "user" ? "User" : role === "assistant" ? "Assistant" : "Tool call";
+  const cleaned = sessionSnippet(text);
+  return cleaned.length > 0 ? `### ${label}\n\n${cleaned}` : "";
 }

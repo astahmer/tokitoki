@@ -5,6 +5,7 @@ import type { UsageEvent } from "../types.ts";
 import { providerConfig } from "../config.ts";
 import { eventId } from "../machine.ts";
 import { estimateCost } from "../pricing.ts";
+import { sessionMessage } from "../sessionText.ts";
 import { homePath, type EntryContext, type Provider, type SessionDoc } from "./types.ts";
 
 /**
@@ -197,7 +198,8 @@ export function extractGrokSessionDocs(file: string): SessionDoc[] {
         if (typeof b.text !== "string" || b.text.length === 0) continue;
         if ((b.type === "input_text" && role === "user") || (b.type === "output_text" && role === "assistant")) {
           if (role === "user" && title.length === 0) title = b.text.replace(/\s+/g, " ").trim().slice(0, 200);
-          body += `${b.text.replace(/\s+/g, " ").slice(0, 2000)}\n`;
+          const message = sessionMessage(role === "user" ? "user" : "assistant", b.text);
+          if (message.length > 0) body += `${message}\n\n`;
           if (body.length >= BODY_CAP) break;
         }
       }

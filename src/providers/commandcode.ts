@@ -4,6 +4,7 @@ import type { UsageEvent } from "../types.ts";
 import { providerConfig } from "../config.ts";
 import { eventId } from "../machine.ts";
 import { estimateCost } from "../pricing.ts";
+import { sessionMessage } from "../sessionText.ts";
 import { shellToolName } from "../tools.ts";
 import { homePath, type EntryContext, type Provider, type SessionDoc } from "./types.ts";
 import { walkJsonl } from "./claude-code.ts";
@@ -187,8 +188,11 @@ export function extractCommandCodeSessionDocs(file: string): SessionDoc[] {
       if (role === "user" && title.length === 0) {
         title = text.replace(/\s+/g, " ").trim().slice(0, 200);
       }
-      if (body.length + text.length > BODY_CAP) break;
-      body += text.replace(/\s+/g, " ").slice(0, 2000) + "\n";
+      const isTool = text.startsWith("[tool:") && text.endsWith("]");
+      const message = sessionMessage(isTool ? "tool" : role === "user" ? "user" : "assistant", isTool ? text.slice(6, -1) : text);
+      if (message.length === 0) continue;
+      if (body.length + message.length > BODY_CAP) break;
+      body += message + "\n\n";
     }
     if (body.length >= BODY_CAP) break;
   }

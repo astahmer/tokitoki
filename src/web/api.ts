@@ -502,8 +502,8 @@ export function apiSessionSearch(
       providers: providers.length > 0 ? providers : undefined,
       sinceIso: w.sinceIso,
       untilIso: w.untilIso,
-      limit: 50,
-      offset: Math.max(0, (page - 1) * 50),
+      limit: 25,
+      offset: Math.max(0, (page - 1) * 25),
     });
     return {
       window: toApiWindow(w),

@@ -17,7 +17,7 @@ import { EmptyState, Heading, SkeletonBlock, TableSkeleton } from "../ui";
 import { sortIndicator, useSort } from "../lib/useSort";
 import { useAsyncStaleWhileRevalidate } from "../lib/useAsync";
 
-const PAGE_SIZE = 50;
+const PAGE_SIZE = 25;
 
 /**
  * Sessions landing view: full-text search across every harness's conversations,
@@ -587,6 +587,14 @@ function ConversationBlock({ block }: { block: MarkdownBlock }) {
   </div>;
   if (block.kind === "heading") {
     const Tag = block.level <= 2 ? "h3" : "h4";
+    const role = block.text.trim().toLowerCase();
+    if (role === "user" || role === "assistant" || role === "tool call") {
+      const tone = role === "user" ? "border-kumo-info/50 bg-kumo-info/10 text-kumo-info" : role === "assistant" ? "border-kumo-success/50 bg-kumo-success/10 text-kumo-success" : "border-kumo-warning/50 bg-kumo-warning/10 text-kumo-warning";
+      return <div className={`flex items-center gap-2 border-b px-2 py-1 text-[10px] font-semibold uppercase tracking-wider ${tone}`}>
+        <span aria-hidden="true">{role === "user" ? "↗" : role === "assistant" ? "✦" : "⚒"}</span>
+        <span>{role}</span>
+      </div>;
+    }
     return <Tag className="border-b border-kumo-border/50 pb-1 font-semibold text-kumo-default"><InlineMarkdown text={block.text} /></Tag>;
   }
   if (block.kind === "quote") return <blockquote className="border-l-2 border-kumo-info/60 pl-3 text-kumo-default"><InlineMarkdown text={block.text} /></blockquote>;
@@ -598,7 +606,7 @@ function ConversationBlock({ block }: { block: MarkdownBlock }) {
 }
 
 function Timeline({ payload }: { payload: SessionDetailPayload }) {
-  const [hovered, setHovered] = useState<number | null>(null);
+  const [hovered, setHovered] = useState<{ index: number; x: number; y: number } | null>(null);
   const events = payload.events;
   const maxTokens = Math.max(1, ...events.map((e) => e.inputTokens + e.outputTokens + e.cacheReadTokens + e.cacheWriteTokens));
   let running = 0;
@@ -626,14 +634,14 @@ function Timeline({ payload }: { payload: SessionDetailPayload }) {
       </div>
       {/* Token volume per request — the shape of a session at a glance. */}
       <div className="relative pt-8">
-        {hovered !== null && events[hovered] !== undefined && (
+        {hovered !== null && events[hovered.index] !== undefined && (
           <div
-            className="pointer-events-none absolute top-0 z-10 w-max max-w-[min(24rem,90%)] -translate-x-1/2 rounded-md border border-kumo-border bg-kumo-elevated px-2.5 py-2 text-[11px] shadow-lg"
-            style={{ left: `${((hovered + 0.5) / Math.max(1, events.length)) * 100}%` }}
+            className="pointer-events-none fixed z-50 w-max max-w-[min(24rem,90vw)] -translate-x-1/2 -translate-y-full rounded-md border border-kumo-border bg-kumo-elevated px-2.5 py-2 text-[11px] shadow-lg"
+            style={{ left: hovered.x, top: hovered.y }}
           >
-            <div className="font-medium text-kumo-default">Request {hovered + 1} · {events[hovered]!.ts.slice(11, 19)}</div>
-            <div className="mt-0.5 text-kumo-subtle">{events[hovered]!.description || `model response · ${events[hovered]!.model}`}</div>
-            <div className="mt-0.5 text-kumo-faint">{events[hovered]!.model} · {humanCount(events[hovered]!.inputTokens + events[hovered]!.outputTokens + events[hovered]!.cacheReadTokens + events[hovered]!.cacheWriteTokens)} tokens · {formatCost(events[hovered]!.costUsd)}</div>
+            <div className="font-medium text-kumo-default">Request {hovered.index + 1} · {events[hovered.index]!.ts.slice(11, 19)}</div>
+            <div className="mt-0.5 text-kumo-subtle">{events[hovered.index]!.description || `model response · ${events[hovered.index]!.model}`}</div>
+            <div className="mt-0.5 text-kumo-faint">{events[hovered.index]!.model} · {humanCount(events[hovered.index]!.inputTokens + events[hovered.index]!.outputTokens + events[hovered.index]!.cacheReadTokens + events[hovered.index]!.cacheWriteTokens)} tokens · {formatCost(events[hovered.index]!.costUsd)}</div>
           </div>
         )}
         <div className="flex h-12 items-end gap-[2px]" role="list" aria-label="request token volume">
@@ -644,9 +652,15 @@ function Timeline({ payload }: { payload: SessionDetailPayload }) {
                 key={i}
                 type="button"
                 aria-label={`Request ${i + 1}, ${e.ts.slice(11, 19)}, ${e.description || e.model}`}
-                onMouseEnter={() => setHovered(i)}
+                onMouseEnter={(event) => {
+                  const rect = event.currentTarget.getBoundingClientRect();
+                  setHovered({ index: i, x: Math.max(8, Math.min(window.innerWidth - 8, rect.left + rect.width / 2)), y: Math.max(8, rect.top - 8) });
+                }}
                 onMouseLeave={() => setHovered(null)}
-                onFocus={() => setHovered(i)}
+                onFocus={(event) => {
+                  const rect = event.currentTarget.getBoundingClientRect();
+                  setHovered({ index: i, x: Math.max(8, Math.min(window.innerWidth - 8, rect.left + rect.width / 2)), y: Math.max(8, rect.top - 8) });
+                }}
                 onBlur={() => setHovered(null)}
                 style={{ height: `${Math.max(2, (tokens / maxTokens) * 100)}%` }}
                 className="min-w-[3px] flex-1 rounded-t-sm bg-kumo-info/70 transition-colors hover:bg-kumo-info focus:bg-kumo-info focus:outline-none focus:ring-1 focus:ring-kumo-info"

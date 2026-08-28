@@ -72,6 +72,8 @@ describe("session display text", () => {
     expect(doc.title).toBe("actual Codex request");
     expect(doc.body).toContain("actual Codex request");
     expect(doc.body).toContain("Codex answer");
+    expect(doc.body).toContain("### User");
+    expect(doc.body).toContain("### Assistant");
     expect(doc.body).not.toContain("AGENTS.md");
     fs.rmSync(file, { force: true });
   });

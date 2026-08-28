@@ -6,7 +6,7 @@ import { providerConfig } from "../config.ts";
 import { eventId } from "../machine.ts";
 import { estimateCost } from "../pricing.ts";
 import { shellToolName } from "../tools.ts";
-import { cleanSessionText, sessionSnippet, sessionTitle } from "../sessionText.ts";
+import { cleanSessionText, sessionMessage, sessionTitle } from "../sessionText.ts";
 import { homePath, type EntryContext, type Provider, type SessionDoc } from "./types.ts";
 
 interface ClaudeUsage {
@@ -172,8 +172,10 @@ export function extractClaudeSessionDocs(file: string): SessionDoc[] {
       if (role === "user") {
         userTexts.push(text);
       }
-      if (body.length + text.length > BODY_CAP) break;
-      body += sessionSnippet(text) + "\n";
+      const message = sessionMessage(role === "user" ? "user" : "assistant", text);
+      if (message.length === 0) continue;
+      if (body.length + message.length > BODY_CAP) break;
+      body += message + "\n\n";
     }
     if (body.length >= BODY_CAP) break;
   }

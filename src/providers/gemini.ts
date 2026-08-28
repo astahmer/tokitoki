@@ -5,6 +5,7 @@ import type { UsageEvent } from "../types.ts";
 import { providerConfig } from "../config.ts";
 import { eventId } from "../machine.ts";
 import { estimateCost } from "../pricing.ts";
+import { sessionMessage } from "../sessionText.ts";
 import { homePath, type EntryContext, type Provider, type SessionDoc } from "./types.ts";
 
 /**
@@ -124,9 +125,11 @@ export const geminiCliProvider: Provider = {
       const role = rec.type === "user" ? "user" : rec.type === "gemini" ? "assistant" : undefined;
       if (role === "user") {
         if (title.length === 0) title = text.replace(/\s+/g, " ").trim().slice(0, 200);
-        body += `${text.replace(/\s+/g, " ").slice(0, 2000)}\n`;
+        const message = sessionMessage("user", text);
+        if (message.length > 0) body += `${message}\n\n`;
       } else if (role === "assistant") {
-        body += `${text.replace(/\s+/g, " ").slice(0, 2000)}\n`;
+        const message = sessionMessage("assistant", text);
+        if (message.length > 0) body += `${message}\n\n`;
       }
       const ts = normalizeTs(rec.timestamp);
       if (ts !== undefined && startedAt === undefined) startedAt = ts;
