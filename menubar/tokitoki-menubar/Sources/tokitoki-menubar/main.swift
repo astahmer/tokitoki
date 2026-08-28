@@ -245,7 +245,7 @@ struct PopoverBlock: Codable, Identifiable {
 struct BlocksPayload: Codable { let rows: [PopoverBlock] }
 struct StatuslinePreviewPayload: Codable { let command: String; let preview: String }
 
-struct PopoverSessionRow: Codable, Identifiable {
+struct PopoverSessionRow: Decodable, Identifiable {
     let sessionId: String
     let provider: String
     let accountKey: String
