@@ -432,6 +432,7 @@ export interface SessionDetailPayload {
     inputTokens: number;
     outputTokens: number;
     cacheReadTokens: number;
+    cacheWriteTokens: number;
     costUsd: number;
     tool?: string;
     description: string;

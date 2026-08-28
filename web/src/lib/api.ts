@@ -186,6 +186,7 @@ export interface SessionEvent {
   inputTokens: number;
   outputTokens: number;
   cacheReadTokens: number;
+  cacheWriteTokens: number;
   costUsd: number;
   tool?: string;
   description: string;
@@ -245,6 +246,7 @@ export function fetchSessionDetail(
           inputTokens: numberOrZero(event.inputTokens),
           outputTokens: numberOrZero(event.outputTokens),
           cacheReadTokens: numberOrZero(event.cacheReadTokens),
+          cacheWriteTokens: numberOrZero(event.cacheWriteTokens),
           costUsd: numberOrZero(event.costUsd),
           tool: typeof event.tool === "string" ? event.tool : undefined,
           description: typeof event.description === "string" ? event.description : "",

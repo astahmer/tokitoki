@@ -600,10 +600,10 @@ function ConversationBlock({ block }: { block: MarkdownBlock }) {
 function Timeline({ payload }: { payload: SessionDetailPayload }) {
   const [hovered, setHovered] = useState<number | null>(null);
   const events = payload.events;
-  const maxTokens = Math.max(1, ...events.map((e) => e.inputTokens + e.outputTokens + e.cacheReadTokens));
+  const maxTokens = Math.max(1, ...events.map((e) => e.inputTokens + e.outputTokens + e.cacheReadTokens + e.cacheWriteTokens));
   let running = 0;
   const rows = events.map((e) => {
-    running += e.inputTokens + e.outputTokens + e.cacheReadTokens;
+    running += e.inputTokens + e.outputTokens + e.cacheReadTokens + e.cacheWriteTokens;
     return { ...e, running };
   });
   const totalCost = events.reduce((s, e) => s + e.costUsd, 0);
@@ -632,12 +632,12 @@ function Timeline({ payload }: { payload: SessionDetailPayload }) {
           >
             <div className="font-medium text-kumo-default">Request {hovered + 1} · {events[hovered]!.ts.slice(11, 19)}</div>
             <div className="mt-0.5 text-kumo-subtle">{events[hovered]!.description || `model response · ${events[hovered]!.model}`}</div>
-            <div className="mt-0.5 text-kumo-faint">{events[hovered]!.model} · {humanCount(events[hovered]!.inputTokens + events[hovered]!.outputTokens + events[hovered]!.cacheReadTokens)} tokens · {formatCost(events[hovered]!.costUsd)}</div>
+            <div className="mt-0.5 text-kumo-faint">{events[hovered]!.model} · {humanCount(events[hovered]!.inputTokens + events[hovered]!.outputTokens + events[hovered]!.cacheReadTokens + events[hovered]!.cacheWriteTokens)} tokens · {formatCost(events[hovered]!.costUsd)}</div>
           </div>
         )}
         <div className="flex h-12 items-end gap-[2px]" role="list" aria-label="request token volume">
           {events.map((e, i) => {
-            const tokens = e.inputTokens + e.outputTokens + e.cacheReadTokens;
+            const tokens = e.inputTokens + e.outputTokens + e.cacheReadTokens + e.cacheWriteTokens;
             return (
               <button
                 key={i}
