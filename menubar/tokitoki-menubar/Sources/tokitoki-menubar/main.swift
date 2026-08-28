@@ -290,7 +290,7 @@ struct PopoverSessionRow: Decodable, Identifiable {
     }
 }
 
-struct PopoverSessionsPayload: Codable {
+struct PopoverSessionsPayload: Decodable {
     let rows: [PopoverSessionRow]
     let page: Int?
     let hasMore: Bool?
