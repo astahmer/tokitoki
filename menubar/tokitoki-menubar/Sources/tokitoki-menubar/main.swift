@@ -319,6 +319,7 @@ struct MenubarPayload: Codable {
     let repoHistory: DailyUsageHistory?
     let blocks: BlocksPayload?
     let statuslinePreview: StatuslinePreviewPayload?
+    let recentSessions: PopoverSessionsPayload?
 }
 
 @MainActor
@@ -674,12 +675,12 @@ final class Model: ObservableObject {
                 try Data("{}\n".utf8).write(to: url, options: .atomic)
             }
             guard NSWorkspace.shared.open(url) else {
-                pollStatus = "Could not open (url.lastPathComponent)"
+                pollStatus = "Could not open \\(url.lastPathComponent)"
                 return
             }
-            pollStatus = "Opened (url.lastPathComponent)"
+            pollStatus = "Opened \\(url.lastPathComponent)"
         } catch {
-            pollStatus = "Could not open config: (error.localizedDescription)"
+            pollStatus = "Could not open config: \\(error.localizedDescription)"
         }
     }
 
@@ -1082,6 +1083,17 @@ final class Model: ObservableObject {
                 self.week = p.week
                 self.currentPayloadForTitle = p
                 self.currentPreviewCfg = p.uiPreview
+                if let recentSessions = p.recentSessions {
+                    self.sessionPageCache["|1"] = recentSessions
+                    if self.selectedSessionRow == nil && self.sessionQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        self.sessionRows = recentSessions.rows
+                        self.sessionPage = recentSessions.page ?? 1
+                        self.sessionHasMore = recentSessions.hasMore ?? false
+                        self.sessionStatus = recentSessions.rows.isEmpty
+                            ? "No sessions found"
+                            : "\(recentSessions.rows.count) sessions · page \(recentSessions.page ?? 1)"
+                    }
+                }
                 if let rm = p.reposMonth {
                     self.repos = Array(rm.rows.sorted { $0.costUsd > $1.costUsd }.prefix(6))
                 }
@@ -1131,7 +1143,7 @@ final class Model: ObservableObject {
                 self.refreshFailureCount = min(self.refreshFailureCount + 1, 6)
                 let delay = min(300.0, 5.0 * pow(2.0, Double(self.refreshFailureCount - 1)))
                 self.nextRefreshRetryAt = Date().addingTimeInterval(delay)
-                self.errorText = "Couldn’t refresh latest data · retry in (countdown(self.nextRefreshRetryAt!))"
+                self.errorText = "Couldn’t refresh latest data · retry in \\(countdown(self.nextRefreshRetryAt!))"
                 self.errorDetails = error.localizedDescription
                 setTitleIfChanged("tokitoki ⚠️")
                 dbg("refresh failed: \(error.localizedDescription)")
@@ -3331,7 +3343,7 @@ struct UsageHistoryChart: View {
                             ForEach(Array(history.series.enumerated()).reversed(), id: \.offset) { _, series in
                                 let value = index < series.values.count ? series.values[index] : 0
                                 Rectangle()
-                                    .fill(bucketColor(series.bucket))
+                                    .fill(bucketColor(series.bucket, peers: history.series.map(\.bucket)))
                                     .frame(height: maximum > 0 ? max(1, proxy.size.height * value / maximum) : 1)
                             }
                         }
@@ -3350,7 +3362,7 @@ struct UsageHistoryChart: View {
             HStack(spacing: 8) {
                 ForEach(history.series.prefix(4)) { series in
                     HStack(spacing: 3) {
-                        Circle().fill(bucketColor(series.bucket)).frame(width: 6, height: 6)
+                        Circle().fill(bucketColor(series.bucket, peers: history.series.map(\.bucket))).frame(width: 6, height: 6)
                         Text(series.bucket).font(.caption2).lineLimit(1)
                     }
                 }
@@ -5238,10 +5250,7 @@ private struct HighlightedSnippet: View {
         } else {
             return []
         }
-        return rows
-            .map { (name: $0.bucket, value: metric == .cost ? $0.costUsd : $0.totalTokens, color: bucketColor($0.bucket)) }
-            .filter { $0.value > 0 }
-            .sorted { $0.value > $1.value }
+        return colorizeSlices(rows.map { (name: $0.bucket, value: metric == .cost ? $0.costUsd : $0.totalTokens) })
     }
 
     private func tokenTotals(for key: String) -> (tokens: Double, cost: Double, requests: Int, sessions: Int) {
@@ -5266,30 +5275,30 @@ private struct HighlightedSnippet: View {
 
     private func tokenSlices(for key: String, metric: SpendMetric = .tokens) -> [(name: String, value: Double, color: Color)] {
         if key == "custom" { return metric == .tokens ? customTokenSlices : [] }
-        return tokenRows(for: key)
-            .map { (name: $0.bucket, value: metric == .cost ? $0.costUsd : $0.totalTokens, color: bucketColor($0.bucket)) }
-            .filter { $0.value > 0 }
-            .sorted { $0.value > $1.value }
+        return colorizeSlices(tokenRows(for: key).map { (name: $0.bucket, value: metric == .cost ? $0.costUsd : $0.totalTokens) })
     }
 
     private var customTokenSlices: [(name: String, value: Double, color: Color)] {
         if !model.customHarnessRows.isEmpty {
-            return model.customHarnessRows
-                .map { (name: $0.bucket, value: $0.totalTokens, color: bucketColor($0.bucket)) }
-                .filter { $0.value > 0 }
-                .sorted { $0.value > $1.value }
+            return colorizeSlices(model.customHarnessRows.map { (name: $0.bucket, value: $0.totalTokens) })
         }
         guard let history = model.history else { return [] }
         let from = localDayKey(customTokenFrom)
         let to = localDayKey(customTokenTo)
-        return history.series.map { series in
+        return colorizeSlices(history.series.map { series in
             let value = history.days.indices.reduce(0) { total, index in
                 let day = history.days[index]
                 guard day >= from && day <= to else { return total }
                 return total + (index < series.values.count ? series.values[index] : 0)
             }
-            return (series.bucket, value, bucketColor(series.bucket))
-        }.filter { $0.value > 0 }.sorted { $0.value > $1.value }
+            return (name: series.bucket, value: value)
+        })
+    }
+
+    private func colorizeSlices(_ values: [(name: String, value: Double)]) -> [(name: String, value: Double, color: Color)] {
+        let filtered = values.filter { $0.value > 0 }.sorted { $0.value > $1.value }
+        let colors = ChartColorRegistry.colors(for: filtered.map(\.name))
+        return filtered.map { (name: $0.name, value: $0.value, color: colors[$0.name] ?? bucketColor($0.name)) }
     }
 
     private func localDayKey(_ date: Date) -> String {
@@ -5493,12 +5502,7 @@ private struct HighlightedSnippet: View {
     private func pieSlices(metric: SpendMetric) -> [(name: String, value: Double, color: Color)] {
         // spendPeriodRows() honors the popover search filter.
         let rows = spendPeriodRows()
-        var out: [(name: String, value: Double, color: Color)] = []
-        for row in rows {
-            let value = metric == .cost ? row.costUsd : row.totalTokens
-            if value > 0 { out.append((row.bucket, value, bucketColor(row.bucket))) }
-        }
-        return out.sorted { $0.value > $1.value }
+        return colorizeSlices(rows.map { (name: $0.bucket, value: metric == .cost ? $0.costUsd : $0.totalTokens) })
     }
 
     private func sliceValue(_ value: Double, metric: SpendMetric) -> String {
@@ -6019,20 +6023,61 @@ struct ProviderLogo: View {
 /// Swift's `hashValue` is intentionally randomized per process, so use a
 /// tiny deterministic FNV-1a hash for unknown model/tool names instead.
 enum ChartColorRegistry {
-    private static let fallback: [Color] = [.blue, .purple, .orange, .mint, .pink, .teal]
+    /// Deliberately separated hues. The previous six-color fallback mapped
+    /// unrelated models/providers to near-identical violet/pink colors.
+    private static let palette: [Color] = [
+        Color(red: 0.11, green: 0.58, blue: 0.96), // blue
+        Color(red: 0.96, green: 0.55, blue: 0.12), // orange
+        Color(red: 0.08, green: 0.70, blue: 0.48), // emerald
+        Color(red: 0.84, green: 0.24, blue: 0.89), // magenta
+        Color(red: 0.04, green: 0.72, blue: 0.78), // cyan
+        Color(red: 0.98, green: 0.25, blue: 0.39), // rose
+        Color(red: 0.55, green: 0.38, blue: 0.94), // violet
+        Color(red: 0.65, green: 0.78, blue: 0.12), // lime
+        Color(red: 0.96, green: 0.36, blue: 0.20), // vermilion
+        Color(red: 0.16, green: 0.78, blue: 0.68), // turquoise
+        Color(red: 0.38, green: 0.45, blue: 0.95), // indigo
+        Color(red: 0.95, green: 0.30, blue: 0.64), // pink
+    ]
+
+    private static func hash(_ name: String) -> Int {
+        var value: UInt64 = 14695981039346656037
+        for byte in name.utf8 {
+            value ^= UInt64(byte)
+            value &*= 1099511628211
+        }
+        return Int(value % UInt64(palette.count))
+    }
+
+    /// Allocate a distinct palette slot for every peer in one chart. This
+    /// keeps the assignment deterministic while preventing exact collisions
+    /// when a chart has several models with similar names.
+    static func colors(for names: [String]) -> [String: Color] {
+        var result: [String: Color] = [:]
+        var used = Set<Int>()
+        for name in Array(Set(names)).sorted() {
+            let start = hash(name)
+            let index = (0..<palette.count)
+                .map { (start + $0) % palette.count }
+                .first { !used.contains($0) } ?? start
+            used.insert(index)
+            result[name] = palette[index]
+        }
+        return result
+    }
 
     static func color(for name: String) -> Color {
-        if ProviderLogo.symbol(name) != "circle.fill" { return ProviderLogo.brandColor(name) }
-        var hash: UInt64 = 14695981039346656037
-        for byte in name.utf8 {
-            hash ^= UInt64(byte)
-            hash &*= 1099511628211
-        }
-        return fallback[Int(hash % UInt64(fallback.count))]
+        colors(for: [name])[name] ?? palette[0]
+    }
+
+    static func color(for name: String, among peers: [String]) -> Color {
+        colors(for: peers)[name] ?? color(for: name)
     }
 }
 
-func bucketColor(_ name: String) -> Color { ChartColorRegistry.color(for: name) }
+func bucketColor(_ name: String, peers: [String] = []) -> Color {
+    peers.isEmpty ? ChartColorRegistry.color(for: name) : ChartColorRegistry.color(for: name, among: peers)
+}
 
 /// CodexBar-style per-account limit card: primary window bar + resets-in
 /// countdown, stacked secondary windows, banked resets. Raw token numbers
