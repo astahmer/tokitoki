@@ -2079,7 +2079,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func showHoverPopover() {
         guard let button = statusItem?.button, let model, !popover.isShown else { return }
         hoverPopover.contentViewController = NSHostingController(rootView: HoverPreviewView(model: model))
-        hoverPopover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        hoverPopover.show(relativeTo: button.bounds, of: button, preferredEdge: .maxY)
     }
 
     private func hideHoverPopover() {
@@ -2103,7 +2103,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // then fail to close it.
             NSApp.activate(ignoringOtherApps: true)
             updatePopoverSize(for: button)
-            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .maxY)
             FileHandle.standardError.write(Data("[tokitoki-menubar] popover.show called · shown=\(popover.isShown)\n".utf8))
             popover.contentViewController?.view.window?.makeKey()
             loadPopoverContentIfNeeded()
@@ -2130,6 +2130,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.popoverHost?.rootView = AnyView(ContentView(model: model))
             if let button = self.statusItem?.button { self.updatePopoverSize(for: button) }
             self.popover.contentViewController?.view.layoutSubtreeIfNeeded()
+            // The content swap can change the hosting view's intrinsic size.
+            // Re-apply the same below-the-menubar anchor after layout so the
+            // first open cannot retain the launch shell's off-screen origin.
+            if let button = self.statusItem?.button {
+                self.popover.show(relativeTo: button.bounds, of: button, preferredEdge: .maxY)
+            }
             self.popover.contentViewController?.view.window?.makeKey()
         }
     }
