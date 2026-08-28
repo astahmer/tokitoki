@@ -1738,20 +1738,9 @@ final class Model: ObservableObject {
 
     nonisolated static func runJSON<T: Decodable>(_ type: T.Type, _ cli: CLIInvocation, _ args: [String]) async throws -> T? {
         let out = try await runCLI(cli, args)
-        if Self.debug {
-            let tail = String(out.suffix(120)).replacingOccurrences(of: "\n", with: "\\n")
-            FileHandle.standardError.write(Data("[tokitoki-menubar] JSON bytes=\(out.utf8.count) tail=\(tail)\n".utf8))
-        }
         guard !out.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
         guard let data = out.data(using: .utf8) else { return nil }
-        do {
-            return try JSONDecoder().decode(T.self, from: data)
-        } catch {
-            if Self.debug {
-                FileHandle.standardError.write(Data("[tokitoki-menubar] JSON decode failed for \(args.first ?? "payload"): \(error)\n".utf8))
-            }
-            throw error
-        }
+        return try JSONDecoder().decode(T.self, from: data)
     }
 
     /// Serialize all config-mutating CLI calls. Each CLI invocation does a
@@ -1782,41 +1771,32 @@ final class Model: ObservableObject {
         let proc = Process()
         proc.executableURL = cli.executable
         proc.arguments = cli.prefixArgs + args
-        let pipe = Pipe()
-        let errPipe = Pipe()
-        proc.standardOutput = pipe
-        proc.standardError = errPipe
+        let outputURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("tokitoki-cli-\(UUID().uuidString).out")
+        let errorURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("tokitoki-cli-\(UUID().uuidString).err")
+        FileManager.default.createFile(atPath: outputURL.path, contents: nil)
+        FileManager.default.createFile(atPath: errorURL.path, contents: nil)
+        defer {
+            try? FileManager.default.removeItem(at: outputURL)
+            try? FileManager.default.removeItem(at: errorURL)
+        }
         do {
+            guard let outputHandle = FileHandle(forWritingAtPath: outputURL.path),
+                  let errorHandle = FileHandle(forWritingAtPath: errorURL.path) else {
+                throw NSError(domain: "tokitoki", code: 2, userInfo: [NSLocalizedDescriptionKey: "could not create CLI output files"])
+            }
+            proc.standardOutput = outputHandle
+            proc.standardError = errorHandle
             try proc.run()
-            // Drain both pipes concurrently. Reading stdout to EOF before
-            // stderr can deadlock a verbose Bun/SQLite failure when stderr's
-            // pipe fills, which used to present as an intermittent popover
-            // stall and a clipped error fragment.
-            let outputGroup = DispatchGroup()
-            let dataLock = NSLock()
-            var data = Data()
-            var errorData = Data()
-            outputGroup.enter()
-            DispatchQueue.global(qos: .utility).async {
-                let value = pipe.fileHandleForReading.readDataToEndOfFile()
-                dataLock.lock()
-                data = value
-                dataLock.unlock()
-                outputGroup.leave()
-            }
-            outputGroup.enter()
-            DispatchQueue.global(qos: .utility).async {
-                let value = errPipe.fileHandleForReading.readDataToEndOfFile()
-                dataLock.lock()
-                errorData = value
-                dataLock.unlock()
-                outputGroup.leave()
-            }
             proc.waitUntilExit()
-            outputGroup.wait()
+            try? outputHandle.close()
+            try? errorHandle.close()
+            let data = (try? Data(contentsOf: outputURL)) ?? Data()
             if proc.terminationStatus == 0 {
                 cont.resume(returning: String(data: data, encoding: .utf8) ?? "")
             } else {
+                let errorData = (try? Data(contentsOf: errorURL)) ?? Data()
                 let raw = String(data: errorData, encoding: .utf8) ?? "exit \(proc.terminationStatus)"
                 let msg = Self.conciseCLIError(raw)
                 cont.resume(throwing: NSError(domain: "tokitoki", code: 1, userInfo: [NSLocalizedDescriptionKey: msg]))
