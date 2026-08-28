@@ -1738,6 +1738,10 @@ final class Model: ObservableObject {
 
     nonisolated static func runJSON<T: Decodable>(_ type: T.Type, _ cli: CLIInvocation, _ args: [String]) async throws -> T? {
         let out = try await runCLI(cli, args)
+        if Self.debug {
+            let tail = String(out.suffix(120)).replacingOccurrences(of: "\n", with: "\\n")
+            FileHandle.standardError.write(Data("[tokitoki-menubar] JSON bytes=\(out.utf8.count) tail=\(tail)\n".utf8))
+        }
         guard !out.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
         guard let data = out.data(using: .utf8) else { return nil }
         do {
