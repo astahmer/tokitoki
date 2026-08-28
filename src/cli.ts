@@ -2197,16 +2197,32 @@ function runMenubarPayload(parsed: ParsedInvocation): void {
   // refresh. The popover can then use `sessions --cached` without paying the
   // raw-store walk on every search or detail navigation.
   let snapshotAt: string | undefined;
+  let recentSessions: unknown = null;
   withCache((cache) => {
     syncCache(cache, resolveExtraFiles(loadConfig()));
     if (!menubarReadOnly) updateSessionIndex(cache.database);
+    const sessionWindow = resolveTimeWindow({ last: "month", fallbackPeriod: "month" });
+    const recentRows = cache.topSessions({
+      sinceIso: sessionWindow.sinceIso,
+      untilIso: sessionWindow.untilIso,
+      limit: 51,
+      sort: "recent",
+    });
+    recentSessions = {
+      page: 1,
+      hasMore: recentRows.length > 50,
+      rows: recentRows.slice(0, 50).map((row) => ({
+        ...row,
+        ...(sessionPreview(cache.database, row.provider, row.sessionId) ?? {}),
+      })),
+    };
     snapshotAt = cache.metaValue("menubar_snapshot_at");
     if (!menubarReadOnly) {
       snapshotAt = new Date().toISOString();
       cache.setMetaValue("menubar_snapshot_at", snapshotAt);
     }
   });
-  const parts: Record<string, unknown> = { snapshotAt: snapshotAt ?? null };
+  const parts: Record<string, unknown> = { snapshotAt: snapshotAt ?? null, recentSessions };
   const capture = (key: string, fn: () => void): void => {
     const orig = console.log;
     const chunks: string[] = [];
