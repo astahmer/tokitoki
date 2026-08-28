@@ -1351,6 +1351,7 @@ function renderSessionDrill(
       provider: matches[0],
       sessionId,
       conversation: sessionConversation(cache.database, matches[0]!, sessionId),
+      cacheDuration: cache.sessionCacheEstimate(matches[0]!, sessionId),
       events: detailRows,
       eventsTotal,
       eventsOffset,

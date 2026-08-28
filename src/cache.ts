@@ -6,7 +6,8 @@ import { Database, type SQLQueryBindings } from "bun:sqlite";
 import type { QuotaWindow, UsageEvent } from "./types.ts";
 import { dataDir, eventsFile, readEventsFile, readEventsTail } from "./store.ts";
 import { partitionBlocks, type BlockRow } from "./blocks.ts";import { resolveRepo } from "./repos.ts";
-import { ensureSessionFts } from "./sessionIndex.ts";
+import { ensureSessionFts, sessionConversation } from "./sessionIndex.ts";
+import { describeSessionEvent, estimateCacheDuration, type CacheDurationEstimate } from "./session-insights.ts";
 import { EXTRACTION_VERSION } from "./scan.ts";
 import { modelProvider } from "./model-provider.ts";
 
@@ -106,7 +107,8 @@ export class EventCache {
         cost_usd REAL NOT NULL DEFAULT 0,
         project_dir TEXT,
         session_id TEXT,
-        tool TEXT
+        tool TEXT,
+        description TEXT
       );
       CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);
       CREATE INDEX IF NOT EXISTS idx_events_provider ON events(provider);
@@ -120,6 +122,9 @@ export class EventCache {
     const cols = this.db.query("PRAGMA table_info(events)").all() as Array<{ name: string }>;
     if (!cols.some((c) => c.name === "tool")) {
       this.db.exec("ALTER TABLE events ADD COLUMN tool TEXT");
+    }
+    if (!cols.some((c) => c.name === "description")) {
+      this.db.exec("ALTER TABLE events ADD COLUMN description TEXT");
     }
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS meta (
@@ -212,8 +217,8 @@ export class EventCache {
       INSERT OR IGNORE INTO events (
         id, ts, machine_id, provider, account_key, model,
         input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
-        cost_usd, project_dir, session_id, tool
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        cost_usd, project_dir, session_id, tool, description
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const tx = this.db.transaction((rows: UsageEvent[]) => {
       let inserted = 0;
@@ -234,6 +239,7 @@ export class EventCache {
           e.projectDir ?? null,
           e.sessionId ?? null,
           e.tool ?? null,
+          e.description ?? null,
         ).changes;
         inserted += changes;
         if (changes > 0) newRows.push(e);
@@ -1341,7 +1347,7 @@ export class EventCache {
       .query(
         `
         SELECT ts, model, input_tokens, output_tokens,
-               cache_read_tokens, cache_write_tokens, cost_usd
+               cache_read_tokens, cache_write_tokens, cost_usd, tool, description
         FROM events
         WHERE provider = ? AND session_id = ?
         ORDER BY ts, id
@@ -1349,7 +1355,8 @@ export class EventCache {
         `,
       )
       .all(provider, sessionId, limit, offset) as Array<RawSessionEventRow>;
-    return rows.map((r) => ({
+    const conversation = sessionConversation(this.db, provider, sessionId)?.body ?? null;
+    return rows.map((r, index) => ({
       ts: r.ts,
       model: r.model,
       inputTokens: r.input_tokens ?? 0,
@@ -1357,7 +1364,21 @@ export class EventCache {
       cacheReadTokens: r.cache_read_tokens ?? 0,
       cacheWriteTokens: r.cache_write_tokens ?? 0,
       costUsd: r.cost_usd ?? 0,
+      tool: r.tool ?? undefined,
+      description: r.description ?? describeSessionEvent(r, index, conversation),
     }));
+  }
+
+  sessionCacheEstimate(provider: string, sessionId: string): CacheDurationEstimate {
+    const rows = this.db.query(
+      `SELECT ts, input_tokens, cache_read_tokens
+       FROM events WHERE provider = ? AND session_id = ? ORDER BY ts, id`,
+    ).all(provider, sessionId) as Array<{ ts: string; input_tokens: number | null; cache_read_tokens: number | null }>;
+    return estimateCacheDuration(rows.map((row) => ({
+      ts: row.ts,
+      inputTokens: row.input_tokens ?? 0,
+      cacheReadTokens: row.cache_read_tokens ?? 0,
+    })));
   }
 
   sessionEventCount(provider: string, sessionId: string): number {
@@ -1598,6 +1619,8 @@ export interface SessionEventRow {
   cacheReadTokens: number;
   cacheWriteTokens: number;
   costUsd: number;
+  tool?: string;
+  description: string;
 }
 
 interface RawSessionEventRow {
@@ -1608,4 +1631,6 @@ interface RawSessionEventRow {
   cache_read_tokens: number | null;
   cache_write_tokens: number | null;
   cost_usd: number | null;
+  tool: string | null;
+  description: string | null;
 }

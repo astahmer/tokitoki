@@ -33,6 +33,7 @@ import { collectSources } from "../sources.ts";
 import { collectMachines } from "../presence.ts";
 import { searchSessions, sessionConversation, sessionPreview, updateSessionIndex } from "../sessionIndex.ts";
 import { detectAnomalies, type AnomalyMetric } from "../anomalies.ts";
+import type { CacheDurationEstimate } from "../session-insights.ts";
 
 /** JSON responses reuse the exact CLI aggregation — no duplicated SQL. */
 
@@ -424,6 +425,7 @@ export interface SessionDetailPayload {
   eventsTotal: number;
   eventsOffset: number;
   eventsHasMore: boolean;
+  cacheDuration: CacheDurationEstimate;
   events: Array<{
     ts: string;
     model: string;
@@ -431,6 +433,8 @@ export interface SessionDetailPayload {
     outputTokens: number;
     cacheReadTokens: number;
     costUsd: number;
+    tool?: string;
+    description: string;
   }>;
 }
 
@@ -451,6 +455,7 @@ export function apiSessionDetail(
       eventsTotal,
       eventsOffset,
       eventsHasMore: eventsOffset + events.length < eventsTotal,
+      cacheDuration: cache.sessionCacheEstimate(provider, sessionId),
       events,
     };
   });

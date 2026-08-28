@@ -11,7 +11,7 @@ import {
   type SessionRow,
   type SessionSearchRow,
 } from "../lib/api";
-import { cachePct, formatCost, humanCount } from "../lib/fmt";
+import { cachePct, formatCost, formatDurationSeconds, humanCount } from "../lib/fmt";
 import type { WindowSelection } from "../lib/api";
 import { EmptyState, Heading, SkeletonBlock, TableSkeleton } from "../ui";
 import { sortIndicator, useSort } from "../lib/useSort";
@@ -460,6 +460,13 @@ function SessionDetail({ provider, sessionId }: { provider: string; sessionId: s
   );
 }
 
+type MarkdownBlock =
+  | { kind: "paragraph"; text: string }
+  | { kind: "heading"; text: string; level: number }
+  | { kind: "code"; text: string; language?: string }
+  | { kind: "quote"; text: string }
+  | { kind: "list"; text: string; ordered: boolean };
+
 function ConversationBody({ body, title }: { body: string; title?: string }) {
   const toolCounts = new Map<string, number>();
   let visibleLines = body.split("\n").filter((line) => {
@@ -480,9 +487,9 @@ function ConversationBody({ body, title }: { body: string; title?: string }) {
       visibleLines = visibleLines.slice(0, first).concat(visibleLines.slice(first + 1));
     }
   }
-  const blocks = visibleLines.join("\n").split(/\n{2,}/).map((block) => block.trim()).filter(Boolean);
+  const blocks = parseMarkdownBlocks(visibleLines);
   return (
-    <div className="mt-3 max-h-[32rem] space-y-3 overflow-auto text-xs leading-relaxed text-kumo-subtle">
+    <div className="mt-3 max-h-[40rem] space-y-3 overflow-auto text-xs leading-relaxed text-kumo-subtle">
       {toolCounts.size > 0 && (
         <details className="rounded-md border border-kumo-border/60 bg-kumo-recessed/50 p-2">
           <summary className="cursor-pointer font-medium text-kumo-default">
@@ -500,21 +507,98 @@ function ConversationBody({ body, title }: { body: string; title?: string }) {
   );
 }
 
-function ConversationBlock({ block }: { block: string }) {
-  if (block.startsWith("```") || block.includes("\n```")) {
-    return <pre className="overflow-x-auto rounded-md border border-kumo-border/60 bg-kumo-recessed p-3 font-mono text-[11px] leading-relaxed text-kumo-default">{block.replace(/^```[\w-]*\n?/, "").replace(/\n?```$/, "")}</pre>;
+function parseMarkdownBlocks(lines: string[]): MarkdownBlock[] {
+  const blocks: MarkdownBlock[] = [];
+  let paragraph: string[] = [];
+  let code: string[] | undefined;
+  let codeLanguage: string | undefined;
+  let list: string[] = [];
+  let listOrdered = false;
+  const flushParagraph = (): void => {
+    const text = paragraph.join("\n").trim();
+    if (text) blocks.push({ kind: "paragraph", text });
+    paragraph = [];
+  };
+  const flushList = (): void => {
+    if (list.length > 0) blocks.push({ kind: "list", text: list.join("\n"), ordered: listOrdered });
+    list = [];
+  };
+  const flushAll = (): void => { flushParagraph(); flushList(); };
+  for (const line of lines) {
+    const trimmed = line.trim();
+    const fence = /^```\s*([\w-]+)?\s*$/.exec(trimmed);
+    if (code !== undefined) {
+      if (fence !== null) {
+        blocks.push({ kind: "code", text: code.join("\n"), language: codeLanguage });
+        code = undefined;
+        codeLanguage = undefined;
+      } else code.push(line);
+      continue;
+    }
+    if (fence !== null) {
+      flushAll();
+      code = [];
+      codeLanguage = fence[1];
+      continue;
+    }
+    if (trimmed.length === 0) { flushAll(); continue; }
+    const heading = /^(#{1,6})\s+(.+)$/.exec(trimmed);
+    if (heading !== null) {
+      flushAll();
+      blocks.push({ kind: "heading", text: heading[2]!, level: heading[1]!.length });
+      continue;
+    }
+    if (trimmed.startsWith(">")) {
+      flushAll();
+      blocks.push({ kind: "quote", text: trimmed.replace(/^>\s?/, "") });
+      continue;
+    }
+    const item = /^(?:[-*+]\s+|\d+[.)]\s+)(.*)$/.exec(trimmed);
+    if (item !== null) {
+      const ordered = /^\d/.test(trimmed);
+      if (list.length > 0 && ordered !== listOrdered) flushList();
+      listOrdered = ordered;
+      list.push(item[1]!);
+      continue;
+    }
+    if (list.length > 0) flushList();
+    paragraph.push(line);
   }
-  const heading = /^(#{1,4})\s+(.+)$/.exec(block);
-  if (heading !== null) {
-    return <h4 className="border-b border-kumo-border/50 pb-1 font-semibold text-kumo-default">{heading[2]}</h4>;
+  if (code !== undefined) blocks.push({ kind: "code", text: code.join("\n"), language: codeLanguage });
+  flushAll();
+  return blocks;
+}
+
+function InlineMarkdown({ text }: { text: string }) {
+  const parts = text.split(/(`[^`]+`|\*\*[^*]+\*\*|\[[^\]]+\]\([^\)]+\))/g);
+  return <>{parts.map((part, i) => {
+    if (part.startsWith("`") && part.endsWith("`")) return <code key={i} className="rounded bg-kumo-recessed px-1 py-0.5 font-mono text-[11px]">{part.slice(1, -1)}</code>;
+    if (part.startsWith("**") && part.endsWith("**")) return <strong key={i}>{part.slice(2, -2)}</strong>;
+    const link = /^\[([^\]]+)\]\(([^)]+)\)$/.exec(part);
+    if (link !== null && /^(https?:|mailto:)/.test(link[2]!)) return <a key={i} href={link[2]} target="_blank" rel="noreferrer" className="text-kumo-info underline">{link[1]}</a>;
+    return <span key={i}>{part}</span>;
+  })}</>;
+}
+
+function ConversationBlock({ block }: { block: MarkdownBlock }) {
+  if (block.kind === "code") return <div className="overflow-hidden rounded-md border border-kumo-border/60 bg-kumo-recessed">
+    {block.language && <div className="border-b border-kumo-border/50 px-3 py-1 text-[10px] uppercase tracking-wider text-kumo-subtle">{block.language}</div>}
+    <pre className="overflow-x-auto p-3 font-mono text-[11px] leading-relaxed text-kumo-default">{block.text}</pre>
+  </div>;
+  if (block.kind === "heading") {
+    const Tag = block.level <= 2 ? "h3" : "h4";
+    return <Tag className="border-b border-kumo-border/50 pb-1 font-semibold text-kumo-default"><InlineMarkdown text={block.text} /></Tag>;
   }
-  if (/^(?:[-*]\s|\d+[.)]\s)/.test(block)) {
-    return <div className="whitespace-pre-wrap break-words rounded-md bg-kumo-recessed/40 px-2 py-1.5 text-kumo-default">{block}</div>;
+  if (block.kind === "quote") return <blockquote className="border-l-2 border-kumo-info/60 pl-3 text-kumo-default"><InlineMarkdown text={block.text} /></blockquote>;
+  if (block.kind === "list") {
+    const Tag = block.ordered ? "ol" : "ul";
+    return <Tag className={`${block.ordered ? "list-decimal" : "list-disc"} space-y-1 pl-5 text-kumo-default`}>{block.text.split("\n").map((item, i) => <li key={i}><InlineMarkdown text={item} /></li>)}</Tag>;
   }
-  return <p className="whitespace-pre-wrap break-words text-kumo-default">{block}</p>;
+  return <p className="whitespace-pre-wrap break-words text-kumo-default"><InlineMarkdown text={block.text} /></p>;
 }
 
 function Timeline({ payload }: { payload: SessionDetailPayload }) {
+  const [hovered, setHovered] = useState<number | null>(null);
   const events = payload.events;
   const maxTokens = Math.max(1, ...events.map((e) => e.inputTokens + e.outputTokens + e.cacheReadTokens));
   let running = 0;
@@ -537,20 +621,35 @@ function Timeline({ payload }: { payload: SessionDetailPayload }) {
           )}
           %
         </span>
+        <span>cache lifetime ≈ {formatDurationSeconds(payload.cacheDuration.estimatedSeconds)} · {payload.cacheDuration.confidence} confidence</span>
       </div>
       {/* Token volume per request — the shape of a session at a glance. */}
-      <div className="flex h-12 items-end gap-[2px]" aria-hidden="true">
-        {events.map((e, i) => {
-          const tokens = e.inputTokens + e.outputTokens + e.cacheReadTokens;
-          return (
-            <div
-              key={i}
-              title={`${e.ts.slice(11, 19)} ${e.model}: ${tokens} tok, ${formatCost(e.costUsd)}`}
-              style={{ height: `${Math.max(2, (tokens / maxTokens) * 100)}%` }}
-              className="min-w-[3px] flex-1 rounded-t-sm bg-kumo-info/70"
-            />
-          );
-        })}
+      <div className="relative pt-8">
+        {hovered !== null && events[hovered] !== undefined && (
+          <div className="pointer-events-none absolute left-1/2 top-0 z-10 w-max max-w-[min(24rem,90%)] -translate-x-1/2 rounded-md border border-kumo-border bg-kumo-elevated px-2.5 py-2 text-[11px] shadow-lg">
+            <div className="font-medium text-kumo-default">Request {hovered + 1} · {events[hovered]!.ts.slice(11, 19)}</div>
+            <div className="mt-0.5 text-kumo-subtle">{events[hovered]!.description || `model response · ${events[hovered]!.model}`}</div>
+            <div className="mt-0.5 text-kumo-faint">{events[hovered]!.model} · {humanCount(events[hovered]!.inputTokens + events[hovered]!.outputTokens + events[hovered]!.cacheReadTokens)} tokens · {formatCost(events[hovered]!.costUsd)}</div>
+          </div>
+        )}
+        <div className="flex h-12 items-end gap-[2px]" role="list" aria-label="request token volume">
+          {events.map((e, i) => {
+            const tokens = e.inputTokens + e.outputTokens + e.cacheReadTokens;
+            return (
+              <button
+                key={i}
+                type="button"
+                aria-label={`Request ${i + 1}, ${e.ts.slice(11, 19)}, ${e.description || e.model}`}
+                onMouseEnter={() => setHovered(i)}
+                onMouseLeave={() => setHovered(null)}
+                onFocus={() => setHovered(i)}
+                onBlur={() => setHovered(null)}
+                style={{ height: `${Math.max(2, (tokens / maxTokens) * 100)}%` }}
+                className="min-w-[3px] flex-1 rounded-t-sm bg-kumo-info/70 transition-colors hover:bg-kumo-info focus:bg-kumo-info focus:outline-none focus:ring-1 focus:ring-kumo-info"
+              />
+            );
+          })}
+        </div>
       </div>
       <div className="max-h-96 overflow-y-auto">
         <Table className="w-full text-xs">

@@ -187,6 +187,16 @@ export interface SessionEvent {
   outputTokens: number;
   cacheReadTokens: number;
   costUsd: number;
+  tool?: string;
+  description: string;
+}
+
+export interface CacheDurationEstimate {
+  estimatedSeconds: number | null;
+  confidence: "low" | "medium" | "high";
+  samples: number;
+  busts: number;
+  lastBustAt: string | null;
 }
 
 export interface SessionDetailPayload {
@@ -196,6 +206,7 @@ export interface SessionDetailPayload {
   eventsTotal: number;
   eventsOffset: number;
   eventsHasMore: boolean;
+  cacheDuration: CacheDurationEstimate;
   events: SessionEvent[];
 }
 
@@ -235,6 +246,8 @@ export function fetchSessionDetail(
           outputTokens: numberOrZero(event.outputTokens),
           cacheReadTokens: numberOrZero(event.cacheReadTokens),
           costUsd: numberOrZero(event.costUsd),
+          tool: typeof event.tool === "string" ? event.tool : undefined,
+          description: typeof event.description === "string" ? event.description : "",
         }))
       : [];
     return {
@@ -244,6 +257,7 @@ export function fetchSessionDetail(
       eventsTotal: numberOrZero(raw.eventsTotal),
       eventsOffset: numberOrZero(raw.eventsOffset),
       eventsHasMore: raw.eventsHasMore === true,
+      cacheDuration: raw.cacheDuration ?? { estimatedSeconds: null, confidence: "low", samples: 0, busts: 0, lastBustAt: null },
       events,
       conversation:
         raw.conversation !== null && typeof raw.conversation === "object"

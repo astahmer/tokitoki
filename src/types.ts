@@ -26,6 +26,8 @@ export interface UsageEvent {
    * text/thinking turns and older events (pre tool-extraction).
    */
   tool?: string;
+  /** Short user-facing description of the request, when the harness exposes it. */
+  description?: string;
   /** Embedded provider quota snapshot (codex rate_limits), when present. */
   quota?: QuotaSnapshot;
 }

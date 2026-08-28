@@ -38,6 +38,15 @@ export function totalTokens(row: {
   return row.inputTokens + row.outputTokens + row.cacheReadTokens + row.cacheWriteTokens;
 }
 
+export function formatDurationSeconds(seconds: number | null): string {
+  if (seconds === null || !Number.isFinite(seconds) || seconds <= 0) return "not enough evidence";
+  const minutes = Math.max(1, Math.round(seconds / 60));
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 48) return `${hours}h`;
+  return `${Math.round(hours / 24)}d`;
+}
+
 function trimZeros(s: string): string {
   return s.includes(".") ? s.replace(/\.?0+$/, "") : s;
 }
