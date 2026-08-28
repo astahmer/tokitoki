@@ -172,6 +172,21 @@ export class EventCache {
     return this.db;
   }
 
+  /** Read a small durable cache marker without exposing the SQLite handle. */
+  metaValue(key: string): string | undefined {
+    const row = this.db
+      .query("SELECT value FROM meta WHERE key = ?")
+      .get(key) as { value?: string } | undefined;
+    return row?.value;
+  }
+
+  /** Persist a small cache marker atomically alongside the projection. */
+  setMetaValue(key: string, value: string): void {
+    this.db
+      .prepare("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)")
+      .run(key, value);
+  }
+
   /**
    * True when the cache was built by older extraction logic (e.g. before the
    * tool dimension existed) and must be rebuilt from the event logs even

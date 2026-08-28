@@ -298,6 +298,7 @@ struct PopoverSessionDetail: Codable {
 }
 
 struct MenubarPayload: Codable {
+    let snapshotAt: String?
     let today: ReportPayload
     let rollingDay: ReportPayload?
     let week: ReportPayload
@@ -416,6 +417,9 @@ final class Model: ObservableObject {
     private var quotaObservations: [String: QuotaObservation] = [:]
     private var payloadInFlight = false
     private var payloadRefreshPending = false
+    private var payloadRefreshPendingForce = false
+    private var refreshFailureCount = 0
+    private var nextRefreshRetryAt: Date?
     private var sessionRequestGeneration = 0
     private var hasHydratedSnapshot = false
     private var sessionTask: Task<Void, Never>?
@@ -982,7 +986,12 @@ final class Model: ObservableObject {
     /// Invalidate payload requests already in flight before a config mutation.
     func invalidateRefreshes() { refreshGeneration += 1 }
 
-    func refresh() {
+    func refresh(force: Bool = false) {
+        if !force, let retryAt = nextRefreshRetryAt, retryAt > Date() {
+            isLoading = false
+            loadingStage = "Retry scheduled"
+            return
+        }
         refreshGeneration += 1
         let generation = refreshGeneration
         isLoading = true
@@ -990,10 +999,12 @@ final class Model: ObservableObject {
         loadingTotal = 4
         if payloadInFlight {
             payloadRefreshPending = true
+            payloadRefreshPendingForce = payloadRefreshPendingForce || force
             return
         }
         if pollInFlight {
             payloadRefreshPending = true
+            payloadRefreshPendingForce = payloadRefreshPendingForce || force
             return
         }
         if pollAuto, lastPollAt.map({ Date().timeIntervalSince($0) >= Double(effectivePollIntervalMinutes) * 60 }) ?? true {
@@ -1010,8 +1021,10 @@ final class Model: ObservableObject {
                 self.payloadInFlight = false
                 self.isLoading = false
                 if self.payloadRefreshPending {
+                    let pendingForce = self.payloadRefreshPendingForce
                     self.payloadRefreshPending = false
-                    self.refresh()
+                    self.payloadRefreshPendingForce = false
+                    self.refresh(force: pendingForce)
                 }
             }
             do {
@@ -1092,8 +1105,13 @@ final class Model: ObservableObject {
                 setTitleIfChanged(newTitle)
                 self.errorText = nil
                 self.errorDetails = nil
-                self.lastUpdatedAt = Date()
-                self.loadingCompleted = 1
+                self.refreshFailureCount = 0
+                self.nextRefreshRetryAt = nil
+                if let snapshotAt = p.snapshotAt, let parsedSnapshotAt = parseISO(snapshotAt) {
+                    self.lastUpdatedAt = parsedSnapshotAt
+                } else if self.lastUpdatedAt == nil {
+                    self.lastUpdatedAt = Date()
+                }
                 applyAnomalies(p.anomalies)
                 AppDelegate.shared?.refreshProofIfShown()
                 // Test-mode diagnostics don't require the popover to be open.
@@ -1109,7 +1127,10 @@ final class Model: ObservableObject {
                     }
                 }
             } catch {
-                self.errorText = "Couldn’t refresh latest data"
+                self.refreshFailureCount = min(self.refreshFailureCount + 1, 6)
+                let delay = min(300.0, 5.0 * pow(2.0, Double(self.refreshFailureCount - 1)))
+                self.nextRefreshRetryAt = Date().addingTimeInterval(delay)
+                self.errorText = "Couldn’t refresh latest data · retry in (countdown(self.nextRefreshRetryAt!))"
                 self.errorDetails = error.localizedDescription
                 setTitleIfChanged("tokitoki ⚠️")
                 dbg("refresh failed: \(error.localizedDescription)")
@@ -2080,6 +2101,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let button = statusItem?.button, let model, !popover.isShown else { return }
         hoverPopover.contentViewController = NSHostingController(rootView: HoverPreviewView(model: model))
         hoverPopover.show(relativeTo: button.bounds, of: button, preferredEdge: .maxY)
+        positionPopoverBelowStatusItem(hoverPopover, button: button)
     }
 
     private func hideHoverPopover() {
@@ -2104,6 +2126,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSApp.activate(ignoringOtherApps: true)
             updatePopoverSize(for: button)
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .maxY)
+            positionPopoverBelowStatusItem(popover, button: button)
             FileHandle.standardError.write(Data("[tokitoki-menubar] popover.show called · shown=\(popover.isShown)\n".utf8))
             popover.contentViewController?.view.window?.makeKey()
             loadPopoverContentIfNeeded()
@@ -2135,6 +2158,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // first open cannot retain the launch shell's off-screen origin.
             if let button = self.statusItem?.button {
                 self.popover.show(relativeTo: button.bounds, of: button, preferredEdge: .maxY)
+                self.positionPopoverBelowStatusItem(self.popover, button: button)
             }
             self.popover.contentViewController?.view.window?.makeKey()
         }
@@ -2147,6 +2171,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let width = min(520, max(400, (visible?.width ?? 1440) * 0.30))
         let height = min(860, max(560, (visible?.height ?? 900) * 0.80))
         popover.contentSize = NSSize(width: width, height: height)
+    }
+
+    /// NSPopover's automatic edge selection can place a tall panel above the
+    /// menu bar on the first layout pass. Explicitly pin its window below the
+    /// status item, inside the screen's usable frame, after AppKit has created
+    /// the window. This also keeps the launch-shell -> ContentView swap from
+    /// inheriting an off-screen origin.
+    private func positionPopoverBelowStatusItem(_ panel: NSPopover, button: NSStatusBarButton) {
+        let apply = {
+            guard let window = panel.contentViewController?.view.window,
+                  let screen = button.window?.screen ?? NSScreen.main else { return }
+            let visible = screen.visibleFrame
+            let buttonRect = button.window?.convert(button.bounds, to: nil)
+            let size = window.frame.size
+            let preferredX = (buttonRect?.midX ?? visible.midX) - size.width / 2
+            let x = min(max(preferredX, visible.minX), visible.maxX - size.width)
+            let y = visible.maxY - size.height
+            window.setFrameOrigin(NSPoint(x: x, y: y))
+        }
+        apply()
+        // AppKit may perform one more positioning pass after `show` returns;
+        // repeat on the next run-loop turn so the explicit origin wins.
+        DispatchQueue.main.async(execute: apply)
     }
 
     /// Deterministic e2e proof of what the popover renders (AX cannot see
@@ -3803,7 +3850,7 @@ struct ContentView: View {
                                 .font(.caption.weight(.semibold))
                                 .foregroundStyle(.red)
                             Spacer(minLength: 4)
-                            Button("Retry") { model.refresh() }
+                            Button("Retry") { model.refresh(force: true) }
                                 .buttonStyle(.bordered)
                                 .controlSize(.small)
                         }
@@ -3856,7 +3903,7 @@ struct ContentView: View {
 
     private var popoverFooter: some View {
         HStack(spacing: 6) {
-            Button(action: { model.refresh() }) {
+            Button(action: { model.refresh(force: true) }) {
                 Label("Refresh all", systemImage: "arrow.clockwise")
             }
             .buttonStyle(.bordered).controlSize(.small)

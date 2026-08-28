@@ -27,6 +27,10 @@ describe("cli help completeness", () => {
     expect(commandHelpText("sessions")).toContain("--cached");
   });
 
+  it("documents the cached menubar snapshot read path", () => {
+    expect(commandHelpText("menubar-payload")).toContain("--cached");
+  });
+
   it("every command's help documents all of its known flags", () => {
     for (const [cmd, entry] of Object.entries(COMMAND_HELP) as [string, CommandHelp][]) {
       const text = `${entry.usage}\n${entry.flags ?? ""}`;

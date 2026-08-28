@@ -2196,11 +2196,17 @@ function runMenubarPayload(parsed: ParsedInvocation): void {
   // Build the searchable conversation index once as part of the payload
   // refresh. The popover can then use `sessions --cached` without paying the
   // raw-store walk on every search or detail navigation.
+  let snapshotAt: string | undefined;
   withCache((cache) => {
     syncCache(cache, resolveExtraFiles(loadConfig()));
     if (!menubarReadOnly) updateSessionIndex(cache.database);
+    snapshotAt = cache.metaValue("menubar_snapshot_at");
+    if (!menubarReadOnly) {
+      snapshotAt = new Date().toISOString();
+      cache.setMetaValue("menubar_snapshot_at", snapshotAt);
+    }
   });
-  const parts: Record<string, unknown> = {};
+  const parts: Record<string, unknown> = { snapshotAt: snapshotAt ?? null };
   const capture = (key: string, fn: () => void): void => {
     const orig = console.log;
     const chunks: string[] = [];
