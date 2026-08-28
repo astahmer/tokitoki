@@ -3851,8 +3851,8 @@ struct ContentView: View {
         .buttonStyle(.plain)
         .foregroundStyle(activeSubview == view ? .primary : .secondary)
         .accessibilityLabel(view.title)
-        .accessibilityHint("Switch to the (view.title) view")
-        .help("Open (view.title)")
+        .accessibilityHint("Switch to the \(view.title) view")
+        .help("Open \(view.title)")
     }
 
     private var overviewBody: some View {

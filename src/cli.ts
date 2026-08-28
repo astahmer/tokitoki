@@ -2178,7 +2178,8 @@ function localDateKey(offsetDays = 0): string {
 }
 
 function runMenubarPayload(parsed: ParsedInvocation): void {
-  menubarReadOnly = flagBool(parsed, "cached");
+  const readOnlyPayload = flagBool(parsed, "cached");
+  menubarReadOnly = readOnlyPayload;
   // Sequential single-process composition: the menu bar previously spawned
   // 7 CLIs at once (~1GB RSS each) and thrashed memory.
   // Ingest changed harness stores before any report is composed. This is
@@ -2201,27 +2202,38 @@ function runMenubarPayload(parsed: ParsedInvocation): void {
   withCache((cache) => {
     syncCache(cache, resolveExtraFiles(loadConfig()));
     if (!menubarReadOnly) updateSessionIndex(cache.database);
-    const sessionWindow = resolveTimeWindow({ last: "month", fallbackPeriod: "month" });
-    const recentRows = cache.topSessions({
-      sinceIso: sessionWindow.sinceIso,
-      untilIso: sessionWindow.untilIso,
-      limit: 51,
-      sort: "recent",
-    });
-    recentSessions = {
-      page: 1,
-      hasMore: recentRows.length > 50,
-      rows: recentRows.slice(0, 50).map((row) => ({
-        ...row,
-        ...(sessionPreview(cache.database, row.provider, row.sessionId) ?? {}),
-      })),
-    };
-    snapshotAt = cache.metaValue("menubar_snapshot_at");
+    // The cached snapshot is the first-frame path. A live payload must stay
+    // focused on quota/report refresh; it can reuse the recent-session page
+    // already hydrated from the cached snapshot instead of repeating the
+    // large event-grouping query while scans are still settling.
+    if (readOnlyPayload) {
+      const sessionWindow = resolveTimeWindow({ last: "month", fallbackPeriod: "month" });
+      const recentRows = cache.topSessions({
+        sinceIso: sessionWindow.sinceIso,
+        untilIso: sessionWindow.untilIso,
+        limit: 51,
+        sort: "recent",
+      });
+      recentSessions = {
+        page: 1,
+        hasMore: recentRows.length > 50,
+        rows: recentRows.slice(0, 50).map((row) => ({
+          ...row,
+          ...(sessionPreview(cache.database, row.provider, row.sessionId) ?? {}),
+        })),
+      };
+    }
+      snapshotAt = cache.metaValue("menubar_snapshot_at");
     if (!menubarReadOnly) {
       snapshotAt = new Date().toISOString();
       cache.setMetaValue("menubar_snapshot_at", snapshotAt);
     }
   });
+  // Every capture below reads the same projection just synchronized above.
+  // Keeping these reads explicitly read-only avoids reopening and rechecking
+  // every harness log once per card (which made live payloads take tens of
+  // seconds on a large local history).
+  menubarReadOnly = true;
   const parts: Record<string, unknown> = { snapshotAt: snapshotAt ?? null, recentSessions };
   const capture = (key: string, fn: () => void): void => {
     const orig = console.log;
