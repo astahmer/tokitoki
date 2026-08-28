@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
 
 import { Button, Surface, Tabs } from "@cloudflare/kumo";
 
@@ -15,22 +15,26 @@ import {
   type WindowSelection,
 } from "./lib/api";
 import { useAsyncStaleWhileRevalidate } from "./lib/useAsync";
-import { SummaryCards } from "./components/SummaryCards";
-import { UsageTable } from "./components/UsageTable";
-import { ToolsView } from "./components/ToolsView";
-import { TimeseriesChart } from "./components/TimeseriesChart";
-import { DonutShare } from "./components/DonutShare";
-import { SpendDistribution } from "./components/SpendDistribution";
-import { CalendarGrid, type GridMetric } from "./components/CalendarGrid";
-import { SessionsView } from "./components/SessionsView";
+import type { GridMetric } from "./components/CalendarGrid";
 import { MultiSelect } from "./components/MultiSelect";
-import { SourcesView } from "./components/SourcesView";
-import { AnomaliesView } from "./components/AnomaliesView";
-import { BudgetsView } from "./components/BudgetsView";
-import { ReportsView } from "./components/ReportsView";
 import { ShareButton } from "./components/ShareButton";
 import { EmptyState, Panel, Pill, SkeletonBlock, SummaryCardsSkeleton, TableSkeleton, Toggle } from "./ui";
 import { applyMode, effectiveMode, persistMode, resolveInitialMode, watchSystemMode, type ThemeMode } from "./theme";
+
+// Keep the shell and controls in the first paint. Charts and secondary views
+// are loaded only when their route or panel is rendered, which keeps the
+// menubar-compatible dashboard bundle comfortably below Vite's warning size.
+const SummaryCards = lazy(() => import("./components/SummaryCards").then((m) => ({ default: m.SummaryCards })));
+const UsageTable = lazy(() => import("./components/UsageTable").then((m) => ({ default: m.UsageTable })));
+const TimeseriesChart = lazy(() => import("./components/TimeseriesChart").then((m) => ({ default: m.TimeseriesChart })));
+const SpendDistribution = lazy(() => import("./components/SpendDistribution").then((m) => ({ default: m.SpendDistribution })));
+const CalendarGrid = lazy(() => import("./components/CalendarGrid").then((m) => ({ default: m.CalendarGrid })));
+const ToolsView = lazy(() => import("./components/ToolsView").then((m) => ({ default: m.ToolsView })));
+const SessionsView = lazy(() => import("./components/SessionsView").then((m) => ({ default: m.SessionsView })));
+const SourcesView = lazy(() => import("./components/SourcesView").then((m) => ({ default: m.SourcesView })));
+const AnomaliesView = lazy(() => import("./components/AnomaliesView").then((m) => ({ default: m.AnomaliesView })));
+const BudgetsView = lazy(() => import("./components/BudgetsView").then((m) => ({ default: m.BudgetsView })));
+const ReportsView = lazy(() => import("./components/ReportsView").then((m) => ({ default: m.ReportsView })));
 
 const DIMENSIONS = ["model", "provider", "account", "machine", "project", "repo"] as const;
 const GRID_METRICS: GridMetric[] = ["tokens", "cost", "requests"];
@@ -254,7 +258,7 @@ export function App() {
         </div>
       </header>
 
-      {view === "sessions" ? (
+      <Suspense fallback={<PageLoading />}>{view === "sessions" ? (
         <>
           <FilterBar
             range={range}
@@ -429,8 +433,19 @@ export function App() {
             )}
           </Panel>
         </>
-      )}
+      )}</Suspense>
     </main>
+  );
+}
+
+function PageLoading() {
+  return (
+    <Panel className="flex min-h-48 items-center justify-center">
+      <div className="flex items-center gap-2 text-xs text-kumo-subtle" role="status" aria-live="polite">
+        <span className="size-2 animate-pulse rounded-full bg-kumo-primary" aria-hidden="true" />
+        loading view…
+      </div>
+    </Panel>
   );
 }
 
