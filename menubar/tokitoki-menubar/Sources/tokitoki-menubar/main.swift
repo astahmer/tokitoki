@@ -260,6 +260,34 @@ struct PopoverSessionRow: Codable, Identifiable {
     let cachePct: Int
     let costUsd: Double
     var id: String { "\(provider)/\(sessionId)" }
+
+    private enum CodingKeys: String, CodingKey {
+        case sessionId, provider, accountKey, startedAt, lastRequestAt, title, snippet
+        case requests, models, repos, totalTokens, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens
+        case cachePct, costUsd
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        sessionId = try values.decode(String.self, forKey: .sessionId)
+        provider = try values.decode(String.self, forKey: .provider)
+        accountKey = try values.decode(String.self, forKey: .accountKey)
+        startedAt = try values.decode(String.self, forKey: .startedAt)
+        lastRequestAt = try values.decodeIfPresent(String.self, forKey: .lastRequestAt) ?? startedAt
+        title = try values.decodeIfPresent(String.self, forKey: .title)
+        snippet = try values.decodeIfPresent(String.self, forKey: .snippet)
+        requests = try values.decode(Int.self, forKey: .requests)
+        models = try values.decodeIfPresent([String].self, forKey: .models) ?? []
+        repos = try values.decodeIfPresent([String].self, forKey: .repos) ?? []
+        let explicitTotal = try values.decodeIfPresent(Double.self, forKey: .totalTokens)
+        let input = try values.decodeIfPresent(Double.self, forKey: .inputTokens) ?? 0
+        let output = try values.decodeIfPresent(Double.self, forKey: .outputTokens) ?? 0
+        let cacheRead = try values.decodeIfPresent(Double.self, forKey: .cacheReadTokens) ?? 0
+        let cacheWrite = try values.decodeIfPresent(Double.self, forKey: .cacheWriteTokens) ?? 0
+        totalTokens = explicitTotal ?? input + output + cacheRead + cacheWrite
+        cachePct = try values.decodeIfPresent(Int.self, forKey: .cachePct) ?? 0
+        costUsd = try values.decodeIfPresent(Double.self, forKey: .costUsd) ?? 0
+    }
 }
 
 struct PopoverSessionsPayload: Codable {
@@ -675,12 +703,12 @@ final class Model: ObservableObject {
                 try Data("{}\n".utf8).write(to: url, options: .atomic)
             }
             guard NSWorkspace.shared.open(url) else {
-                pollStatus = "Could not open \\(url.lastPathComponent)"
+                pollStatus = "Could not open \(url.lastPathComponent)"
                 return
             }
-            pollStatus = "Opened \\(url.lastPathComponent)"
+            pollStatus = "Opened \(url.lastPathComponent)"
         } catch {
-            pollStatus = "Could not open config: \\(error.localizedDescription)"
+            pollStatus = "Could not open config: \(error.localizedDescription)"
         }
     }
 
@@ -1143,7 +1171,7 @@ final class Model: ObservableObject {
                 self.refreshFailureCount = min(self.refreshFailureCount + 1, 6)
                 let delay = min(300.0, 5.0 * pow(2.0, Double(self.refreshFailureCount - 1)))
                 self.nextRefreshRetryAt = Date().addingTimeInterval(delay)
-                self.errorText = "Couldn’t refresh latest data · retry in \\(countdown(self.nextRefreshRetryAt!))"
+                self.errorText = "Couldn’t refresh latest data · retry in \(countdown(self.nextRefreshRetryAt!))"
                 self.errorDetails = error.localizedDescription
                 setTitleIfChanged("tokitoki ⚠️")
                 dbg("refresh failed: \(error.localizedDescription)")
