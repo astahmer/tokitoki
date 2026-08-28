@@ -56,8 +56,22 @@ export function sessionSnippet(raw: string, max = 2000): string {
 }
 
 /** Add a stable, renderer-friendly role boundary to indexed transcripts. */
-export function sessionMessage(role: "user" | "assistant" | "tool", text: string): string {
+export function sessionMessage(role: "user" | "assistant" | "tool", text: string, timestamp?: string): string {
   const label = role === "user" ? "User" : role === "assistant" ? "Assistant" : "Tool call";
   const cleaned = sessionSnippet(text);
-  return cleaned.length > 0 ? `### ${label}\n\n${cleaned}` : "";
+  if (cleaned.length === 0) return "";
+  const time = timestamp !== undefined && Number.isFinite(Date.parse(timestamp))
+    ? ` · ${timestamp.slice(0, 19).replace("T", " ")}`
+    : "";
+  return `### ${label}${time}\n\n${cleaned}`;
+}
+
+/** Keep tool transcripts useful without echoing giant serialized arguments. */
+export function summarizeToolCall(name: string, input = ""): string {
+  const normalizedName = name.replace(/^functions\.|^tools\./, "");
+  const command = /(?:["']?cmd["']?|["']?command["']?)\s*:\s*["']([^"']+)/i.exec(input)?.[1]
+    ?? /\b(?:rtk|bun|pnpm|npm|node|git|jj|swift|curl)\s+[^,}\n]+/i.exec(input)?.[0];
+  return command === undefined
+    ? normalizedName
+    : `${normalizedName} · ${command.replace(/\\["']/g, '"').trim()}`.slice(0, 180);
 }

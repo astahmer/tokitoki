@@ -467,12 +467,21 @@ type MarkdownBlock =
   | { kind: "quote"; text: string }
   | { kind: "list"; text: string; ordered: boolean };
 
+type ConversationRole = "user" | "assistant" | "tool" | "message";
+
+interface ConversationGroup {
+  role: ConversationRole;
+  timestamp?: string;
+  blocks: MarkdownBlock[];
+}
+
 function ConversationBody({ body, title }: { body: string; title?: string }) {
   const toolCounts = new Map<string, number>();
   let visibleLines = body.split("\n").filter((line) => {
     const trimmed = line.trim();
     let name: string | undefined;
-    if (trimmed.startsWith("[tool:")) name = trimmed.slice(6).split("]", 1)[0];
+    if (trimmed.toLowerCase() === "### tool call") name = "tool call";
+    else if (trimmed.startsWith("[tool:")) name = trimmed.slice(6).split("]", 1)[0];
     else if (trimmed.startsWith("tools.") || trimmed.startsWith("functions.")) name = trimmed.split("(", 1)[0];
     if (name !== undefined && name.length > 0) {
       toolCounts.set(name, (toolCounts.get(name) ?? 0) + 1);
@@ -488,8 +497,9 @@ function ConversationBody({ body, title }: { body: string; title?: string }) {
     }
   }
   const blocks = parseMarkdownBlocks(visibleLines);
+  const groups = groupConversationBlocks(blocks);
   return (
-    <div className="mt-3 max-h-[40rem] space-y-3 overflow-auto text-xs leading-relaxed text-kumo-subtle">
+    <div className="mt-3 max-h-[40rem] space-y-3 overflow-auto text-xs leading-relaxed text-kumo-subtle overscroll-contain">
       {toolCounts.size > 0 && (
         <details className="rounded-md border border-kumo-border/60 bg-kumo-recessed/50 p-2">
           <summary className="cursor-pointer font-medium text-kumo-default">
@@ -502,9 +512,69 @@ function ConversationBody({ body, title }: { body: string; title?: string }) {
           </div>
         </details>
       )}
-      {blocks.map((block, i) => <ConversationBlock key={i} block={block} />)}
+      {groups.map((group, i) => <ConversationGroup key={i} group={group} />)}
     </div>
   );
+}
+
+function roleFromHeading(block: MarkdownBlock): { role: ConversationRole; timestamp?: string } | undefined {
+  if (block.kind !== "heading") return undefined;
+  const match = /^(user|assistant|tool call)(?:\s+·\s+(.+))?$/i.exec(block.text.trim());
+  if (match === null) return undefined;
+  const role = match[1]!.toLowerCase();
+  const timestamp = match[2]?.trim();
+  if (role === "user") return { role: "user", timestamp };
+  if (role === "assistant") return { role: "assistant", timestamp };
+  if (role === "tool call") return { role: "tool", timestamp };
+  return undefined;
+}
+
+function groupConversationBlocks(blocks: MarkdownBlock[]): ConversationGroup[] {
+  const groups: ConversationGroup[] = [];
+  let current: ConversationGroup = { role: "message", blocks: [] };
+  const flush = (): void => {
+    if (current.blocks.length > 0) groups.push(current);
+    current = { role: current.role, blocks: [] };
+  };
+  for (const block of blocks) {
+    const heading = roleFromHeading(block);
+    if (heading !== undefined) {
+      flush();
+      current = { role: heading.role, timestamp: heading.timestamp, blocks: [] };
+    } else {
+      current.blocks.push(block);
+    }
+  }
+  flush();
+  return groups;
+}
+
+function ConversationGroup({ group }: { group: ConversationGroup }) {
+  const label = group.role === "tool" ? "tool call" : group.role;
+  const tone = group.role === "user"
+    ? "ml-5 border-kumo-info/40 bg-kumo-info/10"
+    : group.role === "assistant"
+      ? "mr-5 border-kumo-border/70 bg-kumo-surface"
+      : group.role === "tool"
+        ? "border-kumo-warning/40 bg-kumo-warning/5"
+        : "border-kumo-border/60 bg-kumo-surface/60";
+  const content = <div className="space-y-3">{group.blocks.map((block, i) => <ConversationBlock key={i} block={block} />)}</div>;
+  if (group.role === "tool") {
+    return <details className={`rounded-lg border px-3 py-2 ${tone}`}>
+      <summary className="cursor-pointer select-none text-[10px] font-semibold uppercase tracking-wider text-kumo-warning">
+        <span>⚒ {label} · {group.blocks.length} part{group.blocks.length === 1 ? "" : "s"}</span>
+        {group.timestamp && <time className="ml-2 normal-case tracking-normal text-kumo-faint">{group.timestamp}</time>}
+      </summary>
+      <div className="mt-2">{content}</div>
+    </details>;
+  }
+  return <section className={`rounded-lg border px-3 py-2 ${tone}`} aria-label={`${label} message`}>
+    <div className={`mb-1 flex items-baseline gap-2 text-[10px] font-semibold uppercase tracking-wider ${group.role === "user" ? "text-kumo-info" : "text-kumo-success"}`}>
+      <span>{group.role === "user" ? "↗" : "✦"} {label}</span>
+      {group.timestamp && <time className="normal-case tracking-normal text-kumo-faint">{group.timestamp}</time>}
+    </div>
+    {content}
+  </section>;
 }
 
 function parseMarkdownBlocks(lines: string[]): MarkdownBlock[] {

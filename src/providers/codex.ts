@@ -6,7 +6,7 @@ import { providerConfig } from "../config.ts";
 import { eventId } from "../machine.ts";
 import { estimateCost } from "../pricing.ts";
 import { extractCodexToolName, shellToolName } from "../tools.ts";
-import { cleanSessionText, sessionMessage, sessionTitle } from "../sessionText.ts";
+import { cleanSessionText, sessionMessage, sessionTitle, summarizeToolCall } from "../sessionText.ts";
 import { homePath, type EntryContext, type Provider, type SessionDoc } from "./types.ts";
 
 interface CodexTokenUsage {
@@ -228,8 +228,8 @@ export function extractCodexSessionDocs(file: string): SessionDoc[] {
   let startedAt: string | undefined;
   const userTexts: string[] = [];
   let body = "";
-  const push = (role: "user" | "assistant" | "tool", text: string): void => {
-    const message = sessionMessage(role, text);
+  const push = (role: "user" | "assistant" | "tool", text: string, timestamp?: string): void => {
+    const message = sessionMessage(role, text, timestamp);
     if (message.length === 0) return;
     if (body.length + message.length > BODY_CAP) return;
     body += message + "\n\n";
@@ -263,13 +263,13 @@ export function extractCodexSessionDocs(file: string): SessionDoc[] {
         if (typeof b.text !== "string" || b.text.length === 0) continue;
         if ((b.type === "input_text" && role === "user") || (b.type === "output_text" && role === "assistant")) {
           if (role === "user") userTexts.push(b.text);
-          push(role === "user" ? "user" : "assistant", b.text);
+          push(role === "user" ? "user" : "assistant", b.text, typeof entry.timestamp === "string" ? entry.timestamp : undefined);
         }
       }
     } else if (kind === "function_call" || kind === "custom_tool_call") {
       const name = typeof payload.name === "string" ? payload.name : "tool";
       const input = typeof payload.input === "string" ? payload.input : "";
-      push("tool", `${name}${input.length > 0 ? ` ${input.slice(0, 120)}` : ""}`);
+      push("tool", summarizeToolCall(name, input), typeof entry.timestamp === "string" ? entry.timestamp : undefined);
     }
     if (body.length >= BODY_CAP) break;
   }

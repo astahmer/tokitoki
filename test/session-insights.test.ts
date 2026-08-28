@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 
 import { describeSessionEvent, estimateCacheDuration } from "../src/session-insights.ts";
+import { summarizeToolCall } from "../src/sessionText.ts";
 
 const sample = (second: number, cacheReadTokens: number, inputTokens = 1000) => ({
   ts: `2026-08-28T10:${String(Math.floor(second / 60)).padStart(2, "0")}:${String(second % 60).padStart(2, "0")}.000Z`,
@@ -29,5 +30,10 @@ describe("session insights", () => {
   it("describes tools and falls back to a compact message excerpt", () => {
     expect(describeSessionEvent({ model: "gpt", tool: "tools.read_file" }, 0)).toContain("tool call");
     expect(describeSessionEvent({ model: "gpt" }, 0, "Inspect the cache implementation")).toContain("Inspect the cache");
+  });
+
+  it("summarizes serialized tool arguments without echoing the payload", () => {
+    expect(summarizeToolCall("tools.exec_command", '{"cmd":"rtk rg -n cache src"}')).toBe("exec_command · rtk rg -n cache src");
+    expect(summarizeToolCall("read_file", "{\"path\":\"src/cache.ts\"}")).toBe("read_file");
   });
 });

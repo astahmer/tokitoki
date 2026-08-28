@@ -198,7 +198,7 @@ export function extractGrokSessionDocs(file: string): SessionDoc[] {
         if (typeof b.text !== "string" || b.text.length === 0) continue;
         if ((b.type === "input_text" && role === "user") || (b.type === "output_text" && role === "assistant")) {
           if (role === "user" && title.length === 0) title = b.text.replace(/\s+/g, " ").trim().slice(0, 200);
-          const message = sessionMessage(role === "user" ? "user" : "assistant", b.text);
+          const message = sessionMessage(role === "user" ? "user" : "assistant", b.text, typeof entry.timestamp === "string" ? entry.timestamp : undefined);
           if (message.length > 0) body += `${message}\n\n`;
           if (body.length >= BODY_CAP) break;
         }

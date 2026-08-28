@@ -4603,6 +4603,7 @@ private struct ConversationBodyView: View {
 
     private func toolName(for rawLine: Substring) -> String? {
         let line = rawLine.trimmingCharacters(in: .whitespaces)
+        if line.lowercased() == "### tool call" { return "tool call" }
         if line.hasPrefix("[tool:"), let end = line.firstIndex(of: "]") {
             return String(line[line.index(line.startIndex, offsetBy: 6)..<end])
         }
@@ -4705,6 +4706,74 @@ private struct ConversationBodyView: View {
         return blocks
     }
 
+    private var readableGroups: [(role: String, timestamp: String?, blocks: [MarkdownBlock])] {
+        var groups: [(role: String, timestamp: String?, blocks: [MarkdownBlock])] = []
+        var role = "message"
+        var timestamp: String?
+        var blocks: [MarkdownBlock] = []
+        func flush() {
+            if !blocks.isEmpty { groups.append((role, timestamp, blocks)) }
+            blocks.removeAll(keepingCapacity: true)
+        }
+        for block in readableBlocks {
+            if case let .heading(text, _) = block {
+                let parts = text.components(separatedBy: "·")
+                let candidate = parts[0].trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                if candidate == "user" || candidate == "assistant" || candidate == "tool call" {
+                    flush()
+                    role = candidate == "tool call" ? "tool" : candidate
+                    timestamp = parts.count > 1 ? parts.dropFirst().joined(separator: "·").trimmingCharacters(in: .whitespacesAndNewlines) : nil
+                    continue
+                }
+            }
+            blocks.append(block)
+        }
+        flush()
+        return groups
+    }
+
+    @ViewBuilder
+    private func blockView(_ block: MarkdownBlock) -> some View {
+        switch block {
+        case let .code(text, language):
+            VStack(alignment: .leading, spacing: 4) {
+                if let language { Text(language).font(.caption2).foregroundStyle(.secondary) }
+                Text(text)
+                    .font(.system(size: 10, design: .monospaced))
+                    .textSelection(.enabled)
+            }
+            .padding(8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.black.opacity(0.18), in: RoundedRectangle(cornerRadius: 7))
+        case let .heading(text, level):
+            markdownText(text)
+                .font(level <= 2 ? .headline.weight(.semibold) : .caption.weight(.semibold))
+                .foregroundStyle(.primary)
+                .padding(.top, level <= 2 ? 3 : 0)
+        case let .quote(text):
+            markdownText(text)
+                .font(.system(size: 12))
+                .italic()
+                .padding(.leading, 8)
+                .overlay(alignment: .leading) { Rectangle().fill(.tint).frame(width: 2) }
+        case let .list(items, ordered):
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(Array(items.enumerated()), id: \.offset) { index, item in
+                    HStack(alignment: .firstTextBaseline, spacing: 5) {
+                        Text(ordered ? "\(index + 1)." : "•").foregroundStyle(.secondary)
+                        markdownText(item)
+                    }
+                }
+            }
+        case let .paragraph(text):
+            markdownText(text)
+                .font(.system(size: 12, weight: .regular))
+                .lineSpacing(2)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
     var bodyView: some View {
         VStack(alignment: .leading, spacing: 7) {
             if !toolCounts.isEmpty {
@@ -4724,62 +4793,42 @@ private struct ConversationBodyView: View {
                 Text("No conversation body indexed.")
                     .font(.caption2).foregroundStyle(.secondary)
             } else {
-                ForEach(Array(readableBlocks.enumerated()), id: \.offset) { _, block in
-                    switch block {
-                    case let .code(text, language):
-                        VStack(alignment: .leading, spacing: 4) {
-                            if let language { Text(language).font(.caption2).foregroundStyle(.secondary) }
-                            Text(text)
-                            .font(.system(size: 10, design: .monospaced))
-                            .textSelection(.enabled)
-                        }
-                            .padding(8)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(.black.opacity(0.18), in: RoundedRectangle(cornerRadius: 7))
-                    case let .heading(text, level):
-                        let role = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-                        if role == "user" || role == "assistant" || role == "tool call" {
-                            HStack(spacing: 5) {
-                                Image(systemName: role == "user" ? "arrow.up.right" : role == "assistant" ? "sparkles" : "wrench.and.screwdriver")
-                                Text(role)
+                LazyVStack(alignment: .leading, spacing: 8) {
+                    ForEach(Array(readableGroups.enumerated()), id: \.offset) { _, group in
+                        if group.role == "tool" {
+                            DisclosureGroup {
+                                LazyVStack(alignment: .leading, spacing: 7) {
+                                    ForEach(Array(group.blocks.enumerated()), id: \.offset) { _, block in
+                                        blockView(block)
+                                    }
+                                }
+                                .padding(.top, 4)
+                            } label: {
+                                HStack(spacing: 5) {
+                                    Label("Tool call · \(group.blocks.count) part\(group.blocks.count == 1 ? "" : "s")", systemImage: "wrench.and.screwdriver")
+                                    if let timestamp = group.timestamp { Text(timestamp).font(.caption2).foregroundStyle(.tertiary) }
+                                }
+                                    .foregroundStyle(.orange)
                             }
                             .font(.caption2.weight(.semibold))
-                            .foregroundStyle(role == "user" ? .blue : role == "assistant" ? .green : .orange)
-                            .padding(.vertical, 3)
+                            .tint(.orange)
                         } else {
-                            markdownText(text)
-                                .font(level <= 2 ? .headline.weight(.semibold) : .caption.weight(.semibold))
-                                .foregroundStyle(.primary)
-                                .padding(.top, level <= 2 ? 3 : 0)
-                        }
-                    case let .quote(text):
-                        markdownText(text)
-                            .font(.system(size: 12))
-                            .italic()
-                            .padding(.leading, 8)
-                            .overlay(alignment: .leading) { Rectangle().fill(.tint).frame(width: 2) }
-                    case let .list(items, ordered):
-                        VStack(alignment: .leading, spacing: 4) {
-                            ForEach(Array(items.enumerated()), id: \.offset) { index, item in
-                                HStack(alignment: .firstTextBaseline, spacing: 5) {
-                                    Text(ordered ? "\(index + 1)." : "•").foregroundStyle(.secondary)
-                                    markdownText(item)
+                            VStack(alignment: .leading, spacing: 7) {
+                                HStack(spacing: 5) {
+                                    Label(group.role, systemImage: group.role == "user" ? "arrow.up.right" : group.role == "assistant" ? "sparkles" : "text.bubble")
+                                    if let timestamp = group.timestamp { Text(timestamp).font(.caption2).foregroundStyle(.tertiary) }
+                                }
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(group.role == "user" ? .blue : group.role == "assistant" ? .green : .secondary)
+                                LazyVStack(alignment: .leading, spacing: 7) {
+                                    ForEach(Array(group.blocks.enumerated()), id: \.offset) { _, block in
+                                        blockView(block)
+                                    }
                                 }
                             }
-                        }
-                    case let .paragraph(text):
-                        if let markdown = try? AttributedString(markdown: text) {
-                        Text(markdown)
-                            .font(.system(size: 12, weight: .regular))
-                            .lineSpacing(2)
-                            .textSelection(.enabled)
+                            .padding(9)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                        } else {
-                        Text(text)
-                            .font(.system(size: 12, weight: .regular))
-                            .lineSpacing(2)
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(group.role == "user" ? Color.blue.opacity(0.10) : Color.primary.opacity(0.055), in: RoundedRectangle(cornerRadius: 9))
                         }
                     }
                 }

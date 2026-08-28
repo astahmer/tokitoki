@@ -125,10 +125,10 @@ export const geminiCliProvider: Provider = {
       const role = rec.type === "user" ? "user" : rec.type === "gemini" ? "assistant" : undefined;
       if (role === "user") {
         if (title.length === 0) title = text.replace(/\s+/g, " ").trim().slice(0, 200);
-        const message = sessionMessage("user", text);
+        const message = sessionMessage("user", text, normalizeTs(rec.timestamp));
         if (message.length > 0) body += `${message}\n\n`;
       } else if (role === "assistant") {
-        const message = sessionMessage("assistant", text);
+        const message = sessionMessage("assistant", text, normalizeTs(rec.timestamp));
         if (message.length > 0) body += `${message}\n\n`;
       }
       const ts = normalizeTs(rec.timestamp);

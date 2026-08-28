@@ -53,7 +53,7 @@ const MAX_INDEX_FILE_BYTES = 256 * 1024 * 1024;
 const UPDATE_THROTTLE_MS = 120_000;
 // Bump whenever extraction changes materially; otherwise an existing local
 // index would keep stale titles/bodies until every source file changes.
-const EXTRACTOR_VERSION = "7";
+const EXTRACTOR_VERSION = "9";
 
 function ensureExtractorVersion(db: Database): void {
   try {

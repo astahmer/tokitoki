@@ -180,7 +180,7 @@ export function extractPiSessionDocs(file: string): SessionDoc[] {
       if (role === "user") {
         userTexts.push(text);
       }
-      const message = sessionMessage(role === "user" ? "user" : "assistant", text);
+      const message = sessionMessage(role === "user" ? "user" : "assistant", text, typeof entry.timestamp === "string" ? entry.timestamp : undefined);
       if (message.length === 0) continue;
       if (body.length + message.length > BODY_CAP) break;
       body += message + "\n\n";
