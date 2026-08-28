@@ -2184,7 +2184,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let window = panel.contentViewController?.view.window,
                   let screen = button.window?.screen ?? NSScreen.main else { return }
             let visible = screen.visibleFrame
-            let buttonRect = button.window?.convert(button.bounds, to: nil)
+            let buttonRect = button.window?.convertToScreen(button.frame)
             let size = window.frame.size
             let preferredX = (buttonRect?.midX ?? visible.midX) - size.width / 2
             let x = min(max(preferredX, visible.minX), visible.maxX - size.width)
@@ -3962,7 +3962,7 @@ struct ContentView: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Needs attention")
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(.orange)
+                    .foregroundColor(.orange)
                 ForEach(Array(attention.enumerated()), id: \.offset) { _, row in
                     Button {
                         if row.0 != "spend" {
@@ -4593,8 +4593,7 @@ private struct HighlightedSnippet: View {
             if pieces.count == 2 {
                 result = result + Text(String(pieces[0]))
                     .bold()
-                    .foregroundStyle(.orange)
-                    .background(Color.orange.opacity(0.16))
+                    .foregroundColor(.orange)
                 result = result + Text(String(pieces[1]))
             } else {
                 result = result + Text("[[" + raw)
