@@ -1740,7 +1740,14 @@ final class Model: ObservableObject {
         let out = try await runCLI(cli, args)
         guard !out.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
         guard let data = out.data(using: .utf8) else { return nil }
-        return try JSONDecoder().decode(T.self, from: data)
+        do {
+            return try JSONDecoder().decode(T.self, from: data)
+        } catch {
+            if Self.debug {
+                FileHandle.standardError.write(Data("[tokitoki-menubar] JSON decode failed for \(args.first ?? "payload"): \(error)\n".utf8))
+            }
+            throw error
+        }
     }
 
     /// Serialize all config-mutating CLI calls. Each CLI invocation does a
