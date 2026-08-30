@@ -493,12 +493,22 @@ final class Model: ObservableObject {
             ? ["scan", "--provider", account.provider]
             : ["poll", "--json", "--provider", provider]
         Task { [weak self] in
+            var succeeded = false
             do {
                 _ = try await Self.runCLI(cli, args)
+                succeeded = true
             } catch {
                 self?.dbg("card refresh failed for \(id): \(error.localizedDescription)")
+                self?.pollStatus = "Quota refresh failed: \(error.localizedDescription)"
             }
             self?.refreshingAccounts.remove(id)
+            if succeeded {
+                self?.pollStatus = "Provider quotas refreshed"
+                self?.lastPollAt = Date()
+                self?.nextPollAt = self?.pollAuto == true
+                    ? Date().addingTimeInterval(Double(self?.effectivePollIntervalMinutes ?? 15) * 60)
+                    : nil
+            }
             self?.refresh()
         }
     }
@@ -1080,9 +1090,12 @@ final class Model: ObservableObject {
             payloadRefreshPendingForce = payloadRefreshPendingForce || force
             return
         }
-        if pollAuto, lastPollAt.map({ Date().timeIntervalSince($0) >= Double(effectivePollIntervalMinutes) * 60 }) ?? true {
+        // A user-triggered refresh must also refresh provider quotas. The
+        // scheduler is only a throttle for background refreshes; otherwise
+        // pressing “Refresh all” can redraw the same stale Claude snapshot.
+        if force || (pollAuto && lastPollAt.map({ Date().timeIntervalSince($0) >= Double(effectivePollIntervalMinutes) * 60 }) ?? true) {
             lastPollAt = Date()
-            runBackgroundPoll()
+            pollNow(background: !force)
             return
         }
         let cached = !hasHydratedSnapshot

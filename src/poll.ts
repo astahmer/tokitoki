@@ -391,15 +391,24 @@ export function loadClaudeCredentials(opts: PollOptions): { accessToken?: string
   }
 }
 
-async function refreshClaudeToken(refreshToken: string, fetcher: typeof fetch): Promise<{ ok: boolean; accessToken?: string }> {
+async function refreshClaudeToken(
+  refreshToken: string,
+  fetcher: typeof fetch,
+): Promise<{ ok: boolean; accessToken?: string; error?: string }> {
   try {
     const res = await fetcher(CLAUDE_REFRESH_URL, {
       method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
-      body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: refreshToken, client_id: CLAUDE_CLIENT_ID }),
+      // Claude Code's token endpoint expects a JSON OAuth payload. Form-encoded
+      // requests are rejected, which leaves the last good quota snapshot stale
+      // even though the local refresh token is still valid.
+      headers: { "content-type": "application/json", accept: "application/json" },
+      body: JSON.stringify({ grant_type: "refresh_token", refresh_token: refreshToken, client_id: CLAUDE_CLIENT_ID }),
     });
-    if (!res.ok) return { ok: false };
-    const json = (await res.json()) as { access_token?: string };
+    const json = (await res.json()) as { access_token?: string; error?: string; error_description?: string };
+    if (!res.ok) {
+      const detail = json.error_description ?? json.error;
+      return { ok: false, ...(detail !== undefined ? { error: detail } : {}) };
+    }
     return json.access_token !== undefined && json.access_token.length > 0
       ? { ok: true, accessToken: json.access_token }
       : { ok: false };
@@ -454,7 +463,7 @@ async function pollClaudeQuotas(opts: PollOptions, fetcher: typeof fetch): Promi
     }
     const renewed = await refreshClaudeToken(creds.refreshToken, fetcher);
     if (!renewed.ok || renewed.accessToken === undefined) {
-      return `unauthorized (${res.status}) and token refresh failed`;
+      return `unauthorized (${res.status}) and token refresh failed${renewed.error !== undefined ? `: ${renewed.error}` : ""}`;
     }
     res = await fetchOnce(renewed.accessToken);
   }

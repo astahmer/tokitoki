@@ -412,11 +412,11 @@ describe("pollQuotas", () => {
       path.join(dir, "claude.json"),
       JSON.stringify({ claudeAiOauth: { accessToken: "stale", refreshToken: "rt-x" } }),
     );
-    const urls: string[] = [];
+    const requests: Array<{ url: string; init?: RequestInit }> = [];
     let usageCalls = 0;
-    const fetcher = (async (input: unknown) => {
+    const fetcher = (async (input: unknown, init?: RequestInit) => {
       const url = String(input);
-      urls.push(url);
+      requests.push({ url, init });
       if (url.includes("/v1/oauth/token")) {
         return new Response(JSON.stringify({ access_token: "fresh" }), { status: 200 });
       }
@@ -439,7 +439,14 @@ describe("pollQuotas", () => {
       claudeCredentialsPath: path.join(dir, "claude.json"),
       fetcher,
     });
-    expect(urls.filter((u) => u.includes("/v1/oauth/token")).length).toBe(1);
+    const refreshRequest = requests.find((request) => request.url.includes("/v1/oauth/token"));
+    expect(refreshRequest).toBeDefined();
+    expect((refreshRequest!.init?.headers as Record<string, string>)["content-type"]).toBe("application/json");
+    expect(JSON.parse(String(refreshRequest!.init?.body))).toEqual({
+      grant_type: "refresh_token",
+      refresh_token: "rt-x",
+      client_id: "9d1c250a-e61b-44d9-88ed-5944d1962f5e",
+    });
     const acc = res.accounts.find((a) => a.harnesses?.includes("claude-code"));
     expect(acc).toBeDefined();
     expect(acc!.windows.length).toBeGreaterThan(0);

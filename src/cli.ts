@@ -1831,10 +1831,15 @@ async function runPoll(parsed: ParsedInvocation): Promise<void> {
     });
     if (jsonOut) {
       console.log(JSON.stringify(result));
+      if (!result.ok) {
+        console.error(`poll failed: ${result.reason ?? "unknown reason"}`);
+        process.exitCode = 1;
+      }
       return;
     }
     if (!result.ok) {
-      console.log(`poll failed: ${result.reason ?? "unknown reason"}`);
+      console.error(`poll failed: ${result.reason ?? "unknown reason"}`);
+      process.exitCode = 1;
       return;
     }
     for (const acc of result.accounts) {
