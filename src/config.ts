@@ -130,6 +130,8 @@ export interface TokitokiConfig {
     menubarPreviewEnabled?: boolean;
     /** "inline" (default): preview always in the status item. "hover": only while pointing at it. */
     menubarPreviewMode?: "inline" | "hover";
+    /** Show the floating vertical usage rail attached to the right screen edge (default: false). */
+    sideNotchEnabled?: boolean;
     /**
      * Menubar popover card layout: ordered ids; an id prefixed "!" is hidden
      * (e.g. ["limits", "!tools", "hero"]). Ids missing from the list keep

@@ -195,6 +195,7 @@ struct UiPreviewConfig: Codable {
     let previewLines: Int?
     let previewEnabled: Bool?
     let previewMode: String? // "inline" | "hover"
+    let sideNotchEnabled: Bool?
     // Provider visibility (context-menu Settings ▸ toggles).
     let providers: [String]?
     let menubarHidden: [String]?
@@ -390,6 +391,7 @@ final class Model: ObservableObject {
     @Published var limits: [AccountLimits] = []
     @Published var previewEnabled = true
     @Published var previewMode: String = "inline"
+    @Published var sideNotchEnabled = false
     /// Status-item strip groups: UPSTREAM providers (openai, claude,
     /// opencode, openrouter… — not harnesses), each with stacked "NN%" lines
     /// for real quotas or a single "~NN%" usage-relative estimate.
@@ -1231,6 +1233,7 @@ final class Model: ObservableObject {
                 if let ui = p.uiPreview {
                     self.previewEnabled = ui.previewEnabled ?? true
                     self.previewMode = ui.previewMode ?? "inline"
+                    self.sideNotchEnabled = ui.sideNotchEnabled ?? false
                     self.knownProviders = ui.providers ?? []
                     self.menubarHidden = Set(ui.menubarHidden ?? [])
                     self.cardLayout = (ui.cards ?? []).map { ($0.id, $0.hidden) }
@@ -1311,6 +1314,7 @@ final class Model: ObservableObject {
                 if ProcessInfo.processInfo.environment["TOKITOKI_MENUBAR_TEST"] == "1" {
                     AppDelegate.shared?.writeTestProof()
                 }
+                AppDelegate.shared?.refreshSideNotch()
                 if cached {
                     // The persisted snapshot makes the first frame useful;
                     // the live pass catches up without competing with it.
@@ -1816,6 +1820,12 @@ final class Model: ObservableObject {
         persistUISetting(path: "ui.menubarPreviewEnabled", json: enabled ? "true" : "false")
     }
 
+    func setSideNotchEnabled(_ enabled: Bool) {
+        sideNotchEnabled = enabled
+        AppDelegate.shared?.refreshSideNotch()
+        persistUISetting(path: "ui.sideNotchEnabled", json: enabled ? "true" : "false")
+    }
+
     func setStripMetric(_ value: String) {
         stripMetric = ["tokens", "smart"].contains(value) ? value : "percent"
         rebuildStripPreview()
@@ -2051,6 +2061,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var hoverWorkItem: DispatchWorkItem?
     private var popoverContentLoaded = false
     private var popoverContentLoadScheduled = false
+    private var sideNotchPanel: NSPanel?
+    private var sideNotchHost: NSHostingController<AnyView>?
     var model: Model?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -2096,6 +2108,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         popover.animates = false
 
         installEventMonitors()
+        refreshSideNotch()
         if ProcessInfo.processInfo.environment["TOKITOKI_MENUBAR_TEST_CONTEXT"] == "1" {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in self?.showTestContextMenu() }
         }
@@ -2340,6 +2353,69 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func refreshPreviewBehavior() {
         refreshHoverMonitor()
+    }
+
+    /// Keep the usage rail as a real floating edge panel. It is deliberately
+    /// independent from the status-item preview: hiding one should not hide
+    /// the other, and the rail must remain attached to the screen edge rather
+    /// than becoming another menubar popover.
+    func refreshSideNotch() {
+        guard let model else { return }
+        guard model.sideNotchEnabled else {
+            sideNotchPanel?.orderOut(nil)
+            return
+        }
+        installSideNotchIfNeeded(model: model)
+        layoutSideNotch()
+        sideNotchPanel?.orderFrontRegardless()
+    }
+
+    private func installSideNotchIfNeeded(model: Model) {
+        guard sideNotchPanel == nil else { return }
+        let panel = NSPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 82, height: 390),
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false,
+        )
+        panel.isFloatingPanel = true
+        panel.level = .statusBar
+        panel.hidesOnDeactivate = false
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+        panel.backgroundColor = .clear
+        panel.isOpaque = false
+        panel.hasShadow = false
+        panel.becomesKeyOnlyIfNeeded = true
+        panel.isMovable = false
+        panel.ignoresMouseEvents = false
+
+        let host = NSHostingController(rootView: AnyView(SideNotchView(
+            model: model,
+            onOpen: { [weak self] in self?.openPopoverFromSideNotch() },
+        )))
+        panel.contentViewController = host
+        sideNotchHost = host
+        sideNotchPanel = panel
+    }
+
+    private func layoutSideNotch() {
+        guard let panel = sideNotchPanel else { return }
+        let mouse = NSEvent.mouseLocation
+        let screen = NSScreen.screens.first(where: { $0.frame.contains(mouse) }) ?? NSScreen.main
+        guard let visible = screen?.visibleFrame else { return }
+        let height = min(520, max(220, visible.height * 0.52))
+        let width: CGFloat = 82
+        let frame = NSRect(
+            x: visible.maxX - width,
+            y: visible.minY + (visible.height - height) / 2,
+            width: width,
+            height: height,
+        )
+        panel.setFrame(frame, display: true)
+    }
+
+    func openPopoverFromSideNotch() {
+        statusItemAction(nil)
     }
 
     @objc private func statusItemAction(_ sender: Any?) {
@@ -3341,6 +3417,19 @@ struct PreviewSettingsSheet: View {
             Divider()
             List {
                 Section {
+                    Toggle("Show usage side-notch", isOn: Binding(
+                        get: { model.sideNotchEnabled },
+                        set: { model.setSideNotchEnabled($0) },
+                    ))
+                    .font(.caption)
+                    Text("Show a compact vertical usage rail on the right edge of the screen. Click it to open the full Tokitoki details.")
+                        .font(.caption2).foregroundStyle(.secondary)
+                } header: {
+                    Text("Edge display")
+                } footer: {
+                    Text("This is separate from the menubar preview and stays visible while other apps are active.")
+                }
+                Section {
                     Toggle("Show usage preview in menubar", isOn: Binding(
                         get: { model.previewEnabled },
                         set: { model.setPreviewEnabled($0) },
@@ -3716,6 +3805,152 @@ struct CollapsibleCard<Content: View>: View {
         }
         .padding(10)
         .background(.quaternary.opacity(0.28), in: RoundedRectangle(cornerRadius: 12))
+    }
+}
+
+/// Floating usage rail attached to the active screen's right edge. It keeps
+/// the always-available glanceable state intentionally smaller than the full
+/// popover; click opens the existing detailed surface.
+struct SideNotchView: View {
+    @ObservedObject var model: Model
+    let onOpen: () -> Void
+    @State private var isHovering = false
+
+    struct Entry: Identifiable {
+        let id: String
+        let provider: String
+        let remaining: Double?
+    }
+
+    private var entries: [Entry] {
+        let visible = model.limits.filter { limit in
+            !model.menubarHidden.contains(limit.provider)
+                && !model.menubarHidden.contains("(limit.provider):(limit.accountKey)")
+        }
+        let grouped = Dictionary(grouping: visible) { limit in
+            Model.upstreamProvider(limit) ?? limit.provider
+        }
+        return grouped.compactMap { provider, limits in
+            guard !model.previewHidden.contains(provider) else { return nil }
+            let remaining = limits.compactMap { limit in
+                Model.primaryWindow(limit)?.usedPct.map { max(0, min(100, 100 - $0)) }
+            }.min()
+            return Entry(id: provider, provider: provider, remaining: remaining)
+        }
+        .sorted { lhs, rhs in
+            switch (lhs.remaining, rhs.remaining) {
+            case let (left?, right?): return left < right
+            case (_?, nil): return true
+            case (nil, _?): return false
+            default: return lhs.provider < rhs.provider
+            }
+        }
+    }
+
+    var body: some View {
+        VStack(spacing: 13) {
+            Image(systemName: "chart.bar.xaxis")
+                .font(.system(size: 11, weight: .bold))
+                .foregroundStyle(.white.opacity(0.55))
+                .padding(.top, 2)
+
+            ScrollView(.vertical, showsIndicators: false) {
+                VStack(spacing: 17) {
+                    if entries.isEmpty {
+                        Image(systemName: "ellipsis")
+                            .font(.system(size: 16, weight: .bold))
+                            .foregroundStyle(.white.opacity(0.55))
+                            .accessibilityLabel("No provider quota data")
+                    } else {
+                        ForEach(entries.prefix(6)) { entry in
+                            VStack(spacing: 5) {
+                                ZStack {
+                                    Circle()
+                                        .stroke(Color.white.opacity(0.16), lineWidth: 4)
+                                    if let remaining = entry.remaining {
+                                        Circle()
+                                            .trim(from: 0, to: remaining / 100)
+                                            .stroke(
+                                                barTint(remaining),
+                                                style: StrokeStyle(lineWidth: 4, lineCap: .round),
+                                            )
+                                            .rotationEffect(.degrees(-90))
+                                    }
+                                    ProviderLogo(provider: Self.logoProvider(for: entry.provider))
+                                        .scaleEffect(1.15)
+                                }
+                                .frame(width: 39, height: 39)
+                                Text(remainingText(for: entry))
+                                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                                    .foregroundStyle(.white.opacity(0.92))
+                                    .accessibilityLabel(accessibilityText(for: entry))
+                            }
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity)
+            }
+
+            Image(systemName: isHovering ? "chevron.left" : "ellipsis")
+                .font(.system(size: 9, weight: .bold))
+                .foregroundStyle(.white.opacity(isHovering ? 0.9 : 0.35))
+                .padding(.bottom, 2)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 13)
+        .frame(width: 82)
+        .frame(maxHeight: .infinity)
+        .background(SideNotchBackground().fill(Color.black.opacity(0.94)))
+        .overlay(SideNotchBackground().stroke(Color.white.opacity(0.10), lineWidth: 1))
+        .shadow(color: .black.opacity(0.28), radius: 15, x: -5, y: 0)
+        .contentShape(SideNotchBackground())
+        .scaleEffect(isHovering ? 1.015 : 1, anchor: .trailing)
+        .animation(.easeOut(duration: 0.14), value: isHovering)
+        .onHover { isHovering = $0 }
+        .onTapGesture(perform: onOpen)
+        .help("Open Tokitoki usage details")
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Tokitoki usage side-notch")
+        .accessibilityHint("Click to open usage details")
+    }
+
+    private static func logoProvider(for provider: String) -> String {
+        switch provider {
+        case "openai": return "codex"
+        case "claude": return "claude-code"
+        case "gemini": return "gemini-cli"
+        default: return provider
+        }
+    }
+
+    private func remainingText(for entry: Entry) -> String {
+        entry.remaining.map { "\(Int($0.rounded()))%" } ?? "—"
+    }
+
+    private func accessibilityText(for entry: Entry) -> String {
+        let detail = entry.remaining.map { "\(Int($0.rounded())) percent remaining" } ?? "usage unavailable"
+        return "\(entry.provider), \(detail)"
+    }
+}
+
+struct SideNotchBackground: Shape {
+    func path(in rect: CGRect) -> Path {
+        let radius = min(24, rect.height / 4)
+        var path = Path()
+        path.move(to: CGPoint(x: rect.maxX, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.minX + radius, y: rect.minY))
+        path.addQuadCurve(
+            to: CGPoint(x: rect.minX, y: rect.minY + radius),
+            control: CGPoint(x: rect.minX, y: rect.minY),
+        )
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY - radius))
+        path.addQuadCurve(
+            to: CGPoint(x: rect.minX + radius, y: rect.maxY),
+            control: CGPoint(x: rect.minX, y: rect.maxY),
+        )
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
+        path.closeSubpath()
+        return path
     }
 }
 

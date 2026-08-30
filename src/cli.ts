@@ -2383,6 +2383,7 @@ function runMenubarPayload(parsed: ParsedInvocation): void {
           previewLines: config.ui?.menubarPreviewLines ?? 3,
           previewEnabled: config.ui?.menubarPreviewEnabled !== false,
           previewMode: config.ui?.menubarPreviewMode ?? "inline",
+          sideNotchEnabled: config.ui?.sideNotchEnabled === true,
           providers: [...new Set([
             ...cache.providerStats().keys(),
             // Cursor is a binary-store/search provider: it can be present
