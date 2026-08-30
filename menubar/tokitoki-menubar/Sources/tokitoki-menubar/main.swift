@@ -1812,6 +1812,7 @@ final class Model: ObservableObject {
             labeled: previewMode == "hover",
         ) : nil
         setTitleIfChanged(composeTitle(today: currentPayloadForTitle?.today, preview: preview, hovering: isHovering, mode: previewMode))
+        AppDelegate.shared?.refreshPreviewBehavior()
         persistUISetting(path: "ui.menubarPreviewEnabled", json: enabled ? "true" : "false")
     }
 
@@ -2289,12 +2290,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// mouse-moved monitor hit-testing the button frame is deterministic.
     private var hoverMonitor: Any?
     private func refreshHoverMonitor() {
-        let preserveHoverPopover = model?.previewMode == "hover" && model?.isHovering == true
+        let preserveHoverPopover = model?.previewEnabled == true
+            && model?.previewMode == "hover"
+            && model?.isHovering == true
         if let hoverMonitor { NSEvent.removeMonitor(hoverMonitor); self.hoverMonitor = nil }
         hoverWorkItem?.cancel()
         hoverWorkItem = nil
         if !preserveHoverPopover { hideHoverPopover() }
-        guard model?.previewMode == "hover", statusItem?.button != nil else { return }
+        guard model?.previewEnabled == true, model?.previewMode == "hover", statusItem?.button != nil else { return }
         if preserveHoverPopover {
             DispatchQueue.main.async { [weak self] in self?.showHoverPopover() }
         }
@@ -2333,6 +2336,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func hideHoverPopover() {
         if hoverPopover.isShown { hoverPopover.performClose(nil) }
+    }
+
+    func refreshPreviewBehavior() {
+        refreshHoverMonitor()
     }
 
     @objc private func statusItemAction(_ sender: Any?) {
