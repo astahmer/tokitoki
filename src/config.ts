@@ -126,6 +126,8 @@ export interface TokitokiConfig {
     stripExhausted?: "show" | "hide" | "reset";
     /** Max provider percentages shown in the status-item preview line. */
     menubarPreviewLines?: number;
+    /** Show the compact usage preview in the menu bar (default: true). */
+    menubarPreviewEnabled?: boolean;
     /** "inline" (default): preview always in the status item. "hover": only while pointing at it. */
     menubarPreviewMode?: "inline" | "hover";
     /**

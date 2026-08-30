@@ -183,6 +183,7 @@ struct AccountLimits: Codable, Identifiable {
 
 struct PollResultPayload: Codable {
     let authRequiredProviders: [String]?
+    let providerAuthStates: [String: String]?
 }
 
 struct MenubarCardConfig: Codable {
@@ -192,6 +193,7 @@ struct MenubarCardConfig: Codable {
 
 struct UiPreviewConfig: Codable {
     let previewLines: Int?
+    let previewEnabled: Bool?
     let previewMode: String? // "inline" | "hover"
     // Provider visibility (context-menu Settings ▸ toggles).
     let providers: [String]?
@@ -386,6 +388,7 @@ final class Model: ObservableObject {
     @Published var anomalyLine: String?
     @Published var spendHealth: SpendHealthPayload?
     @Published var limits: [AccountLimits] = []
+    @Published var previewEnabled = true
     @Published var previewMode: String = "inline"
     /// Status-item strip groups: UPSTREAM providers (openai, claude,
     /// opencode, openrouter… — not harnesses), each with stacked "NN%" lines
@@ -403,6 +406,7 @@ final class Model: ObservableObject {
     @Published var pollStatus: String?
     @Published var pollLastResult: String?
     @Published var authRequiredProviders: Set<String> = []
+    @Published var providerAuthStates: [String: String] = [:]
     @Published var nextPollAt: Date?
     @Published var isLoading = true
     @Published var loadingCompleted = 0
@@ -505,11 +509,16 @@ final class Model: ObservableObject {
             } catch {
                 self?.dbg("card refresh failed for \(id): \(error.localizedDescription)")
                 self?.pollStatus = "Quota refresh failed: \(error.localizedDescription)"
-                if Self.loginRequired(in: error) { self?.authRequiredProviders.insert(account.provider) }
+                let state = Self.authState(in: error, provider: account.provider)
+                self?.providerAuthStates[account.provider] = state
+                if state == "login-required" { self?.authRequiredProviders.insert(account.provider) }
             }
             self?.refreshingAccounts.remove(id)
             if succeeded {
-                self?.authRequiredProviders.remove(account.provider)
+                for cardProvider in Self.cardProviders(for: provider) {
+                    self?.authRequiredProviders.remove(cardProvider)
+                    self?.providerAuthStates.removeValue(forKey: cardProvider)
+                }
                 self?.pollStatus = "Provider quotas refreshed"
                 self?.lastPollAt = Date()
                 self?.nextPollAt = self?.pollAuto == true
@@ -712,6 +721,27 @@ final class Model: ObservableObject {
 
     /// Accessor for AppDelegate context-menu actions.
     func currentInvocation() -> CLIInvocation { invocation }
+
+    func copyLoginSteps(for provider: String) {
+        let steps: String
+        switch provider {
+        case "claude-code":
+            steps = "Claude Code login\n1. Open Claude Code.\n2. Run /login.\n3. Return to Tokitoki and choose Refresh now."
+        case "codex":
+            steps = "Codex login\n1. Run codex login in Terminal.\n2. Return to Tokitoki and choose Refresh now."
+        case "copilot":
+            steps = "GitHub Copilot login\n1. Open your Copilot client or CLI.\n2. Sign in to GitHub.\n3. Return to Tokitoki and choose Refresh now."
+        case "cursor":
+            steps = "Cursor login\n1. Open Cursor.\n2. Sign in to your Cursor account.\n3. Return to Tokitoki and choose Refresh now."
+        case "commandcode":
+            steps = "Command Code login\n1. Open Command Code.\n2. Sign in to your account.\n3. Return to Tokitoki and choose Refresh now."
+        default:
+            steps = "Sign in to \(provider), then return to Tokitoki and choose Refresh now."
+        }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(steps, forType: .string)
+        pollStatus = "Copied login steps for \(provider)"
+    }
 
     /// Resolve the same writable config file as the CLI. An existing TOML
     /// file wins when no JSON file exists, keeping declarative/Nix-owned
@@ -958,6 +988,7 @@ final class Model: ObservableObject {
             do {
                 let output = try await Self.runCLI(cli, ["poll", "--json"])
                 if let data = output.data(using: .utf8), let result = try? JSONDecoder().decode(PollResultPayload.self, from: data) {
+                    self.providerAuthStates = result.providerAuthStates ?? [:]
                     self.authRequiredProviders = Set(result.authRequiredProviders ?? [])
                 }
                 succeeded = true
@@ -965,6 +996,14 @@ final class Model: ObservableObject {
             } catch {
                 self.pollStatus = "Quota refresh failed: \(error.localizedDescription)"
                 self.pollLastResult = "Failed · \(error.localizedDescription)"
+                for provider in ["codex", "claude-code", "copilot", "cursor", "commandcode", "openrouter", "opencode-go"] {
+                    guard error.localizedDescription.lowercased().contains("\(provider):") else { continue }
+                    let state = Self.authState(in: error, provider: provider)
+                    for cardProvider in Self.cardProviders(for: provider) {
+                        self.providerAuthStates[cardProvider] = state
+                        if state == "login-required" { self.authRequiredProviders.insert(cardProvider) }
+                    }
+                }
             }
             self.pollInFlight = false
             self.lastPollAt = Date()
@@ -1145,6 +1184,7 @@ final class Model: ObservableObject {
                     self.disabledNotifications = Set(notifications.disabledNotifications ?? [])
                 }
                 if let ui = p.uiPreview {
+                    self.previewEnabled = ui.previewEnabled ?? true
                     self.previewMode = ui.previewMode ?? "inline"
                     self.knownProviders = ui.providers ?? []
                     self.menubarHidden = Set(ui.menubarHidden ?? [])
@@ -1209,7 +1249,7 @@ final class Model: ObservableObject {
                     previewHidden: previewHidden,
                     exhaustedBehavior: stripExhausted
                 )
-                let newTitle = composeTitle(today: p.today, preview: Self.previewText(p.limits ?? [], cfg: p.uiPreview, labeled: self.previewMode == "hover"), hovering: isHovering, mode: self.previewMode)
+                let newTitle = composeTitle(today: p.today, preview: self.previewEnabled ? Self.previewText(p.limits ?? [], cfg: p.uiPreview, labeled: self.previewMode == "hover") : nil, hovering: isHovering, mode: self.previewMode)
                 setTitleIfChanged(newTitle)
                 self.errorText = nil
                 self.errorDetails = nil
@@ -1710,13 +1750,24 @@ final class Model: ObservableObject {
 
     func setPreviewMode(_ value: String) {
         previewMode = value == "hover" ? "hover" : "inline"
-        let preview = Self.previewText(
+        let preview = previewEnabled ? Self.previewText(
             currentPayloadForTitle?.limits ?? limits,
             cfg: currentPreviewCfg,
             labeled: previewMode == "hover",
-        )
+        ) : nil
         setTitleIfChanged(composeTitle(today: currentPayloadForTitle?.today, preview: preview, hovering: isHovering, mode: previewMode))
         persistUISetting(path: "ui.menubarPreviewMode", json: "\"\(previewMode)\"")
+    }
+
+    func setPreviewEnabled(_ enabled: Bool) {
+        previewEnabled = enabled
+        let preview = previewEnabled ? Self.previewText(
+            currentPayloadForTitle?.limits ?? limits,
+            cfg: currentPreviewCfg,
+            labeled: previewMode == "hover",
+        ) : nil
+        setTitleIfChanged(composeTitle(today: currentPayloadForTitle?.today, preview: preview, hovering: isHovering, mode: previewMode))
+        persistUISetting(path: "ui.menubarPreviewEnabled", json: enabled ? "true" : "false")
     }
 
     func setStripMetric(_ value: String) {
@@ -1793,7 +1844,7 @@ final class Model: ObservableObject {
             guard oldValue != isHovering else { return }
             let p = currentPayloadForTitle
             let t = composeTitle(today: p?.today,
-                                 preview: Self.previewText(p?.limits ?? [], cfg: currentPreviewCfg, labeled: previewMode == "hover"),
+                                 preview: previewEnabled ? Self.previewText(p?.limits ?? [], cfg: currentPreviewCfg, labeled: previewMode == "hover") : nil,
                                  hovering: isHovering,
                                  mode: previewMode)
             setTitleIfChanged(t)
@@ -1902,6 +1953,24 @@ final class Model: ObservableObject {
             || message.contains("http 403")
             || message.contains("status 401")
             || message.contains("status 403")
+    }
+
+    nonisolated static func authState(in error: Error, provider: String) -> String {
+        let message = error.localizedDescription.lowercased()
+        let keyProvider = provider == "openrouter" || provider == "opencode" || provider == "opencode-go" || provider == "pi"
+        if keyProvider && (message.contains("api") || message.contains("key") || message.contains("401") || message.contains("403") || message.contains("unauthorized")) {
+            return "api-key-required"
+        }
+        if loginRequired(in: error) { return "login-required" }
+        return "temporarily-unavailable"
+    }
+
+    nonisolated static func cardProviders(for provider: String) -> [String] {
+        switch provider {
+        case "openrouter": return ["openrouter", "pi"]
+        case "opencode-go": return ["opencode-go", "opencode", "pi"]
+        default: return [provider]
+        }
     }
 
 }
@@ -2087,7 +2156,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func applyTemplateStrip(fallback: String) {
         guard let button = statusItem?.button else { return }
         guard let model else { return }
-        let showPreview = model.previewMode != "hover" || model.isHovering
+        let showPreview = model.previewEnabled && (model.previewMode != "hover" || model.isHovering)
         let entries = showPreview ? model.previewGroups : []
 
         // Fingerprint of everything the strip renders, for memoization.
@@ -3220,6 +3289,13 @@ struct PreviewSettingsSheet: View {
             Divider()
             List {
                 Section {
+                    Toggle("Show usage preview in menubar", isOn: Binding(
+                        get: { model.previewEnabled },
+                        set: { model.setPreviewEnabled($0) },
+                    ))
+                    .font(.caption)
+                    Text("Hide the compact provider usage strip without hiding the popover or quota cards.")
+                        .font(.caption2).foregroundStyle(.secondary)
                     Picker("Display", selection: Binding(
                         get: { model.previewMode },
                         set: { model.setPreviewMode($0) },
@@ -3227,6 +3303,7 @@ struct PreviewSettingsSheet: View {
                         Text("Always in the menubar").tag("inline")
                         Text("Only while hovering").tag("hover")
                     }
+                    .disabled(!model.previewEnabled)
                     Picker("Metric", selection: Binding(
                         get: { model.stripMetric },
                         set: { model.setStripMetric($0) },
@@ -3235,6 +3312,7 @@ struct PreviewSettingsSheet: View {
                         Text("Usage tokens").tag("tokens")
                         Text("Smart constraint").tag("smart")
                     }
+                    .disabled(!model.previewEnabled)
                     Picker("When a provider is exhausted", selection: Binding(
                         get: { model.stripExhausted },
                         set: { model.setStripExhausted($0) },
@@ -3243,6 +3321,7 @@ struct PreviewSettingsSheet: View {
                         Text("Hide its mark").tag("hide")
                         Text("Keep showing 0%").tag("show")
                     }
+                    .disabled(!model.previewEnabled)
                 } header: {
                     Text("Display")
                 } footer: {
@@ -5726,11 +5805,20 @@ private struct HighlightedSnippet: View {
             LazyVStack(alignment: .leading, spacing: 8) {
             ForEach(Array(visible.enumerated()), id: \.element.id) { idx, l in
                 let accountId = "\(l.provider)@\(l.accountKey)"
+                let authState = model.providerAuthStates[l.provider]
+                    ?? (model.authRequiredProviders.contains(l.provider) ? "login-required" : nil)
                 AccountLimitCard(
                     limits: l,
                     isRefreshing: model.refreshingAccounts.contains(accountId),
-                    requiresLogin: model.authRequiredProviders.contains(l.provider),
+                    authState: authState,
                     onRefresh: { model.refreshAccount(l) },
+                    onAuthAction: {
+                        switch authState {
+                        case "login-required": model.copyLoginSteps(for: l.provider)
+                        case "api-key-required": showAPIKeys = true
+                        default: model.refreshAccount(l)
+                        }
+                    },
                     onHide: { model.hideAccount(l) },
                     budgets: matchingBudgets(for: l),
                     tokenScale: tokenMaxima(model.limits),
@@ -6433,8 +6521,9 @@ private func tokenMaxima(_ limits: [AccountLimits]) -> [String: Double] {
 struct AccountLimitCard: View {
     let limits: AccountLimits
     let isRefreshing: Bool
-    let requiresLogin: Bool
+    let authState: String?
     let onRefresh: () -> Void
+    let onAuthAction: () -> Void
     let onHide: () -> Void
     /// Budget rows whose pattern matches this account — rendered as a slim footer.
     var budgets: [BudgetRow] = []
@@ -6457,7 +6546,7 @@ struct AccountLimitCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             headerRow
-            if requiresLogin { loginRequiredRow }
+            if let authState { authStateRow(authState) }
             if isExpanded {
                 ForEach(Array(orderedWindows.enumerated()), id: \.offset) { _, w in
                     windowBarRow(w)
@@ -6473,12 +6562,48 @@ struct AccountLimitCard: View {
         .padding(.vertical, 2)
     }
 
-    private var loginRequiredRow: some View {
+    private func authStateRow(_ state: String) -> some View {
         let provider = Self.displayName(for: limits.provider)
-        return Label("Login required · refresh \(provider)", systemImage: "person.crop.circle.badge.exclamationmark")
-            .font(.caption2.weight(.semibold))
-            .foregroundStyle(.orange)
-            .help("Sign in to \(provider), then refresh this card")
+        let title: String
+        let action: String
+        let icon: String
+        let help: String
+        switch state {
+        case "api-key-required":
+            title = "API key required"
+            action = "Manage keys"
+            icon = "key.fill"
+            help = "Add or replace the \(provider) API key"
+        case "temporarily-unavailable":
+            title = "Provider unavailable"
+            action = "Try again"
+            icon = "wifi.exclamationmark"
+            help = "Retry the \(provider) quota refresh"
+        default:
+            title = "Login required"
+            action = "Copy login steps"
+            icon = "person.crop.circle.badge.exclamationmark"
+            help = "Copy steps to sign in to \(provider), then refresh"
+        }
+        return HStack(spacing: 6) {
+            Label(title, systemImage: icon)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.orange)
+            Spacer(minLength: 4)
+            Button(action, action: onAuthAction)
+                .buttonStyle(.link)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.orange)
+            Button(action: onRefresh) {
+                Image(systemName: "arrow.clockwise")
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .disabled(isRefreshing)
+            .accessibilityLabel("Refresh \(provider) quota")
+            .help("Refresh \(provider) quota")
+        }
+        .help(help)
     }
 
     private static func displayName(for provider: String) -> String {

@@ -36,6 +36,7 @@ describe("menubar config persistence", () => {
     expect(run(["ui", "--account-order", "codex@openai:plus,pi@opencode-go"], configPath).status).toBe(0);
     expect(run(["config", "set", "ui.stripMetric", '"smart"'], configPath).status).toBe(0);
     expect(run(["config", "set", "ui.stripExhausted", '"hide"'], configPath).status).toBe(0);
+    expect(run(["config", "set", "ui.menubarPreviewEnabled", "false"], configPath).status).toBe(0);
     expect(run(["config", "set", "poll.adaptive", "true"], configPath).status).toBe(0);
     expect(run(["config", "set", "notifications.enabled", "false"], configPath).status).toBe(0);
     expect(run(["config", "set", "notifications.resetAware", "true"], configPath).status).toBe(0);
@@ -49,6 +50,7 @@ describe("menubar config persistence", () => {
         previewHidden?: string[];
         stripMetric?: string;
         stripExhausted?: string;
+        menubarPreviewEnabled?: boolean;
         menubarAccountOrder?: string[];
         hidden?: { menubar?: string[] };
         menubarTabs?: string[];
@@ -61,6 +63,7 @@ describe("menubar config persistence", () => {
     expect(cfg.ui?.previewHidden).toEqual(["claude", "openrouter"]);
     expect(cfg.ui?.stripMetric).toBe("smart");
     expect(cfg.ui?.stripExhausted).toBe("hide");
+    expect(cfg.ui?.menubarPreviewEnabled).toBe(false);
     expect(cfg.ui?.menubarAccountOrder).toEqual(["codex@openai:plus", "pi@opencode-go"]);
     expect(cfg.ui?.hidden?.menubar).toEqual(["codex:openai:plus"]);
     expect(cfg.ui?.menubarTabs).toEqual(["tokens", "overview", "quotas", "reports", "mcp", "sources", "settings"]);

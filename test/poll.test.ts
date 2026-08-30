@@ -500,7 +500,11 @@ describe("pollQuotas", () => {
       cursorAuthPath: cursorAuth,
       fetcher,
     });
-    expect(result.authRequiredProviders).toEqual(["cursor", "openrouter", "pi"]);
+    expect(result.providerAuthStates).toEqual({
+      cursor: "login-required",
+      openrouter: "api-key-required",
+      pi: "api-key-required",
+    });
   });
 
   it("marks missing Copilot credentials as requiring login", async () => {

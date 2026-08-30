@@ -70,6 +70,8 @@ export interface PollResult {
   accounts: PollAccountResult[];
   /** Providers whose local credentials need login or re-authentication. */
   authRequiredProviders?: string[];
+  /** Actionable provider credential state, keyed by visible card provider id. */
+  providerAuthStates?: Record<string, "login-required" | "api-key-required" | "temporarily-unavailable">;
 }
 
 /**
@@ -87,6 +89,20 @@ function authRequiredCardProviders(provider: string): string[] {
 /** Provider auth failures should be visible even when the exact API wording varies. */
 function isAuthRequiredReason(reason: string): boolean {
   return /not logged in|auth(?:entication)? (?:not found|required)|oauth[_ -]?token|unauthorized|token refresh failed|refresh token|\b(?:401|403)\b/i.test(reason);
+}
+
+function authStateFor(provider: string, reason: string): "login-required" | "api-key-required" | "temporarily-unavailable" | undefined {
+  const keyProvider = provider === "openrouter" || provider === "opencode-go";
+  if (keyProvider && (/no key|api[_ -]?key|oauth[_ -]?token|\b(?:401|403)\b|unauthorized/i.test(reason))) {
+    return "api-key-required";
+  }
+  if (isAuthRequiredReason(reason)) return "login-required";
+  if (/\b(?:http )?5\d\d\b|network|timeout|fetch|temporarily/i.test(reason)) return "temporarily-unavailable";
+  return undefined;
+}
+
+function authStatePriority(state: "login-required" | "api-key-required" | "temporarily-unavailable"): number {
+  return state === "temporarily-unavailable" ? 1 : 2;
 }
 
 export interface PollOptions {
@@ -1004,11 +1020,17 @@ async function pollQuotasLocked(opts: PollOptions = {}): Promise<PollResult> {
   const accounts: PollAccountResult[] = [];
   const reasons: string[] = [];
   const authRequiredProviders = new Set<string>();
+  const providerAuthStates = new Map<string, "login-required" | "api-key-required" | "temporarily-unavailable">();
   const addReason = (provider: string, reason: string): void => {
     reasons.push(`${provider}: ${reason}`);
-    if (isAuthRequiredReason(reason)) {
+    const state = authStateFor(provider, reason);
+    if (state !== undefined) {
       for (const cardProvider of authRequiredCardProviders(provider)) {
-        authRequiredProviders.add(cardProvider);
+        const previous = providerAuthStates.get(cardProvider);
+        if (previous === undefined || authStatePriority(state) >= authStatePriority(previous)) {
+          providerAuthStates.set(cardProvider, state);
+        }
+        if (state === "login-required") authRequiredProviders.add(cardProvider);
       }
     }
   };
@@ -1292,6 +1314,7 @@ async function pollQuotasLocked(opts: PollOptions = {}): Promise<PollResult> {
     reason: ok ? undefined : reasons.join("; ") || "no provider returned quota data",
     accounts,
     ...(authRequiredProviders.size > 0 ? { authRequiredProviders: [...authRequiredProviders].sort() } : {}),
+    ...(providerAuthStates.size > 0 ? { providerAuthStates: Object.fromEntries([...providerAuthStates.entries()].sort(([a], [b]) => a.localeCompare(b))) } : {}),
   };
 }
 

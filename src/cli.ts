@@ -2381,6 +2381,7 @@ function runMenubarPayload(parsed: ParsedInvocation): void {
       console.log(
         JSON.stringify({
           previewLines: config.ui?.menubarPreviewLines ?? 3,
+          previewEnabled: config.ui?.menubarPreviewEnabled !== false,
           previewMode: config.ui?.menubarPreviewMode ?? "inline",
           providers: [...new Set([
             ...cache.providerStats().keys(),
