@@ -480,6 +480,39 @@ describe("pollQuotas", () => {
     expect(result.reason).toContain("Refresh token not found or invalid");
   });
 
+  it("marks other providers and shared harness cards when credentials fail", async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "tk-poll-provider-auth-"));
+    const piAuth = piAuthFixture(dir);
+    const cursorAuth = path.join(dir, "cursor.json");
+    writeFileSync(cursorAuth, JSON.stringify({ accessToken: "expired" }));
+    const fetcher = (async (input: unknown) => {
+      const url = String(input);
+      if (url.includes("openrouter.ai")) return new Response("unauthorized", { status: 401 });
+      if (url.includes("api2.cursor.sh")) return new Response("unauthorized", { status: 403 });
+      throw new Error(`unexpected fetch: ${url}`);
+    }) as unknown as typeof fetch;
+
+    const result = await pollQuotas({
+      ...hermeticPaths(),
+      providers: ["openrouter", "cursor"],
+      authPath: path.join(dir, "missing-codex.json"),
+      piAuthPath: piAuth,
+      cursorAuthPath: cursorAuth,
+      fetcher,
+    });
+    expect(result.authRequiredProviders).toEqual(["cursor", "openrouter", "pi"]);
+  });
+
+  it("marks missing Copilot credentials as requiring login", async () => {
+    const result = await pollQuotas({
+      ...hermeticPaths(),
+      providers: ["copilot"],
+      authPath: path.join(os.tmpdir(), `missing-${Date.now()}.json`),
+      piAuthPath: path.join(os.tmpdir(), `missing-pi-${Date.now()}.json`),
+    });
+    expect(result.authRequiredProviders).toEqual(["copilot"]);
+  });
+
   it("reads the copilot token from apps.json and stores a percent meter", async () => {
     const dir = mkdtempSync(path.join(os.tmpdir(), "tk-pilot-"));
     const cache = new EventCache(path.join(dir, "cache.db"));

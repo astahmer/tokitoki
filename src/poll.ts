@@ -72,6 +72,23 @@ export interface PollResult {
   authRequiredProviders?: string[];
 }
 
+/**
+ * Convert an upstream poller's provider id into the provider ids used by
+ * visible quota cards. Shared credentials can appear under harness ids.
+ */
+function authRequiredCardProviders(provider: string): string[] {
+  switch (provider) {
+    case "openrouter": return ["openrouter", "pi"];
+    case "opencode-go": return ["opencode-go", "opencode", "pi"];
+    default: return [provider];
+  }
+}
+
+/** Provider auth failures should be visible even when the exact API wording varies. */
+function isAuthRequiredReason(reason: string): boolean {
+  return /not logged in|auth(?:entication)? (?:not found|required)|oauth[_ -]?token|unauthorized|token refresh failed|refresh token|\b(?:401|403)\b/i.test(reason);
+}
+
 export interface PollOptions {
   /** Limit the run to one upstream provider (used by card-level refresh). */
   providers?: string[];
@@ -677,7 +694,7 @@ async function pollCommandCodeQuotas(
 /** Copilot internal/user → one window per real quota_snapshots bucket. */
 async function pollCopilotQuotas(opts: PollOptions, fetcher: typeof fetch, now: number): Promise<PollAccountResult | string> {
   const token = copilotToken(opts.copilotAuthPath);
-  if (token === null) return "no GitHub oauth_token in ~/.config/github-copilot/{apps,hosts}.json";
+  if (token === null) return "not logged in (no GitHub oauth_token in ~/.config/github-copilot/{apps,hosts}.json)";
 
   let body: CopilotUserResponse;
   try {
@@ -989,8 +1006,10 @@ async function pollQuotasLocked(opts: PollOptions = {}): Promise<PollResult> {
   const authRequiredProviders = new Set<string>();
   const addReason = (provider: string, reason: string): void => {
     reasons.push(`${provider}: ${reason}`);
-    if (/not logged in|auth(?:entication)? (?:not found|required)|unauthorized|token refresh failed/i.test(reason)) {
-      authRequiredProviders.add(provider);
+    if (isAuthRequiredReason(reason)) {
+      for (const cardProvider of authRequiredCardProviders(provider)) {
+        authRequiredProviders.add(cardProvider);
+      }
     }
   };
   const capturedAtIso = new Date(opts.now ?? Date.now()).toISOString();
@@ -1299,7 +1318,7 @@ async function pollCodexCredential(
   const fetcher = opts.fetcher ?? globalThis.fetch;
   const token = auth.tokens?.access_token;
   if (token === undefined || token.length === 0) {
-    return "no access token in credential";
+    return "not logged in (no access token in credential)";
   }
 
   const claims = decodeJwtPayload(auth.tokens?.id_token ?? "");

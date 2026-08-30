@@ -509,7 +509,7 @@ final class Model: ObservableObject {
             }
             self?.refreshingAccounts.remove(id)
             if succeeded {
-                self?.authRequiredProviders.remove(provider)
+                self?.authRequiredProviders.remove(account.provider)
                 self?.pollStatus = "Provider quotas refreshed"
                 self?.lastPollAt = Date()
                 self?.nextPollAt = self?.pollAuto == true
@@ -1897,6 +1897,11 @@ final class Model: ObservableObject {
             || message.contains("authentication")
             || message.contains("token refresh failed")
             || message.contains("refresh token")
+            || message.contains("oauth_token")
+            || message.contains("http 401")
+            || message.contains("http 403")
+            || message.contains("status 401")
+            || message.contains("status 403")
     }
 
 }
@@ -6469,11 +6474,25 @@ struct AccountLimitCard: View {
     }
 
     private var loginRequiredRow: some View {
-        let provider = limits.provider == "claude-code" ? "Claude Code" : limits.provider
+        let provider = Self.displayName(for: limits.provider)
         return Label("Login required · refresh \(provider)", systemImage: "person.crop.circle.badge.exclamationmark")
             .font(.caption2.weight(.semibold))
             .foregroundStyle(.orange)
             .help("Sign in to \(provider), then refresh this card")
+    }
+
+    private static func displayName(for provider: String) -> String {
+        switch provider {
+        case "claude-code": return "Claude Code"
+        case "codex": return "Codex"
+        case "copilot": return "GitHub Copilot"
+        case "openrouter": return "OpenRouter"
+        case "opencode", "opencode-go": return "OpenCode"
+        case "commandcode": return "Command Code"
+        case "cursor": return "Cursor"
+        case "pi": return "Pi"
+        default: return provider
+        }
     }
 
     /// Collapsible per-window detail rows — compact: window name + reset date
