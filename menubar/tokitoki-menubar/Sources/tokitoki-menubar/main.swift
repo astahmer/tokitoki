@@ -722,25 +722,70 @@ final class Model: ObservableObject {
     /// Accessor for AppDelegate context-menu actions.
     func currentInvocation() -> CLIInvocation { invocation }
 
-    func copyLoginSteps(for provider: String) {
-        let steps: String
+    func openAuthFlow(for provider: String) {
+        let command: String?
+        let url: URL?
         switch provider {
         case "claude-code":
-            steps = "Claude Code login\n1. Open Claude Code.\n2. Run /login.\n3. Return to Tokitoki and choose Refresh now."
+            command = "claude"
+            url = nil
         case "codex":
-            steps = "Codex login\n1. Run codex login in Terminal.\n2. Return to Tokitoki and choose Refresh now."
+            command = "codex login"
+            url = nil
         case "copilot":
-            steps = "GitHub Copilot login\n1. Open your Copilot client or CLI.\n2. Sign in to GitHub.\n3. Return to Tokitoki and choose Refresh now."
+            command = "gh auth login"
+            url = nil
         case "cursor":
-            steps = "Cursor login\n1. Open Cursor.\n2. Sign in to your Cursor account.\n3. Return to Tokitoki and choose Refresh now."
+            command = nil
+            url = URL(string: "https://cursor.com/dashboard")
         case "commandcode":
-            steps = "Command Code login\n1. Open Command Code.\n2. Sign in to your account.\n3. Return to Tokitoki and choose Refresh now."
+            command = "cmd"
+            url = nil
         default:
-            steps = "Sign in to \(provider), then return to Tokitoki and choose Refresh now."
+            command = nil
+            url = Self.authURL(for: provider)
         }
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(steps, forType: .string)
-        pollStatus = "Copied login steps for \(provider)"
+        if let command {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+            process.arguments = ["-e", "tell application \"Terminal\" to do script \(Self.appleScriptString(command))"]
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+            do {
+                try process.run()
+                pollStatus = "Opened \(Self.authDisplayName(for: provider)) in Terminal · finish login, then Refresh now"
+            } catch {
+                pollStatus = "Could not open \(Self.authDisplayName(for: provider)): \(error.localizedDescription)"
+            }
+        } else if let url, NSWorkspace.shared.open(url) {
+            pollStatus = "Opened \(Self.authDisplayName(for: provider)) sign-in · then Refresh now"
+        } else {
+            pollStatus = "Could not open sign-in for \(Self.authDisplayName(for: provider))"
+        }
+    }
+
+    private static func appleScriptString(_ value: String) -> String {
+        "\"" + value.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") + "\""
+    }
+
+    nonisolated static func authURL(for provider: String) -> URL? {
+        switch provider {
+        case "cursor": return URL(string: "https://cursor.com/dashboard")
+        case "claude-code": return URL(string: "https://claude.ai/login")
+        case "copilot": return URL(string: "https://github.com/login")
+        default: return nil
+        }
+    }
+
+    nonisolated static func authDisplayName(for provider: String) -> String {
+        switch provider {
+        case "claude-code": return "Claude Code"
+        case "codex": return "Codex"
+        case "copilot": return "GitHub Copilot"
+        case "cursor": return "Cursor"
+        case "commandcode": return "Command Code"
+        default: return provider
+        }
     }
 
     /// Resolve the same writable config file as the CLI. An existing TOML
@@ -5814,7 +5859,7 @@ private struct HighlightedSnippet: View {
                     onRefresh: { model.refreshAccount(l) },
                     onAuthAction: {
                         switch authState {
-                        case "login-required": model.copyLoginSteps(for: l.provider)
+                        case "login-required": model.openAuthFlow(for: l.provider)
                         case "api-key-required": showAPIKeys = true
                         default: model.refreshAccount(l)
                         }
@@ -6581,9 +6626,9 @@ struct AccountLimitCard: View {
             help = "Retry the \(provider) quota refresh"
         default:
             title = "Login required"
-            action = "Copy login steps"
+            action = Self.authActionTitle(for: limits.provider)
             icon = "person.crop.circle.badge.exclamationmark"
-            help = "Copy steps to sign in to \(provider), then refresh"
+            help = "Open the sign-in flow for \(provider), then refresh"
         }
         return HStack(spacing: 6) {
             Label(title, systemImage: icon)
@@ -6617,6 +6662,17 @@ struct AccountLimitCard: View {
         case "cursor": return "Cursor"
         case "pi": return "Pi"
         default: return provider
+        }
+    }
+
+    private static func authActionTitle(for provider: String) -> String {
+        switch provider {
+        case "cursor": return "Open Cursor sign-in"
+        case "claude-code": return "Open Claude Code"
+        case "codex": return "Open Codex login"
+        case "copilot": return "Open GitHub login"
+        case "commandcode": return "Open Command Code"
+        default: return "Open sign-in"
         }
     }
 
