@@ -8,13 +8,13 @@ import type { SyncConfig } from "./sync/types.ts";
 import type { BudgetsConfig } from "./budgets.ts";
 
 export interface NotificationsConfig {
-  /** Native/local alerts are enabled by default for critical states. */
+  /** Native/local alerts are opt-in; absent means disabled. */
   enabled?: boolean;
-  /** Notify when a previously exhausted quota becomes available again. */
+  /** Notify when a previously exhausted quota becomes available again. Opt-in. */
   resetAware?: boolean;
   /** Remaining percentage at which a quota becomes critical. */
   quotaCriticalPercent?: number;
-  /** Warn when the month-end spend projection reaches this fraction of cap. */
+  /** Warn when the month-end spend projection reaches this fraction of cap. Opt-in. */
   burnWarnings?: boolean;
   burnWarningRatio?: number;
   /** Notification categories disabled by the user (kept as stable ids for Nix). */
@@ -132,6 +132,14 @@ export interface TokitokiConfig {
     menubarPreviewMode?: "inline" | "hover";
     /** Show the floating vertical usage rail attached to the right screen edge (default: false). */
     sideNotchEnabled?: boolean;
+    /** Providers hidden from the side-notch rail; independent from previewHidden. */
+    sideNotchHidden?: string[];
+    /** Side-notch display metric: "percent" (default) | "tokens" | "smart". */
+    sideNotchMetric?: "percent" | "tokens" | "smart";
+    /** Mirror enabled/providers/metric between the side-notch and menubar preview. */
+    sideNotchSyncPreview?: boolean;
+    /** Side-notch perimeter anchor: three positions on each screen edge. */
+    sideNotchPlacement?: "top-left" | "top" | "top-right" | "right-top" | "right" | "right-bottom" | "bottom-left" | "bottom" | "bottom-right" | "left-top" | "left" | "left-bottom";
     /**
      * Menubar popover card layout: ordered ids; an id prefixed "!" is hidden
      * (e.g. ["limits", "!tools", "hero"]). Ids missing from the list keep

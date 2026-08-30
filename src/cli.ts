@@ -2384,6 +2384,10 @@ function runMenubarPayload(parsed: ParsedInvocation): void {
           previewEnabled: config.ui?.menubarPreviewEnabled !== false,
           previewMode: config.ui?.menubarPreviewMode ?? "inline",
           sideNotchEnabled: config.ui?.sideNotchEnabled === true,
+          sideNotchHidden: config.ui?.sideNotchHidden ?? [],
+          sideNotchMetric: config.ui?.sideNotchMetric ?? "percent",
+          sideNotchSyncPreview: config.ui?.sideNotchSyncPreview === true,
+          sideNotchPlacement: config.ui?.sideNotchPlacement ?? "right",
           providers: [...new Set([
             ...cache.providerStats().keys(),
             // Cursor is a binary-store/search provider: it can be present
@@ -2404,10 +2408,10 @@ function runMenubarPayload(parsed: ParsedInvocation): void {
           pollAuto: config.poll?.enabled === true,
           pollIntervalMinutes: config.poll?.intervalMinutes ?? 15,
           pollAdaptive: config.poll?.adaptive === true,
-          notificationsEnabled: config.notifications?.enabled !== false,
-          quotaResetNotifications: config.notifications?.resetAware !== false,
+          notificationsEnabled: config.notifications?.enabled === true,
+          quotaResetNotifications: config.notifications?.resetAware === true,
           quotaCriticalPercent: Math.max(0, Math.min(100, config.notifications?.quotaCriticalPercent ?? 10)),
-          burnWarnings: config.notifications?.burnWarnings !== false,
+          burnWarnings: config.notifications?.burnWarnings === true,
           burnWarningRatio: Math.max(0, Math.min(1, config.notifications?.burnWarningRatio ?? 0.8)),
           disabledNotifications: config.notifications?.disabled ?? [],
           privacyHideIdentities: config.privacy?.hideIdentities === true,
@@ -2417,10 +2421,10 @@ function runMenubarPayload(parsed: ParsedInvocation): void {
   });
   const notifications = loadConfig().notifications;
   parts["notifications"] = {
-    enabled: notifications?.enabled !== false,
-    resetAware: notifications?.resetAware !== false,
+    enabled: notifications?.enabled === true,
+    resetAware: notifications?.resetAware === true,
     quotaCriticalPercent: Math.max(0, Math.min(100, notifications?.quotaCriticalPercent ?? 10)),
-    burnWarnings: notifications?.burnWarnings !== false,
+    burnWarnings: notifications?.burnWarnings === true,
     burnWarningRatio: Math.max(0, Math.min(1, notifications?.burnWarningRatio ?? 0.8)),
     disabledNotifications: notifications?.disabled ?? [],
   };

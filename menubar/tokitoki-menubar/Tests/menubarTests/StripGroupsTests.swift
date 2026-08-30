@@ -59,6 +59,116 @@ import Testing
         #expect(Model.upstreamProvider(account(provider: "opencode", accountKey: "opencode-go", windows: [])) == "opencode")
     }
 
+    @Test func sideNotchAnchorDerivesItsEdge() {
+        #expect(Model.sideNotchEdge(for: "top-left") == "top")
+        #expect(Model.sideNotchEdge(for: "top-right") == "top")
+        #expect(Model.sideNotchEdge(for: "right-top") == "right")
+        #expect(Model.sideNotchEdge(for: "right-bottom") == "right")
+        #expect(Model.sideNotchEdge(for: "left-top") == "left")
+        #expect(Model.sideNotchEdge(for: "left-bottom") == "left")
+        #expect(Model.sideNotchEdge(for: "center") == "right") // legacy
+        #expect(Model.sideNotchEdge(for: "right") == "right")
+        #expect(Model.sideNotchEdge(for: "bottom-left") == "bottom")
+        #expect(Model.sideNotchEdge(for: "bottom-right") == "bottom")
+    }
+
+    @Test func sideNotchDropSnapsToTheNearestGridAnchor() {
+        #expect(Model.sideNotchPlacement(forNormalizedX: 0.50, yFromTop: 0.04) == "top")
+        #expect(Model.sideNotchPlacement(forNormalizedX: 0.96, yFromTop: 0.04) == "top-right")
+        #expect(Model.sideNotchPlacement(forNormalizedX: 0.96, yFromTop: 0.24) == "right-top")
+        #expect(Model.sideNotchPlacement(forNormalizedX: 0.96, yFromTop: 0.76) == "right-bottom")
+        #expect(Model.sideNotchPlacement(forNormalizedX: 0.50, yFromTop: 0.96) == "bottom")
+        #expect(Model.sideNotchPlacement(forNormalizedX: 0.04, yFromTop: 0.96) == "bottom-left")
+        #expect(Model.sideNotchPlacement(forNormalizedX: 0.04, yFromTop: 0.76) == "left-bottom")
+        #expect(Model.sideNotchPlacement(forNormalizedX: 0.04, yFromTop: 0.24) == "left-top")
+
+        // Center is equidistant from every edge; preserve dragged rail edge.
+        #expect(Model.sideNotchPlacement(forNormalizedX: 0.50, yFromTop: 0.50, preferredEdge: "right") == "right")
+        #expect(Model.sideNotchPlacement(forNormalizedX: -1, yFromTop: 2) == "bottom-left")
+    }
+
+    @Test func sideNotchGeometryKeepsEveryAnchorInsideTheViewport() {
+        let visible = NSRect(x: 40, y: 30, width: 1_440, height: 900)
+
+        for placement in Model.validSideNotchPlacements {
+            let collapsed = SideNotchGeometry.frame(
+                in: visible,
+                placement: placement,
+                expanded: false,
+                hasDetail: false,
+            )
+            let expanded = SideNotchGeometry.frame(
+                in: visible,
+                placement: placement,
+                expanded: true,
+                hasDetail: true,
+            )
+
+            for frame in [collapsed, expanded] {
+                #expect(frame.minX >= visible.minX)
+                #expect(frame.maxX <= visible.maxX)
+                #expect(frame.minY >= visible.minY)
+                #expect(frame.maxY <= visible.maxY)
+            }
+
+            switch Model.sideNotchEdge(for: placement) {
+            case "left":
+                #expect(collapsed.minX == visible.minX)
+                #expect(expanded.minX == visible.minX)
+                #expect(expanded.size == NSSize(
+                    width: SideNotchGeometry.railWidth + SideNotchGeometry.detailWidth + SideNotchGeometry.detailGap,
+                    height: SideNotchGeometry.railLength,
+                ))
+            case "right":
+                #expect(collapsed.maxX == visible.maxX)
+                #expect(expanded.maxX == visible.maxX)
+                #expect(expanded.size == NSSize(
+                    width: SideNotchGeometry.railWidth + SideNotchGeometry.detailWidth + SideNotchGeometry.detailGap,
+                    height: SideNotchGeometry.railLength,
+                ))
+            case "top":
+                #expect(collapsed.maxY == visible.maxY)
+                #expect(expanded.maxY == visible.maxY)
+                #expect(expanded.size == NSSize(
+                    width: SideNotchGeometry.railLength,
+                    height: SideNotchGeometry.railWidth + SideNotchGeometry.detailHeight + SideNotchGeometry.detailGap,
+                ))
+            case "bottom":
+                #expect(collapsed.minY == visible.minY)
+                #expect(expanded.minY == visible.minY)
+                #expect(expanded.size == NSSize(
+                    width: SideNotchGeometry.railLength,
+                    height: SideNotchGeometry.railWidth + SideNotchGeometry.detailHeight + SideNotchGeometry.detailGap,
+                ))
+            default:
+                Issue.record("Unsupported side-notch placement: \(placement)")
+            }
+        }
+    }
+
+    @Test func topCenterCanHideCollapsedHandleInPhysicalNotch() {
+        let visible = NSRect(x: 0, y: 30, width: 1_440, height: 900)
+        let screen = NSRect(x: 0, y: 0, width: 1_440, height: 982)
+        let topCenter = SideNotchGeometry.frame(
+            in: visible,
+            placement: "top",
+            expanded: false,
+            hasDetail: false,
+            screenFrame: screen,
+        )
+        #expect(topCenter.maxY == screen.maxY)
+        #expect(topCenter.midX == screen.midX)
+
+        let topLeft = SideNotchGeometry.frame(
+            in: visible,
+            placement: "top-left",
+            expanded: false,
+            hasDetail: false,
+            screenFrame: screen,
+        )
+        #expect(topLeft.maxY == visible.maxY)
+    }
+
     // MARK: percent mode (default)
 
     @Test func percentModeShowsOnlyRealQuotas() {
@@ -214,7 +324,7 @@ import Testing
             ]),
         ]
         let preview = Model.previewText(limits, cfg: UiPreviewConfig(
-            previewLines: 3, previewEnabled: nil, previewMode: "hover", sideNotchEnabled: nil, providers: nil, menubarHidden: nil,
+            previewLines: 3, previewEnabled: nil, previewMode: "hover", sideNotchEnabled: nil, sideNotchHidden: nil, sideNotchMetric: nil, sideNotchSyncPreview: nil, sideNotchPlacement: nil, providers: nil, menubarHidden: nil,
             cards: nil, pollAuto: nil, pollIntervalMinutes: nil, previewHidden: nil, stripMetric: nil, stripExhausted: nil,
         ), labeled: true)
         #expect(preview == "session 60% weekly 100% monthly 88%")

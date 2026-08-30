@@ -196,6 +196,10 @@ struct UiPreviewConfig: Codable {
     let previewEnabled: Bool?
     let previewMode: String? // "inline" | "hover"
     let sideNotchEnabled: Bool?
+    let sideNotchHidden: [String]?
+    let sideNotchMetric: String?
+    let sideNotchSyncPreview: Bool?
+    let sideNotchPlacement: String?
     // Provider visibility (context-menu Settings ▸ toggles).
     let providers: [String]?
     let menubarHidden: [String]?
@@ -392,6 +396,16 @@ final class Model: ObservableObject {
     @Published var previewEnabled = true
     @Published var previewMode: String = "inline"
     @Published var sideNotchEnabled = false
+    @Published var sideNotchHidden: Set<String> = []
+    @Published var sideNotchMetric: String = "percent"
+    @Published var sideNotchSyncPreview = false
+    @Published var sideNotchPlacement: String = "right"
+    @Published var sideNotchExpanded = false
+    /// Set by AppKit from the screen hosting the notch. This must not be
+    /// inferred from the pointer: the pointer can cross displays while the
+    /// physical top-notch panel is opening.
+    @Published var sideNotchHidesCollapsedHandle = false
+    @Published var sideNotchSelectedProvider: String?
     /// Status-item strip groups: UPSTREAM providers (openai, claude,
     /// opencode, openrouter… — not harnesses), each with stacked "NN%" lines
     /// for real quotas or a single "~NN%" usage-relative estimate.
@@ -439,10 +453,10 @@ final class Model: ObservableObject {
     @Published var syncUrl = ""
     @Published var syncHandle = ""
     @Published var mcpStatus = "Ready · stdio is agent-owned"
-    @Published var notificationsEnabled = true
-    @Published var resetAwareNotifications = true
+    @Published var notificationsEnabled = false
+    @Published var resetAwareNotifications = false
     @Published var quotaCriticalPercent = 10
-    @Published var burnWarnings = true
+    @Published var burnWarnings = false
     @Published var burnWarningRatio = 0.8
     @Published var disabledNotifications: Set<String> = []
     @Published var privacyHideIdentities = false
@@ -467,6 +481,8 @@ final class Model: ObservableObject {
     @Published var refreshingAccounts: Set<String> = []
     @Published var scanInFlight = false
     @Published var scanStatus: String?
+
+    static let notificationKinds = ["quotaCritical", "quotaReset", "burnRate", "budget"]
 
     private var timer: Timer?
     /// Refresh responses are asynchronous; mutations bump this generation so
@@ -909,6 +925,17 @@ final class Model: ObservableObject {
         persistUISetting(path: "notifications.disabled", json: json)
     }
 
+    var allNotificationKindsEnabled: Bool {
+        Self.notificationKinds.allSatisfy { !disabledNotifications.contains($0) }
+    }
+
+    func setAllNotificationKindsEnabled(_ enabled: Bool) {
+        disabledNotifications = enabled ? [] : Set(Self.notificationKinds)
+        notificationStatus = enabled ? "All alert categories enabled" : "All alert categories disabled"
+        let json = "[" + disabledNotifications.sorted().map { "\"\($0)\"" }.joined(separator: ",") + "]"
+        persistUISetting(path: "notifications.disabled", json: json)
+    }
+
     func notificationKindLabel(_ kind: String) -> String {
         switch kind {
         case "quotaCritical": return "Critical quota"
@@ -1070,7 +1097,7 @@ final class Model: ObservableObject {
     /// Scan local harness stores, then refresh the dashboard from the new
     /// cache. The first launch uses --if-needed so an already-initialized
     /// install does not pay for a full source walk on every app start.
-    func scanNow(initial: Bool = false) {
+    func scanNow(initial: Bool = false, refreshAfterScan: Bool = false) {
         guard !scanInFlight else { return }
         scanInFlight = true
         scanStatus = initial ? "Scanning local sources on first launch…" : "Scanning local sources…"
@@ -1085,8 +1112,15 @@ final class Model: ObservableObject {
                 self.scanStatus = "Scan failed: \(error.localizedDescription)"
             }
             self.scanInFlight = false
-            self.refresh()
+            self.refresh(force: refreshAfterScan)
         }
+    }
+
+    /// The primary footer action intentionally covers both local source scans
+    /// and quota/report refreshes. Keeping them together avoids making users
+    /// guess which of two adjacent icon buttons fixes stale data.
+    func refreshAll() {
+        scanNow(refreshAfterScan: true)
     }
 
     func start(invocation: CLIInvocation) {
@@ -1223,10 +1257,10 @@ final class Model: ObservableObject {
                 self.loadingCompleted = cached ? 1 : 4
                 self.loadingStage = cached ? "Refreshing live data…" : "Reports ready"
                 if let notifications = p.notifications {
-                    self.notificationsEnabled = notifications.enabled ?? true
-                    self.resetAwareNotifications = notifications.resetAware ?? true
+                    self.notificationsEnabled = notifications.enabled ?? false
+                    self.resetAwareNotifications = notifications.resetAware ?? false
                     self.quotaCriticalPercent = max(0, min(100, notifications.quotaCriticalPercent ?? 10))
-                    self.burnWarnings = notifications.burnWarnings ?? true
+                    self.burnWarnings = notifications.burnWarnings ?? false
                     self.burnWarningRatio = max(0, min(1, notifications.burnWarningRatio ?? 0.8))
                     self.disabledNotifications = Set(notifications.disabledNotifications ?? [])
                 }
@@ -1234,6 +1268,10 @@ final class Model: ObservableObject {
                     self.previewEnabled = ui.previewEnabled ?? true
                     self.previewMode = ui.previewMode ?? "inline"
                     self.sideNotchEnabled = ui.sideNotchEnabled ?? false
+                    self.sideNotchHidden = Set(ui.sideNotchHidden ?? [])
+                    self.sideNotchMetric = ["tokens", "smart"].contains(ui.sideNotchMetric ?? "percent") ? (ui.sideNotchMetric ?? "percent") : "percent"
+                    self.sideNotchSyncPreview = ui.sideNotchSyncPreview ?? false
+                    self.sideNotchPlacement = Self.canonicalSideNotchPlacement(ui.sideNotchPlacement ?? "right")
                     self.knownProviders = ui.providers ?? []
                     self.menubarHidden = Set(ui.menubarHidden ?? [])
                     self.cardLayout = (ui.cards ?? []).map { ($0.id, $0.hidden) }
@@ -1818,18 +1856,184 @@ final class Model: ObservableObject {
         setTitleIfChanged(composeTitle(today: currentPayloadForTitle?.today, preview: preview, hovering: isHovering, mode: previewMode))
         AppDelegate.shared?.refreshPreviewBehavior()
         persistUISetting(path: "ui.menubarPreviewEnabled", json: enabled ? "true" : "false")
+        if sideNotchSyncPreview {
+            sideNotchEnabled = enabled
+            persistUISetting(path: "ui.sideNotchEnabled", json: enabled ? "true" : "false")
+            AppDelegate.shared?.refreshSideNotch()
+        }
     }
 
     func setSideNotchEnabled(_ enabled: Bool) {
         sideNotchEnabled = enabled
         AppDelegate.shared?.refreshSideNotch()
         persistUISetting(path: "ui.sideNotchEnabled", json: enabled ? "true" : "false")
+        if sideNotchSyncPreview && previewEnabled != enabled {
+            setPreviewEnabled(enabled)
+        }
+    }
+
+    func setSideNotchMetric(_ value: String) {
+        sideNotchMetric = ["tokens", "smart"].contains(value) ? value : "percent"
+        persistUISetting(path: "ui.sideNotchMetric", json: "\"\(sideNotchMetric)\"")
+    }
+
+    /// Perimeter anchors. Legacy `center` is accepted below and normalized to
+    /// the right-center anchor so existing configs keep working.
+    nonisolated static let validSideNotchPlacements = [
+        "top-left", "top", "top-right",
+        "right-top", "right", "right-bottom",
+        "bottom-left", "bottom", "bottom-right",
+        "left-top", "left", "left-bottom",
+    ]
+
+    nonisolated static let sideNotchProviderOrder = [
+        "claude", "openai", "openrouter", "opencode", "gemini", "cursor", "copilot", "grok",
+    ]
+
+    nonisolated static func canonicalSideNotchPlacement(_ value: String) -> String {
+        if value == "center" { return "right" }
+        return validSideNotchPlacements.contains(value) ? value : "right"
+    }
+
+    func setSideNotchPlacement(_ value: String) {
+        sideNotchPlacement = Self.canonicalSideNotchPlacement(value)
+        persistUISetting(path: "ui.sideNotchPlacement", json: "\"\(sideNotchPlacement)\"")
+        AppDelegate.shared?.refreshSideNotch()
+    }
+
+    var sideNotchEdge: String { Self.sideNotchEdge(for: sideNotchPlacement) }
+
+    nonisolated static func sideNotchEdge(for placement: String) -> String {
+        switch placement {
+        case "top-left", "top", "top-right": return "top"
+        case "bottom-left", "bottom", "bottom-right": return "bottom"
+        case "left-top", "left", "left-bottom": return "left"
+        case "right-top", "right", "right-bottom": return "right"
+        case "center": return "right" // legacy config value
+        default: return "right"
+        }
+    }
+
+    nonisolated static func sideNotchAnchor(for placement: String) -> String {
+        switch placement {
+        case "top-left", "bottom-left": return "left"
+        case "top-right", "bottom-right": return "right"
+        case "right-top", "left-top": return "top"
+        case "right-bottom", "left-bottom": return "bottom"
+        default: return "center"
+        }
+    }
+
+    nonisolated static func sideNotchPlacement(
+        forNormalizedX x: Double,
+        yFromTop y: Double,
+        preferredEdge: String? = nil,
+    ) -> String {
+        let clampedX = max(0, min(1, x))
+        let clampedY = max(0, min(1, y))
+        let distances: [(edge: String, distance: Double)] = [
+            ("top", clampedY),
+            ("right", 1 - clampedX),
+            ("bottom", 1 - clampedY),
+            ("left", clampedX),
+        ]
+        let nearestDistance = distances.map(\.distance).min() ?? 0
+        let edge = preferredEdge.flatMap { preferred in
+            distances.first { $0.edge == preferred && $0.distance <= nearestDistance + 0.001 }?.edge
+        } ?? distances.first { abs($0.distance - nearestDistance) <= 0.001 }?.edge ?? "right"
+
+        func slot(_ value: Double) -> Int {
+            [0.0, 0.5, 1.0].enumerated().min {
+                abs($0.element - value) < abs($1.element - value)
+            }?.offset ?? 1
+        }
+
+        switch edge {
+        case "top": return ["top-left", "top", "top-right"][slot(clampedX)]
+        case "right": return ["right-top", "right", "right-bottom"][slot(clampedY)]
+        case "bottom": return ["bottom-left", "bottom", "bottom-right"][slot(clampedX)]
+        default: return ["left-top", "left", "left-bottom"][slot(clampedY)]
+        }
+    }
+
+    func setSideNotchVisible(_ provider: String, visible: Bool) {
+        if visible { sideNotchHidden.remove(provider) } else { sideNotchHidden.insert(provider) }
+        persistUISetting(path: "ui.sideNotchHidden", json: "[" + sideNotchHidden.sorted().map { "\"\($0)\"" }.joined(separator: ",") + "]")
+    }
+
+    func setSideNotchSyncPreview(_ enabled: Bool) {
+        sideNotchSyncPreview = enabled
+        persistUISetting(path: "ui.sideNotchSyncPreview", json: enabled ? "true" : "false")
+        if enabled {
+            sideNotchEnabled = previewEnabled
+            sideNotchHidden = previewHidden
+            sideNotchMetric = stripMetric
+            persistUISetting(path: "ui.sideNotchEnabled", json: previewEnabled ? "true" : "false")
+            persistUISetting(path: "ui.sideNotchHidden", json: "[" + sideNotchHidden.sorted().map { "\"\($0)\"" }.joined(separator: ",") + "]")
+            persistUISetting(path: "ui.sideNotchMetric", json: "\"\(sideNotchMetric)\"")
+        }
+        AppDelegate.shared?.refreshSideNotch()
+    }
+
+    func setSideNotchExpanded(_ expanded: Bool) {
+        guard sideNotchExpanded != expanded else { return }
+        sideNotchExpanded = expanded
+        AppDelegate.shared?.refreshSideNotch()
+    }
+
+    func setSideNotchSelectedProvider(_ provider: String?) {
+        guard sideNotchSelectedProvider != provider else { return }
+        sideNotchSelectedProvider = provider
+        AppDelegate.shared?.refreshSideNotch()
+    }
+
+    /// Provider order shared by the rail and the opening preselection. The
+    /// pointer is already over the collapsed handle when the rail opens, so
+    /// selecting the item that will land under it avoids a second outer-panel
+    /// resize once SwiftUI's hover callback arrives.
+    func sideNotchProviders() -> [String] {
+        var providers = Set<String>()
+        for limit in limits {
+            let provider = Self.upstreamProvider(limit) ?? limit.provider
+            guard !sideNotchHidden.contains(provider),
+                  !menubarHidden.contains(limit.provider),
+                  !menubarHidden.contains("\(limit.provider):\(limit.accountKey)") else { continue }
+            providers.insert(provider)
+        }
+        return providers.sorted { lhs, rhs in
+            let left = Self.sideNotchProviderOrder.firstIndex(of: lhs) ?? Self.sideNotchProviderOrder.count
+            let right = Self.sideNotchProviderOrder.firstIndex(of: rhs) ?? Self.sideNotchProviderOrder.count
+            return left == right ? lhs < rhs : left < right
+        }
+    }
+
+    func sideNotchProvider(at point: NSPoint, screen: NSScreen) -> String? {
+        let providers = Array(sideNotchProviders().prefix(6))
+        guard !providers.isEmpty else { return nil }
+
+        let rail = SideNotchGeometry.frame(
+            in: screen.visibleFrame,
+            placement: sideNotchPlacement,
+            expanded: true,
+            hasDetail: false,
+            screenFrame: screen.frame,
+        )
+        let vertical = sideNotchEdge == "left" || sideNotchEdge == "right"
+        let position = vertical ? rail.maxY - point.y : point.x - rail.minX
+        let leadingPadding: CGFloat = vertical ? 8 + 28 : 8 + 26
+        let itemStride: CGFloat = 68
+        let index = Int(((position - leadingPadding - itemStride / 2) / itemStride).rounded())
+        return providers[max(0, min(providers.count - 1, index))]
     }
 
     func setStripMetric(_ value: String) {
         stripMetric = ["tokens", "smart"].contains(value) ? value : "percent"
         rebuildStripPreview()
         persistUISetting(path: "ui.stripMetric", json: "\"\(stripMetric)\"")
+        if sideNotchSyncPreview {
+            sideNotchMetric = stripMetric
+            persistUISetting(path: "ui.sideNotchMetric", json: "\"\(sideNotchMetric)\"")
+        }
     }
 
     func setStripExhausted(_ value: String) {
@@ -1844,6 +2048,10 @@ final class Model: ObservableObject {
         rebuildStripPreview()
         let json = "[" + previewHidden.sorted().map { "\"\($0)\"" }.joined(separator: ",") + "]"
         persistUISetting(path: "ui.previewHidden", json: json)
+        if sideNotchSyncPreview {
+            sideNotchHidden = previewHidden
+            persistUISetting(path: "ui.sideNotchHidden", json: json)
+        }
     }
 
     private func persistUISetting(path: String, json: String) {
@@ -2042,6 +2250,126 @@ private func humanCount(_ n: Double) -> String {
 
 // MARK: - AppKit shell (NSStatusItem + NSPopover)
 
+enum SideNotchGeometry {
+    static let collapsedThickness: CGFloat = 20
+    static let collapsedLength: CGFloat = 66
+    static let railWidth: CGFloat = 84
+    static let railLength: CGFloat = 480
+    static let detailWidth: CGFloat = 292
+    static let detailHeight: CGFloat = 210
+    static let detailGap: CGFloat = 20
+
+    static func frame(
+        in visible: NSRect,
+        placement: String,
+        expanded: Bool,
+        hasDetail: Bool,
+        screenFrame: NSRect? = nil,
+    ) -> NSRect {
+        let edge = Model.sideNotchEdge(for: placement)
+        let vertical = edge == "left" || edge == "right"
+        let width: CGFloat
+        let height: CGFloat
+        if !expanded {
+            width = vertical ? collapsedThickness : collapsedLength
+            height = vertical ? collapsedLength : collapsedThickness
+        } else if vertical {
+            width = railWidth + (hasDetail ? detailWidth + detailGap : 0)
+            height = railLength
+        } else {
+            width = railLength
+            height = railWidth + (hasDetail ? detailHeight + detailGap : 0)
+        }
+
+        let anchor = Model.sideNotchAnchor(for: placement)
+        let horizontalBounds = edge == "top" || edge == "bottom" ? (screenFrame ?? visible) : visible
+        let verticalBounds = placement == "top" ? (screenFrame ?? visible) : visible
+        let x: CGFloat
+        let y: CGFloat
+        if vertical {
+            x = edge == "left" ? visible.minX : visible.maxX - width
+            switch anchor {
+            case "top": y = visible.maxY - height
+            case "bottom": y = visible.minY
+            default: y = visible.minY + (visible.height - height) / 2
+            }
+        } else {
+            y = edge == "bottom" ? visible.minY : verticalBounds.maxY - height
+            switch anchor {
+            case "left": x = visible.minX
+            case "right": x = horizontalBounds.maxX - width
+            default: x = horizontalBounds.minX + (horizontalBounds.width - width) / 2
+            }
+        }
+        return NSRect(x: x, y: y, width: width, height: height)
+    }
+}
+
+private enum SideNotchMotion {
+    case opening
+    case closing
+    case snap
+    case resize
+
+    var duration: TimeInterval {
+        switch self {
+        case .opening: return 0.24
+        case .closing: return 0.20
+        case .snap: return 0.26
+        case .resize: return 0.26
+        }
+    }
+
+    var naturalFrequency: Double {
+        switch self {
+        case .opening: return 29
+        case .closing: return 31
+        case .snap: return 28
+        case .resize: return 28
+        }
+    }
+
+    var dampingRatio: Double {
+        switch self {
+        case .opening, .closing: return 0.90
+        case .snap, .resize: return 0.90
+        }
+    }
+}
+
+private enum SideNotchAnimation {
+    static let expansion = Animation.spring(response: 0.24, dampingFraction: 0.88, blendDuration: 0.04)
+}
+
+@MainActor
+private final class SideNotchSpringDriver: NSObject {
+    weak var owner: AppDelegate?
+    weak var panel: NSPanel?
+    let start: NSRect
+    let target: NSRect
+    let startedAt: TimeInterval
+    let motion: SideNotchMotion
+    var timer: Timer?
+
+    init(owner: AppDelegate, panel: NSPanel, start: NSRect, target: NSRect, motion: SideNotchMotion) {
+        self.owner = owner
+        self.panel = panel
+        self.start = start
+        self.target = target
+        self.motion = motion
+        self.startedAt = ProcessInfo.processInfo.systemUptime
+    }
+
+    @objc func tick(_ timer: Timer) {
+        owner?.advanceSideNotchSpring(self, timer: timer)
+    }
+
+    func invalidate() {
+        timer?.invalidate()
+        timer = nil
+    }
+}
+
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     static weak var shared: AppDelegate?
@@ -2063,6 +2391,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var popoverContentLoadScheduled = false
     private var sideNotchPanel: NSPanel?
     private var sideNotchHost: NSHostingController<AnyView>?
+    private var sideNotchHoverMonitor: Any?
+    private var sideNotchLocalHoverMonitor: Any?
+    private var sideNotchDragMonitor: Any?
+    private var sideNotchGlobalDragMonitor: Any?
+    private var sideNotchPointerDown = false
+    private var sideNotchIsDragging = false
+    private var sideNotchIsSnapping = false
+    private var sideNotchDragStart = NSPoint.zero
+    private var sideNotchDragOrigin = NSPoint.zero
+    private var sideNotchIgnoredHoverPoint: NSPoint?
+    private var sideNotchSpringDriver: SideNotchSpringDriver?
+    private var sideNotchPendingMotion: SideNotchMotion?
+    private var sideNotchHasLaidOut = false
+    private var sideNotchDisplayID: CGDirectDisplayID?
+    private var sideNotchDisplayWasDragged = false
     var model: Model?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -2362,18 +2705,93 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func refreshSideNotch() {
         guard let model else { return }
         guard model.sideNotchEnabled else {
+            model.sideNotchExpanded = false
+            model.sideNotchSelectedProvider = nil
+            model.sideNotchHidesCollapsedHandle = false
+            if let sideNotchHoverMonitor { NSEvent.removeMonitor(sideNotchHoverMonitor); self.sideNotchHoverMonitor = nil }
+            if let sideNotchLocalHoverMonitor { NSEvent.removeMonitor(sideNotchLocalHoverMonitor); self.sideNotchLocalHoverMonitor = nil }
+            if let sideNotchDragMonitor { NSEvent.removeMonitor(sideNotchDragMonitor); self.sideNotchDragMonitor = nil }
+            if let sideNotchGlobalDragMonitor { NSEvent.removeMonitor(sideNotchGlobalDragMonitor); self.sideNotchGlobalDragMonitor = nil }
+            sideNotchSpringDriver?.invalidate()
+            sideNotchSpringDriver = nil
+            sideNotchPointerDown = false
+            sideNotchIsDragging = false
+            sideNotchIsSnapping = false
+            sideNotchIgnoredHoverPoint = nil
+            sideNotchPendingMotion = nil
+            sideNotchHasLaidOut = false
             sideNotchPanel?.orderOut(nil)
             return
         }
+        if let screen = sideNotchScreen() {
+            model.sideNotchHidesCollapsedHandle = model.sideNotchPlacement == "top"
+                && screen.safeAreaInsets.top > 0
+        }
         installSideNotchIfNeeded(model: model)
+        installSideNotchHoverMonitorIfNeeded()
         layoutSideNotch()
         sideNotchPanel?.orderFrontRegardless()
+    }
+
+    private func displayID(for screen: NSScreen) -> CGDirectDisplayID? {
+        guard let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else {
+            return nil
+        }
+        return CGDirectDisplayID(number.uint32Value)
+    }
+
+    /// Resolve the notch's display once, then keep using that display while
+    /// the pointer moves. A hover callback must never relocate a panel that is
+    /// already animating, especially when the top anchor sits in a physical
+    /// Mac notch and the next display is immediately beyond it.
+    private func sideNotchScreen() -> NSScreen? {
+        if let cachedDisplayID = sideNotchDisplayID,
+           let screen = NSScreen.screens.first(where: { displayID(for: $0) == cachedDisplayID }) {
+            if !sideNotchDisplayWasDragged,
+               model?.sideNotchPlacement == "top",
+               screen.safeAreaInsets.top <= 0,
+               let physicalNotchScreen = NSScreen.screens.first(where: { $0.safeAreaInsets.top > 0 }) {
+                // Before the first drag, a status item can have cached the
+                // active document's display. The exact top-center anchor is
+                // reserved for the display with the physical notch.
+                sideNotchDisplayID = displayID(for: physicalNotchScreen)
+                return physicalNotchScreen
+            }
+            return screen
+        }
+
+        let statusScreen = statusItem?.button?.window?.screen
+        let screen: NSScreen?
+        if model?.sideNotchPlacement == "top",
+           let physicalNotchScreen = NSScreen.screens.first(where: { $0.safeAreaInsets.top > 0 }),
+           statusScreen?.safeAreaInsets.top ?? 0 <= 0 {
+            // A bare accessory app can report the active document's display
+            // before its status item has a window. For the physical top-notch
+            // anchor, prefer the display that actually owns the safe-area
+            // inset instead of accidentally caching a neighbouring display.
+            screen = physicalNotchScreen
+        } else {
+            screen = statusScreen ?? NSScreen.main ?? NSScreen.screens.first
+        }
+        sideNotchDisplayID = screen.flatMap(displayID)
+        return screen
+    }
+
+    private func screen(containing point: NSPoint) -> NSScreen? {
+        NSScreen.screens.first(where: { $0.frame.contains(point) }) ?? NSScreen.main
+    }
+
+    private func setSideNotchExpanded(_ expanded: Bool) {
+        guard let model else { return }
+        withAnimation(SideNotchAnimation.expansion) {
+            model.setSideNotchExpanded(expanded)
+        }
     }
 
     private func installSideNotchIfNeeded(model: Model) {
         guard sideNotchPanel == nil else { return }
         let panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 82, height: 390),
+            contentRect: NSRect(x: 0, y: 0, width: SideNotchGeometry.collapsedThickness, height: SideNotchGeometry.collapsedLength),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false,
@@ -2393,25 +2811,223 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             model: model,
             onOpen: { [weak self] in self?.openPopoverFromSideNotch() },
         )))
+        // The default hosting sizing options resize the NSPanel when the
+        // SwiftUI state changes. That would jump straight to the expanded
+        // dimensions at the collapsed origin before our edge spring gets a
+        // chance to move it. AppKit must own this panel's frame exclusively.
+        host.sizingOptions = []
         panel.contentViewController = host
         sideNotchHost = host
         sideNotchPanel = panel
     }
 
-    private func layoutSideNotch() {
-        guard let panel = sideNotchPanel else { return }
-        let mouse = NSEvent.mouseLocation
-        let screen = NSScreen.screens.first(where: { $0.frame.contains(mouse) }) ?? NSScreen.main
-        guard let visible = screen?.visibleFrame else { return }
-        let height = min(520, max(220, visible.height * 0.52))
-        let width: CGFloat = 82
-        let frame = NSRect(
-            x: visible.maxX - width,
-            y: visible.minY + (visible.height - height) / 2,
-            width: width,
-            height: height,
+    private func installSideNotchHoverMonitorIfNeeded() {
+        if sideNotchHoverMonitor == nil {
+            sideNotchHoverMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved]) { [weak self] _ in
+                self?.handleSideNotchPointer()
+            }
+        }
+        if sideNotchLocalHoverMonitor == nil {
+            sideNotchLocalHoverMonitor = NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved]) { [weak self] event in
+                self?.handleSideNotchPointer()
+                return event
+            }
+        }
+        if sideNotchDragMonitor == nil {
+            sideNotchDragMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseDragged, .leftMouseUp]) { [weak self] event in
+                self?.handleSideNotchDrag(event) ?? event
+            }
+        }
+        if sideNotchGlobalDragMonitor == nil {
+            sideNotchGlobalDragMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDragged, .leftMouseUp]) { [weak self] event in
+                _ = self?.handleSideNotchDrag(event)
+            }
+        }
+    }
+
+    private func handleSideNotchPointer() {
+        guard !sideNotchPointerDown, !sideNotchIsDragging, !sideNotchIsSnapping,
+              let model, model.sideNotchEnabled, let panel = sideNotchPanel else { return }
+        let pointer = NSEvent.mouseLocation
+        if let ignored = sideNotchIgnoredHoverPoint {
+            guard hypot(pointer.x - ignored.x, pointer.y - ignored.y) >= 2 else { return }
+            sideNotchIgnoredHoverPoint = nil
+        }
+        let inside = panel.frame.contains(pointer)
+        if inside && !model.sideNotchExpanded {
+            // The pointer is entering the collapsed handle, but the item it
+            // will hover after the rail unfolds is already knowable from its
+            // along-edge coordinate. Set it before the first layout pass so
+            // the opening spring has one target that includes the callout.
+            if let screen = sideNotchScreen() {
+                model.sideNotchSelectedProvider = model.sideNotchProvider(at: pointer, screen: screen)
+            } else {
+                model.sideNotchSelectedProvider = nil
+            }
+            setSideNotchExpanded(true)
+        } else if !inside && model.sideNotchExpanded {
+            setSideNotchExpanded(false)
+        }
+    }
+
+    private func handleSideNotchDrag(_ event: NSEvent) -> NSEvent? {
+        guard let model, model.sideNotchEnabled, let panel = sideNotchPanel else { return event }
+        let location = NSEvent.mouseLocation
+
+        switch event.type {
+        case .leftMouseDown:
+            guard panel.frame.contains(location) else { return event }
+            sideNotchPointerDown = true
+            sideNotchDragStart = location
+            sideNotchDragOrigin = panel.frame.origin
+            return event
+        case .leftMouseDragged:
+            guard sideNotchPointerDown else { return event }
+            let delta = NSPoint(x: location.x - sideNotchDragStart.x, y: location.y - sideNotchDragStart.y)
+            if !sideNotchIsDragging && hypot(delta.x, delta.y) < 5 { return event }
+            if !sideNotchIsDragging {
+                sideNotchIsDragging = true
+                sideNotchIsSnapping = false
+                sideNotchIgnoredHoverPoint = nil
+                sideNotchSpringDriver?.invalidate()
+                sideNotchSpringDriver = nil
+            }
+            panel.setFrameOrigin(NSPoint(x: sideNotchDragOrigin.x + delta.x, y: sideNotchDragOrigin.y + delta.y))
+            return nil
+        case .leftMouseUp:
+            guard sideNotchPointerDown else { return event }
+            sideNotchPointerDown = false
+            guard sideNotchIsDragging else { return event }
+            sideNotchIsDragging = false
+            snapSideNotch(to: location)
+            return nil
+        default:
+            return event
+        }
+    }
+
+    private func snapSideNotch(to point: NSPoint) {
+        guard let model, let screen = screen(containing: point) else { return }
+        let visible = screen.visibleFrame
+        let x = max(0, min(1, (point.x - visible.minX) / max(1, visible.width)))
+        let y = max(0, min(1, 1 - (point.y - visible.minY) / max(1, visible.height)))
+        let placement = Model.sideNotchPlacement(
+            forNormalizedX: x,
+            yFromTop: y,
+            preferredEdge: Model.sideNotchEdge(for: model.sideNotchPlacement),
         )
-        panel.setFrame(frame, display: true)
+        if placement == "top",
+           let physicalNotchScreen = NSScreen.screens.first(where: { $0.safeAreaInsets.top > 0 }) {
+            // A drop in the physical top-notch slot should not land on the
+            // display below merely because the two screens touch at an edge.
+            sideNotchDisplayID = displayID(for: physicalNotchScreen)
+        } else {
+            sideNotchDisplayID = displayID(for: screen)
+        }
+        sideNotchDisplayWasDragged = true
+        sideNotchIgnoredHoverPoint = point
+        sideNotchPendingMotion = .snap
+        model.setSideNotchPlacement(placement)
+    }
+
+    private func layoutSideNotch() {
+        guard !sideNotchIsDragging, let panel = sideNotchPanel, let model else { return }
+        guard let screen = sideNotchScreen() else { return }
+        let visible = screen.visibleFrame
+        let hidesCollapsedHandle = model.sideNotchPlacement == "top" && screen.safeAreaInsets.top > 0
+        if model.sideNotchHidesCollapsedHandle != hidesCollapsedHandle {
+            model.sideNotchHidesCollapsedHandle = hidesCollapsedHandle
+        }
+        let expanded = model.sideNotchExpanded
+        let hasDetail = model.sideNotchSelectedProvider != nil
+        let frame = SideNotchGeometry.frame(
+            in: visible,
+            placement: model.sideNotchPlacement,
+            expanded: expanded,
+            hasDetail: hasDetail,
+            screenFrame: screen.frame,
+        )
+        if sideNotchHasLaidOut, panel.frame != frame {
+            let start = panel.frame
+            let startIsCollapsed = min(start.width, start.height) <= SideNotchGeometry.collapsedThickness + 2
+                && max(start.width, start.height) <= SideNotchGeometry.collapsedLength + 2
+            let targetIsCollapsed = !expanded
+            let sameSize = abs(start.width - frame.width) < 1 && abs(start.height - frame.height) < 1
+            let motion = sideNotchPendingMotion
+                ?? (startIsCollapsed && !targetIsCollapsed ? .opening
+                    : !startIsCollapsed && targetIsCollapsed ? .closing
+                    : sameSize ? .snap
+                    : .resize)
+            sideNotchPendingMotion = nil
+            animateSideNotch(to: frame, motion: motion)
+        } else {
+            sideNotchPendingMotion = nil
+            panel.setFrame(frame, display: true)
+        }
+        sideNotchHasLaidOut = true
+    }
+
+    private func animateSideNotch(to target: NSRect, motion: SideNotchMotion) {
+        guard let panel = sideNotchPanel else { return }
+        sideNotchSpringDriver?.invalidate()
+        sideNotchSpringDriver = nil
+        let start = panel.frame
+        guard start != target else { return }
+        sideNotchIsSnapping = true
+        let driver = SideNotchSpringDriver(owner: self, panel: panel, start: start, target: target, motion: motion)
+        let timer = Timer(timeInterval: 1.0 / 60.0, target: driver, selector: #selector(SideNotchSpringDriver.tick(_:)), userInfo: nil, repeats: true)
+        driver.timer = timer
+        sideNotchSpringDriver = driver
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    fileprivate func advanceSideNotchSpring(_ driver: SideNotchSpringDriver, timer: Timer) {
+        guard let panel = driver.panel else {
+            driver.invalidate()
+            if sideNotchSpringDriver === driver { sideNotchSpringDriver = nil }
+            return
+        }
+        let elapsed = ProcessInfo.processInfo.systemUptime - driver.startedAt
+        let progress = sideNotchSpringProgress(elapsed, motion: driver.motion)
+        panel.setFrame(interpolatedSideNotchFrame(from: driver.start, to: driver.target, progress: progress), display: true)
+        guard elapsed >= driver.motion.duration else { return }
+        timer.invalidate()
+        driver.timer = nil
+        if sideNotchSpringDriver === driver { sideNotchSpringDriver = nil }
+        sideNotchIsSnapping = false
+        if model?.sideNotchExpanded == false {
+            // Keep the selected card mounted while the closing spring fades
+            // it into the handle, then release it once the panel is settled.
+            // This prevents the detail surface from being torn down at the
+            // start of the close animation.
+            model?.sideNotchSelectedProvider = nil
+        }
+        handleSideNotchPointer()
+    }
+
+    private nonisolated func sideNotchSpringProgress(_ elapsed: TimeInterval, motion: SideNotchMotion) -> CGFloat {
+        guard elapsed < motion.duration else { return 1 }
+        let naturalFrequency = motion.naturalFrequency
+        let dampingRatio = motion.dampingRatio
+        let root = sqrt(1 - dampingRatio * dampingRatio)
+        let dampedFrequency = naturalFrequency * root
+        let rawProgress = CGFloat(1 - exp(-dampingRatio * naturalFrequency * elapsed) * (
+            cos(dampedFrequency * elapsed) +
+            (dampingRatio / root) * sin(dampedFrequency * elapsed)
+        ))
+        // The content gets the visual spring overshoot. The outer panel must
+        // remain inside its display, otherwise an overshoot at the top edge
+        // can cross into a neighbouring display for a single frame.
+        return max(0, min(1, rawProgress))
+    }
+
+    private nonisolated func interpolatedSideNotchFrame(from start: NSRect, to target: NSRect, progress: CGFloat) -> NSRect {
+        NSRect(
+            x: start.minX + (target.minX - start.minX) * progress,
+            y: start.minY + (target.minY - start.minY) * progress,
+            width: start.width + (target.width - start.width) * progress,
+            height: start.height + (target.height - start.height) * progress,
+        )
     }
 
     func openPopoverFromSideNotch() {
@@ -3417,19 +4033,6 @@ struct PreviewSettingsSheet: View {
             Divider()
             List {
                 Section {
-                    Toggle("Show usage side-notch", isOn: Binding(
-                        get: { model.sideNotchEnabled },
-                        set: { model.setSideNotchEnabled($0) },
-                    ))
-                    .font(.caption)
-                    Text("Show a compact vertical usage rail on the right edge of the screen. Click it to open the full Tokitoki details.")
-                        .font(.caption2).foregroundStyle(.secondary)
-                } header: {
-                    Text("Edge display")
-                } footer: {
-                    Text("This is separate from the menubar preview and stays visible while other apps are active.")
-                }
-                Section {
                     Toggle("Show usage preview in menubar", isOn: Binding(
                         get: { model.previewEnabled },
                         set: { model.setPreviewEnabled($0) },
@@ -3764,29 +4367,44 @@ struct ActivityGridView: View {
 struct CollapsibleCard<Content: View>: View {
     let title: String
     let icon: String
+    let showsDragHandle: Bool
+    let expansion: Binding<Bool>?
+    let highlighted: Bool
     let content: () -> Content
-    @State private var isExpanded = true
+    @State private var localExpanded: Bool
 
-    init(title: String, icon: String, @ViewBuilder content: @escaping () -> Content) {
+    init(title: String, icon: String, showsDragHandle: Bool = true, initiallyExpanded: Bool = true, expansion: Binding<Bool>? = nil, highlighted: Bool = false, @ViewBuilder content: @escaping () -> Content) {
         self.title = title
         self.icon = icon
+        self.showsDragHandle = showsDragHandle
+        self.expansion = expansion
+        self.highlighted = highlighted
         self.content = content
+        _localExpanded = State(initialValue: initiallyExpanded)
+    }
+
+    private var isExpanded: Bool { expansion?.wrappedValue ?? localExpanded }
+
+    private func toggle() {
+        if let expansion { expansion.wrappedValue.toggle() } else { localExpanded.toggle() }
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: isExpanded ? 7 : 0) {
             HStack(spacing: 4) {
-                Image(systemName: "line.3.horizontal")
-                    .font(.system(size: 8, weight: .semibold))
-                    .foregroundStyle(.quaternary)
-                    .help("drag to reorder")
+                if showsDragHandle {
+                    Image(systemName: "line.3.horizontal")
+                        .font(.system(size: 8, weight: .semibold))
+                        .foregroundStyle(.quaternary)
+                        .help("drag to reorder")
+                }
                 Button {
-                    withAnimation(.easeInOut(duration: 0.15)) { isExpanded.toggle() }
+                    withAnimation(.easeInOut(duration: 0.15)) { toggle() }
                 } label: {
                     HStack(spacing: 4) {
-                        Label(title.uppercased(), systemImage: icon)
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(.secondary)
+                        Label(title.capitalized, systemImage: icon)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.primary)
                         Spacer(minLength: 4)
                         Image(systemName: "chevron.right")
                             .font(.system(size: 8, weight: .bold))
@@ -3805,116 +4423,339 @@ struct CollapsibleCard<Content: View>: View {
         }
         .padding(10)
         .background(.quaternary.opacity(0.28), in: RoundedRectangle(cornerRadius: 12))
+        .overlay {
+            if highlighted {
+                RoundedRectangle(cornerRadius: 12)
+                    .stroke(Color.orange.opacity(0.75), lineWidth: 1.5)
+            }
+        }
     }
 }
 
 /// Floating usage rail attached to the active screen's right edge. It keeps
 /// the always-available glanceable state intentionally smaller than the full
 /// popover; click opens the existing detailed surface.
+struct SideNotchEntry: Identifiable {
+    let id: String
+    let provider: String
+    let limits: [AccountLimits]
+    let remaining: Double?
+    let tokenTotal: Double
+}
+
 struct SideNotchView: View {
     @ObservedObject var model: Model
     let onOpen: () -> Void
-    @State private var isHovering = false
+    @Namespace private var notchNamespace
 
-    struct Entry: Identifiable {
-        let id: String
-        let provider: String
-        let remaining: Double?
-    }
+    private let railWidth = SideNotchGeometry.railWidth
+    private let railLength = SideNotchGeometry.railLength
+    private let itemStride: CGFloat = 68
+    private let detailWidth = SideNotchGeometry.detailWidth
+    private let detailHeight = SideNotchGeometry.detailHeight
+    private let detailGap = SideNotchGeometry.detailGap
 
-    private var entries: [Entry] {
+    private var isVertical: Bool { model.sideNotchEdge == "left" || model.sideNotchEdge == "right" }
+
+    private var entries: [SideNotchEntry] {
         let visible = model.limits.filter { limit in
             !model.menubarHidden.contains(limit.provider)
-                && !model.menubarHidden.contains("(limit.provider):(limit.accountKey)")
+                && !model.menubarHidden.contains("\(limit.provider):\(limit.accountKey)")
         }
         let grouped = Dictionary(grouping: visible) { limit in
             Model.upstreamProvider(limit) ?? limit.provider
         }
         return grouped.compactMap { provider, limits in
-            guard !model.previewHidden.contains(provider) else { return nil }
+            guard !model.sideNotchHidden.contains(provider) else { return nil }
             let remaining = limits.compactMap { limit in
                 Model.primaryWindow(limit)?.usedPct.map { max(0, min(100, 100 - $0)) }
             }.min()
-            return Entry(id: provider, provider: provider, remaining: remaining)
+            let tokenTotal = limits.compactMap { Model.primaryWindow($0)?.tokens }.reduce(0, +)
+            return SideNotchEntry(id: provider, provider: provider, limits: limits, remaining: remaining, tokenTotal: tokenTotal)
         }
+        // Quota values change frequently; they must never decide visual order.
+        // A stable provider order keeps the pointer over the same item while
+        // refreshes update percentages underneath it.
         .sorted { lhs, rhs in
-            switch (lhs.remaining, rhs.remaining) {
-            case let (left?, right?): return left < right
-            case (_?, nil): return true
-            case (nil, _?): return false
-            default: return lhs.provider < rhs.provider
-            }
+            let left = Model.sideNotchProviderOrder.firstIndex(of: lhs.provider) ?? Model.sideNotchProviderOrder.count
+            let right = Model.sideNotchProviderOrder.firstIndex(of: rhs.provider) ?? Model.sideNotchProviderOrder.count
+            return left == right ? lhs.provider < rhs.provider : left < right
         }
+    }
+
+    private var selectedEntry: SideNotchEntry? {
+        entries.first { $0.provider == model.sideNotchSelectedProvider }
     }
 
     var body: some View {
-        VStack(spacing: 13) {
-            Image(systemName: "chart.bar.xaxis")
-                .font(.system(size: 11, weight: .bold))
-                .foregroundStyle(.white.opacity(0.55))
-                .padding(.top, 2)
-
-            ScrollView(.vertical, showsIndicators: false) {
-                VStack(spacing: 17) {
-                    if entries.isEmpty {
-                        Image(systemName: "ellipsis")
-                            .font(.system(size: 16, weight: .bold))
-                            .foregroundStyle(.white.opacity(0.55))
-                            .accessibilityLabel("No provider quota data")
-                    } else {
-                        ForEach(entries.prefix(6)) { entry in
-                            VStack(spacing: 5) {
-                                ZStack {
-                                    Circle()
-                                        .stroke(Color.white.opacity(0.16), lineWidth: 4)
-                                    if let remaining = entry.remaining {
-                                        Circle()
-                                            .trim(from: 0, to: remaining / 100)
-                                            .stroke(
-                                                barTint(remaining),
-                                                style: StrokeStyle(lineWidth: 4, lineCap: .round),
-                                            )
-                                            .rotationEffect(.degrees(-90))
-                                    }
-                                    ProviderLogo(provider: Self.logoProvider(for: entry.provider))
-                                        .scaleEffect(1.15)
-                                }
-                                .frame(width: 39, height: 39)
-                                Text(remainingText(for: entry))
-                                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                                    .foregroundStyle(.white.opacity(0.92))
-                                    .accessibilityLabel(accessibilityText(for: entry))
-                            }
-                        }
-                    }
-                }
-                .frame(maxWidth: .infinity)
-            }
-
-            Image(systemName: isHovering ? "chevron.left" : "ellipsis")
-                .font(.system(size: 9, weight: .bold))
-                .foregroundStyle(.white.opacity(isHovering ? 0.9 : 0.35))
-                .padding(.bottom, 2)
+        // Keep both surfaces mounted in one edge-anchored composition. A
+        // conditional transition has its own temporary layout container; as
+        // the AppKit window shrinks that container can briefly resolve at
+        // (0, 0), which is the top/left flash seen during close. Opacity and
+        // scale keep the handle and card in the same coordinate space for the
+        // entire spring.
+        ZStack(alignment: surfaceAlignment) {
+            expandedContent
+                .opacity(model.sideNotchExpanded ? 1 : 0)
+                .scaleEffect(model.sideNotchExpanded ? 1 : 0.84, anchor: transitionAnchor)
+                .allowsHitTesting(model.sideNotchExpanded)
+            collapsedHandle
+                .frame(width: collapsedWidth, height: collapsedHeight)
+                .opacity(model.sideNotchExpanded ? 0 : 1)
+                .scaleEffect(model.sideNotchExpanded ? 0.96 : 1, anchor: transitionAnchor)
+                .allowsHitTesting(!model.sideNotchExpanded)
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 13)
-        .frame(width: 82)
-        .frame(maxHeight: .infinity)
-        .background(SideNotchBackground().fill(Color.black.opacity(0.94)))
-        .overlay(SideNotchBackground().stroke(Color.white.opacity(0.10), lineWidth: 1))
-        .shadow(color: .black.opacity(0.28), radius: 15, x: -5, y: 0)
-        .contentShape(SideNotchBackground())
-        .scaleEffect(isHovering ? 1.015 : 1, anchor: .trailing)
-        .animation(.easeOut(duration: 0.14), value: isHovering)
-        .onHover { isHovering = $0 }
-        .onTapGesture(perform: onOpen)
-        .help("Open Tokitoki usage details")
+        .frame(width: frameWidth, height: frameHeight, alignment: surfaceAlignment)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: surfaceAlignment)
+        .clipped()
+        .contentShape(Rectangle())
+        .animation(SideNotchAnimation.expansion, value: model.sideNotchExpanded)
+        .onTapGesture {
+            if model.sideNotchExpanded {
+                onOpen()
+            } else {
+                withAnimation(SideNotchAnimation.expansion) {
+                    model.setSideNotchExpanded(true)
+                }
+            }
+        }
+        .help(model.sideNotchExpanded ? "Open Tokitoki usage details" : "Show usage")
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Tokitoki usage side-notch")
-        .accessibilityHint("Click to open usage details")
+        .accessibilityHint("Hover to expand. Click to open usage details.")
     }
 
-    private static func logoProvider(for provider: String) -> String {
+    private var frameWidth: CGFloat {
+        guard model.sideNotchExpanded else { return collapsedWidth }
+        if isVertical { return railWidth + (selectedEntry == nil ? 0 : detailWidth + detailGap) }
+        return railLength
+    }
+
+    private var collapsedWidth: CGFloat {
+        isVertical ? SideNotchGeometry.collapsedThickness : SideNotchGeometry.collapsedLength
+    }
+
+    private var collapsedHeight: CGFloat {
+        isVertical ? SideNotchGeometry.collapsedLength : SideNotchGeometry.collapsedThickness
+    }
+
+    private var surfaceAlignment: Alignment {
+        switch model.sideNotchEdge {
+        case "left": return .leading
+        case "top": return .top
+        case "bottom": return .bottom
+        default: return .trailing
+        }
+    }
+
+    private var transitionAnchor: UnitPoint {
+        switch model.sideNotchEdge {
+        case "left": return .leading
+        case "top": return .top
+        case "bottom": return .bottom
+        default: return .trailing
+        }
+    }
+
+    private var frameHeight: CGFloat {
+        guard model.sideNotchExpanded else { return collapsedHeight }
+        if isVertical { return railLength }
+        return railWidth + (selectedEntry == nil ? 0 : detailHeight + detailGap)
+    }
+
+    private var collapsedHandle: some View {
+        Group {
+            if model.sideNotchHidesCollapsedHandle {
+                // The centered top anchor lives inside the Mac's physical
+                // notch. Keep its hit target, but let the black surface
+                // disappear into that notch instead of drawing a second
+                // visible handle over the menu bar.
+                Color.black.opacity(0.985)
+                    .clipShape(SideNotchBackground(edge: model.sideNotchEdge))
+            } else {
+                Capsule()
+                    .fill(Color.white.opacity(0.48))
+                    .frame(width: isVertical ? 2.5 : 22, height: isVertical ? 22 : 2.5)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Color.black.opacity(0.985), in: SideNotchBackground(edge: model.sideNotchEdge))
+                    .overlay {
+                        SideNotchBackground(edge: model.sideNotchEdge)
+                            .stroke(surfaceBorder, lineWidth: 1.15)
+                    }
+                    .shadow(color: .black.opacity(0.34), radius: 10, x: 0, y: 0)
+            }
+        }
+    }
+
+    private var surfaceBorder: LinearGradient {
+        LinearGradient(
+            colors: [Color.white.opacity(0.22), Color.white.opacity(0.045), Color.white.opacity(0.15)],
+            startPoint: isVertical ? .top : .leading,
+            endPoint: isVertical ? .bottom : .trailing,
+        )
+    }
+
+    @ViewBuilder private var expandedContent: some View {
+        if isVertical {
+            verticalExpanded
+        } else {
+            horizontalExpanded
+        }
+    }
+
+    private var verticalExpanded: some View {
+        ZStack(alignment: .topLeading) {
+            expandedRail
+                .offset(x: model.sideNotchEdge == "right" && selectedEntry != nil ? detailWidth + detailGap : 0)
+            if let selectedEntry {
+                detailCallout(selectedEntry)
+                    .offset(x: model.sideNotchEdge == "right" ? 0 : railWidth, y: detailOffset)
+            }
+        }
+        .animation(.interactiveSpring(response: 0.32, dampingFraction: 0.88, blendDuration: 0.08), value: model.sideNotchSelectedProvider)
+    }
+
+    private var horizontalExpanded: some View {
+        ZStack(alignment: .topLeading) {
+            expandedRail
+                .offset(y: model.sideNotchEdge == "bottom" && selectedEntry != nil ? detailHeight + detailGap : 0)
+            if let selectedEntry {
+                detailCallout(selectedEntry)
+                    .offset(x: detailOffset, y: model.sideNotchEdge == "top" ? railWidth : 0)
+            }
+        }
+        .animation(.interactiveSpring(response: 0.32, dampingFraction: 0.88, blendDuration: 0.08), value: model.sideNotchSelectedProvider)
+    }
+
+    private var expandedRail: some View {
+        Group {
+            if isVertical {
+                VStack(spacing: 0) {
+                    railHeader
+                    ScrollView(.vertical, showsIndicators: false) {
+                        VStack(spacing: 0) {
+                            ForEach(Array(entries.prefix(6))) { entry in providerItem(entry) }
+                        }
+                    }
+                    railFooter
+                }
+            } else {
+                HStack(spacing: 0) {
+                    railHeader
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 0) {
+                            ForEach(Array(entries.prefix(6))) { entry in providerItem(entry) }
+                        }
+                    }
+                    railFooter
+                }
+            }
+        }
+        .padding(isVertical ? .horizontal : .vertical, 10)
+        .padding(isVertical ? .vertical : .horizontal, 8)
+        .frame(width: isVertical ? railWidth : railLength, height: isVertical ? railLength : railWidth)
+        .background(Color.black.opacity(0.985), in: SideNotchBackground(edge: model.sideNotchEdge))
+        .overlay {
+            SideNotchBackground(edge: model.sideNotchEdge)
+                .stroke(surfaceBorder, lineWidth: 1.2)
+        }
+        .shadow(color: .black.opacity(0.34), radius: 18, x: 0, y: 0)
+    }
+
+    private var railHeader: some View {
+        Image(systemName: "chart.bar.xaxis")
+            .font(.system(size: 11, weight: .bold))
+            .foregroundStyle(.white.opacity(0.55))
+            .frame(width: isVertical ? railWidth - 20 : 26, height: isVertical ? 28 : railWidth - 20)
+    }
+
+    private var railFooter: some View {
+        Image(systemName: model.sideNotchSelectedProvider == nil ? "ellipsis" : (isVertical ? "chevron.left" : "chevron.up"))
+            .font(.system(size: 9, weight: .bold))
+            .foregroundStyle(.white.opacity(0.4))
+            .frame(width: isVertical ? railWidth - 20 : 26, height: isVertical ? 24 : railWidth - 20)
+    }
+
+    private func providerItem(_ entry: SideNotchEntry) -> some View {
+        VStack(spacing: 5) {
+            QuotaRing(provider: entry.provider, remaining: entry.remaining, size: 44)
+            Text(valueText(for: entry))
+                .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                .foregroundStyle(.white.opacity(0.92))
+                .accessibilityLabel(accessibilityText(for: entry))
+        }
+        .frame(width: isVertical ? railWidth - 20 : itemStride, height: isVertical ? itemStride : railWidth - 20)
+        .contentShape(Rectangle())
+        .onHover { isHovering in
+            if isHovering { model.setSideNotchSelectedProvider(entry.provider) }
+        }
+    }
+
+    private func detailCallout(_ entry: SideNotchEntry) -> some View {
+        ZStack {
+            SideNotchDetailView(entry: entry, metric: model.sideNotchMetric)
+                .frame(width: detailWidth, height: detailHeight)
+                .position(x: detailCardPosition.x, y: detailCardPosition.y)
+                .matchedGeometryEffect(id: "side-notch-detail", in: notchNamespace, properties: .position, anchor: .center, isSource: true)
+            detailPointer()
+                .position(x: detailPointerPosition.x, y: detailPointerPosition.y)
+        }
+        .frame(
+            width: isVertical ? detailWidth + detailGap : detailWidth,
+            height: isVertical ? detailHeight : detailHeight + detailGap,
+        )
+    }
+
+    private func detailPointer() -> some View {
+        SideNotchPointer(edge: model.sideNotchEdge)
+            .foregroundStyle(Color.black.opacity(0.97))
+            .frame(
+                width: isVertical ? detailGap : 34,
+                height: isVertical ? 34 : detailGap,
+            )
+    }
+
+    private var detailCardPosition: CGPoint {
+        switch model.sideNotchEdge {
+        case "left": return CGPoint(x: detailGap + detailWidth / 2, y: detailHeight / 2)
+        case "top": return CGPoint(x: detailWidth / 2, y: detailGap + detailHeight / 2)
+        case "bottom": return CGPoint(x: detailWidth / 2, y: detailHeight / 2)
+        default: return CGPoint(x: detailWidth / 2, y: detailHeight / 2)
+        }
+    }
+
+    private var detailPointerPosition: CGPoint {
+        switch model.sideNotchEdge {
+        case "left": return CGPoint(x: detailGap / 2, y: detailHeight / 2)
+        case "top": return CGPoint(x: detailWidth / 2, y: detailGap / 2)
+        case "bottom": return CGPoint(x: detailWidth / 2, y: detailHeight + detailGap / 2)
+        default: return CGPoint(x: detailWidth + detailGap / 2, y: detailHeight / 2)
+        }
+    }
+
+    private var detailOffset: CGFloat {
+        let index = Array(entries.prefix(6)).firstIndex { $0.provider == selectedEntry?.provider } ?? 0
+        let center = 28 + CGFloat(index) * itemStride + itemStride / 2
+        let length = isVertical ? railLength : railLength
+        let detailLength = isVertical ? detailHeight : detailWidth + detailGap
+        return max(8, min(length - detailLength - 8, center - detailLength / 2))
+    }
+
+    private func valueText(for entry: SideNotchEntry) -> String {
+        switch model.sideNotchMetric {
+        case "tokens": return entry.tokenTotal > 0 ? humanCount(entry.tokenTotal) : "—"
+        case "smart":
+            if let remaining = entry.remaining { return "\(Int(remaining.rounded()))%" }
+            return entry.tokenTotal > 0 ? "~\(humanCount(entry.tokenTotal))" : "—"
+        default: return entry.remaining.map { "\(Int($0.rounded()))%" } ?? "—"
+        }
+    }
+
+    private func accessibilityText(for entry: SideNotchEntry) -> String {
+        "\(entry.provider), \(valueText(for: entry))"
+    }
+
+    static func logoProvider(for provider: String) -> String {
         switch provider {
         case "openai": return "codex"
         case "claude": return "claude-code"
@@ -3923,32 +4764,224 @@ struct SideNotchView: View {
         }
     }
 
-    private func remainingText(for entry: Entry) -> String {
-        entry.remaining.map { "\(Int($0.rounded()))%" } ?? "—"
+    static func providerTitle(for provider: String) -> String {
+        switch provider {
+        case "openai": return "OpenAI"
+        case "claude": return "Claude"
+        case "openrouter": return "OpenRouter"
+        case "opencode": return "OpenCode"
+        case "gemini": return "Gemini"
+        default: return provider.capitalized
+        }
+    }
+}
+
+struct QuotaRing: View {
+    let provider: String
+    let remaining: Double?
+    let size: CGFloat
+
+    var body: some View {
+        ZStack {
+            Circle().stroke(Color.white.opacity(0.16), lineWidth: 5)
+            if let remaining {
+                Circle()
+                    .trim(from: 0, to: max(0, min(1, remaining / 100)))
+                    .stroke(barTint(remaining), style: StrokeStyle(lineWidth: 5, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+                    .animation(.easeInOut(duration: 0.28), value: remaining)
+            }
+            ProviderLogo(provider: SideNotchView.logoProvider(for: provider)).scaleEffect(1.35)
+        }
+        .frame(width: size, height: size)
+    }
+}
+
+struct SideNotchDetailView: View {
+    let entry: SideNotchEntry
+    let metric: String
+
+    struct Row: Identifiable {
+        let id: String
+        let label: String
+        let remaining: Double?
+        let tokens: Double
+        let reset: String
     }
 
-    private func accessibilityText(for entry: Entry) -> String {
-        let detail = entry.remaining.map { "\(Int($0.rounded())) percent remaining" } ?? "usage unavailable"
-        return "\(entry.provider), \(detail)"
+    private var rows: [Row] {
+        let grouped = Dictionary(grouping: entry.limits.flatMap(\.windows), by: \.kind)
+        let order = ["day": 0, "week": 1, "month": 2]
+        return grouped.map { kind, windows in
+            let remaining = windows.compactMap { $0.usedPct.map { max(0, min(100, 100 - $0)) } }.min()
+            let tokens = windows.map(\.tokens).max() ?? 0
+            return Row(
+                id: kind,
+                label: windowDisplayName(kind, provider: entry.limits.first?.provider ?? entry.provider),
+                remaining: remaining,
+                tokens: tokens,
+                reset: windows.compactMap(\.resetsAt).map(countdown).first ?? "—",
+            )
+        }.sorted { (order[$0.id] ?? 9) < (order[$1.id] ?? 9) }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 11) {
+            HStack(spacing: 8) {
+                ProviderLogo(provider: SideNotchView.logoProvider(for: entry.provider)).scaleEffect(1.45)
+                Text("\(SideNotchView.providerTitle(for: entry.provider)) Usage")
+                    .font(.system(size: 14, weight: .semibold))
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+            }
+            if rows.isEmpty {
+                Text("No quota windows reported yet.").font(.caption).foregroundStyle(.secondary)
+            } else {
+                ForEach(rows) { row in
+                    VStack(alignment: .leading, spacing: 5) {
+                        HStack(spacing: 6) {
+                            Text(row.label).font(.caption.weight(.medium))
+                            Spacer(minLength: 4)
+                            Text(row.reset == "now" ? "Available now" : "Resets in \(row.reset)")
+                                .font(.caption2).foregroundStyle(.secondary)
+                        }
+                        QuotaProgressBar(remaining: row.remaining, tokens: row.tokens, metric: metric)
+                        Text(row.remaining.map { "\(Int($0.rounded()))% left" } ?? (row.tokens > 0 ? "~\(humanCount(row.tokens)) tokens" : "Usage unavailable"))
+                            .font(.caption2.monospacedDigit())
+                            .foregroundStyle(row.remaining.map(barTint) ?? .secondary)
+                    }
+                }
+            }
+            Text("Click for full details")
+                .font(.caption2.weight(.medium))
+                .foregroundStyle(.tertiary)
+                .padding(.top, 2)
+        }
+        .padding(16)
+        .frame(maxHeight: .infinity, alignment: .topLeading)
+        .background(Color.black.opacity(0.97), in: RoundedRectangle(cornerRadius: 18))
+        .clipShape(RoundedRectangle(cornerRadius: 18))
+    }
+}
+
+struct QuotaProgressBar: View {
+    let remaining: Double?
+    let tokens: Double
+    let metric: String
+
+    var body: some View {
+        GeometryReader { proxy in
+            ZStack(alignment: .leading) {
+                Capsule().fill(Color.white.opacity(0.16))
+                if let remaining {
+                    Capsule().fill(barTint(remaining)).frame(width: proxy.size.width * max(0, min(1, remaining / 100)))
+                } else if metric == "tokens", tokens > 0 {
+                    Capsule().fill(Color(red: 0.33, green: 0.62, blue: 0.96)).frame(width: proxy.size.width * 0.42)
+                }
+            }
+        }
+        .frame(height: 5)
+    }
+}
+
+struct SideNotchPointer: Shape {
+    let edge: String
+
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        switch edge {
+        case "left":
+            path.move(to: CGPoint(x: rect.maxX, y: rect.minY))
+            path.addLine(to: CGPoint(x: rect.minX, y: rect.midY))
+            path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
+        case "top":
+            path.move(to: CGPoint(x: rect.minX, y: rect.maxY))
+            path.addLine(to: CGPoint(x: rect.midX, y: rect.minY))
+            path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
+        case "bottom":
+            path.move(to: CGPoint(x: rect.minX, y: rect.minY))
+            path.addLine(to: CGPoint(x: rect.midX, y: rect.maxY))
+            path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))
+        default:
+            path.move(to: CGPoint(x: rect.minX, y: rect.minY))
+            path.addLine(to: CGPoint(x: rect.maxX, y: rect.midY))
+            path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY))
+        }
+        path.closeSubpath()
+        return path
     }
 }
 
 struct SideNotchBackground: Shape {
+    let edge: String
+
     func path(in rect: CGRect) -> Path {
-        let radius = min(24, rect.height / 4)
+        let radius = min(34, min(rect.width, rect.height) / 2)
+        let control = radius * 0.42
         var path = Path()
-        path.move(to: CGPoint(x: rect.maxX, y: rect.minY))
-        path.addLine(to: CGPoint(x: rect.minX + radius, y: rect.minY))
-        path.addQuadCurve(
-            to: CGPoint(x: rect.minX, y: rect.minY + radius),
-            control: CGPoint(x: rect.minX, y: rect.minY),
-        )
-        path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY - radius))
-        path.addQuadCurve(
-            to: CGPoint(x: rect.minX + radius, y: rect.maxY),
-            control: CGPoint(x: rect.minX, y: rect.maxY),
-        )
-        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
+        switch edge {
+        case "left":
+            path.move(to: CGPoint(x: rect.minX, y: rect.minY))
+            path.addLine(to: CGPoint(x: rect.maxX - radius, y: rect.minY))
+            path.addCurve(
+                to: CGPoint(x: rect.maxX, y: rect.minY + radius),
+                control1: CGPoint(x: rect.maxX - control, y: rect.minY),
+                control2: CGPoint(x: rect.maxX, y: rect.minY + control),
+            )
+            path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY - radius))
+            path.addCurve(
+                to: CGPoint(x: rect.maxX - radius, y: rect.maxY),
+                control1: CGPoint(x: rect.maxX, y: rect.maxY - control),
+                control2: CGPoint(x: rect.maxX - control, y: rect.maxY),
+            )
+            path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY))
+        case "top":
+            path.move(to: CGPoint(x: rect.minX, y: rect.minY))
+            path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))
+            path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY - radius))
+            path.addCurve(
+                to: CGPoint(x: rect.maxX - radius, y: rect.maxY),
+                control1: CGPoint(x: rect.maxX, y: rect.maxY - control),
+                control2: CGPoint(x: rect.maxX - control, y: rect.maxY),
+            )
+            path.addLine(to: CGPoint(x: rect.minX + radius, y: rect.maxY))
+            path.addCurve(
+                to: CGPoint(x: rect.minX, y: rect.maxY - radius),
+                control1: CGPoint(x: rect.minX + control, y: rect.maxY),
+                control2: CGPoint(x: rect.minX, y: rect.maxY - control),
+            )
+        case "bottom":
+            path.move(to: CGPoint(x: rect.minX + radius, y: rect.minY))
+            path.addLine(to: CGPoint(x: rect.maxX - radius, y: rect.minY))
+            path.addCurve(
+                to: CGPoint(x: rect.maxX, y: rect.minY + radius),
+                control1: CGPoint(x: rect.maxX - control, y: rect.minY),
+                control2: CGPoint(x: rect.maxX, y: rect.minY + control),
+            )
+            path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
+            path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY))
+            path.addLine(to: CGPoint(x: rect.minX, y: rect.minY + radius))
+            path.addCurve(
+                to: CGPoint(x: rect.minX + radius, y: rect.minY),
+                control1: CGPoint(x: rect.minX, y: rect.minY + control),
+                control2: CGPoint(x: rect.minX + control, y: rect.minY),
+            )
+        default:
+            path.move(to: CGPoint(x: rect.maxX, y: rect.minY))
+            path.addLine(to: CGPoint(x: rect.minX + radius, y: rect.minY))
+            path.addCurve(
+                to: CGPoint(x: rect.minX, y: rect.minY + radius),
+                control1: CGPoint(x: rect.minX + control, y: rect.minY),
+                control2: CGPoint(x: rect.minX, y: rect.minY + control),
+            )
+            path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY - radius))
+            path.addCurve(
+                to: CGPoint(x: rect.minX + radius, y: rect.maxY),
+                control1: CGPoint(x: rect.minX, y: rect.maxY - control),
+                control2: CGPoint(x: rect.minX + control, y: rect.maxY),
+            )
+            path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
+        }
         path.closeSubpath()
         return path
     }
@@ -4050,6 +5083,174 @@ struct HoverPreviewView: View {
     }
 }
 
+/// Settings for the edge rail are deliberately separate from the menubar
+/// preview: the two surfaces have different space and attention budgets.
+struct SideNotchSettingsSheet: View {
+    @ObservedObject var model: Model
+    @Binding var isPresented: Bool
+    @State private var rows: [ProviderRow] = []
+
+    struct ProviderRow: Identifiable {
+        let id: String
+        var visible: Bool
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("Side-notch settings")
+                    .font(.system(size: 13, weight: .semibold))
+                Spacer()
+                Button("Done") { isPresented = false }
+                    .buttonStyle(.plain).fontWeight(.semibold)
+            }
+            .padding(.horizontal, 14).padding(.vertical, 10)
+            Divider()
+            List {
+                Section {
+                    Toggle("Show usage side-notch", isOn: Binding(
+                        get: { model.sideNotchEnabled },
+                        set: { model.setSideNotchEnabled($0) },
+                    ))
+                    .font(.caption)
+                    Text("A small edge handle expands on hover into the usage rail. Hover a provider to see its quota details; click for the full popover.")
+                        .font(.caption2).foregroundStyle(.secondary)
+                    Toggle("Mirror menubar preview settings", isOn: Binding(
+                        get: { model.sideNotchSyncPreview },
+                        set: { model.setSideNotchSyncPreview($0) },
+                    ))
+                    .font(.caption)
+                    Text("When enabled, visibility, metric, and enabled state stay the same in both surfaces.")
+                        .font(.caption2).foregroundStyle(.secondary)
+                } header: {
+                    Text("Display")
+                }
+                Section {
+                    Text("Screen anchor")
+                        .font(.caption.weight(.medium))
+                    VStack(spacing: 5) {
+                        ForEach(Self.sideNotchPlacementRows, id: \.edge) { row in
+                            HStack(spacing: 5) {
+                                Text(row.edge.capitalized)
+                                    .font(.caption2.weight(.medium))
+                                    .foregroundStyle(.secondary)
+                                    .frame(width: 48, alignment: .leading)
+                                ForEach(row.placements, id: \.self) { placement in
+                                    Button {
+                                        model.setSideNotchPlacement(placement)
+                                    } label: {
+                                        Text(sideNotchPositionLabel(placement))
+                                            .font(.caption2.weight(placement == model.sideNotchPlacement ? .semibold : .regular))
+                                            .foregroundStyle(placement == model.sideNotchPlacement ? Color.accentColor : Color.secondary)
+                                            .frame(maxWidth: .infinity, minHeight: 25)
+                                            .background(placement == model.sideNotchPlacement ? Color.accentColor.opacity(0.14) : Color.clear, in: RoundedRectangle(cornerRadius: 6))
+                                    }
+                                    .buttonStyle(.plain)
+                                    .help(sideNotchPlacementLabel(placement))
+                                    .accessibilityLabel(sideNotchPlacementLabel(placement))
+                                }
+                            }
+                        }
+                    }
+                    Text("\(sideNotchPlacementLabel(model.sideNotchPlacement)) · \(model.sideNotchEdge) edge")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                } header: {
+                    Text("Position")
+                } footer: {
+                    Text("The selected anchor determines the nearest screen edge and the notch orientation automatically.")
+                }
+                Section {
+                    Picker("Metric", selection: Binding(
+                        get: { model.sideNotchMetric },
+                        set: { model.setSideNotchMetric($0) },
+                    )) {
+                        Text("Remaining percent").tag("percent")
+                        Text("Usage tokens").tag("tokens")
+                        Text("Smart constraint").tag("smart")
+                    }
+                    .pickerStyle(.menu)
+                    .disabled(model.sideNotchSyncPreview)
+                } header: {
+                    Text("Rail values")
+                } footer: {
+                    Text("The circular ring always uses the real remaining quota when a provider reports one. Token-only data stays neutral instead of pretending to be a percentage.")
+                }
+                Section {
+                    ForEach($rows) { $row in
+                        Toggle(isOn: Binding(
+                            get: { row.visible },
+                            set: { newValue in
+                                row.visible = newValue
+                                model.setSideNotchVisible(row.id, visible: newValue)
+                            },
+                        )) {
+                            HStack(spacing: 9) {
+                                ProviderLogo(provider: row.id)
+                                Text(row.id).font(.system(size: 13, weight: .medium))
+                            }
+                        }
+                        .disabled(model.sideNotchSyncPreview)
+                    }
+                    if rows.isEmpty {
+                        Text("No quota providers detected")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                } header: {
+                    Text("Providers")
+                } footer: {
+                    Text("These choices affect only the side-notch rail. Turn on mirroring above to use the menubar preview's provider selection.")
+                }
+            }
+            .listStyle(.inset)
+        }
+        .frame(width: 340, height: 430)
+        .onAppear(perform: loadRows)
+    }
+
+    private func loadRows() {
+        rows = (model.providerVisibilityItems() ?? []).map(\.display).sorted().map { provider in
+            ProviderRow(id: provider, visible: !model.sideNotchHidden.contains(provider))
+        }
+    }
+
+    private static let sideNotchPlacementRows = [
+        (edge: "top", placements: ["top-left", "top", "top-right"]),
+        (edge: "right", placements: ["right-top", "right", "right-bottom"]),
+        (edge: "bottom", placements: ["bottom-left", "bottom", "bottom-right"]),
+        (edge: "left", placements: ["left-top", "left", "left-bottom"]),
+    ]
+
+    private func sideNotchPositionLabel(_ value: String) -> String {
+        switch value {
+        case "top-left", "bottom-left": return "Left"
+        case "top-right", "bottom-right": return "Right"
+        case "right-top", "left-top": return "Top"
+        case "right-bottom", "left-bottom": return "Bottom"
+        default: return "Center"
+        }
+    }
+
+    private func sideNotchPlacementLabel(_ value: String) -> String {
+        switch value {
+        case "top-left": return "Top left"
+        case "top": return "Top center"
+        case "top-right": return "Top right"
+        case "right-top": return "Right top"
+        case "right": return "Right center"
+        case "right-bottom": return "Right bottom"
+        case "bottom-left": return "Bottom left"
+        case "bottom": return "Bottom center"
+        case "bottom-right": return "Bottom right"
+        case "left-top": return "Left top"
+        case "left": return "Left center"
+        case "left-bottom": return "Left bottom"
+        case "center": return "Right center"
+        default: return value.capitalized
+        }
+    }
+}
+
 struct TabSettingsSheet: View {
     @ObservedObject var model: Model
     @Binding var isPresented: Bool
@@ -4093,6 +5294,179 @@ struct TabSettingsSheet: View {
         }
         .frame(width: 340, height: 390)
         .onAppear { tabs = model.tabOrder }
+    }
+}
+
+/// Inline controls for the settings page. The focused editor sheets remain
+/// available as implementation references, but everyday display preferences
+/// should be visible beside the other collapsible settings.
+struct PreviewSettingsInline: View {
+    @ObservedObject var model: Model
+    @State private var rows: [String] = []
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Toggle("Show usage preview in menubar", isOn: Binding(
+                get: { model.previewEnabled },
+                set: { model.setPreviewEnabled($0) },
+            ))
+            .font(.caption)
+            Text("Hide the compact provider usage strip without hiding the popover or quota cards.")
+                .font(.caption2).foregroundStyle(.secondary)
+            Picker("Display", selection: Binding(
+                get: { model.previewMode },
+                set: { model.setPreviewMode($0) },
+            )) {
+                Text("Always in the menubar").tag("inline")
+                Text("Only while hovering").tag("hover")
+            }
+            .pickerStyle(.menu)
+            .disabled(!model.previewEnabled)
+            Picker("Metric", selection: Binding(
+                get: { model.stripMetric },
+                set: { model.setStripMetric($0) },
+            )) {
+                Text("Remaining percent").tag("percent")
+                Text("Usage tokens").tag("tokens")
+                Text("Smart constraint").tag("smart")
+            }
+            .pickerStyle(.menu)
+            .disabled(!model.previewEnabled)
+            Picker("When a provider is exhausted", selection: Binding(
+                get: { model.stripExhausted },
+                set: { model.setStripExhausted($0) },
+            )) {
+                Text("Show next reset").tag("reset")
+                Text("Hide its mark").tag("hide")
+                Text("Keep showing 0%").tag("show")
+            }
+            .pickerStyle(.menu)
+            .disabled(!model.previewEnabled)
+            Divider().opacity(0.35)
+            Text("Providers").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            ForEach(rows, id: \.self) { provider in
+                Toggle(isOn: Binding(
+                    get: { !model.previewHidden.contains(provider) },
+                    set: { model.setPreviewVisible(provider, visible: $0) },
+                )) {
+                    HStack(spacing: 9) {
+                        MonoMark(provider: provider)
+                        Text(provider).font(.system(size: 13, weight: .medium))
+                    }
+                }
+                .font(.caption)
+            }
+            if rows.isEmpty {
+                Text("No quota providers detected").font(.caption).foregroundStyle(.secondary)
+            }
+            Text("Smart constraint favors the window that limits availability; exhausted providers show the latest required reset.")
+                .font(.caption2).foregroundStyle(.tertiary)
+        }
+        .onAppear(perform: load)
+    }
+
+    private func load() {
+        var order: [String] = []
+        for limit in model.limits {
+            guard let provider = Model.upstreamProvider(limit), !order.contains(provider) else { continue }
+            order.append(provider)
+        }
+        rows = order
+    }
+}
+
+struct SideNotchSettingsInline: View {
+    @ObservedObject var model: Model
+    @State private var rows: [String] = []
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Toggle("Show usage side-notch", isOn: Binding(
+                get: { model.sideNotchEnabled },
+                set: { model.setSideNotchEnabled($0) },
+            ))
+            .font(.caption)
+            Text("A small edge handle expands on hover into the usage rail. Hover a provider to see its quota details; click for the full popover.")
+                .font(.caption2).foregroundStyle(.secondary)
+            Toggle("Mirror menubar preview settings", isOn: Binding(
+                get: { model.sideNotchSyncPreview },
+                set: { model.setSideNotchSyncPreview($0) },
+            ))
+            .font(.caption)
+            Text("When enabled, visibility, metric, and enabled state stay the same in both surfaces.")
+                .font(.caption2).foregroundStyle(.secondary)
+            Divider().opacity(0.35)
+            Text("Screen anchor").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 3), spacing: 6) {
+                ForEach(Model.validSideNotchPlacements, id: \.self) { placement in
+                    Button {
+                        model.setSideNotchPlacement(placement)
+                    } label: {
+                        Image(systemName: placement == model.sideNotchPlacement ? "circle.inset.filled" : "circle")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(placement == model.sideNotchPlacement ? Color.accentColor : Color.secondary)
+                            .frame(maxWidth: .infinity, minHeight: 24)
+                            .background(placement == model.sideNotchPlacement ? Color.accentColor.opacity(0.14) : Color.clear, in: RoundedRectangle(cornerRadius: 6))
+                    }
+                    .buttonStyle(.plain)
+                    .help(placementLabel(placement))
+                    .accessibilityLabel(placementLabel(placement))
+                }
+            }
+            Text("\(placementLabel(model.sideNotchPlacement)) · \(model.sideNotchEdge) edge")
+                .font(.caption2).foregroundStyle(.secondary)
+            Divider().opacity(0.35)
+            Picker("Metric", selection: Binding(
+                get: { model.sideNotchMetric },
+                set: { model.setSideNotchMetric($0) },
+            )) {
+                Text("Remaining percent").tag("percent")
+                Text("Usage tokens").tag("tokens")
+                Text("Smart constraint").tag("smart")
+            }
+            .pickerStyle(.menu)
+            .disabled(model.sideNotchSyncPreview)
+            Text("The ring uses real remaining quota when available; token-only data stays neutral.")
+                .font(.caption2).foregroundStyle(.tertiary)
+            Divider().opacity(0.35)
+            Text("Providers").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            ForEach(rows, id: \.self) { provider in
+                Toggle(isOn: Binding(
+                    get: { !model.sideNotchHidden.contains(provider) },
+                    set: { model.setSideNotchVisible(provider, visible: $0) },
+                )) {
+                    HStack(spacing: 9) {
+                        ProviderLogo(provider: provider)
+                        Text(provider).font(.system(size: 13, weight: .medium))
+                    }
+                }
+                .font(.caption)
+                .disabled(model.sideNotchSyncPreview)
+            }
+            if rows.isEmpty {
+                Text("No quota providers detected").font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .onAppear(perform: load)
+    }
+
+    private func load() {
+        rows = (model.providerVisibilityItems() ?? []).map(\.display).sorted()
+    }
+
+    private func placementLabel(_ value: String) -> String {
+        switch value {
+        case "top-left": return "Top left"
+        case "top": return "Top center"
+        case "top-right": return "Top right"
+        case "left": return "Middle left"
+        case "center": return "Default right-center"
+        case "right": return "Middle right"
+        case "bottom-left": return "Bottom left"
+        case "bottom": return "Bottom center"
+        case "bottom-right": return "Bottom right"
+        default: return value.capitalized
+        }
     }
 }
 
@@ -4144,10 +5518,13 @@ struct ContentView: View {
     @ObservedObject var model: Model
     /// Card filter — matches harness/account names, repo paths, tools.
     @State private var searchText = ""
+    /// Settings-only search keeps the main data views' search semantics intact.
+    @State private var settingsSearchText = ""
+    /// Expansion is owned here so Expand all / Collapse all can control every
+    /// settings section without affecting the reorderable data cards.
+    @State private var expandedSettingsCards: Set<String> = ["configuration file", "notifications & spend guard"]
     /// Customize sheet (card toggles + drag reorder).
     @State private var showCustomize = false
-    /// Separate status-item preview settings (provider marks and display mode).
-    @State private var showPreviewSettings = false
     /// Provider API-key manager, kept separate from card layout editing.
     @State private var showAPIKeys = false
     @State private var showTabSettings = false
@@ -4182,6 +5559,25 @@ struct ContentView: View {
         "anomalies": "anomalies",
         "repos": "top repos",
         "tools": "top tools",
+    ]
+    static let settingsCardIds = [
+        "configuration file", "privacy", "notifications & spend guard", "recent alerts",
+        "background quota polling", "popover layout", "menubar preview", "side-notch",
+        "provider API keys", "index & import diagnostics", "sync", "local dashboard",
+    ]
+    static let settingsKeywords: [String: String] = [
+        "configuration file": "config file nix home manager settings",
+        "privacy": "account identity email private",
+        "notifications & spend guard": "alerts quota spend burn budget",
+        "recent alerts": "notification history",
+        "background quota polling": "automatic refresh quotas polling",
+        "popover layout": "cards tabs reorder drag",
+        "menubar preview": "status item provider percentage reset",
+        "side-notch": "side notch rail hover edge orientation placement screen",
+        "provider API keys": "credentials tokens authentication",
+        "index & import diagnostics": "reindex conversations csv import diagnostics",
+        "sync": "backend folder git atproto",
+        "local dashboard": "browser web server",
     ]
 
     private var searchActive: Bool { !trimmedQuery.lowercased().isEmpty }
@@ -4243,9 +5639,6 @@ struct ContentView: View {
         .background(.thinMaterial)
         .sheet(isPresented: $showCustomize) {
             CustomizeSheet(model: model, isPresented: $showCustomize)
-        }
-        .sheet(isPresented: $showPreviewSettings) {
-            PreviewSettingsSheet(model: model, isPresented: $showPreviewSettings)
         }
         .sheet(isPresented: $showAPIKeys) {
             ApiKeysSheet(model: model, isPresented: $showAPIKeys)
@@ -4383,20 +5776,17 @@ struct ContentView: View {
 
     private var popoverFooter: some View {
         HStack(spacing: 6) {
-            Button(action: { model.refresh(force: true) }) {
-                Label("Refresh all", systemImage: "arrow.clockwise")
-            }
-            .buttonStyle(.bordered).controlSize(.small)
-            .accessibilityLabel("Refresh all data")
-            .accessibilityIdentifier("refresh-all")
-            Button(action: { model.scanNow() }) {
-                Image(systemName: model.scanInFlight ? "hourglass" : "magnifyingglass")
+            Button(action: { model.refreshAll() }) {
+                Label(
+                    model.scanInFlight ? "Scanning…" : (model.pollInFlight ? "Refreshing…" : "Refresh & scan"),
+                    systemImage: model.scanInFlight ? "arrow.triangle.2.circlepath" : "arrow.clockwise",
+                )
             }
             .buttonStyle(.bordered).controlSize(.small)
             .disabled(model.scanInFlight)
-            .help(model.scanInFlight ? "Scanning local sources…" : "Scan local sources")
-            .accessibilityLabel(model.scanInFlight ? "Scanning local sources" : "Scan local sources")
-            .accessibilityIdentifier("scan-sources")
+            .help("Scan local sources, then refresh provider quotas and reports")
+            .accessibilityLabel("Scan local sources and refresh all data")
+            .accessibilityIdentifier("refresh-all")
             Spacer(minLength: 0)
             Menu {
                 Button("Save screenshot to Desktop") { saveScreenshot() }
@@ -5358,7 +6748,8 @@ private struct HighlightedSnippet: View {
         ScrollView(.vertical) {
             VStack(alignment: .leading, spacing: 10) {
                 freshnessRow
-                card(title: "configuration file", icon: "doc.badge.gearshape") {
+                settingsToolbar
+                settingsCard(title: "configuration file", icon: "doc.badge.gearshape", keywords: "config file nix home manager settings", initiallyExpanded: true) {
                     Text("Popover, preview, polling, notification, sync, and provider-key settings are persisted here so the same file can be managed by Nix or Home Manager.")
                         .font(.caption).foregroundStyle(.secondary)
                     Text(model.configFilePath)
@@ -5374,7 +6765,7 @@ private struct HighlightedSnippet: View {
                     .buttonStyle(.bordered).controlSize(.small)
                     .accessibilityIdentifier("open-config-file")
                 }
-                card(title: "privacy", icon: "eye.slash") {
+                settingsCard(title: "privacy", icon: "eye.slash", keywords: "account identity email private") {
                     Toggle("Hide account identities in the popover", isOn: Binding(
                         get: { model.privacyHideIdentities },
                         set: { model.setPrivacyHideIdentities($0) },
@@ -5383,12 +6774,14 @@ private struct HighlightedSnippet: View {
                     Text("Emails, account ids, and credential hints are replaced with private labels locally. The config remains plain text and contains no secrets.")
                         .font(.caption2).foregroundStyle(.secondary)
                 }
-                card(title: "notifications & spend guard", icon: "bell.badge.fill") {
-                    Toggle("Critical quota alerts", isOn: Binding(
+                settingsCard(title: "notifications & spend guard", icon: "bell.badge.fill", keywords: "alerts quota spend burn budget", initiallyExpanded: true) {
+                    Toggle("Allow notifications", isOn: Binding(
                         get: { model.notificationsEnabled },
                         set: { model.setNotificationsEnabled($0) },
                     ))
                     .font(.caption)
+                    Text("Notifications are off by default. Turn them on only if you want Tokitoki to interrupt you about quota or spend changes.")
+                        .font(.caption2).foregroundStyle(.secondary)
                     Toggle("Notify when an exhausted quota resets", isOn: Binding(
                         get: { model.resetAwareNotifications },
                         set: { model.setResetAwareNotifications($0) },
@@ -5435,6 +6828,12 @@ private struct HighlightedSnippet: View {
                     }
                     Divider().opacity(0.35)
                     Text("Alert categories").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                    Toggle("All alert categories", isOn: Binding(
+                        get: { model.allNotificationKindsEnabled },
+                        set: { model.setAllNotificationKindsEnabled($0) },
+                    ))
+                    .font(.caption)
+                    .disabled(!model.notificationsEnabled)
                     ForEach([("quotaCritical", "Critical quota"), ("quotaReset", "Quota reset / recovery"), ("burnRate", "Burn-rate"), ("budget", "Budget threshold")], id: \.0) { kind, label in
                         Toggle(label, isOn: Binding(
                             get: { !model.disabledNotifications.contains(kind) },
@@ -5444,7 +6843,7 @@ private struct HighlightedSnippet: View {
                         .disabled(!model.notificationsEnabled)
                     }
                 }
-                card(title: "recent alerts", icon: "bell.fill") {
+                settingsCard(title: "recent alerts", icon: "bell.fill", keywords: "notification history") {
                     if model.notificationHistory.isEmpty {
                         Text("No alerts have been emitted yet.")
                             .font(.caption).foregroundStyle(.secondary)
@@ -5472,7 +6871,7 @@ private struct HighlightedSnippet: View {
                         }
                     }
                 }
-                card(title: "background quota polling", icon: "clock.arrow.circlepath") {
+                settingsCard(title: "background quota polling", icon: "clock.arrow.circlepath", keywords: "automatic refresh quotas polling") {
                     Toggle("Poll provider quotas automatically", isOn: Binding(
                         get: { model.pollAuto },
                         set: { model.setPolling(enabled: $0) },
@@ -5515,7 +6914,7 @@ private struct HighlightedSnippet: View {
                     .buttonStyle(.bordered).controlSize(.small)
                     .disabled(model.pollInFlight)
                 }
-                card(title: "popover layout", icon: "rectangle.3.group") {
+                settingsCard(title: "popover layout", icon: "rectangle.3.group", keywords: "cards tabs reorder drag") {
                     Text("Choose which cards appear and drag them into your preferred order.")
                         .font(.caption).foregroundStyle(.secondary)
                     Button("Customize popover…") { showCustomize = true }
@@ -5523,19 +6922,23 @@ private struct HighlightedSnippet: View {
                     Button("Customize tabs…") { showTabSettings = true }
                         .buttonStyle(.bordered).controlSize(.small)
                 }
-                card(title: "menubar preview", icon: "menubar.dock.rectangle") {
+                settingsCard(title: "menubar preview", icon: "menubar.dock.rectangle", keywords: "status item provider percentage reset") {
                     Text("Choose how the status item shows provider marks, percentages, and reset countdowns.")
                         .font(.caption).foregroundStyle(.secondary)
-                    Button("Customize preview…") { showPreviewSettings = true }
-                        .buttonStyle(.bordered).controlSize(.small)
+                    PreviewSettingsInline(model: model)
                 }
-                card(title: "provider API keys", icon: "key.fill") {
+                settingsCard(title: "side-notch", icon: "rectangle.rightthird.inset.filled", keywords: "side notch rail hover edge orientation placement screen") {
+                    Text("A quiet edge rail that stays collapsed until you need it, then reveals provider quotas on hover.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    SideNotchSettingsInline(model: model)
+                }
+                settingsCard(title: "provider API keys", icon: "key.fill", keywords: "credentials tokens authentication") {
                     Text("Add multiple keys for providers that expose quota APIs. Each key gets its own usage card.")
                         .font(.caption).foregroundStyle(.secondary)
                     Button("Manage API keys…") { showAPIKeys = true }
                     .buttonStyle(.bordered).controlSize(.small)
                 }
-                card(title: "index & import diagnostics", icon: "stethoscope") {
+                settingsCard(title: "index & import diagnostics", icon: "stethoscope", keywords: "reindex conversations csv import diagnostics") {
                     Text("Rebuild conversation search across Codex, Pi, Claude, Cursor, and other configured harness stores, or import a provider CSV backfill.")
                         .font(.caption).foregroundStyle(.secondary)
                     HStack(spacing: 7) {
@@ -5548,7 +6951,7 @@ private struct HighlightedSnippet: View {
                         Text(status).font(.caption2).foregroundStyle(.secondary).lineLimit(2)
                     }
                 }
-                card(title: "sync", icon: "arrow.triangle.2.circlepath") {
+                settingsCard(title: "sync", icon: "arrow.triangle.2.circlepath", keywords: "backend folder git atproto") {
                     Picker("Backend", selection: Binding(
                         get: { model.syncBackend ?? "none" },
                         set: { model.setSyncBackend($0) },
@@ -5579,7 +6982,7 @@ private struct HighlightedSnippet: View {
                         }
                     }
                 }
-                card(title: "local dashboard", icon: "safari") {
+                settingsCard(title: "local dashboard", icon: "safari", keywords: "browser web server") {
                     Text("The browser dashboard is local-only and starts on demand. Stopping it only affects a server launched by this app.")
                         .font(.caption).foregroundStyle(.secondary)
                     if let status = model.dashboardStatus {
@@ -5597,6 +7000,80 @@ private struct HighlightedSnippet: View {
             .padding(12)
             .onAppear { AppDelegate.shared?.refreshDashboardStatus() }
         }
+    }
+
+    private var settingsToolbar: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Image(systemName: "magnifyingglass")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                TextField("Search settings…", text: $settingsSearchText)
+                    .textFieldStyle(.plain)
+                    .font(.caption)
+                    .autocorrectionDisabled()
+                if !settingsSearchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Button { settingsSearchText = "" } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 9)
+            .padding(.vertical, 7)
+            .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 9))
+            .accessibilityIdentifier("settings-search")
+            HStack(spacing: 6) {
+                if settingsSearchActive {
+                    Text(settingsMatchCount == 0 ? "No matching settings" : "(settingsMatchCount) matching sections")
+                        .font(.caption2)
+                        .foregroundStyle(settingsMatchCount == 0 ? .orange : .secondary)
+                } else {
+                    Text("Settings")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 4)
+                Button("Expand all") { expandedSettingsCards = Set(Self.settingsCardIds) }
+                    .buttonStyle(.bordered)
+                    .controlSize(.mini)
+                Button("Collapse all") { expandedSettingsCards.removeAll() }
+                    .buttonStyle(.bordered)
+                    .controlSize(.mini)
+            }
+        }
+        .padding(.vertical, 1)
+    }
+
+    private var settingsQuery: String {
+        settingsSearchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    private var settingsSearchActive: Bool { !settingsQuery.isEmpty }
+
+    private func settingsCardMatches(_ title: String, keywords: String) -> Bool {
+        guard settingsSearchActive else { return true }
+        let terms = keywords.isEmpty ? Self.settingsKeywords[title] ?? "" : keywords
+        return "\(title) \(terms)".lowercased().contains(settingsQuery)
+    }
+
+    private var settingsMatchCount: Int {
+        Self.settingsCardIds.filter { settingsCardMatches($0, keywords: "") }.count
+    }
+
+    private func settingsExpansionBinding(_ title: String) -> Binding<Bool> {
+        Binding(
+            get: {
+                if settingsSearchActive && settingsCardMatches(title, keywords: "") { return true }
+                return expandedSettingsCards.contains(title)
+            },
+            set: { expanded in
+                if expanded { expandedSettingsCards.insert(title) }
+                else { expandedSettingsCards.remove(title) }
+            },
+        )
     }
 
     private func syncField(_ label: String, value: Binding<String>, path: String) -> some View {
@@ -6300,6 +7777,20 @@ private struct HighlightedSnippet: View {
 
     @ViewBuilder private func card<Content: View>(title: String, icon: String, @ViewBuilder content: @escaping () -> Content) -> some View {
         CollapsibleCard(title: title, icon: icon, content: content)
+    }
+
+    @ViewBuilder private func settingsCard<Content: View>(title: String, icon: String, keywords: String = "", initiallyExpanded: Bool = false, @ViewBuilder content: @escaping () -> Content) -> some View {
+        if settingsCardMatches(title, keywords: keywords) {
+            CollapsibleCard(
+                title: title,
+                icon: icon,
+                showsDragHandle: false,
+                initiallyExpanded: initiallyExpanded,
+                expansion: settingsExpansionBinding(title),
+                highlighted: settingsSearchActive,
+                content: content,
+            )
+        }
     }
 
     /// CodexBar-style per-repo usage: name + $cost · tokens on one line,

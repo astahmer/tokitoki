@@ -38,6 +38,10 @@ describe("menubar config persistence", () => {
     expect(run(["config", "set", "ui.stripExhausted", '"hide"'], configPath).status).toBe(0);
     expect(run(["config", "set", "ui.menubarPreviewEnabled", "false"], configPath).status).toBe(0);
     expect(run(["config", "set", "ui.sideNotchEnabled", "true"], configPath).status).toBe(0);
+    expect(run(["config", "set", "ui.sideNotchHidden", '["claude"]'], configPath).status).toBe(0);
+    expect(run(["config", "set", "ui.sideNotchMetric", '"smart"'], configPath).status).toBe(0);
+    expect(run(["config", "set", "ui.sideNotchSyncPreview", "true"], configPath).status).toBe(0);
+    expect(run(["config", "set", "ui.sideNotchPlacement", '"top-left"'], configPath).status).toBe(0);
     expect(run(["config", "set", "poll.adaptive", "true"], configPath).status).toBe(0);
     expect(run(["config", "set", "notifications.enabled", "false"], configPath).status).toBe(0);
     expect(run(["config", "set", "notifications.resetAware", "true"], configPath).status).toBe(0);
@@ -53,6 +57,10 @@ describe("menubar config persistence", () => {
         stripExhausted?: string;
         menubarPreviewEnabled?: boolean;
         sideNotchEnabled?: boolean;
+        sideNotchHidden?: string[];
+        sideNotchMetric?: string;
+        sideNotchSyncPreview?: boolean;
+        sideNotchPlacement?: string;
         menubarAccountOrder?: string[];
         hidden?: { menubar?: string[] };
         menubarTabs?: string[];
@@ -67,6 +75,10 @@ describe("menubar config persistence", () => {
     expect(cfg.ui?.stripExhausted).toBe("hide");
     expect(cfg.ui?.menubarPreviewEnabled).toBe(false);
     expect(cfg.ui?.sideNotchEnabled).toBe(true);
+    expect(cfg.ui?.sideNotchHidden).toEqual(["claude"]);
+    expect(cfg.ui?.sideNotchMetric).toBe("smart");
+    expect(cfg.ui?.sideNotchSyncPreview).toBe(true);
+    expect(cfg.ui?.sideNotchPlacement).toBe("top-left");
     expect(cfg.ui?.menubarAccountOrder).toEqual(["codex@openai:plus", "pi@opencode-go"]);
     expect(cfg.ui?.hidden?.menubar).toEqual(["codex:openai:plus"]);
     expect(cfg.ui?.menubarTabs).toEqual(["tokens", "overview", "quotas", "reports", "mcp", "sources", "settings"]);
