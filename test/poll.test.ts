@@ -452,6 +452,34 @@ describe("pollQuotas", () => {
     expect(acc!.windows.length).toBeGreaterThan(0);
   });
 
+  it("marks Claude as requiring login when its refresh token is rejected", async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "tk-poll-claude-auth-"));
+    writeFileSync(
+      path.join(dir, "claude.json"),
+      JSON.stringify({ claudeAiOauth: { accessToken: "expired", refreshToken: "revoked" } }),
+    );
+    const fetcher = (async (input: unknown) => {
+      const url = String(input);
+      if (url.includes("/api/oauth/usage")) return new Response("unauthorized", { status: 401 });
+      if (url.includes("/v1/oauth/token")) {
+        return new Response(JSON.stringify({ error: "invalid_grant", error_description: "Refresh token not found or invalid" }), { status: 400 });
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    }) as unknown as typeof fetch;
+
+    const result = await pollQuotas({
+      ...hermeticPaths(),
+      providers: ["claude-code"],
+      authPath: path.join(os.tmpdir(), `missing-${Date.now()}.json`),
+      piAuthPath: path.join(os.tmpdir(), `missing-pi-${Date.now()}.json`),
+      claudeCredentialsPath: path.join(dir, "claude.json"),
+      fetcher,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.authRequiredProviders).toEqual(["claude-code"]);
+    expect(result.reason).toContain("Refresh token not found or invalid");
+  });
+
   it("reads the copilot token from apps.json and stores a percent meter", async () => {
     const dir = mkdtempSync(path.join(os.tmpdir(), "tk-pilot-"));
     const cache = new EventCache(path.join(dir, "cache.db"));

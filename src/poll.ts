@@ -68,6 +68,8 @@ export interface PollResult {
   ok: boolean;
   reason?: string;
   accounts: PollAccountResult[];
+  /** Providers whose local credentials need login or re-authentication. */
+  authRequiredProviders?: string[];
 }
 
 export interface PollOptions {
@@ -984,6 +986,13 @@ async function pollQuotasLocked(opts: PollOptions = {}): Promise<PollResult> {
   const fetcher = opts.fetcher ?? globalThis.fetch;
   const accounts: PollAccountResult[] = [];
   const reasons: string[] = [];
+  const authRequiredProviders = new Set<string>();
+  const addReason = (provider: string, reason: string): void => {
+    reasons.push(`${provider}: ${reason}`);
+    if (/not logged in|auth(?:entication)? (?:not found|required)|unauthorized|token refresh failed/i.test(reason)) {
+      authRequiredProviders.add(provider);
+    }
+  };
   const capturedAtIso = new Date(opts.now ?? Date.now()).toISOString();
   const cache = opts.cache;
   let now = opts.now ?? Date.now();
@@ -995,10 +1004,10 @@ async function pollQuotasLocked(opts: PollOptions = {}): Promise<PollResult> {
   if (providerEnabled("codex")) {
     try {
       const codex = await pollCodexQuotas(opts);
-      if (typeof codex === "string") reasons.push(`codex: ${codex}`);
+      if (typeof codex === "string") addReason("codex", codex);
       else accounts.push(codex);
     } catch (e) {
-      reasons.push(`codex: ${String(e)}`);
+      addReason("codex", String(e));
     }
   }
 
@@ -1026,13 +1035,13 @@ async function pollQuotasLocked(opts: PollOptions = {}): Promise<PollResult> {
   if (providerEnabled("openrouter")) {
     const orKey = piKeys["openrouter"];
     if (orKey === undefined || orKey.length === 0) {
-      reasons.push("openrouter: no key in pi auth store");
+      addReason("openrouter", "no key in pi auth store");
     } else {
       const r = await pollOpenRouter(orKey, fetcher);
       if (r.error !== undefined) {
-        reasons.push(`openrouter: ${r.error}`);
+        addReason("openrouter", r.error);
       } else if (r.skip !== undefined) {
-        reasons.push(`openrouter: ${r.skip}`);
+        addReason("openrouter", r.skip);
       } else {
         accounts.push({
           accountKey: "openrouter",
@@ -1047,11 +1056,11 @@ async function pollQuotasLocked(opts: PollOptions = {}): Promise<PollResult> {
   if (providerEnabled("opencode-go")) {
     const ocKey = piKeys["opencode-go"] ?? Object.values(opencodeCredentials(opts.opencodeAuthPath))[0] ?? "";
     if (ocKey === undefined || ocKey.length === 0) {
-      reasons.push("opencode-go: no key in pi/opencode auth stores");
+      addReason("opencode-go", "no key in pi/opencode auth stores");
     } else {
       const r = await pollOpencodeGo(ocKey, fetcher);
       if (r.error !== undefined) {
-        reasons.push(`opencode-go: ${r.error}`);
+        addReason("opencode-go", r.error);
       } else {
         accounts.push({
           accountKey: "opencode-go",
@@ -1070,40 +1079,40 @@ async function pollQuotasLocked(opts: PollOptions = {}): Promise<PollResult> {
   if (providerEnabled("claude-code")) {
     try {
       const claude = await pollClaudeQuotas(opts, fetcher);
-      if (typeof claude === "string") reasons.push(`claude-code: ${claude}`);
+      if (typeof claude === "string") addReason("claude-code", claude);
       else accounts.push(claude);
     } catch (e) {
-      reasons.push(`claude-code: ${String(e)}`);
+      addReason("claude-code", String(e));
     }
   }
 
   if (providerEnabled("copilot")) {
     try {
       const copilot = await pollCopilotQuotas(opts, fetcher, now);
-      if (typeof copilot === "string") reasons.push(`copilot: ${copilot}`);
+      if (typeof copilot === "string") addReason("copilot", copilot);
       else accounts.push(copilot);
     } catch (e) {
-      reasons.push(`copilot: ${String(e)}`);
+      addReason("copilot", String(e));
     }
   }
 
   if (providerEnabled("cursor")) {
     try {
       const cursor = await pollCursorQuotas(opts, fetcher, now);
-      if (typeof cursor === "string") reasons.push(`cursor: ${cursor}`);
+      if (typeof cursor === "string") addReason("cursor", cursor);
       else accounts.push(cursor);
     } catch (e) {
-      reasons.push(`cursor: ${String(e)}`);
+      addReason("cursor", String(e));
     }
   }
 
   if (providerEnabled("commandcode")) {
     try {
       const commandcode = await pollCommandCodeQuotas(opts, fetcher, now);
-      if (typeof commandcode === "string") reasons.push(`commandcode: ${commandcode}`);
+      if (typeof commandcode === "string") addReason("commandcode", commandcode);
       else accounts.push(commandcode);
     } catch (e) {
-      reasons.push(`commandcode: ${String(e)}`);
+      addReason("commandcode", String(e));
     }
   }
 
@@ -1113,9 +1122,9 @@ async function pollQuotasLocked(opts: PollOptions = {}): Promise<PollResult> {
     if (mk.provider === "openrouter") {
       const r = await pollOpenRouter(mk.key, fetcher);
       if (r.error !== undefined) {
-        reasons.push(`${mk.id}: ${r.error}`);
+        addReason(mk.provider, `${mk.id}: ${r.error}`);
       } else if (r.skip !== undefined) {
-        reasons.push(`${mk.id}: ${r.skip}`);
+        addReason(mk.provider, `${mk.id}: ${r.skip}`);
       } else {
         accounts.push({
           accountKey: mk.id,
@@ -1128,7 +1137,7 @@ async function pollQuotasLocked(opts: PollOptions = {}): Promise<PollResult> {
     }
     const r = await pollOpencodeGo(mk.key, fetcher);
     if (r.error !== undefined) {
-      reasons.push(`${mk.id}: ${r.error}`);
+      addReason(mk.provider, `${mk.id}: ${r.error}`);
       continue;
     }
     accounts.push({
@@ -1178,7 +1187,7 @@ async function pollQuotasLocked(opts: PollOptions = {}): Promise<PollResult> {
         `:opencodex:${poolKey}`,
       );
       if (typeof result === "string") {
-        reasons.push(`${accountKey}: ${result}`);
+        addReason("codex", `${accountKey}: ${result}`);
       } else if (result.windows.length > 0) {
         accounts.push({ ...result, harnesses: ["opencodex"] });
         freshPoolKeys.add(poolKey);
@@ -1259,7 +1268,12 @@ async function pollQuotasLocked(opts: PollOptions = {}): Promise<PollResult> {
   }
 
   const ok = accounts.some((a) => a.windows.length > 0);
-  return { ok, reason: ok ? undefined : reasons.join("; ") || "no provider returned quota data", accounts };
+  return {
+    ok,
+    reason: ok ? undefined : reasons.join("; ") || "no provider returned quota data",
+    accounts,
+    ...(authRequiredProviders.size > 0 ? { authRequiredProviders: [...authRequiredProviders].sort() } : {}),
+  };
 }
 
 /** codex wham/usage poll. Returns the account result, or a reason string. */

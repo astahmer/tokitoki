@@ -181,6 +181,10 @@ struct AccountLimits: Codable, Identifiable {
     var id: String { "\(provider)@\(accountKey)" }
 }
 
+struct PollResultPayload: Codable {
+    let authRequiredProviders: [String]?
+}
+
 struct MenubarCardConfig: Codable {
     let id: String
     let hidden: Bool
@@ -398,6 +402,7 @@ final class Model: ObservableObject {
     @Published var pollInFlight = false
     @Published var pollStatus: String?
     @Published var pollLastResult: String?
+    @Published var authRequiredProviders: Set<String> = []
     @Published var nextPollAt: Date?
     @Published var isLoading = true
     @Published var loadingCompleted = 0
@@ -500,9 +505,11 @@ final class Model: ObservableObject {
             } catch {
                 self?.dbg("card refresh failed for \(id): \(error.localizedDescription)")
                 self?.pollStatus = "Quota refresh failed: \(error.localizedDescription)"
+                if Self.loginRequired(in: error) { self?.authRequiredProviders.insert(account.provider) }
             }
             self?.refreshingAccounts.remove(id)
             if succeeded {
+                self?.authRequiredProviders.remove(provider)
                 self?.pollStatus = "Provider quotas refreshed"
                 self?.lastPollAt = Date()
                 self?.nextPollAt = self?.pollAuto == true
@@ -949,7 +956,10 @@ final class Model: ObservableObject {
             guard let self else { return }
             var succeeded = false
             do {
-                _ = try await Self.runCLI(cli, ["poll", "--json"])
+                let output = try await Self.runCLI(cli, ["poll", "--json"])
+                if let data = output.data(using: .utf8), let result = try? JSONDecoder().decode(PollResultPayload.self, from: data) {
+                    self.authRequiredProviders = Set(result.authRequiredProviders ?? [])
+                }
                 succeeded = true
                 self.pollStatus = background ? nil : "provider quotas refreshed"
             } catch {
@@ -1878,6 +1888,15 @@ final class Model: ObservableObject {
         }
         if let sqlite = oneLine.first(where: { $0.hasPrefix("SQLiteError") }) { return sqlite }
         return oneLine.first ?? "CLI failed (exit status unknown)"
+    }
+
+    nonisolated static func loginRequired(in error: Error) -> Bool {
+        let message = error.localizedDescription.lowercased()
+        return message.contains("not logged in")
+            || message.contains("unauthorized")
+            || message.contains("authentication")
+            || message.contains("token refresh failed")
+            || message.contains("refresh token")
     }
 
 }
@@ -5705,6 +5724,7 @@ private struct HighlightedSnippet: View {
                 AccountLimitCard(
                     limits: l,
                     isRefreshing: model.refreshingAccounts.contains(accountId),
+                    requiresLogin: model.authRequiredProviders.contains(l.provider),
                     onRefresh: { model.refreshAccount(l) },
                     onHide: { model.hideAccount(l) },
                     budgets: matchingBudgets(for: l),
@@ -6408,6 +6428,7 @@ private func tokenMaxima(_ limits: [AccountLimits]) -> [String: Double] {
 struct AccountLimitCard: View {
     let limits: AccountLimits
     let isRefreshing: Bool
+    let requiresLogin: Bool
     let onRefresh: () -> Void
     let onHide: () -> Void
     /// Budget rows whose pattern matches this account — rendered as a slim footer.
@@ -6431,6 +6452,7 @@ struct AccountLimitCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             headerRow
+            if requiresLogin { loginRequiredRow }
             if isExpanded {
                 ForEach(Array(orderedWindows.enumerated()), id: \.offset) { _, w in
                     windowBarRow(w)
@@ -6444,6 +6466,14 @@ struct AccountLimitCard: View {
             }
         }
         .padding(.vertical, 2)
+    }
+
+    private var loginRequiredRow: some View {
+        let provider = limits.provider == "claude-code" ? "Claude Code" : limits.provider
+        return Label("Login required · refresh \(provider)", systemImage: "person.crop.circle.badge.exclamationmark")
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(.orange)
+            .help("Sign in to \(provider), then refresh this card")
     }
 
     /// Collapsible per-window detail rows — compact: window name + reset date
