@@ -23,7 +23,11 @@ struct ReportRow: Codable {
     let cacheWriteTokens: Double?
 
     var totalTokens: Double {
-        (inputTokens ?? 0) + (outputTokens ?? 0) + (cacheReadTokens ?? 0) + (cacheWriteTokens ?? 0)
+        let input = inputTokens ?? 0.0
+        let output = outputTokens ?? 0.0
+        let cacheRead = cacheReadTokens ?? 0.0
+        let cacheWrite = cacheWriteTokens ?? 0.0
+        return input + output + cacheRead + cacheWrite
     }
 }
 
@@ -38,7 +42,11 @@ struct TotalsRow: Codable {
     let costUsd: Double
 
     var totalTokens: Double {
-        (inputTokens ?? 0) + (outputTokens ?? 0) + (cacheReadTokens ?? 0) + (cacheWriteTokens ?? 0)
+        let input = inputTokens ?? 0.0
+        let output = outputTokens ?? 0.0
+        let cacheRead = cacheReadTokens ?? 0.0
+        let cacheWrite = cacheWriteTokens ?? 0.0
+        return input + output + cacheRead + cacheWrite
     }
 }
 
@@ -446,6 +454,8 @@ final class Model: ObservableObject {
     @Published var errorText: String?
     @Published var errorDetails: String?
     @Published var refreshingAccounts: Set<String> = []
+    @Published var scanInFlight = false
+    @Published var scanStatus: String?
 
     private var timer: Timer?
     /// Refresh responses are asynchronous; mutations bump this generation so
@@ -951,6 +961,28 @@ final class Model: ObservableObject {
         pollNow(background: true)
     }
 
+    /// Scan local harness stores, then refresh the dashboard from the new
+    /// cache. The first launch uses --if-needed so an already-initialized
+    /// install does not pay for a full source walk on every app start.
+    func scanNow(initial: Bool = false) {
+        guard !scanInFlight else { return }
+        scanInFlight = true
+        scanStatus = initial ? "Scanning local sources on first launch…" : "Scanning local sources…"
+        let cli = invocation
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                let args = initial ? ["scan", "--if-needed"] : ["scan"]
+                let output = try await Self.runCLI(cli, args)
+                self.scanStatus = output.contains("no scan needed") ? "Sources are up to date" : "Sources scanned"
+            } catch {
+                self.scanStatus = "Scan failed: \(error.localizedDescription)"
+            }
+            self.scanInFlight = false
+            self.refresh()
+        }
+    }
+
     func start(invocation: CLIInvocation) {
         self.invocation = invocation
         dbg("start · exec=\(invocation.executable.path) prefix=\(invocation.prefixArgs)")
@@ -958,7 +990,7 @@ final class Model: ObservableObject {
         notificationHistory = Self.loadNotificationHistory()
         quotaObservations = Self.loadQuotaObservations()
         dbg("loaded \(notifiedKeys.count) notified keys from \(Self.stateFileURL.path)")
-        refresh()
+        scanNow(initial: true)
         timer = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refresh() }
         }
@@ -2239,7 +2271,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // repeat on the next run-loop turn so the explicit origin wins.
         DispatchQueue.main.async(execute: apply)
     }
-
     /// Deterministic e2e proof of what the popover renders (AX cannot see
     /// inside SwiftUI on accessory apps reliably). Written on every open.
     func refreshProofIfShown() {
@@ -2430,8 +2461,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    @objc private func rescanAll() { runMaintenance(["scan"], label: "scan") }
-    func rescanForPopover() { rescanAll() }
+    @objc private func rescanAll() { model?.scanNow() }
+    func rescanForPopover() { model?.scanNow() }
     @objc private func pollNow() { model?.pollNow() }
     @objc private func enablePolling() { runMaintenance(["poll", "--enable"], label: "enable polling", config: true); model?.pollAuto = true }
     @objc private func disablePolling() { runMaintenance(["poll", "--disable"], label: "disable polling", config: true); model?.pollAuto = false }
@@ -3955,6 +3986,14 @@ struct ContentView: View {
             .buttonStyle(.bordered).controlSize(.small)
             .accessibilityLabel("Refresh all data")
             .accessibilityIdentifier("refresh-all")
+            Button(action: { model.scanNow() }) {
+                Image(systemName: model.scanInFlight ? "hourglass" : "magnifyingglass")
+            }
+            .buttonStyle(.bordered).controlSize(.small)
+            .disabled(model.scanInFlight)
+            .help(model.scanInFlight ? "Scanning local sources…" : "Scan local sources")
+            .accessibilityLabel(model.scanInFlight ? "Scanning local sources" : "Scan local sources")
+            .accessibilityIdentifier("scan-sources")
             Spacer(minLength: 0)
             Menu {
                 Button("Save screenshot to Desktop") { saveScreenshot() }
@@ -4898,11 +4937,15 @@ private struct HighlightedSnippet: View {
                             Text("detected").font(.caption2).foregroundStyle(.secondary)
                         }
                     }
-                    Button {
-                        AppDelegate.shared?.rescanForPopover()
-                    } label: {
-                        Label("Re-scan sources", systemImage: "arrow.triangle.2.circlepath")
-                    }.buttonStyle(.bordered).controlSize(.small)
+                    Button(action: { model.scanNow() }) {
+                        Label(model.scanInFlight ? "Scanning…" : "Scan local sources", systemImage: "arrow.triangle.2.circlepath")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(model.scanInFlight)
+                    if let status = model.scanStatus {
+                        Text(status).font(.caption2).foregroundStyle(.secondary)
+                    }
                 }
             }.padding(12)
         }

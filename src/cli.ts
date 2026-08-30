@@ -3,7 +3,7 @@ import { parseArgs, type FlagValue, type ParsedInvocation } from "./args.ts";
 import fs from "node:fs";
 import path from "node:path";
 import { localMachineId } from "./machine.ts";
-import { appendEvents, eventsFile, saveProviderCursors } from "./store.ts";
+import { appendEvents, eventsFile, loadCursors, saveProviderCursors } from "./store.ts";
 import { PROVIDERS, getProvider } from "./providers/index.ts";
 import { scanProviderCore, type ScanResult } from "./scan.ts";
 import type { UsageEvent } from "./types.ts";
@@ -103,8 +103,9 @@ export interface CommandHelp {
 
 export const COMMAND_HELP: Record<string, CommandHelp> = {
   scan: {
-    usage: "tokitoki scan [--provider <id>]",
-    flags: "  --provider <id>   only scan this harness (repeatable not allowed here)",
+    usage: "tokitoki scan [--provider <id>] [--if-needed]",
+    flags: `  --provider <id>   only scan this harness (repeatable not allowed here)
+  --if-needed        skip the scan when every discovered source has a cursor`,
     example: "tokitoki scan",
   },
   sources: {
@@ -456,7 +457,7 @@ export async function main(argv: string[]): Promise<void> {
 const KNOWN_FLAGS: Record<string, string[]> = {
   "menubar-payload": ["cached", "json"],
   ui: ["list", "hide", "show", "surface", "menubar-only", "card-set", "account-order", "tabs"],
-  scan: ["provider"],
+  scan: ["provider", "if-needed"],
   sources: [],
   report: ["last", "by", "json", "sort", "asc", "provider", "delta", "no-delta", "show-email", "show-emails", "since", "until", "from", "to"],
   today: ["provider", "json", "show-email", "show-emails"],
@@ -567,6 +568,15 @@ interface ScanOutcome {
   events: UsageEvent[];
 }
 
+/** Whether a provider has any discovered file that has never been scanned. */
+export function scanNeedsInitialPass(providers = PROVIDERS): boolean {
+  const cursors = loadCursors();
+  return providers.some((provider) => {
+    const files = provider.discoverRoots().flatMap((root) => provider.listFiles(root));
+    return files.some((file) => cursors[file] === undefined);
+  });
+}
+
 /**
  * Run one provider scan inside a Bun worker. Events stream back in batches;
  * the worker persists its own cursor shard so an interrupted scan resumes
@@ -615,6 +625,10 @@ async function runScan(parsed: ParsedInvocation): Promise<void> {
     );
   }
   const providerIds = only !== undefined ? [only] : PROVIDERS.map((p) => p.id);
+  if (flagBool(parsed, "if-needed") && !scanNeedsInitialPass(providerIds.map((id) => getProvider(id)!))) {
+    console.log("scan: already initialized (no scan needed)");
+    return;
+  }
   const machineId = localMachineId();
 
   // Direct cache handle for the ingest below — bypasses withCache's lazy sync

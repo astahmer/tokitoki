@@ -7,9 +7,10 @@ import { dataDir } from "./store.ts";
  * Per-model USD pricing per million tokens, used only when a harness does not
  * report cost itself. Estimates are flagged by callers.
  *
- * Live table: fetched from LiteLLM's community-maintained pricing JSON and
- * cached under the data dir with a 7-day TTL. The embedded snapshot below is
- * the offline fallback (and the seed when no cache exists yet).
+ * Live table: fetched from Models.dev's community-maintained catalog and
+ * cached under the data dir with a 7-day TTL. LiteLLM remains a live fallback
+ * because no catalog covers every provider alias used by local harnesses.
+ * The embedded snapshot below is the offline fallback.
  */
 export interface ModelPrice {
   inputPerMtok: number;
@@ -33,6 +34,7 @@ const EMBEDDED: PricingTable = {
   "gemini-2.5-flash": { inputPerMtok: 0.3, outputPerMtok: 2.5, cacheReadPerMtok: 0.075, cacheWritePerMtok: 0 },
 };
 
+export const MODELS_DEV_URL = "https://models.dev/api.json";
 export const LITELLM_URL =
   "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json";
 const TTL_MS = 7 * 24 * 3600_000;
@@ -45,6 +47,74 @@ interface CacheFile {
   fetchedAt: number;
   /** model name → per-Mtok prices */
   models: PricingTable;
+  source?: string;
+}
+
+function finiteCost(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+function canonicalModelName(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+}
+
+function canonicalModelAliases(value: string): string[] {
+  const canonical = canonicalModelName(value);
+  return canonical.startsWith("claude-")
+    ? [canonical, canonical.slice("claude-".length)]
+    : [canonical];
+}
+
+/** Convert Models.dev's per-Mtok catalog into the pricing shape used here. */
+export function buildModelsDevTable(raw: unknown): PricingTable {
+  const out: PricingTable = {};
+  if (typeof raw !== "object" || raw === null) return out;
+
+  const add = (key: string, price: ModelPrice): void => {
+    const normalized = key.trim().toLowerCase();
+    if (normalized.length === 0) return;
+    const previous = out[normalized];
+    // Keep the first priced entry for a bare alias. Provider-qualified keys
+    // remain available when two providers publish different prices.
+    if (previous === undefined || (previous.inputPerMtok === 0 && previous.outputPerMtok === 0)) {
+      out[normalized] = price;
+    }
+  };
+
+  for (const [provider, providerValue] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof providerValue !== "object" || providerValue === null) continue;
+    const models = (providerValue as Record<string, unknown>).models;
+    if (typeof models !== "object" || models === null) continue;
+    for (const [modelId, modelValue] of Object.entries(models as Record<string, unknown>)) {
+      if (typeof modelValue !== "object" || modelValue === null) continue;
+      const cost = (modelValue as Record<string, unknown>).cost;
+      if (typeof cost !== "object" || cost === null) continue;
+      const c = cost as Record<string, unknown>;
+      const input = finiteCost(c.input);
+      const output = finiteCost(c.output);
+      if (input === undefined && output === undefined) continue;
+      const price: ModelPrice = {
+        inputPerMtok: input ?? 0,
+        outputPerMtok: output ?? 0,
+        cacheReadPerMtok: finiteCost(c.cache_read) ?? 0,
+        cacheWritePerMtok: finiteCost(c.cache_write) ?? 0,
+      };
+      add(`${provider}/${modelId}`, price);
+      add(modelId, price);
+      // Harness logs often keep only the final path segment, e.g. a provider
+      // records `grok-4.5` while Models.dev uses `x-ai/grok-4.5`.
+      const basename = modelId.split("/").at(-1);
+      if (basename !== undefined) {
+        add(basename, price);
+        const canonical = canonicalModelName(basename);
+        add(canonical, price);
+        // OpenCode and similar logs sometimes omit the vendor family prefix
+        // (`sonnet-4.5` rather than `claude-sonnet-4-5`).
+        if (canonical.startsWith("claude-")) add(canonical.slice("claude-".length), price);
+      }
+    }
+  }
+  return out;
 }
 
 /** Map LiteLLM's per-token fields to our per-Mtok shape. Pure + testable. */
@@ -71,12 +141,28 @@ export function buildLiteLlmTable(raw: unknown): PricingTable {
 export function matchPrice(table: PricingTable, model: string): ModelPrice | undefined {
   const lower = model.toLowerCase();
   if (table[lower] !== undefined) return table[lower]!;
+  const canonical = canonicalModelName(model);
+  for (const alias of canonicalModelAliases(model)) {
+    if (table[alias] !== undefined) return table[alias]!;
+  }
   let bestKey: string | undefined;
   for (const key of Object.keys(table)) {
     if (!lower.startsWith(key)) continue;
     if (bestKey === undefined || key.length > bestKey.length) bestKey = key;
   }
   if (bestKey !== undefined) return table[bestKey]!;
+  let bestCanonicalKey: string | undefined;
+  let bestCanonicalLength = 0;
+  for (const key of Object.keys(table)) {
+    for (const normalizedKey of canonicalModelAliases(key)) {
+      if (!canonical.startsWith(normalizedKey)) continue;
+      if (normalizedKey.length > bestCanonicalLength) {
+        bestCanonicalKey = key;
+        bestCanonicalLength = normalizedKey.length;
+      }
+    }
+  }
+  if (bestCanonicalKey !== undefined) return table[bestCanonicalKey]!;
   // Substring fallback so things like "accounts/.../gemini-2.5-pro" or
   // "openrouter/gpt-4o" still resolve.
   for (const key of Object.keys(table)) {
@@ -100,7 +186,9 @@ function initFromCache(): void {
     const parsed = JSON.parse(fs.readFileSync(pricingCachePath(), "utf8")) as CacheFile;
     if (parsed.models !== undefined && typeof parsed.models === "object") {
       loadedTable = parsed.models;
-      if (Date.now() - parsed.fetchedAt > TTL_MS) void refreshPricing();
+      // Migrate older LiteLLM caches to Models.dev immediately; otherwise a
+      // still-fresh cache would hide the new source until the normal TTL.
+      if (parsed.source !== MODELS_DEV_URL || Date.now() - parsed.fetchedAt > TTL_MS) void refreshPricing();
       return;
     }
   } catch {
@@ -130,23 +218,30 @@ function markAttempt(now = Date.now()): void {
   }
 }
 
-/** Fetch LiteLLM's pricing JSON into the cache; swaps the live table in. Never throws. */
+/** Fetch live pricing into the cache; Models.dev is primary, LiteLLM fallback. */
 export async function refreshPricing(force = false): Promise<boolean> {
   if (!force && !shouldAttempt()) return false;
   markAttempt();
-  try {
-    const res = await fetch(LITELLM_URL, { signal: AbortSignal.timeout(15_000) });
-    if (!res.ok) return false;
-    const table = buildLiteLlmTable(await res.json());
-    if (Object.keys(table).length < 50) return false; // implausible payload
-    loadedTable = table;
-    fs.mkdirSync(path.dirname(pricingCachePath()), { recursive: true });
-    const payload: CacheFile = { fetchedAt: Date.now(), models: table };
-    fs.writeFileSync(pricingCachePath(), JSON.stringify(payload));
-    return true;
-  } catch {
-    return false; // offline: keep whatever we had (cache → embedded)
+  const sources: Array<[string, (raw: unknown) => PricingTable]> = [
+    [MODELS_DEV_URL, buildModelsDevTable],
+    [LITELLM_URL, buildLiteLlmTable],
+  ];
+  for (const [url, build] of sources) {
+    try {
+      const res = await fetch(url, { signal: AbortSignal.timeout(15_000) });
+      if (!res.ok) continue;
+      const table = build(await res.json());
+      if (Object.keys(table).length < 50) continue; // implausible payload
+      loadedTable = table;
+      fs.mkdirSync(path.dirname(pricingCachePath()), { recursive: true });
+      const payload: CacheFile = { fetchedAt: Date.now(), models: table, source: url };
+      fs.writeFileSync(pricingCachePath(), JSON.stringify(payload));
+      return true;
+    } catch {
+      // Try the fallback source before retaining the existing cache.
+    }
   }
+  return false; // offline: keep whatever we had (cache → embedded)
 }
 
 const ZERO: ModelPrice = {

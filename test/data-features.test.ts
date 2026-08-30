@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, it } from "bun:test";
 import { rmSync } from "node:fs";
 
-import { buildLiteLlmTable, matchPrice, setTableForTests, estimateCost, type PricingTable } from "../src/pricing.ts";
+import { buildLiteLlmTable, buildModelsDevTable, matchPrice, setTableForTests, estimateCost, type PricingTable } from "../src/pricing.ts";
 import { detectAnomalies } from "../src/anomalies.ts";
 import { evaluateBudgets, alertStateKey, filterNewAlerts } from "../src/budgets.ts";
 import { parseCsv, mapColumns, importCsv } from "../src/import.ts";
@@ -29,6 +29,29 @@ describe("buildLiteLlmTable", () => {
     });
     expect(table[".status"]).toBeUndefined();
     expect(table["text-embedding-3"]).toBeUndefined();
+  });
+});
+
+describe("buildModelsDevTable", () => {
+  it("converts provider models and adds aliases used by harness logs", () => {
+    const table = buildModelsDevTable({
+      openrouter: {
+        models: {
+          "x-ai/grok-4.5": {
+            cost: { input: 2, output: 6, cache_read: 0.5 },
+          },
+          "claude-sonnet-4-5": {
+            cost: { input: 3, output: 15 },
+          },
+          "free-model": { cost: null },
+        },
+      },
+    });
+    expect(table["openrouter/x-ai/grok-4.5"]!.outputPerMtok).toBe(6);
+    expect(table["x-ai/grok-4.5"]!.inputPerMtok).toBe(2);
+    expect(table["grok-4.5"]!.cacheReadPerMtok).toBe(0.5);
+    expect(matchPrice(table, "sonnet-4.5")!.outputPerMtok).toBe(15);
+    expect(table["free-model"]).toBeUndefined();
   });
 });
 

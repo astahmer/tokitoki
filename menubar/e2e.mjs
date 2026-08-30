@@ -269,7 +269,9 @@ end tell`;
     await sleepMs(1500);
     windows = listWindows().filter((w) => w.pid === child.pid);
     // popover panels can report unexpected layers — identify by size
-    const panel = windows.find((w) => w.w > 200 && w.w <= 500 && w.h > 50);
+    // The native popover frame is a little wider than its SwiftUI content
+    // size (currently capped at 520pt), so allow that decoration here.
+    const panel = windows.find((w) => w.w > 200 && w.w <= 560 && w.h > 50);
     if (clicked.status === 0 && panel) {
         pass(`dropdown opened on click: ${panel.w}x${panel.h} @(${panel.x},${panel.y})`);
     } else {
