@@ -221,7 +221,7 @@ import Testing
         #expect(SideNotchGeometry.dynamicDetailHeight(forRowCount: 1) == 110)
         #expect(SideNotchGeometry.dynamicDetailHeight(forRowCount: 2) == 156)
         #expect(SideNotchGeometry.dynamicDetailHeight(forRowCount: 3) == 206)
-        #expect(SideNotchGeometry.dynamicDetailHeight(forRowCount: 5) == 238)
+        #expect(SideNotchGeometry.dynamicDetailHeight(forRowCount: 5) == 264)
     }
 
     @Test func sideNotchRailLengthTracksVisibleIcons() {

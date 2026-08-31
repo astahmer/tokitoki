@@ -2642,7 +2642,10 @@ enum SideNotchGeometry {
     static let detailWidth: CGFloat = 292
     // The AppKit panel keeps the largest supported detail footprint stable while
     // the visible bubble below derives its own height from the rows it contains.
-    static let detailHeight: CGFloat = 238
+    // The detail header now has separate account and freshness rows, so the
+    // stable maximum must include that real content instead of clipping the
+    // last quota value.
+    static let detailHeight: CGFloat = 264
     static let detailGap: CGFloat = 20
 
     static func dynamicDetailHeight(forRowCount rowCount: Int, extraHeight: CGFloat = 0) -> CGFloat {
@@ -5165,10 +5168,11 @@ struct SideNotchView: View {
             return SideNotchGeometry.dynamicDetailHeight(forRowCount: 0)
         }
         let rowCount = Set(selectedEntry.limits.flatMap(\.windows).map(\.kind)).count
-        // Every mode now has one compact, explicit summary line in the
-        // header. Reserve the same small amount for all modes so switching
-        // between Quota/Activity/Runway does not clip the first quota row.
-        return SideNotchGeometry.dynamicDetailHeight(forRowCount: rowCount, extraHeight: 16)
+        // The header contains title/actions, account identity, freshness or
+        // recovery action, and the mode summary. Keep the row formula honest
+        // so the card ends after its content rather than clipping the final
+        // percentage or adding a fixed empty tail.
+        return SideNotchGeometry.dynamicDetailHeight(forRowCount: rowCount, extraHeight: 50)
     }
 
     var body: some View {
@@ -5293,7 +5297,7 @@ struct SideNotchView: View {
     }
 
     private var frameHeight: CGFloat {
-        if isVertical { return railLength }
+        if isVertical { return max(railLength, selectedEntry == nil ? 0 : detailMaxHeight) }
         return railWidth + detailMaxHeight + detailGap
     }
 
@@ -5351,7 +5355,7 @@ struct SideNotchView: View {
                     .offset(x: model.sideNotchEdge == "right" ? 0 : railWidth, y: detailOffset)
             }
         }
-        .frame(width: railWidth + detailWidth + detailGap, height: railLength, alignment: .topLeading)
+        .frame(width: railWidth + detailWidth + detailGap, height: max(railLength, selectedEntry == nil ? 0 : detailMaxHeight), alignment: .topLeading)
         .animation(.interactiveSpring(response: 0.32, dampingFraction: 0.88, blendDuration: 0.08), value: model.sideNotchSelectedEntryID)
     }
 
@@ -5548,7 +5552,7 @@ struct SideNotchView: View {
     private var detailOffset: CGFloat {
         let index = visibleEntries.firstIndex { $0.id == selectedEntry?.id } ?? 0
         let center = 28 + CGFloat(index) * itemStride + itemStride / 2
-        let length = isVertical ? railLength : railLength
+        let length = isVertical ? max(railLength, selectedEntry == nil ? 0 : detailMaxHeight) : railLength
         let detailLength = isVertical ? selectedDetailHeight : detailWidth + detailGap
         return max(8, min(length - detailLength - 8, center - detailLength / 2))
     }
@@ -5881,26 +5885,27 @@ struct SideNotchDetailView: View {
                 }
                 HStack(spacing: 5) {
                     accountControl
+                        .frame(maxWidth: .infinity, alignment: .leading)
                         .layoutPriority(1)
-                    Spacer(minLength: 3)
-                    HStack(spacing: 4) {
-                        Circle()
-                            .fill(freshnessColor)
-                            .frame(width: 4, height: 4)
-                        Text(freshnessLabel)
-                            .font(.system(size: 9, weight: .medium))
-                            .foregroundStyle(freshnessColor)
-                            .lineLimit(1)
-                            .truncationMode(.head)
-                        if authState != nil {
-                            inlineStateButton(
-                                authState == "api-key-required" ? "Manage key" : "Log in",
-                                icon: authState == "api-key-required" ? "key.fill" : "person.crop.circle.badge.plus",
-                                action: onFix,
-                            )
-                        } else if entry.freshness == "stale" {
-                            inlineStateButton("Refresh", icon: "arrow.clockwise", action: onRefresh)
-                        }
+                }
+                HStack(spacing: 4) {
+                    Circle()
+                        .fill(freshnessColor)
+                        .frame(width: 4, height: 4)
+                    Text(freshnessLabel)
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundStyle(freshnessColor)
+                        .lineLimit(1)
+                        .truncationMode(.head)
+                    Spacer(minLength: 4)
+                    if authState != nil {
+                        inlineStateButton(
+                            authState == "api-key-required" ? "Manage key" : "Log in",
+                            icon: authState == "api-key-required" ? "key.fill" : "person.crop.circle.badge.plus",
+                            action: onFix,
+                        )
+                    } else if entry.freshness == "stale" {
+                        inlineStateButton("Refresh", icon: "arrow.clockwise", action: onRefresh)
                     }
                 }
                 HStack(spacing: 4) {
