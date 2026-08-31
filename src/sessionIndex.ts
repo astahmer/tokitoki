@@ -53,7 +53,7 @@ const MAX_INDEX_FILE_BYTES = 256 * 1024 * 1024;
 const UPDATE_THROTTLE_MS = 120_000;
 // Bump whenever extraction changes materially; otherwise an existing local
 // index would keep stale titles/bodies until every source file changes.
-const EXTRACTOR_VERSION = "9";
+const EXTRACTOR_VERSION = "10";
 
 function ensureExtractorVersion(db: Database): void {
   try {
@@ -110,6 +110,7 @@ export function updateSessionIndex(
 ): SessionIndexStats {
   const t0 = performance.now();
   ensureSessionFts(db);
+  ensureExtractorVersion(db);
   // Throttle: searches must stay fast; a fresh incremental pass is only
   // needed when store files actually changed since the last pass.
   const throttleMs = opts.throttleMs ?? UPDATE_THROTTLE_MS;
@@ -247,13 +248,24 @@ export function searchSessions(db: Database, opts: SessionSearchOptions): Sessio
 
   const t0 = performance.now();
   // MATCH + rank first; snippet() cannot run inside a grouped query, so hits
-  // are resolved to rowids here and enriched one-by-one below.
+  // are resolved to rowids here and enriched one-by-one below. A provider can
+  // expose the same session from two physical stores (for example T3 Code's
+  // active log and compacted LevelDB file), so choose one richest row before
+  // pagination. Otherwise one conversation consumes multiple search slots.
   const hits = db
     .query(
       `
       SELECT rowid, session_id AS sessionId, provider
-      FROM sessions_fts
-      WHERE sessions_fts MATCH ? ${providerFilter}
+      FROM (
+        SELECT rowid, session_id, provider, rank,
+               ROW_NUMBER() OVER (
+                 PARTITION BY provider, session_id
+                 ORDER BY length(body) DESC, COALESCE(started_at, '') DESC, rowid DESC
+               ) AS session_rank
+        FROM sessions_fts
+        WHERE sessions_fts MATCH ? ${providerFilter}
+      )
+      WHERE session_rank = 1
       ORDER BY rank
       LIMIT ? OFFSET ?
       `,

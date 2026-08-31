@@ -70,6 +70,14 @@ import Testing
         #expect(Model.upstreamProvider(for: "opencode-go", accountKey: "default") == "opencode")
     }
 
+    @Test func sideNotchEntryIdentityKeepsProviderAccountsSeparate() {
+        let personal = account(provider: "codex", accountKey: "openai:personal", windows: [])
+        let work = account(provider: "codex", accountKey: "openai:work", windows: [])
+        #expect(Model.sideNotchEntryID(personal) == "openai@openai:personal")
+        #expect(Model.sideNotchEntryID(work) == "openai@openai:work")
+        #expect(Model.sideNotchEntryID(personal) != Model.sideNotchEntryID(work))
+    }
+
     @Test func sideNotchWindowCanPinAQuotaKindAndFallsBackSafely() {
         let limits = account(provider: "codex", accountKey: "default", windows: [
             window(kind: "day", tokens: 1, usedPct: 10),

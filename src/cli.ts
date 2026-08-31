@@ -2390,6 +2390,7 @@ function runMenubarPayload(parsed: ParsedInvocation): void {
           sideNotchMode: config.ui?.sideNotchMode ?? "quota",
           sideNotchSyncPreview: config.ui?.sideNotchSyncPreview === true,
           sideNotchPlacement: config.ui?.sideNotchPlacement ?? "right",
+          sideNotchDisplayNames: config.ui?.sideNotchDisplayNames ?? {},
           providers: [...new Set([
             ...cache.providerStats().keys(),
             // Cursor is a binary-store/search provider: it can be present

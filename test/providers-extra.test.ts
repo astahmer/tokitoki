@@ -30,6 +30,11 @@ const THREAD_B =
   '"title":"fix flaky test","modelSelection":{"instanceId":"claudeAgent","model":"claude-sonnet-5"},' +
   '"createdAt":"2026-08-20T09:00:00.000Z","messages":[{"role":"user","text":"make the test pass"}]}}}';
 
+const THREAD_C =
+  '{"schemaVersion":2,"environmentId":"695d1d4c","threadId":"c8b1c6df-1ee8-42ec-9f3f-8d53686f0fd2",' +
+  '"snapshot":{"snapshotSequence":8,"thread":{"title":"fallback timestamp",' +
+  '"latestTurn":{"requestedAt":"2026-08-21T11:12:13.000Z"}}}}';
+
 function tmpLevelDbWith(contents: string): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "t3code-ldb-"));
   // .log = LevelDB write-ahead; content is binary junk + embedded JSON.
@@ -58,22 +63,24 @@ void (async () => {
   await t3codeExtraction();
 
   async function t3codeExtraction(): Promise<void> {
-    const dir = tmpLevelDbWith(THREAD_A + "\xff\x02junk" + THREAD_B);
+    const dir = tmpLevelDbWith(THREAD_A + "\xff\x02junk" + THREAD_B + THREAD_C);
     try {
       const files = t3CodeProvider.listFiles(dir);
       assert.equal(files.length, 1, "lists the .log data file");
 
       const docs = extractT3SessionDocs(files[0]!);
-      assert.equal(docs.length, 2, `both threads found, got ${docs.length}`);
+      assert.equal(docs.length, 3, `all threads found, got ${docs.length}`);
       const a = docs.find((d) => d.sessionId === "e34f88a5-7e25-4d56-8f68-33eae4844122");
       const b = docs.find((d) => d.sessionId === "0228aba2-07fc-4699-a632-d41c038b8d92");
-      assert.ok(a && b, "docs keyed by threadId");
+      const c = docs.find((d) => d.sessionId === "c8b1c6df-1ee8-42ec-9f3f-8d53686f0fd2");
+      assert.ok(a && b && c, "docs keyed by threadId");
       assert.equal(a!.title, 'if it works just say "ok"');
       assert.ok(a!.body.includes('if it works just say "ok"') && a!.body.includes("say ok if it works"));
       assert.equal(a!.accountKey, "opencode");
       assert.equal(a!.startedAt, "2026-08-04T16:19:17.793Z");
       assert.equal(b!.title, "fix flaky test");
       assert.equal(b!.accountKey, "claudeAgent");
+      assert.equal(c!.startedAt, "2026-08-21T11:12:13.000Z");
 
       // parseLine never emits — no usage data in this store.
       const events = t3CodeProvider.parseLine(THREAD_A, {

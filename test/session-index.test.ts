@@ -181,6 +181,39 @@ describe("session index", () => {
     db.close();
   });
 
+  it("deduplicates one session repeated across physical store files", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tokitoki-stores-"));
+    const first = path.join(dir, "active.log");
+    const compacted = path.join(dir, "compacted.ldb");
+    fs.writeFileSync(first, "active");
+    fs.writeFileSync(compacted, "compacted");
+    const provider: Provider = {
+      id: "t3code",
+      label: "T3 Code",
+      discoverRoots: () => [dir],
+      listFiles: () => [first, compacted],
+      parseLine: () => [],
+      extractSessionDocs: (file) => [{
+        sessionId: "shared-thread",
+        startedAt: "2026-08-20T10:00:00Z",
+        title: "shared thread",
+        body: file === first ? "shared thread active snapshot" : "shared thread compacted snapshot with the richest conversation",
+      }],
+    };
+    const db = tmpDb();
+    try {
+      updateSessionIndex(db, [provider], { force: true });
+      const result = searchSessions(db, { query: "shared thread", limit: 1 });
+      expect(result.rows).toHaveLength(1);
+      expect(result.hasMore).toBe(false);
+      expect(result.rows[0]!.sessionId).toBe("shared-thread");
+      expect(sessionConversation(db, "t3code", "shared-thread")?.body).toContain("richest conversation");
+    } finally {
+      db.close();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("multi-term queries require all terms", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tokitoki-stores-"));
     fs.writeFileSync(

@@ -67,6 +67,7 @@ export const t3CodeProvider: Provider = {
 const SNAPSHOT_MARKER = '{"schemaVersion":';
 const WINDOW_BYTES = 256 * 1024;
 const BODY_CAP = 512 * 1024;
+const ISO_TIMESTAMP_RE = /20\d{2}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})/g;
 
 /**
  * Pull thread snapshots out of raw LevelDB bytes. Records can straddle chunk
@@ -99,7 +100,13 @@ export function extractT3SessionDocs(file: string): SessionDoc[] {
         bodyParts.push(unescapeJson(m[1] ?? ""));
         if (bodyParts.join("\n").length > BODY_CAP) break;
       }
-      const startedAt = /"createdAt":"([^"]+)"/.exec(window)?.[1];
+      const explicitStartedAt = /"createdAt":"([^"]+)"/.exec(window)?.[1];
+      // Some compacted LevelDB records preserve the timestamp value but
+      // damage/interleave the surrounding property name. Keep those T3
+      // sessions in the correct date window by falling back to the earliest
+      // ISO timestamp embedded in the snapshot.
+      const timestamps = [...window.matchAll(ISO_TIMESTAMP_RE)].map((match) => match[0]).sort();
+      const startedAt = explicitStartedAt ?? timestamps[0];
       const model = /"modelSelection":\{"instanceId":"([^"]*)","model":"([^"]*)"/.exec(window);
       const accountKey = model?.[1];
       const prev = byThread.get(sessionId);

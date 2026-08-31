@@ -144,6 +144,8 @@ export interface TokitokiConfig {
     sideNotchSyncPreview?: boolean;
     /** Side-notch perimeter anchor: three positions on each screen edge. */
     sideNotchPlacement?: "top-left" | "top" | "top-right" | "right-top" | "right" | "right-bottom" | "bottom-left" | "bottom" | "bottom-right" | "left-top" | "left" | "left-bottom";
+    /** Optional local labels keyed by the stable side-notch entry id. Blank restores the automatic name. */
+    sideNotchDisplayNames?: Record<string, string>;
     /**
      * Menubar popover card layout: ordered ids; an id prefixed "!" is hidden
      * (e.g. ["limits", "!tools", "hero"]). Ids missing from the list keep

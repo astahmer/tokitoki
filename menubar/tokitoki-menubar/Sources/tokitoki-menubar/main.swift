@@ -202,6 +202,16 @@ struct AccountLimits: Codable, Identifiable {
     var id: String { "\(provider)@\(accountKey)" }
 }
 
+/// One account-scoped group shown by the side-notch rail. A provider can
+/// contribute several groups when it has several signed-in accounts.
+struct SideNotchAccountGroup: Identifiable {
+    let id: String
+    let provider: String
+    let accountKey: String
+    let accountLabel: String
+    let limits: [AccountLimits]
+}
+
 struct PollResultPayload: Codable {
     let authRequiredProviders: [String]?
     let providerAuthStates: [String: String]?
@@ -223,6 +233,7 @@ struct UiPreviewConfig: Codable {
     var sideNotchMode: String? = nil
     let sideNotchSyncPreview: Bool?
     let sideNotchPlacement: String?
+    var sideNotchDisplayNames: [String: String]? = nil
     // Provider visibility (context-menu Settings ▸ toggles).
     let providers: [String]?
     let menubarHidden: [String]?
@@ -467,7 +478,11 @@ final class Model: ObservableObject {
     /// inferred from the pointer: the pointer can cross displays while the
     /// physical top-notch panel is opening.
     @Published var sideNotchHidesCollapsedHandle = false
-    @Published var sideNotchSelectedProvider: String?
+    /// Stores a stable account-scoped side-notch entry id, not just a
+    /// provider id. This keeps the hovered detail card correct for
+    /// multi-account providers.
+    @Published var sideNotchSelectedEntryID: String?
+    @Published var sideNotchDisplayNames: [String: String] = [:]
     /// Status-item strip groups: UPSTREAM providers (openai, claude,
     /// opencode, openrouter… — not harnesses), each with stacked "NN%" lines
     /// for real quotas or a single "~NN%" usage-relative estimate.
@@ -564,6 +579,7 @@ final class Model: ObservableObject {
     private var hasHydratedSnapshot = false
     private var sessionTask: Task<Void, Never>?
     private var sessionPageCache: [String: PopoverSessionsPayload] = [:]
+    private var sideNotchDisplayNameTasks: [String: Task<Void, Never>] = [:]
 
     private struct QuotaObservation: Codable {
         let remaining: Double
@@ -1352,6 +1368,7 @@ final class Model: ObservableObject {
                     self.sideNotchMode = Self.canonicalSideNotchMode(ui.sideNotchMode ?? "quota")
                     self.sideNotchSyncPreview = ui.sideNotchSyncPreview ?? false
                     self.sideNotchPlacement = Self.canonicalSideNotchPlacement(ui.sideNotchPlacement ?? "right")
+                    self.sideNotchDisplayNames = ui.sideNotchDisplayNames ?? [:]
                     self.knownProviders = ui.providers ?? []
                     self.menubarHidden = Set(ui.menubarHidden ?? [])
                     self.cardLayout = (ui.cards ?? []).map { ($0.id, $0.hidden) }
@@ -1718,7 +1735,7 @@ final class Model: ObservableObject {
     /// else the first window. Mirrors the popover hero logic.
     /// Upstream provider (openai/claude/opencode/openrouter/…) for strip
     /// grouping — harnesses (pi, codex, claude-code) are just clients.
-    static func upstreamProvider(_ l: AccountLimits) -> String? {
+    nonisolated static func upstreamProvider(_ l: AccountLimits) -> String? {
         upstreamProvider(for: l.provider, accountKey: l.accountKey)
     }
 
@@ -1974,6 +1991,97 @@ final class Model: ObservableObject {
         AppDelegate.shared?.refreshSideNotch()
     }
 
+    /// Stable identity for one account-scoped side-notch item. Keep this
+    /// human-readable because it is also the key users can inspect in config.
+    nonisolated static func sideNotchEntryID(_ limit: AccountLimits) -> String {
+        "\(upstreamProvider(limit) ?? limit.provider)@\(limit.accountKey)"
+    }
+
+    private func sideNotchAccountLabel(for limits: [AccountLimits]) -> String {
+        if privacyHideIdentities { return "Private account" }
+        guard let limit = limits.sorted(by: { $0.id < $1.id }).first else { return "Account" }
+        if let email = limit.email, !email.isEmpty { return email }
+        if let planLabel = limit.planLabel, !planLabel.isEmpty { return planLabel }
+        return limit.accountKey == "default" ? "Default account" : limit.accountKey
+    }
+
+    /// Return account-scoped groups for the rail. Harness aliases belonging to
+    /// the same provider/account remain one item, while distinct accounts get
+    /// distinct rings and detail cards.
+    func sideNotchAccountGroups(includeHidden: Bool = false) -> [SideNotchAccountGroup] {
+        let visible = limits.filter { limit in
+            !menubarHidden.contains(limit.provider)
+                && !menubarHidden.contains("\(limit.provider):\(limit.accountKey)")
+        }
+        let grouped = Dictionary(grouping: visible, by: Self.sideNotchEntryID)
+        return grouped.compactMap { id, accountLimits in
+            guard let first = accountLimits.sorted(by: { $0.id < $1.id }).first else { return nil }
+            let provider = Self.upstreamProvider(first) ?? first.provider
+            guard includeHidden || !sideNotchHidden.contains(provider) else { return nil }
+            return SideNotchAccountGroup(
+                id: id,
+                provider: provider,
+                accountKey: first.accountKey,
+                accountLabel: sideNotchAccountLabel(for: accountLimits),
+                limits: accountLimits,
+            )
+        }
+        .sorted { lhs, rhs in
+            let left = Self.sideNotchProviderOrder.firstIndex(of: lhs.provider) ?? Self.sideNotchProviderOrder.count
+            let right = Self.sideNotchProviderOrder.firstIndex(of: rhs.provider) ?? Self.sideNotchProviderOrder.count
+            if left != right { return left < right }
+            if lhs.provider != rhs.provider { return lhs.provider < rhs.provider }
+            return lhs.id < rhs.id
+        }
+    }
+
+    func sideNotchEntryIDs() -> [String] {
+        sideNotchAccountGroups().map(\.id)
+    }
+
+    func sideNotchVisibleEntryCount() -> Int {
+        sideNotchEntryIDs().count
+    }
+
+    func sideNotchDisplayName(for entryID: String) -> String? {
+        let value = sideNotchDisplayNames[entryID]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return value.isEmpty ? nil : String(value.prefix(48))
+    }
+
+    func setSideNotchDisplayName(_ value: String, for entryID: String) {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            sideNotchDisplayNames.removeValue(forKey: entryID)
+        } else {
+            sideNotchDisplayNames[entryID] = String(trimmed.prefix(48))
+        }
+        // Text fields send one change per keystroke. Debounce the config
+        // write so editing a label does not spawn a CLI process for every
+        // character while the visible label still updates immediately.
+        sideNotchDisplayNameTasks[entryID]?.cancel()
+        sideNotchDisplayNameTasks[entryID] = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: 250_000_000)
+            } catch {
+                return
+            }
+            guard let self else { return }
+            let data = try? JSONSerialization.data(withJSONObject: self.sideNotchDisplayNames, options: [.sortedKeys])
+            let json = String(data: data ?? Data("{}".utf8), encoding: .utf8) ?? "{}"
+            self.persistUISetting(path: "ui.sideNotchDisplayNames", json: json)
+            self.sideNotchDisplayNameTasks[entryID] = nil
+        }
+        AppDelegate.shared?.refreshSideNotch()
+    }
+
+    func sideNotchProvider(forEntryID entryID: String) -> String? {
+        sideNotchAccountGroups().first { $0.id == entryID }?.provider
+    }
+
+    func sideNotchAccounts(forEntryID entryID: String) -> [AccountLimits] {
+        sideNotchAccountGroups().first { $0.id == entryID }?.limits ?? []
+    }
+
     /// Return the account rows that feed one visual upstream provider group.
     /// Keeping this mapping in the model makes the rail's actions work for
     /// both native provider cards and harnesses such as Codex/Claude Code.
@@ -1998,6 +2106,15 @@ final class Model: ObservableObject {
             .max { (parseISO($0.lastRequestAt) ?? .distantPast) < (parseISO($1.lastRequestAt) ?? .distantPast) }
     }
 
+    func latestSession(forEntryID entryID: String) -> PopoverSessionRow? {
+        guard let upstream = sideNotchProvider(forEntryID: entryID) else { return nil }
+        let sessions = sessionRows.filter { Self.upstreamProvider(for: $0.provider, accountKey: $0.accountKey) == upstream }
+        let accountKeys = Set(sideNotchAccounts(forEntryID: entryID).map(\.accountKey))
+        let accountSessions = sessions.filter { accountKeys.contains($0.accountKey) }
+        return (accountSessions.isEmpty ? sessions : accountSessions)
+            .max { (parseISO($0.lastRequestAt) ?? .distantPast) < (parseISO($1.lastRequestAt) ?? .distantPast) }
+    }
+
     func sideNotchActivityState(for upstream: String, now: Date = Date()) -> String {
         guard let session = latestSession(for: upstream), let lastRequest = parseISO(session.lastRequestAt) else {
             return "none"
@@ -2008,8 +2125,27 @@ final class Model: ObservableObject {
         return "idle"
     }
 
+    func sideNotchActivityState(forEntryID entryID: String, now: Date = Date()) -> String {
+        guard let session = latestSession(forEntryID: entryID), let lastRequest = parseISO(session.lastRequestAt) else {
+            return "none"
+        }
+        let age = max(0, now.timeIntervalSince(lastRequest))
+        if age <= 2 * 60 { return "active" }
+        if age <= 15 * 60 { return "recent" }
+        return "idle"
+    }
+
     func sideNotchActivityText(for upstream: String, now: Date = Date()) -> String {
         switch sideNotchActivityState(for: upstream, now: now) {
+        case "active": return "Active session"
+        case "recent": return "Recent activity"
+        case "idle": return "No recent activity"
+        default: return "No indexed sessions"
+        }
+    }
+
+    func sideNotchActivityText(forEntryID entryID: String, now: Date = Date()) -> String {
+        switch sideNotchActivityState(forEntryID: entryID, now: now) {
         case "active": return "Active session"
         case "recent": return "Recent activity"
         case "idle": return "No recent activity"
@@ -2042,6 +2178,15 @@ final class Model: ObservableObject {
         }
     }
 
+    func refreshSideNotchEntry(_ entryID: String) {
+        let accounts = sideNotchAccounts(forEntryID: entryID)
+        if accounts.isEmpty {
+            pollNow()
+        } else {
+            accounts.forEach(refreshAccount)
+        }
+    }
+
     func fixSideNotchProvider(_ upstream: String) {
         switch sideNotchAuthState(for: upstream) {
         case "api-key-required": AppDelegate.shared?.openAPIKeysFromSideNotch()
@@ -2057,6 +2202,15 @@ final class Model: ObservableObject {
     func focusSideNotchSession(_ upstream: String) {
         guard let session = latestSession(for: upstream) else {
             pollStatus = "No indexed session for \(SideNotchView.providerTitle(for: upstream))"
+            return
+        }
+        AppDelegate.shared?.openSessionInDashboard(provider: session.provider, sessionId: session.sessionId)
+    }
+
+    func focusSideNotchSession(forEntryID entryID: String) {
+        guard let session = latestSession(forEntryID: entryID) else {
+            let provider = sideNotchProvider(forEntryID: entryID) ?? "provider"
+            pollStatus = "No indexed session for \(SideNotchView.providerTitle(for: provider))"
             return
         }
         AppDelegate.shared?.openSessionInDashboard(provider: session.provider, sessionId: session.sessionId)
@@ -2166,9 +2320,9 @@ final class Model: ObservableObject {
         AppDelegate.shared?.refreshSideNotch()
     }
 
-    func setSideNotchSelectedProvider(_ provider: String?) {
-        guard sideNotchSelectedProvider != provider else { return }
-        sideNotchSelectedProvider = provider
+    func setSideNotchSelectedEntryID(_ entryID: String?) {
+        guard sideNotchSelectedEntryID != entryID else { return }
+        sideNotchSelectedEntryID = entryID
         AppDelegate.shared?.refreshSideNotch()
     }
 
@@ -2177,14 +2331,7 @@ final class Model: ObservableObject {
     /// selecting the item that will land under it avoids a second outer-panel
     /// resize once SwiftUI's hover callback arrives.
     func sideNotchProviders() -> [String] {
-        var providers = Set<String>()
-        for limit in limits {
-            let provider = Self.upstreamProvider(limit) ?? limit.provider
-            guard !sideNotchHidden.contains(provider),
-                  !menubarHidden.contains(limit.provider),
-                  !menubarHidden.contains("\(limit.provider):\(limit.accountKey)") else { continue }
-            providers.insert(provider)
-        }
+        let providers = Set(sideNotchAccountGroups().map(\.provider))
         return providers.sorted { lhs, rhs in
             let left = Self.sideNotchProviderOrder.firstIndex(of: lhs) ?? Self.sideNotchProviderOrder.count
             let right = Self.sideNotchProviderOrder.firstIndex(of: rhs) ?? Self.sideNotchProviderOrder.count
@@ -2192,16 +2339,16 @@ final class Model: ObservableObject {
         }
     }
 
-    func sideNotchProvider(at point: NSPoint, screen: NSScreen) -> String? {
-        let providers = Array(sideNotchProviders().prefix(6))
-        guard !providers.isEmpty else { return nil }
+    func sideNotchEntryID(at point: NSPoint, screen: NSScreen) -> String? {
+        let entryIDs = Array(sideNotchEntryIDs().prefix(6))
+        guard !entryIDs.isEmpty else { return nil }
 
         let rail = SideNotchGeometry.frame(
             in: screen.visibleFrame,
             placement: sideNotchPlacement,
             expanded: true,
             hasDetail: false,
-            visibleEntryCount: providers.count,
+            visibleEntryCount: entryIDs.count,
             screenFrame: screen.frame,
             topSafeAreaInset: sideNotchPlacement == "top" ? screen.safeAreaInsets.top : 0,
         )
@@ -2210,7 +2357,7 @@ final class Model: ObservableObject {
         let leadingPadding: CGFloat = vertical ? 8 + 28 : 8 + 26
         let itemStride: CGFloat = 68
         let index = Int(((position - leadingPadding - itemStride / 2) / itemStride).rounded())
-        return providers[max(0, min(providers.count - 1, index))]
+        return entryIDs[max(0, min(entryIDs.count - 1, index))]
     }
 
     func setStripMetric(_ value: String) {
@@ -2954,7 +3101,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let model else { return }
         guard model.sideNotchEnabled else {
             model.sideNotchExpanded = false
-            model.sideNotchSelectedProvider = nil
+            model.sideNotchSelectedEntryID = nil
             model.sideNotchHidesCollapsedHandle = false
             if let sideNotchHoverMonitor { NSEvent.removeMonitor(sideNotchHoverMonitor); self.sideNotchHoverMonitor = nil }
             if let sideNotchLocalHoverMonitor { NSEvent.removeMonitor(sideNotchLocalHoverMonitor); self.sideNotchLocalHoverMonitor = nil }
@@ -3143,11 +3290,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // opening transform contains one card instead of crossfading
                 // a stale card into the newly hovered one.
                 withAnimation(nil) {
-                    model.sideNotchSelectedProvider = model.sideNotchProvider(at: pointer, screen: screen)
+                    model.sideNotchSelectedEntryID = model.sideNotchEntryID(at: pointer, screen: screen)
                 }
             } else {
                 withAnimation(nil) {
-                    model.sideNotchSelectedProvider = nil
+                    model.sideNotchSelectedEntryID = nil
                 }
             }
             setSideNotchExpanded(true)
@@ -3271,7 +3418,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             placement: model.sideNotchPlacement,
             expanded: true,
             hasDetail: true,
-            visibleEntryCount: model.sideNotchProviders().count,
+            visibleEntryCount: model.sideNotchVisibleEntryCount(),
             screenFrame: screen.frame,
             topSafeAreaInset: model.sideNotchPlacement == "top" ? screen.safeAreaInsets.top : 0,
         )
@@ -3323,7 +3470,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // it into the handle, then release it once the panel is settled.
             // This prevents the detail surface from being torn down at the
             // start of the close animation.
-            model?.sideNotchSelectedProvider = nil
+            model?.sideNotchSelectedEntryID = nil
         }
         updateSideNotchHitTesting()
         handleSideNotchPointer()
@@ -3490,22 +3637,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let menu = NSMenu()
         menu.autoenablesItems = false
         let pointer = NSEvent.mouseLocation
-        let provider = screen(containing: pointer).flatMap { model?.sideNotchProvider(at: pointer, screen: $0) }
-        if let provider {
-            let heading = NSMenuItem(title: "\(SideNotchView.providerTitle(for: provider)) Usage", action: nil, keyEquivalent: "")
+        let entryID = screen(containing: pointer).flatMap { model?.sideNotchEntryID(at: pointer, screen: $0) }
+        if let entryID, let provider = model?.sideNotchProvider(forEntryID: entryID) {
+            let headingTitle = model?.sideNotchDisplayName(for: entryID)
+                ?? "\(SideNotchView.providerTitle(for: provider)) Usage"
+            let heading = NSMenuItem(title: headingTitle, action: nil, keyEquivalent: "")
             heading.isEnabled = false
             menu.addItem(heading)
-            let refresh = NSMenuItem(title: "Refresh this provider", action: #selector(refreshSideNotchProvider(_:)), keyEquivalent: "r")
-            refresh.representedObject = provider
+            let refresh = NSMenuItem(title: "Refresh this account", action: #selector(refreshSideNotchEntry(_:)), keyEquivalent: "r")
+            refresh.representedObject = entryID
             refresh.target = self
             menu.addItem(refresh)
             let open = NSMenuItem(title: "Open provider console", action: #selector(openSideNotchProvider(_:)), keyEquivalent: "")
             open.representedObject = provider
             open.target = self
             menu.addItem(open)
-            if model?.latestSession(for: provider) != nil {
+            if model?.latestSession(forEntryID: entryID) != nil {
                 let session = NSMenuItem(title: "Open latest session", action: #selector(openSideNotchSession(_:)), keyEquivalent: "")
-                session.representedObject = provider
+                session.representedObject = entryID
                 session.target = self
                 menu.addItem(session)
             }
@@ -3517,6 +3666,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             menu.addItem(.separator())
         }
+
+        let mode = NSMenuItem(title: "Mode", action: nil, keyEquivalent: "")
+        let modeSub = NSMenu()
+        modeSub.autoenablesItems = false
+        for candidate in SideNotchMode.allCases {
+            let item = NSMenuItem(title: candidate.title, action: #selector(setSideNotchModeFromMenu(_:)), keyEquivalent: "")
+            item.representedObject = candidate.rawValue
+            item.state = model?.sideNotchMode == candidate.rawValue ? .on : .off
+            item.target = self
+            modeSub.addItem(item)
+        }
+        mode.submenu = modeSub
+        menu.addItem(mode)
+
+        let window = NSMenuItem(title: "Primary window", action: nil, keyEquivalent: "")
+        let windowSub = NSMenu()
+        windowSub.autoenablesItems = false
+        let windows: [(String, String)] = [
+            ("Smart / governing", "smart"),
+            ("Session / day", "day"),
+            ("Weekly", "week"),
+            ("Monthly", "month"),
+        ]
+        for (title, value) in windows {
+            let item = NSMenuItem(title: title, action: #selector(setSideNotchWindowFromMenu(_:)), keyEquivalent: "")
+            item.representedObject = value
+            item.state = model?.sideNotchWindow == value ? .on : .off
+            item.target = self
+            windowSub.addItem(item)
+        }
+        window.submenu = windowSub
+        menu.addItem(window)
+        menu.addItem(.separator())
         let disable = NSMenuItem(
             title: "Disable Usage Side-Notch",
             action: #selector(disableSideNotch),
@@ -3531,6 +3713,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model?.setSideNotchEnabled(false)
     }
 
+    @objc private func setSideNotchModeFromMenu(_ sender: NSMenuItem) {
+        guard let mode = sender.representedObject as? String else { return }
+        model?.setSideNotchMode(mode)
+    }
+
+    @objc private func setSideNotchWindowFromMenu(_ sender: NSMenuItem) {
+        guard let window = sender.representedObject as? String else { return }
+        model?.setSideNotchWindow(window)
+    }
+
+    @objc private func refreshSideNotchEntry(_ sender: NSMenuItem) {
+        guard let entryID = sender.representedObject as? String else { return }
+        model?.refreshSideNotchEntry(entryID)
+    }
+
     @objc private func refreshSideNotchProvider(_ sender: NSMenuItem) {
         guard let provider = sender.representedObject as? String else { return }
         model?.refreshSideNotchProvider(provider)
@@ -3542,8 +3739,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func openSideNotchSession(_ sender: NSMenuItem) {
-        guard let provider = sender.representedObject as? String else { return }
-        model?.focusSideNotchSession(provider)
+        guard let entryID = sender.representedObject as? String else { return }
+        model?.focusSideNotchSession(forEntryID: entryID)
     }
 
     @objc private func fixSideNotchProvider(_ sender: NSMenuItem) {
@@ -4847,12 +5044,15 @@ struct CollapsibleCard<Content: View>: View {
     }
 }
 
-/// Floating usage rail attached to the active screen's right edge. It keeps
-/// the always-available glanceable state intentionally smaller than the full
-/// popover; click opens the existing detailed surface.
+/// Floating usage rail attached to the configured anchor on the active screen.
+/// It keeps the always-available glanceable state intentionally smaller than
+/// the full popover; click opens the existing detailed surface.
 struct SideNotchEntry: Identifiable {
     let id: String
     let provider: String
+    let accountKey: String
+    let accountLabel: String
+    let isMultiAccount: Bool
     let limits: [AccountLimits]
     let remaining: Double?
     let tokenTotal: Double
@@ -4872,33 +5072,29 @@ struct SideNotchView: View {
     private var isVertical: Bool { model.sideNotchEdge == "left" || model.sideNotchEdge == "right" }
 
     private var entries: [SideNotchEntry] {
-        let visible = model.limits.filter { limit in
-            !model.menubarHidden.contains(limit.provider)
-                && !model.menubarHidden.contains("\(limit.provider):\(limit.accountKey)")
-        }
-        let grouped = Dictionary(grouping: visible) { limit in
-            Model.upstreamProvider(limit) ?? limit.provider
-        }
-        return grouped.compactMap { provider, limits in
-            guard !model.sideNotchHidden.contains(provider) else { return nil }
+        let groups = model.sideNotchAccountGroups()
+        let accountCountByProvider = Dictionary(grouping: groups, by: \.provider).mapValues(\.count)
+        return groups.map { group in
+            let limits = group.limits
             let remaining = limits.compactMap { limit in
                 Model.sideNotchWindow(limit, preference: model.sideNotchWindow)?.usedPct.map { max(0, min(100, 100 - $0)) }
             }.min()
             let tokenTotal = limits.compactMap { Model.sideNotchWindow($0, preference: model.sideNotchWindow)?.tokens }.reduce(0, +)
-            return SideNotchEntry(id: provider, provider: provider, limits: limits, remaining: remaining, tokenTotal: tokenTotal)
-        }
-        // Quota values change frequently; they must never decide visual order.
-        // A stable provider order keeps the pointer over the same item while
-        // refreshes update percentages underneath it.
-        .sorted { lhs, rhs in
-            let left = Model.sideNotchProviderOrder.firstIndex(of: lhs.provider) ?? Model.sideNotchProviderOrder.count
-            let right = Model.sideNotchProviderOrder.firstIndex(of: rhs.provider) ?? Model.sideNotchProviderOrder.count
-            return left == right ? lhs.provider < rhs.provider : left < right
+            return SideNotchEntry(
+                id: group.id,
+                provider: group.provider,
+                accountKey: group.accountKey,
+                accountLabel: group.accountLabel,
+                isMultiAccount: (accountCountByProvider[group.provider] ?? 0) > 1,
+                limits: limits,
+                remaining: remaining,
+                tokenTotal: tokenTotal,
+            )
         }
     }
 
     private var selectedEntry: SideNotchEntry? {
-        entries.first { $0.provider == model.sideNotchSelectedProvider }
+        entries.first { $0.id == model.sideNotchSelectedEntryID }
     }
 
     private var visibleEntries: [SideNotchEntry] {
@@ -5101,7 +5297,7 @@ struct SideNotchView: View {
             }
         }
         .frame(width: railWidth + detailWidth + detailGap, height: railLength, alignment: .topLeading)
-        .animation(.interactiveSpring(response: 0.32, dampingFraction: 0.88, blendDuration: 0.08), value: model.sideNotchSelectedProvider)
+        .animation(.interactiveSpring(response: 0.32, dampingFraction: 0.88, blendDuration: 0.08), value: model.sideNotchSelectedEntryID)
     }
 
     private var horizontalExpanded: some View {
@@ -5120,7 +5316,7 @@ struct SideNotchView: View {
             }
         }
         .frame(width: railLength, height: railWidth + detailMaxHeight + detailGap, alignment: .topLeading)
-        .animation(.interactiveSpring(response: 0.32, dampingFraction: 0.88, blendDuration: 0.08), value: model.sideNotchSelectedProvider)
+        .animation(.interactiveSpring(response: 0.32, dampingFraction: 0.88, blendDuration: 0.08), value: model.sideNotchSelectedEntryID)
     }
 
     private var expandedRail: some View {
@@ -5170,7 +5366,7 @@ struct SideNotchView: View {
     }
 
     private var railFooter: some View {
-        Image(systemName: model.sideNotchSelectedProvider == nil ? "ellipsis" : (isVertical ? "chevron.left" : "chevron.up"))
+        Image(systemName: model.sideNotchSelectedEntryID == nil ? "ellipsis" : (isVertical ? "chevron.left" : "chevron.up"))
             .font(.system(size: 9, weight: .bold))
             .foregroundStyle(.white.opacity(0.4))
             .frame(width: isVertical ? railWidth - 20 : 26, height: isVertical ? 24 : railWidth - 20)
@@ -5201,20 +5397,26 @@ struct SideNotchView: View {
         .frame(width: isVertical ? railWidth - 20 : itemStride, height: isVertical ? itemStride : railWidth - 20)
         .contentShape(Rectangle())
         .onHover { isHovering in
-            if isHovering { model.setSideNotchSelectedProvider(entry.provider) }
+            if isHovering { model.setSideNotchSelectedEntryID(entry.id) }
         }
     }
 
     private func detailCallout(_ entry: SideNotchEntry) -> some View {
-        ZStack {
+        let latestSession = model.latestSession(forEntryID: entry.id)
+        let displayName = model.sideNotchDisplayName(for: entry.id)
+            ?? (entry.isMultiAccount
+                ? "\(SideNotchView.providerTitle(for: entry.provider)) · \(entry.accountLabel)"
+                : "\(SideNotchView.providerTitle(for: entry.provider)) Usage")
+        return ZStack {
             SideNotchDetailView(
                 entry: entry,
+                displayName: displayName,
                 metric: model.sideNotchMetric,
                 windowPreference: model.sideNotchWindow,
                 mode: model.sideNotchMode,
                 authState: model.sideNotchAuthState(for: entry.provider),
-                activityText: model.sideNotchActivityText(for: entry.provider),
-                activityDetail: model.latestSession(for: entry.provider).flatMap { session in
+                activityText: model.sideNotchActivityText(forEntryID: entry.id),
+                activityDetail: latestSession.flatMap { session in
                     guard !model.privacyHideIdentities else { return nil }
                     return session.title ?? session.repos.first ?? session.snippet
                 },
@@ -5223,13 +5425,13 @@ struct SideNotchView: View {
                     let remaining = model.sideNotchRemaining(for: provider).map { "\(Int($0.rounded()))%" } ?? "—"
                     return "\(SideNotchView.providerTitle(for: provider)) · \(remaining) headroom"
                 },
-                hasSession: model.latestSession(for: entry.provider) != nil,
+                hasSession: latestSession != nil,
                 width: detailWidth,
                 height: selectedDetailHeight,
-                onRefresh: { model.refreshSideNotchProvider(entry.provider) },
+                onRefresh: { model.refreshSideNotchEntry(entry.id) },
                 onFix: { model.fixSideNotchProvider(entry.provider) },
                 onOpenProvider: { model.openSideNotchProvider(entry.provider) },
-                onOpenSession: { model.focusSideNotchSession(entry.provider) },
+                onOpenSession: { model.focusSideNotchSession(forEntryID: entry.id) },
                 onOpenFallback: {
                     if let fallback = model.sideNotchFallbackProvider(excluding: entry.provider) {
                         model.openSideNotchProvider(fallback)
@@ -5275,7 +5477,7 @@ struct SideNotchView: View {
     }
 
     private var detailOffset: CGFloat {
-        let index = visibleEntries.firstIndex { $0.provider == selectedEntry?.provider } ?? 0
+        let index = visibleEntries.firstIndex { $0.id == selectedEntry?.id } ?? 0
         let center = 28 + CGFloat(index) * itemStride + itemStride / 2
         let length = isVertical ? railLength : railLength
         let detailLength = isVertical ? selectedDetailHeight : detailWidth + detailGap
@@ -5340,6 +5542,7 @@ struct QuotaRing: View {
 
 struct SideNotchDetailView: View {
     let entry: SideNotchEntry
+    let displayName: String
     let metric: String
     let windowPreference: String
     let mode: String
@@ -5500,7 +5703,7 @@ struct SideNotchDetailView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 8) {
                         ProviderLogo(provider: SideNotchView.logoProvider(for: entry.provider)).scaleEffect(1.45)
-                        Text("\(SideNotchView.providerTitle(for: entry.provider)) Usage")
+                        Text(displayName)
                             .font(.system(size: 14, weight: .semibold))
                             .lineLimit(1)
                     }
@@ -5876,6 +6079,7 @@ struct SideNotchSettingsSheet: View {
     @ObservedObject var model: Model
     @Binding var isPresented: Bool
     @State private var rows: [ProviderRow] = []
+    @State private var nameItems: [SideNotchAccountGroup] = []
 
     struct ProviderRow: Identifiable {
         let id: String
@@ -6009,10 +6213,37 @@ struct SideNotchSettingsSheet: View {
                 } footer: {
                     Text("These choices affect only the side-notch rail. Turn on mirroring above to use the menubar preview's provider selection.")
                 }
+                Section {
+                    ForEach(nameItems) { item in
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack(spacing: 8) {
+                                ProviderLogo(provider: SideNotchView.logoProvider(for: item.provider))
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text("\(SideNotchView.providerTitle(for: item.provider)) · \(item.accountLabel)")
+                                        .font(.caption.weight(.medium))
+                                        .lineLimit(1)
+                                    TextField("Automatic name", text: Binding(
+                                        get: { model.sideNotchDisplayNames[item.id] ?? "" },
+                                        set: { model.setSideNotchDisplayName($0, for: item.id) },
+                                    ))
+                                    .textFieldStyle(.roundedBorder)
+                                }
+                            }
+                        }
+                    }
+                    if nameItems.isEmpty {
+                        Text("No account-scoped usage items detected")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                } header: {
+                    Text("Usage item names")
+                } footer: {
+                    Text("Names are local to this Mac. Leave a field blank to restore the automatic name.")
+                }
             }
             .listStyle(.inset)
         }
-        .frame(width: 340, height: 430)
+        .frame(width: 340, height: 540)
         .onAppear(perform: loadRows)
     }
 
@@ -6020,6 +6251,7 @@ struct SideNotchSettingsSheet: View {
         rows = (model.providerVisibilityItems() ?? []).map(\.display).sorted().map { provider in
             ProviderRow(id: provider, visible: !model.sideNotchHidden.contains(provider))
         }
+        nameItems = model.sideNotchAccountGroups(includeHidden: true)
     }
 
     private static let sideNotchPlacementRows = [
@@ -6186,6 +6418,7 @@ struct PreviewSettingsInline: View {
 struct SideNotchSettingsInline: View {
     @ObservedObject var model: Model
     @State private var rows: [String] = []
+    @State private var nameItems: [SideNotchAccountGroup] = []
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -6275,12 +6508,37 @@ struct SideNotchSettingsInline: View {
             if rows.isEmpty {
                 Text("No quota providers detected").font(.caption).foregroundStyle(.secondary)
             }
+            Divider().opacity(0.35)
+            Text("Usage item names").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            ForEach(nameItems) { item in
+                HStack(spacing: 8) {
+                    ProviderLogo(provider: SideNotchView.logoProvider(for: item.provider))
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("\(SideNotchView.providerTitle(for: item.provider)) · \(item.accountLabel)")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                        TextField("Automatic name", text: Binding(
+                            get: { model.sideNotchDisplayNames[item.id] ?? "" },
+                            set: { model.setSideNotchDisplayName($0, for: item.id) },
+                        ))
+                        .textFieldStyle(.roundedBorder)
+                    }
+                }
+            }
+            if nameItems.isEmpty {
+                Text("No account-scoped usage items detected")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Text("Leave a name blank to restore the automatic label. Names are local to this Mac.")
+                .font(.caption2).foregroundStyle(.tertiary)
         }
         .onAppear(perform: load)
     }
 
     private func load() {
         rows = (model.providerVisibilityItems() ?? []).map(\.display).sorted()
+        nameItems = model.sideNotchAccountGroups(includeHidden: true)
     }
 
     private func placementLabel(_ value: String) -> String {
