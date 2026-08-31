@@ -169,6 +169,22 @@ import Testing
         #expect(topLeft.maxY == visible.maxY)
     }
 
+    @Test func topCenterReservesPhysicalNotchSafeArea() {
+        let visible = NSRect(x: 0, y: 30, width: 1_440, height: 900)
+        let screen = NSRect(x: 0, y: 0, width: 1_440, height: 982)
+        let expanded = SideNotchGeometry.frame(
+            in: visible,
+            placement: "top",
+            expanded: true,
+            hasDetail: true,
+            screenFrame: screen,
+            topSafeAreaInset: 40,
+        )
+
+        #expect(expanded.maxY == screen.maxY - 40)
+        #expect(expanded.maxY < screen.maxY)
+    }
+
     @Test func sideNotchDetailHeightTracksVisibleQuotaRows() {
         #expect(SideNotchGeometry.dynamicDetailHeight(forRowCount: 0) == 110)
         #expect(SideNotchGeometry.dynamicDetailHeight(forRowCount: 1) == 110)

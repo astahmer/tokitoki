@@ -2039,6 +2039,7 @@ final class Model: ObservableObject {
             hasDetail: false,
             visibleEntryCount: providers.count,
             screenFrame: screen.frame,
+            topSafeAreaInset: sideNotchPlacement == "top" ? screen.safeAreaInsets.top : 0,
         )
         let vertical = sideNotchEdge == "left" || sideNotchEdge == "right"
         let position = vertical ? rail.maxY - point.y : point.x - rail.minX
@@ -2309,6 +2310,7 @@ enum SideNotchGeometry {
         hasDetail: Bool,
         visibleEntryCount: Int = maxVisibleEntries,
         screenFrame: NSRect? = nil,
+        topSafeAreaInset: CGFloat = 0,
     ) -> NSRect {
         let edge = Model.sideNotchEdge(for: placement)
         let railLength = Self.railLength(forVisibleEntryCount: visibleEntryCount)
@@ -2328,7 +2330,19 @@ enum SideNotchGeometry {
 
         let anchor = Model.sideNotchAnchor(for: placement)
         let horizontalBounds = edge == "top" || edge == "bottom" ? (screenFrame ?? visible) : visible
-        let verticalBounds = placement == "top" ? (screenFrame ?? visible) : visible
+        let verticalBounds: NSRect
+        if placement == "top" {
+            let topBounds = screenFrame ?? visible
+            let topInset = min(max(0, topSafeAreaInset), topBounds.height)
+            verticalBounds = NSRect(
+                x: topBounds.minX,
+                y: topBounds.minY,
+                width: topBounds.width,
+                height: topBounds.height - topInset,
+            )
+        } else {
+            verticalBounds = visible
+        }
         let x: CGFloat
         let y: CGFloat
         if vertical {
@@ -2899,7 +2913,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         if sideNotchDragMonitor == nil {
-            sideNotchDragMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseDragged, .leftMouseUp]) { [weak self] event in
+            sideNotchDragMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseDragged, .leftMouseUp, .rightMouseUp]) { [weak self] event in
                 self?.handleSideNotchDrag(event) ?? event
             }
         }
@@ -2928,6 +2942,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 expanded: false,
                 hasDetail: false,
                 screenFrame: screen.frame,
+                topSafeAreaInset: model.sideNotchPlacement == "top" ? screen.safeAreaInsets.top : 0,
             )
             inside = collapsed.insetBy(
                 dx: -SideNotchGeometry.hoverActivationInset,
@@ -2965,6 +2980,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let location = NSEvent.mouseLocation
 
         switch event.type {
+        case .rightMouseUp:
+            guard sideNotchPointIsInteractive(location, model: model, panel: panel) else { return event }
+            showSideNotchContextMenu(with: event)
+            return nil
         case .leftMouseDown:
             guard sideNotchPointIsInteractive(location, model: model, panel: panel) else { return event }
             sideNotchPointerDown = true
@@ -3029,6 +3048,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             expanded: false,
             hasDetail: false,
             screenFrame: screen.frame,
+            topSafeAreaInset: model.sideNotchPlacement == "top" ? screen.safeAreaInsets.top : 0,
         ).contains(point)
     }
 
@@ -3044,6 +3064,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             expanded: false,
             hasDetail: false,
             screenFrame: screen.frame,
+            topSafeAreaInset: model.sideNotchPlacement == "top" ? screen.safeAreaInsets.top : 0,
         )
         hitView.interactionRect = NSRect(
             x: collapsed.minX - panel.frame.minX,
@@ -3071,6 +3092,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             hasDetail: true,
             visibleEntryCount: model.sideNotchProviders().count,
             screenFrame: screen.frame,
+            topSafeAreaInset: model.sideNotchPlacement == "top" ? screen.safeAreaInsets.top : 0,
         )
         if sideNotchHasLaidOut, panel.frame != frame {
             let start = panel.frame
@@ -3279,6 +3301,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let data = try? JSONSerialization.data(withJSONObject: proof, options: [.sortedKeys]) {
             try? data.write(to: URL(fileURLWithPath: "/tmp/tokitoki-menubar.popover.json"))
         }
+    }
+
+    private func showSideNotchContextMenu(with event: NSEvent) {
+        guard let panel = sideNotchPanel, let view = panel.contentView else { return }
+
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        let disable = NSMenuItem(
+            title: "Disable Usage Side-Notch",
+            action: #selector(disableSideNotch),
+            keyEquivalent: "",
+        )
+        disable.target = self
+        menu.addItem(disable)
+        NSMenu.popUpContextMenu(menu, with: event, for: view)
+    }
+
+    @objc private func disableSideNotch() {
+        model?.setSideNotchEnabled(false)
     }
 
     private func showContextMenu(for button: NSStatusBarButton, event: NSEvent?) {
@@ -4181,7 +4222,7 @@ struct PreviewSettingsSheet: View {
                     )) {
                         Text("Remaining percent").tag("percent")
                         Text("Usage tokens").tag("tokens")
-                        Text("Smart constraint").tag("smart")
+                        Text("Tightest quota window").tag("smart")
                     }
                     .disabled(!model.previewEnabled)
                     Picker("When a provider is exhausted", selection: Binding(
@@ -4196,7 +4237,7 @@ struct PreviewSettingsSheet: View {
                 } header: {
                     Text("Display")
                 } footer: {
-                    Text("Smart constraint favors the window that limits availability; exhausted providers show the latest required reset.")
+                    Text("Tightest quota window shows the limit with the least remaining capacity. When it is exhausted, the display shows when that limit becomes available again.")
                 }
                 Section {
                     ForEach($rows) { $row in
@@ -5465,7 +5506,7 @@ struct SideNotchSettingsSheet: View {
                     )) {
                         Text("Remaining percent").tag("percent")
                         Text("Usage tokens").tag("tokens")
-                        Text("Smart constraint").tag("smart")
+                        Text("Tightest quota window").tag("smart")
                     }
                     .pickerStyle(.menu)
                     .disabled(model.sideNotchSyncPreview)
@@ -5626,7 +5667,7 @@ struct PreviewSettingsInline: View {
             )) {
                 Text("Remaining percent").tag("percent")
                 Text("Usage tokens").tag("tokens")
-                Text("Smart constraint").tag("smart")
+                Text("Tightest quota window").tag("smart")
             }
             .pickerStyle(.menu)
             .disabled(!model.previewEnabled)
@@ -5657,7 +5698,7 @@ struct PreviewSettingsInline: View {
             if rows.isEmpty {
                 Text("No quota providers detected").font(.caption).foregroundStyle(.secondary)
             }
-            Text("Smart constraint favors the window that limits availability; exhausted providers show the latest required reset.")
+            Text("Tightest quota window shows the limit with the least remaining capacity. When it is exhausted, the display shows when that limit becomes available again.")
                 .font(.caption2).foregroundStyle(.tertiary)
         }
         .onAppear(perform: load)
@@ -5720,11 +5761,11 @@ struct SideNotchSettingsInline: View {
             )) {
                 Text("Remaining percent").tag("percent")
                 Text("Usage tokens").tag("tokens")
-                Text("Smart constraint").tag("smart")
+                Text("Tightest quota window").tag("smart")
             }
             .pickerStyle(.menu)
             .disabled(model.sideNotchSyncPreview)
-            Text("The ring uses real remaining quota when available; token-only data stays neutral.")
+            Text("Tightest quota window shows the limit with the least remaining capacity; when exhausted, it shows the next reset. The ring uses real remaining quota when available, while token-only data stays neutral.")
                 .font(.caption2).foregroundStyle(.tertiary)
             Divider().opacity(0.35)
             Text("Providers").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
