@@ -4,6 +4,10 @@ import AppKit
 import UserNotifications
 import Darwin
 
+extension Notification.Name {
+    static let tokitokiOpenAPIKeys = Notification.Name("dev.tokitoki.open-api-keys")
+}
+
 private final class TokitokiInstanceLock {
     private let descriptor: Int32
 
@@ -219,6 +223,7 @@ struct UiPreviewConfig: Codable {
     let sideNotchEnabled: Bool?
     let sideNotchHidden: [String]?
     let sideNotchMetric: String?
+    var sideNotchMode: String? = nil
     let sideNotchSyncPreview: Bool?
     let sideNotchPlacement: String?
     // Provider visibility (context-menu Settings ▸ toggles).
@@ -243,6 +248,43 @@ struct UiPreviewConfig: Codable {
     var syncUrl: String? = nil
     var syncHandle: String? = nil
     var privacyHideIdentities: Bool? = nil
+}
+
+enum SideNotchMode: String, CaseIterable, Identifiable {
+    case quota
+    case activity
+    case runway
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .quota: return "Quota"
+        case .activity: return "Activity"
+        case .runway: return "Runway"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .quota: return "gauge.with.dots.needle.67percent"
+        case .activity: return "waveform.path.ecg"
+        case .runway: return "arrow.right.circle"
+        }
+    }
+
+    var description: String {
+        switch self {
+        case .quota: return "Show remaining quota and reset countdowns."
+        case .activity: return "Show recent indexed sessions and jump to the latest one."
+        case .runway: return "Show the tightest limit and the provider with the most headroom."
+        }
+    }
+
+    static func canonical(_ raw: String?) -> String {
+        guard let raw, let mode = SideNotchMode(rawValue: raw) else { return Self.quota.rawValue }
+        return mode.rawValue
+    }
 }
 
 // Combined snapshot from `tokitoki menubar-payload --json` (single CLI
@@ -419,6 +461,7 @@ final class Model: ObservableObject {
     @Published var sideNotchEnabled = false
     @Published var sideNotchHidden: Set<String> = []
     @Published var sideNotchMetric: String = "percent"
+    @Published var sideNotchMode: String = "quota"
     @Published var sideNotchSyncPreview = false
     @Published var sideNotchPlacement: String = "right"
     @Published var sideNotchExpanded = false
@@ -762,9 +805,15 @@ final class Model: ObservableObject {
     func currentInvocation() -> CLIInvocation { invocation }
 
     func openAuthFlow(for provider: String) {
+        let authProvider: String
+        switch provider {
+        case "claude": authProvider = "claude-code"
+        case "openai": authProvider = "codex"
+        default: authProvider = provider
+        }
         let command: String?
         let url: URL?
-        switch provider {
+        switch authProvider {
         case "claude-code":
             command = "claude"
             url = nil
@@ -792,14 +841,14 @@ final class Model: ObservableObject {
             process.standardError = FileHandle.nullDevice
             do {
                 try process.run()
-                pollStatus = "Opened \(Self.authDisplayName(for: provider)) in Terminal · finish login, then Refresh now"
+                pollStatus = "Opened \(Self.authDisplayName(for: authProvider)) in Terminal · finish login, then Refresh now"
             } catch {
-                pollStatus = "Could not open \(Self.authDisplayName(for: provider)): \(error.localizedDescription)"
+                pollStatus = "Could not open \(Self.authDisplayName(for: authProvider)): \(error.localizedDescription)"
             }
         } else if let url, NSWorkspace.shared.open(url) {
-            pollStatus = "Opened \(Self.authDisplayName(for: provider)) sign-in · then Refresh now"
+            pollStatus = "Opened \(Self.authDisplayName(for: authProvider)) sign-in · then Refresh now"
         } else {
-            pollStatus = "Could not open sign-in for \(Self.authDisplayName(for: provider))"
+            pollStatus = "Could not open sign-in for \(Self.authDisplayName(for: authProvider))"
         }
     }
 
@@ -825,6 +874,10 @@ final class Model: ObservableObject {
         case "commandcode": return "Command Code"
         default: return provider
         }
+    }
+
+    nonisolated static func canonicalSideNotchMode(_ raw: String?) -> String {
+        SideNotchMode.canonical(raw)
     }
 
     /// Resolve the same writable config file as the CLI. An existing TOML
@@ -1291,6 +1344,7 @@ final class Model: ObservableObject {
                     self.sideNotchEnabled = ui.sideNotchEnabled ?? false
                     self.sideNotchHidden = Set(ui.sideNotchHidden ?? [])
                     self.sideNotchMetric = ["tokens", "smart"].contains(ui.sideNotchMetric ?? "percent") ? (ui.sideNotchMetric ?? "percent") : "percent"
+                    self.sideNotchMode = Self.canonicalSideNotchMode(ui.sideNotchMode ?? "quota")
                     self.sideNotchSyncPreview = ui.sideNotchSyncPreview ?? false
                     self.sideNotchPlacement = Self.canonicalSideNotchPlacement(ui.sideNotchPlacement ?? "right")
                     self.knownProviders = ui.providers ?? []
@@ -1660,7 +1714,11 @@ final class Model: ObservableObject {
     /// Upstream provider (openai/claude/opencode/openrouter/…) for strip
     /// grouping — harnesses (pi, codex, claude-code) are just clients.
     static func upstreamProvider(_ l: AccountLimits) -> String? {
-        switch l.provider {
+        upstreamProvider(for: l.provider, accountKey: l.accountKey)
+    }
+
+    nonisolated static func upstreamProvider(for provider: String, accountKey: String) -> String? {
+        switch provider {
         case "codex": return "openai"
         case "claude-code": return "claude"
         case "gemini-cli": return "gemini"
@@ -1669,10 +1727,11 @@ final class Model: ObservableObject {
         case "copilot": return "copilot"
         case "openrouter": return "openrouter"
         case "pi", "opencode", "opencode-go":
-            let key = l.accountKey.lowercased()
+            let key = accountKey.lowercased()
             if key.contains("openrouter") { return "openrouter" }
-            if key.contains("opencode") { return "opencode" }
+            if provider == "opencode" || provider == "opencode-go" || key.contains("opencode") { return "opencode" }
             return nil
+        case "openai", "claude", "gemini": return provider
         default: return nil
         }
     }
@@ -1896,6 +1955,102 @@ final class Model: ObservableObject {
     func setSideNotchMetric(_ value: String) {
         sideNotchMetric = ["tokens", "smart"].contains(value) ? value : "percent"
         persistUISetting(path: "ui.sideNotchMetric", json: "\"\(sideNotchMetric)\"")
+    }
+
+    func setSideNotchMode(_ value: String) {
+        sideNotchMode = Self.canonicalSideNotchMode(value)
+        persistUISetting(path: "ui.sideNotchMode", json: "\"\(sideNotchMode)\"")
+        AppDelegate.shared?.refreshSideNotch()
+    }
+
+    /// Return the account rows that feed one visual upstream provider group.
+    /// Keeping this mapping in the model makes the rail's actions work for
+    /// both native provider cards and harnesses such as Codex/Claude Code.
+    func sideNotchAccounts(for upstream: String) -> [AccountLimits] {
+        limits.filter { Self.upstreamProvider($0) == upstream }
+    }
+
+    func sideNotchAuthState(for upstream: String) -> String? {
+        let providers = Set(sideNotchAccounts(for: upstream).map(\.provider))
+        let aliases = providers.union([upstream])
+        if aliases.contains(where: { authRequiredProviders.contains($0) }) { return "login-required" }
+        for provider in providers {
+            if let state = providerAuthStates[provider] { return state }
+        }
+        for alias in aliases {
+            if let state = providerAuthStates[alias] { return state }
+        }
+        return nil
+    }
+
+    func latestSession(for upstream: String) -> PopoverSessionRow? {
+        sessionRows
+            .filter { Self.upstreamProvider(for: $0.provider, accountKey: $0.accountKey) == upstream }
+            .max { (parseISO($0.lastRequestAt) ?? .distantPast) < (parseISO($1.lastRequestAt) ?? .distantPast) }
+    }
+
+    func sideNotchActivityState(for upstream: String, now: Date = Date()) -> String {
+        guard let session = latestSession(for: upstream), let lastRequest = parseISO(session.lastRequestAt) else {
+            return "none"
+        }
+        let age = max(0, now.timeIntervalSince(lastRequest))
+        if age <= 2 * 60 { return "active" }
+        if age <= 15 * 60 { return "recent" }
+        return "idle"
+    }
+
+    func sideNotchActivityText(for upstream: String, now: Date = Date()) -> String {
+        switch sideNotchActivityState(for: upstream, now: now) {
+        case "active": return "Active session"
+        case "recent": return "Recent activity"
+        case "idle": return "No recent activity"
+        default: return "No indexed sessions"
+        }
+    }
+
+    func sideNotchRemaining(for upstream: String) -> Double? {
+        sideNotchAccounts(for: upstream)
+            .compactMap { Self.primaryWindow($0)?.usedPct.map { max(0, min(100, 100 - $0)) } }
+            .min()
+    }
+
+    func sideNotchFallbackProvider(excluding upstream: String) -> String? {
+        sideNotchProviders()
+            .filter { $0 != upstream }
+            .compactMap { provider -> (String, Double)? in
+                guard let remaining = sideNotchRemaining(for: provider) else { return nil }
+                return (provider, remaining)
+            }
+            .max { $0.1 < $1.1 }?.0
+    }
+
+    func refreshSideNotchProvider(_ upstream: String) {
+        let accounts = sideNotchAccounts(for: upstream)
+        if accounts.isEmpty {
+            pollNow()
+        } else {
+            accounts.forEach(refreshAccount)
+        }
+    }
+
+    func fixSideNotchProvider(_ upstream: String) {
+        switch sideNotchAuthState(for: upstream) {
+        case "api-key-required": AppDelegate.shared?.openAPIKeysFromSideNotch()
+        case "login-required": openAuthFlow(for: upstream)
+        default: refreshSideNotchProvider(upstream)
+        }
+    }
+
+    func openSideNotchProvider(_ upstream: String) {
+        AppDelegate.shared?.openProviderConsole(upstream)
+    }
+
+    func focusSideNotchSession(_ upstream: String) {
+        guard let session = latestSession(for: upstream) else {
+            pollStatus = "No indexed session for \(SideNotchView.providerTitle(for: upstream))"
+            return
+        }
+        AppDelegate.shared?.openSessionInDashboard(provider: session.provider, sessionId: session.sessionId)
     }
 
     /// Perimeter anchors. Legacy `center` is accepted below and normalized to
@@ -2298,9 +2453,9 @@ enum SideNotchGeometry {
     static let detailHeight: CGFloat = 238
     static let detailGap: CGFloat = 20
 
-    static func dynamicDetailHeight(forRowCount rowCount: Int) -> CGFloat {
+    static func dynamicDetailHeight(forRowCount rowCount: Int, extraHeight: CGFloat = 0) -> CGFloat {
         let rows = min(max(rowCount, 0), 5)
-        return min(detailHeight, max(110, 56 + CGFloat(rows) * 50))
+        return min(detailHeight, max(110, 56 + CGFloat(rows) * 50 + max(0, extraHeight)))
     }
 
     static func frame(
@@ -3308,6 +3463,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let menu = NSMenu()
         menu.autoenablesItems = false
+        let pointer = NSEvent.mouseLocation
+        let provider = screen(containing: pointer).flatMap { model?.sideNotchProvider(at: pointer, screen: $0) }
+        if let provider {
+            let heading = NSMenuItem(title: "\(SideNotchView.providerTitle(for: provider)) Usage", action: nil, keyEquivalent: "")
+            heading.isEnabled = false
+            menu.addItem(heading)
+            let refresh = NSMenuItem(title: "Refresh this provider", action: #selector(refreshSideNotchProvider(_:)), keyEquivalent: "r")
+            refresh.representedObject = provider
+            refresh.target = self
+            menu.addItem(refresh)
+            let open = NSMenuItem(title: "Open provider console", action: #selector(openSideNotchProvider(_:)), keyEquivalent: "")
+            open.representedObject = provider
+            open.target = self
+            menu.addItem(open)
+            if model?.latestSession(for: provider) != nil {
+                let session = NSMenuItem(title: "Open latest session", action: #selector(openSideNotchSession(_:)), keyEquivalent: "")
+                session.representedObject = provider
+                session.target = self
+                menu.addItem(session)
+            }
+            if model?.sideNotchAuthState(for: provider) != nil {
+                let fix = NSMenuItem(title: "Fix provider access…", action: #selector(fixSideNotchProvider(_:)), keyEquivalent: "")
+                fix.representedObject = provider
+                fix.target = self
+                menu.addItem(fix)
+            }
+            menu.addItem(.separator())
+        }
         let disable = NSMenuItem(
             title: "Disable Usage Side-Notch",
             action: #selector(disableSideNotch),
@@ -3320,6 +3503,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func disableSideNotch() {
         model?.setSideNotchEnabled(false)
+    }
+
+    @objc private func refreshSideNotchProvider(_ sender: NSMenuItem) {
+        guard let provider = sender.representedObject as? String else { return }
+        model?.refreshSideNotchProvider(provider)
+    }
+
+    @objc private func openSideNotchProvider(_ sender: NSMenuItem) {
+        guard let provider = sender.representedObject as? String else { return }
+        model?.openSideNotchProvider(provider)
+    }
+
+    @objc private func openSideNotchSession(_ sender: NSMenuItem) {
+        guard let provider = sender.representedObject as? String else { return }
+        model?.focusSideNotchSession(provider)
+    }
+
+    @objc private func fixSideNotchProvider(_ sender: NSMenuItem) {
+        guard let provider = sender.representedObject as? String else { return }
+        model?.fixSideNotchProvider(provider)
     }
 
     private func showContextMenu(for button: NSStatusBarButton, event: NSEvent?) {
@@ -3445,7 +3648,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case "gemini": return URL(string: "https://aistudio.google.com")
         case "grok": return URL(string: "https://console.x.ai")
         case "cursor": return URL(string: "https://cursor.com/dashboard")
+        case "copilot": return URL(string: "https://github.com/settings/copilot")
         default: return nil
+        }
+    }
+
+    func openProviderConsole(_ provider: String) {
+        guard let url = upstreamConsoleURL(provider) else {
+            model?.pollStatus = "No provider console is configured for \(provider)"
+            return
+        }
+        if NSWorkspace.shared.open(url) {
+            model?.pollStatus = "Opened \(SideNotchView.providerTitle(for: provider)) console"
+        } else {
+            model?.pollStatus = "Could not open \(SideNotchView.providerTitle(for: provider)) console"
+        }
+    }
+
+    func openAPIKeysFromSideNotch() {
+        if !popover.isShown { openPopoverFromSideNotch() }
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(name: .tokitokiOpenAPIKeys, object: nil)
         }
     }
 
@@ -4667,7 +4890,9 @@ struct SideNotchView: View {
             return SideNotchGeometry.dynamicDetailHeight(forRowCount: 0)
         }
         let rowCount = Set(selectedEntry.limits.flatMap(\.windows).map(\.kind)).count
-        return SideNotchGeometry.dynamicDetailHeight(forRowCount: rowCount)
+        let headerExtra: CGFloat = model.sideNotchMode == SideNotchMode.quota.rawValue
+            && model.sideNotchAuthState(for: selectedEntry.provider) == nil ? 0 : 16
+        return SideNotchGeometry.dynamicDetailHeight(forRowCount: rowCount, extraHeight: headerExtra)
     }
 
     var body: some View {
@@ -4947,8 +5172,24 @@ struct SideNotchView: View {
             SideNotchDetailView(
                 entry: entry,
                 metric: model.sideNotchMetric,
+                mode: model.sideNotchMode,
+                authState: model.sideNotchAuthState(for: entry.provider),
+                activityText: model.sideNotchActivityText(for: entry.provider),
+                activityDetail: model.latestSession(for: entry.provider).flatMap { session in
+                    guard !model.privacyHideIdentities else { return nil }
+                    return session.title ?? session.repos.first ?? session.snippet
+                },
+                fallbackText: model.sideNotchFallbackProvider(excluding: entry.provider).map { provider in
+                    let remaining = model.sideNotchRemaining(for: provider).map { "\(Int($0.rounded()))%" } ?? "—"
+                    return "\(SideNotchView.providerTitle(for: provider)) · \(remaining) headroom"
+                },
+                hasSession: model.latestSession(for: entry.provider) != nil,
                 width: detailWidth,
                 height: selectedDetailHeight,
+                onRefresh: { model.refreshSideNotchProvider(entry.provider) },
+                onFix: { model.fixSideNotchProvider(entry.provider) },
+                onOpenProvider: { model.openSideNotchProvider(entry.provider) },
+                onOpenSession: { model.focusSideNotchSession(entry.provider) },
             )
                 .position(x: detailCardPosition.x, y: detailCardPosition.y)
                 .matchedGeometryEffect(id: "side-notch-detail", in: notchNamespace, properties: .position, anchor: .center, isSource: true)
@@ -5055,8 +5296,18 @@ struct QuotaRing: View {
 struct SideNotchDetailView: View {
     let entry: SideNotchEntry
     let metric: String
+    let mode: String
+    let authState: String?
+    let activityText: String
+    let activityDetail: String?
+    let fallbackText: String?
+    let hasSession: Bool
     let width: CGFloat
     let height: CGFloat
+    let onRefresh: () -> Void
+    let onFix: () -> Void
+    let onOpenProvider: () -> Void
+    let onOpenSession: () -> Void
 
     struct Row: Identifiable {
         let id: String
@@ -5082,14 +5333,79 @@ struct SideNotchDetailView: View {
         }.sorted { (order[$0.id] ?? 9) < (order[$1.id] ?? 9) }
     }
 
+    private var notchMode: SideNotchMode {
+        SideNotchMode(rawValue: mode) ?? .quota
+    }
+
+    private var subtitle: String? {
+        if let authState {
+            return authState == "api-key-required" ? "API key required" : "Login required"
+        }
+        switch notchMode {
+        case .activity:
+            if let activityDetail, !activityDetail.isEmpty {
+                return "\(activityText) · \(activityDetail)"
+            }
+            return activityText
+        case .runway:
+            return fallbackText.map { "Best headroom: \($0)" } ?? "No alternate quota available"
+        case .quota:
+            return nil
+        }
+    }
+
+    private var subtitleColor: Color {
+        authState == nil ? .secondary : .orange
+    }
+
+    private var fixTitle: String {
+        authState == "api-key-required" ? "Manage provider API keys" : "Fix provider access"
+    }
+
+    private var fixIcon: String {
+        authState == "api-key-required" ? "key.fill" : "person.crop.circle.badge.exclamationmark"
+    }
+
+    private func actionButton(_ icon: String, help: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: icon)
+                .font(.system(size: 10, weight: .semibold))
+                .frame(width: 20, height: 20)
+        }
+        .buttonStyle(.borderless)
+        .foregroundStyle(.white.opacity(0.62))
+        .help(help)
+        .accessibilityLabel(help)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 11) {
-            HStack(spacing: 8) {
-                ProviderLogo(provider: SideNotchView.logoProvider(for: entry.provider)).scaleEffect(1.45)
-                Text("\(SideNotchView.providerTitle(for: entry.provider)) Usage")
-                    .font(.system(size: 14, weight: .semibold))
-                    .lineLimit(1)
-                Spacer(minLength: 0)
+            HStack(alignment: .top, spacing: 8) {
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 8) {
+                        ProviderLogo(provider: SideNotchView.logoProvider(for: entry.provider)).scaleEffect(1.45)
+                        Text("\(SideNotchView.providerTitle(for: entry.provider)) Usage")
+                            .font(.system(size: 14, weight: .semibold))
+                            .lineLimit(1)
+                    }
+                    if let subtitle {
+                        Text(subtitle)
+                            .font(.caption2)
+                            .foregroundStyle(subtitleColor)
+                            .lineLimit(1)
+                    }
+                }
+                Spacer(minLength: 2)
+                HStack(spacing: 1) {
+                    actionButton("arrow.clockwise", help: "Refresh \(SideNotchView.providerTitle(for: entry.provider)) quotas", action: onRefresh)
+                    if authState != nil {
+                        actionButton(fixIcon, help: fixTitle, action: onFix)
+                    }
+                    if hasSession {
+                        actionButton("text.bubble", help: "Open latest \(SideNotchView.providerTitle(for: entry.provider)) session", action: onOpenSession)
+                    }
+                    actionButton("arrow.up.right.square", help: "Open \(SideNotchView.providerTitle(for: entry.provider)) console", action: onOpenProvider)
+                }
             }
             if rows.isEmpty {
                 Text("No quota windows reported yet.").font(.caption).foregroundStyle(.secondary)
@@ -5461,6 +5777,16 @@ struct SideNotchSettingsSheet: View {
                     .font(.caption)
                     Text("When enabled, visibility, metric, and enabled state stay the same in both surfaces.")
                         .font(.caption2).foregroundStyle(.secondary)
+                    Picker("Mode", selection: Binding(
+                        get: { model.sideNotchMode },
+                        set: { model.setSideNotchMode($0) },
+                    )) {
+                        ForEach(SideNotchMode.allCases) { mode in
+                            Label(mode.title, systemImage: mode.icon).tag(mode.rawValue)
+                        }
+                    }
+                    Text(SideNotchMode(rawValue: model.sideNotchMode)?.description ?? SideNotchMode.quota.description)
+                        .font(.caption2).foregroundStyle(.secondary)
                 } header: {
                     Text("Display")
                 }
@@ -5734,6 +6060,16 @@ struct SideNotchSettingsInline: View {
             .font(.caption)
             Text("When enabled, visibility, metric, and enabled state stay the same in both surfaces.")
                 .font(.caption2).foregroundStyle(.secondary)
+            Picker("Mode", selection: Binding(
+                get: { model.sideNotchMode },
+                set: { model.setSideNotchMode($0) },
+            )) {
+                ForEach(SideNotchMode.allCases) { mode in
+                    Label(mode.title, systemImage: mode.icon).tag(mode.rawValue)
+                }
+            }
+            Text(SideNotchMode(rawValue: model.sideNotchMode)?.description ?? SideNotchMode.quota.description)
+                .font(.caption2).foregroundStyle(.secondary)
             Divider().opacity(0.35)
             Text("Screen anchor").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
             LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 3), spacing: 6) {
@@ -5912,7 +6248,7 @@ struct ContentView: View {
         "background quota polling": "automatic refresh quotas polling",
         "popover layout": "cards tabs reorder drag",
         "menubar preview": "status item provider percentage reset",
-        "side-notch": "side notch rail hover edge orientation placement screen",
+        "side-notch": "side notch rail hover edge orientation placement screen quota activity runway refresh login console session",
         "provider API keys": "credentials tokens authentication",
         "index & import diagnostics": "reindex conversations csv import diagnostics",
         "sync": "backend folder git atproto",
@@ -5976,6 +6312,10 @@ struct ContentView: View {
         .frame(minWidth: 400, idealWidth: 420, maxWidth: 520,
                minHeight: 560, idealHeight: 700, maxHeight: 860)
         .background(.thinMaterial)
+        .onReceive(NotificationCenter.default.publisher(for: .tokitokiOpenAPIKeys)) { _ in
+            activeSubview = .settings
+            showAPIKeys = true
+        }
         .sheet(isPresented: $showCustomize) {
             CustomizeSheet(model: model, isPresented: $showCustomize)
         }

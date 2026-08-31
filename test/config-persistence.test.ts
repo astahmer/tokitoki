@@ -40,6 +40,7 @@ describe("menubar config persistence", () => {
     expect(run(["config", "set", "ui.sideNotchEnabled", "true"], configPath).status).toBe(0);
     expect(run(["config", "set", "ui.sideNotchHidden", '["claude"]'], configPath).status).toBe(0);
     expect(run(["config", "set", "ui.sideNotchMetric", '"smart"'], configPath).status).toBe(0);
+    expect(run(["config", "set", "ui.sideNotchMode", '"runway"'], configPath).status).toBe(0);
     expect(run(["config", "set", "ui.sideNotchSyncPreview", "true"], configPath).status).toBe(0);
     expect(run(["config", "set", "ui.sideNotchPlacement", '"top-left"'], configPath).status).toBe(0);
     expect(run(["config", "set", "poll.adaptive", "true"], configPath).status).toBe(0);
@@ -59,6 +60,7 @@ describe("menubar config persistence", () => {
         sideNotchEnabled?: boolean;
         sideNotchHidden?: string[];
         sideNotchMetric?: string;
+        sideNotchMode?: string;
         sideNotchSyncPreview?: boolean;
         sideNotchPlacement?: string;
         menubarAccountOrder?: string[];
@@ -77,6 +79,7 @@ describe("menubar config persistence", () => {
     expect(cfg.ui?.sideNotchEnabled).toBe(true);
     expect(cfg.ui?.sideNotchHidden).toEqual(["claude"]);
     expect(cfg.ui?.sideNotchMetric).toBe("smart");
+    expect(cfg.ui?.sideNotchMode).toBe("runway");
     expect(cfg.ui?.sideNotchSyncPreview).toBe(true);
     expect(cfg.ui?.sideNotchPlacement).toBe("top-left");
     expect(cfg.ui?.menubarAccountOrder).toEqual(["codex@openai:plus", "pi@opencode-go"]);

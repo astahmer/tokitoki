@@ -59,6 +59,17 @@ import Testing
         #expect(Model.upstreamProvider(account(provider: "opencode", accountKey: "opencode-go", windows: [])) == "opencode")
     }
 
+    @Test func sideNotchModesAreCanonicalAndSessionProvidersMapToTheirUpstream() {
+        #expect(SideNotchMode.canonical(nil) == "quota")
+        #expect(SideNotchMode.canonical("unknown") == "quota")
+        #expect(SideNotchMode.canonical("activity") == "activity")
+        #expect(SideNotchMode.canonical("runway") == "runway")
+        #expect(Model.upstreamProvider(for: "claude-code", accountKey: "default") == "claude")
+        #expect(Model.upstreamProvider(for: "codex", accountKey: "default") == "openai")
+        #expect(Model.upstreamProvider(for: "pi", accountKey: "openrouter") == "openrouter")
+        #expect(Model.upstreamProvider(for: "opencode-go", accountKey: "default") == "opencode")
+    }
+
     @Test func sideNotchAnchorDerivesItsEdge() {
         #expect(Model.sideNotchEdge(for: "top-left") == "top")
         #expect(Model.sideNotchEdge(for: "top-right") == "top")
