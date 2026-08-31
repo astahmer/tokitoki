@@ -2016,6 +2016,7 @@ final class Model: ObservableObject {
             placement: sideNotchPlacement,
             expanded: true,
             hasDetail: false,
+            visibleEntryCount: providers.count,
             screenFrame: screen.frame,
         )
         let vertical = sideNotchEdge == "left" || sideNotchEdge == "right"
@@ -2255,7 +2256,19 @@ enum SideNotchGeometry {
     static let collapsedLength: CGFloat = 66
     static let hoverActivationInset: CGFloat = 14
     static let railWidth: CGFloat = 84
-    static let railLength: CGFloat = 480
+    static let maxVisibleEntries = 6
+    static let railItemStride: CGFloat = 68
+    static let railHeaderLength: CGFloat = 26
+    static let railFooterLength: CGFloat = 26
+    static let railAlongPadding: CGFloat = 8
+    static func railLength(forVisibleEntryCount count: Int) -> CGFloat {
+        let visibleCount = min(max(count, 0), maxVisibleEntries)
+        return railHeaderLength
+            + CGFloat(visibleCount) * railItemStride
+            + railFooterLength
+            + railAlongPadding * 2
+    }
+    static let railLength: CGFloat = railLength(forVisibleEntryCount: maxVisibleEntries)
     static let railShoulderDepth: CGFloat = 42
     static let detailWidth: CGFloat = 292
     // The AppKit panel keeps the largest supported detail footprint stable while
@@ -2273,9 +2286,11 @@ enum SideNotchGeometry {
         placement: String,
         expanded: Bool,
         hasDetail: Bool,
+        visibleEntryCount: Int = maxVisibleEntries,
         screenFrame: NSRect? = nil,
     ) -> NSRect {
         let edge = Model.sideNotchEdge(for: placement)
+        let railLength = Self.railLength(forVisibleEntryCount: visibleEntryCount)
         let vertical = edge == "left" || edge == "right"
         let width: CGFloat
         let height: CGFloat
@@ -2830,6 +2845,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             model: model,
             onOpen: { [weak self] in self?.openPopoverFromSideNotch() },
         )))
+        // Do not let the menu-bar/notch safe area inset the SwiftUI surface;
+        // the rail is deliberately attached to the physical screen edge.
+        if #available(macOS 13.3, *) {
+            host.safeAreaRegions = []
+        }
         // The panel owns a stable expanded footprint. SwiftUI scales the
         // content from the edge; resizing the window at the same time creates
         // the old "card appears on the left, then slides right" artifact.
@@ -3028,6 +3048,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             placement: model.sideNotchPlacement,
             expanded: true,
             hasDetail: true,
+            visibleEntryCount: model.sideNotchProviders().count,
             screenFrame: screen.frame,
         )
         if sideNotchHasLaidOut, panel.frame != frame {
@@ -4528,8 +4549,7 @@ struct SideNotchView: View {
     @Namespace private var notchNamespace
 
     private let railWidth = SideNotchGeometry.railWidth
-    private let railLength = SideNotchGeometry.railLength
-    private let itemStride: CGFloat = 68
+    private let itemStride = SideNotchGeometry.railItemStride
     private let detailWidth = SideNotchGeometry.detailWidth
     private let detailMaxHeight = SideNotchGeometry.detailHeight
     private let detailGap = SideNotchGeometry.detailGap
@@ -4564,6 +4584,14 @@ struct SideNotchView: View {
 
     private var selectedEntry: SideNotchEntry? {
         entries.first { $0.provider == model.sideNotchSelectedProvider }
+    }
+
+    private var visibleEntries: [SideNotchEntry] {
+        Array(entries.prefix(SideNotchGeometry.maxVisibleEntries))
+    }
+
+    private var railLength: CGFloat {
+        SideNotchGeometry.railLength(forVisibleEntryCount: visibleEntries.count)
     }
 
     private var selectedDetailHeight: CGFloat {
@@ -4785,7 +4813,7 @@ struct SideNotchView: View {
                     railHeader
                     ScrollView(.vertical, showsIndicators: false) {
                         VStack(spacing: 0) {
-                            ForEach(Array(entries.prefix(6))) { entry in providerItem(entry) }
+                        ForEach(visibleEntries) { entry in providerItem(entry) }
                         }
                     }
                     railFooter
@@ -4795,7 +4823,7 @@ struct SideNotchView: View {
                     railHeader
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 0) {
-                            ForEach(Array(entries.prefix(6))) { entry in providerItem(entry) }
+                        ForEach(visibleEntries) { entry in providerItem(entry) }
                         }
                     }
                     railFooter
@@ -4893,7 +4921,7 @@ struct SideNotchView: View {
     }
 
     private var detailOffset: CGFloat {
-        let index = Array(entries.prefix(6)).firstIndex { $0.provider == selectedEntry?.provider } ?? 0
+        let index = visibleEntries.firstIndex { $0.provider == selectedEntry?.provider } ?? 0
         let center = 28 + CGFloat(index) * itemStride + itemStride / 2
         let length = isVertical ? railLength : railLength
         let detailLength = isVertical ? selectedDetailHeight : detailWidth + detailGap
@@ -5013,10 +5041,6 @@ struct SideNotchDetailView: View {
                     }
                 }
             }
-            Text("Click for full details")
-                .font(.caption2.weight(.medium))
-                .foregroundStyle(.tertiary)
-                .padding(.top, 2)
         }
         .padding(16)
         .frame(width: width, height: height, alignment: .topLeading)

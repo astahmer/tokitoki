@@ -177,6 +177,14 @@ import Testing
         #expect(SideNotchGeometry.dynamicDetailHeight(forRowCount: 5) == 238)
     }
 
+    @Test func sideNotchRailLengthTracksVisibleIcons() {
+        #expect(SideNotchGeometry.railLength(forVisibleEntryCount: 0) == 68)
+        #expect(SideNotchGeometry.railLength(forVisibleEntryCount: 1) == 136)
+        #expect(SideNotchGeometry.railLength(forVisibleEntryCount: 5) == 408)
+        #expect(SideNotchGeometry.railLength(forVisibleEntryCount: 6) == 476)
+        #expect(SideNotchGeometry.railLength(forVisibleEntryCount: 8) == 476)
+    }
+
     // MARK: percent mode (default)
 
     @Test func percentModeShowsOnlyRealQuotas() {
