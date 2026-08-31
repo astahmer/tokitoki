@@ -4914,9 +4914,10 @@ struct SideNotchView: View {
             return SideNotchGeometry.dynamicDetailHeight(forRowCount: 0)
         }
         let rowCount = Set(selectedEntry.limits.flatMap(\.windows).map(\.kind)).count
-        let headerExtra: CGFloat = model.sideNotchMode == SideNotchMode.quota.rawValue
-            && model.sideNotchAuthState(for: selectedEntry.provider) == nil ? 0 : 16
-        return SideNotchGeometry.dynamicDetailHeight(forRowCount: rowCount, extraHeight: headerExtra)
+        // Every mode now has one compact, explicit summary line in the
+        // header. Reserve the same small amount for all modes so switching
+        // between Quota/Activity/Runway does not clip the first quota row.
+        return SideNotchGeometry.dynamicDetailHeight(forRowCount: rowCount, extraHeight: 16)
     }
 
     var body: some View {
@@ -5047,13 +5048,12 @@ struct SideNotchView: View {
 
     private var collapsedHandle: some View {
         Group {
-            if model.sideNotchHidesCollapsedHandle {
+        if model.sideNotchHidesCollapsedHandle {
                 // The centered top anchor lives inside the Mac's physical
-                // notch. Keep its hit target, but let the black surface
-                // disappear into that notch instead of drawing a second
-                // visible handle over the menu bar.
-                Color.black.opacity(0.985)
-                    .clipShape(SideNotchBackground(edge: model.sideNotchEdge))
+                // notch. Keep the transparent hit target, but do not paint a
+                // second black handle over the system's own notch surface.
+                Color.clear
+                    .contentShape(SideNotchBackground(edge: model.sideNotchEdge))
             } else {
                 Capsule()
                     .fill(Color.white.opacity(0.48))
@@ -5210,6 +5210,7 @@ struct SideNotchView: View {
             SideNotchDetailView(
                 entry: entry,
                 metric: model.sideNotchMetric,
+                windowPreference: model.sideNotchWindow,
                 mode: model.sideNotchMode,
                 authState: model.sideNotchAuthState(for: entry.provider),
                 activityText: model.sideNotchActivityText(for: entry.provider),
@@ -5340,6 +5341,7 @@ struct QuotaRing: View {
 struct SideNotchDetailView: View {
     let entry: SideNotchEntry
     let metric: String
+    let windowPreference: String
     let mode: String
     let authState: String?
     let activityText: String
@@ -5354,6 +5356,8 @@ struct SideNotchDetailView: View {
     let onOpenProvider: () -> Void
     let onOpenSession: () -> Void
     let onOpenFallback: () -> Void
+
+    @State private var hoveredAction: String?
 
     struct Row: Identifiable {
         let id: String
@@ -5383,7 +5387,7 @@ struct SideNotchDetailView: View {
         SideNotchMode(rawValue: mode) ?? .quota
     }
 
-    private var subtitle: String? {
+    private var summaryTitle: String {
         if let authState {
             switch authState {
             case "api-key-required": return "API key required"
@@ -5392,20 +5396,47 @@ struct SideNotchDetailView: View {
             }
         }
         switch notchMode {
-        case .activity:
-            if let activityDetail, !activityDetail.isEmpty {
-                return "\(activityText) · \(activityDetail)"
-            }
-            return activityText
-        case .runway:
-            return fallbackText.map { "Best headroom: \($0)" } ?? "No alternate quota available"
-        case .quota:
-            return nil
+        case .quota: return "Remaining quota"
+        case .activity: return activityText
+        case .runway: return "Best headroom"
         }
     }
 
-    private var subtitleColor: Color {
-        authState == nil ? .secondary : .orange
+    private var summaryDetail: String? {
+        if authState != nil { return nil }
+        switch notchMode {
+        case .quota:
+            switch windowPreference {
+            case "day": return "Session / day window"
+            case "week": return "Weekly window"
+            case "month": return "Monthly window"
+            default: return "Smart governing window"
+            }
+        case .activity:
+            guard let activityDetail, !activityDetail.isEmpty else { return nil }
+            return compactActivityDetail(activityDetail)
+        case .runway:
+            return fallbackText ?? "No alternate quota available"
+        }
+    }
+
+    private var summaryColor: Color {
+        if authState != nil { return .orange }
+        switch notchMode {
+        case .quota: return .white.opacity(0.72)
+        case .activity:
+            return activityText == "Active session" ? .green : (activityText == "Recent activity" ? .cyan : .secondary)
+        case .runway: return .mint
+        }
+    }
+
+    private func compactActivityDetail(_ value: String) -> String {
+        let flattened = value
+            .replacingOccurrences(of: #"https?://\S+"#, with: "link", options: .regularExpression)
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if flattened.count <= 38 { return flattened }
+        return String(flattened.prefix(35)) + "…"
     }
 
     private var fixTitle: String {
@@ -5417,15 +5448,50 @@ struct SideNotchDetailView: View {
     }
 
     private func actionButton(_ icon: String, help: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
+        Button {
+            hoveredAction = nil
+            action()
+        } label: {
             Image(systemName: icon)
                 .font(.system(size: 10, weight: .semibold))
                 .frame(width: 20, height: 20)
         }
         .buttonStyle(.borderless)
         .foregroundStyle(.white.opacity(0.62))
-        .help(help)
+        // NSHelpManager tooltips are delayed and use a different visual
+        // language. This local hover label appears immediately and stays in
+        // the same dark, bordered surface as the detail card.
+        .onHover { hovering in
+            if hovering {
+                hoveredAction = help
+            } else if hoveredAction == help {
+                hoveredAction = nil
+            }
+        }
         .accessibilityLabel(help)
+    }
+
+    @ViewBuilder private var actionTooltip: some View {
+        if let hoveredAction {
+            Text(hoveredAction)
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(.white.opacity(0.92))
+                .multilineTextAlignment(.trailing)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 5)
+                .background(Color.black.opacity(0.96), in: RoundedRectangle(cornerRadius: 8))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(Color.white.opacity(0.18), lineWidth: 0.8)
+                }
+                .shadow(color: .black.opacity(0.45), radius: 8, y: 3)
+                .frame(maxWidth: 210, alignment: .trailing)
+                .offset(y: 25)
+                .transition(.identity)
+                .zIndex(10)
+        }
     }
 
     var body: some View {
@@ -5438,11 +5504,21 @@ struct SideNotchDetailView: View {
                             .font(.system(size: 14, weight: .semibold))
                             .lineLimit(1)
                     }
-                    if let subtitle {
-                        Text(subtitle)
-                            .font(.caption2)
-                            .foregroundStyle(subtitleColor)
-                            .lineLimit(1)
+                    HStack(spacing: 4) {
+                        Image(systemName: notchMode.icon)
+                            .font(.system(size: 8, weight: .bold))
+                            .foregroundStyle(summaryColor)
+                        Text(summaryTitle)
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(summaryColor)
+                        if let summaryDetail {
+                            Text("·").foregroundStyle(.tertiary)
+                            Text(summaryDetail)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
                     }
                 }
                 Spacer(minLength: 2)
@@ -5458,6 +5534,9 @@ struct SideNotchDetailView: View {
                         actionButton("arrow.up.right", help: "Open best headroom provider \(SideNotchView.providerTitle(for: fallbackProvider))", action: onOpenFallback)
                     }
                     actionButton("arrow.up.right.square", help: "Open \(SideNotchView.providerTitle(for: entry.provider)) console", action: onOpenProvider)
+                }
+                .overlay(alignment: .topTrailing) {
+                    actionTooltip
                 }
             }
             if rows.isEmpty {
