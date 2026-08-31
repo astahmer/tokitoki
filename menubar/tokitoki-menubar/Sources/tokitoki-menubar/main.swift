@@ -2256,9 +2256,17 @@ enum SideNotchGeometry {
     static let hoverActivationInset: CGFloat = 14
     static let railWidth: CGFloat = 84
     static let railLength: CGFloat = 480
+    static let railShoulderDepth: CGFloat = 42
     static let detailWidth: CGFloat = 292
-    static let detailHeight: CGFloat = 210
+    // The AppKit panel keeps the largest supported detail footprint stable while
+    // the visible bubble below derives its own height from the rows it contains.
+    static let detailHeight: CGFloat = 238
     static let detailGap: CGFloat = 20
+
+    static func dynamicDetailHeight(forRowCount rowCount: Int) -> CGFloat {
+        let rows = min(max(rowCount, 0), 5)
+        return min(detailHeight, max(132, 88 + CGFloat(rows) * 50))
+    }
 
     static func frame(
         in visible: NSRect,
@@ -4515,7 +4523,7 @@ struct SideNotchView: View {
     private let railLength = SideNotchGeometry.railLength
     private let itemStride: CGFloat = 68
     private let detailWidth = SideNotchGeometry.detailWidth
-    private let detailHeight = SideNotchGeometry.detailHeight
+    private let detailMaxHeight = SideNotchGeometry.detailHeight
     private let detailGap = SideNotchGeometry.detailGap
 
     private var isVertical: Bool { model.sideNotchEdge == "left" || model.sideNotchEdge == "right" }
@@ -4548,6 +4556,14 @@ struct SideNotchView: View {
 
     private var selectedEntry: SideNotchEntry? {
         entries.first { $0.provider == model.sideNotchSelectedProvider }
+    }
+
+    private var selectedDetailHeight: CGFloat {
+        guard let selectedEntry else {
+            return SideNotchGeometry.dynamicDetailHeight(forRowCount: 0)
+        }
+        let rowCount = Set(selectedEntry.limits.flatMap(\.windows).map(\.kind)).count
+        return SideNotchGeometry.dynamicDetailHeight(forRowCount: rowCount)
     }
 
     var body: some View {
@@ -4651,7 +4667,7 @@ struct SideNotchView: View {
 
     private var frameHeight: CGFloat {
         if isVertical { return railLength }
-        return railWidth + detailHeight + detailGap
+        return railWidth + detailMaxHeight + detailGap
     }
 
     private var collapsedHandle: some View {
@@ -4710,13 +4726,13 @@ struct SideNotchView: View {
     private var horizontalExpanded: some View {
         ZStack(alignment: .topLeading) {
             expandedRail
-                .offset(y: model.sideNotchEdge == "bottom" ? detailHeight + detailGap : 0)
+                .offset(y: model.sideNotchEdge == "bottom" ? detailMaxHeight + detailGap : 0)
             if let selectedEntry {
                 detailCallout(selectedEntry)
                     .offset(x: detailOffset, y: model.sideNotchEdge == "top" ? railWidth : 0)
             }
         }
-        .frame(width: railLength, height: railWidth + detailHeight + detailGap, alignment: .topLeading)
+        .frame(width: railLength, height: railWidth + detailMaxHeight + detailGap, alignment: .topLeading)
         .animation(.interactiveSpring(response: 0.32, dampingFraction: 0.88, blendDuration: 0.08), value: model.sideNotchSelectedProvider)
     }
 
@@ -4747,9 +4763,13 @@ struct SideNotchView: View {
         .padding(isVertical ? .horizontal : .vertical, 10)
         .padding(isVertical ? .vertical : .horizontal, 8)
         .frame(width: isVertical ? railWidth : railLength, height: isVertical ? railLength : railWidth)
-        .background(Color.black.opacity(0.985), in: SideNotchBackground(edge: model.sideNotchEdge))
+        .background(
+            Color.black.opacity(0.985),
+            in: SideNotchRailShape(edge: model.sideNotchEdge, shoulderDepth: SideNotchGeometry.railShoulderDepth)
+        )
+        .clipShape(SideNotchRailShape(edge: model.sideNotchEdge, shoulderDepth: SideNotchGeometry.railShoulderDepth))
         .overlay {
-            SideNotchBackground(edge: model.sideNotchEdge)
+            SideNotchRailShape(edge: model.sideNotchEdge, shoulderDepth: SideNotchGeometry.railShoulderDepth)
                 .stroke(surfaceBorder, lineWidth: 1.2)
         }
         .shadow(color: .black.opacity(0.34), radius: 18, x: 0, y: 0)
@@ -4786,8 +4806,12 @@ struct SideNotchView: View {
 
     private func detailCallout(_ entry: SideNotchEntry) -> some View {
         ZStack {
-            SideNotchDetailView(entry: entry, metric: model.sideNotchMetric)
-                .frame(width: detailWidth, height: detailHeight)
+            SideNotchDetailView(
+                entry: entry,
+                metric: model.sideNotchMetric,
+                width: detailWidth,
+                height: selectedDetailHeight,
+            )
                 .position(x: detailCardPosition.x, y: detailCardPosition.y)
                 .matchedGeometryEffect(id: "side-notch-detail", in: notchNamespace, properties: .position, anchor: .center, isSource: true)
             detailPointer()
@@ -4795,7 +4819,7 @@ struct SideNotchView: View {
         }
         .frame(
             width: isVertical ? detailWidth + detailGap : detailWidth,
-            height: isVertical ? detailHeight : detailHeight + detailGap,
+            height: isVertical ? selectedDetailHeight : selectedDetailHeight + detailGap,
         )
     }
 
@@ -4810,19 +4834,19 @@ struct SideNotchView: View {
 
     private var detailCardPosition: CGPoint {
         switch model.sideNotchEdge {
-        case "left": return CGPoint(x: detailGap + detailWidth / 2, y: detailHeight / 2)
-        case "top": return CGPoint(x: detailWidth / 2, y: detailGap + detailHeight / 2)
-        case "bottom": return CGPoint(x: detailWidth / 2, y: detailHeight / 2)
-        default: return CGPoint(x: detailWidth / 2, y: detailHeight / 2)
+        case "left": return CGPoint(x: detailGap + detailWidth / 2, y: selectedDetailHeight / 2)
+        case "top": return CGPoint(x: detailWidth / 2, y: detailGap + selectedDetailHeight / 2)
+        case "bottom": return CGPoint(x: detailWidth / 2, y: selectedDetailHeight / 2)
+        default: return CGPoint(x: detailWidth / 2, y: selectedDetailHeight / 2)
         }
     }
 
     private var detailPointerPosition: CGPoint {
         switch model.sideNotchEdge {
-        case "left": return CGPoint(x: detailGap / 2, y: detailHeight / 2)
+        case "left": return CGPoint(x: detailGap / 2, y: selectedDetailHeight / 2)
         case "top": return CGPoint(x: detailWidth / 2, y: detailGap / 2)
-        case "bottom": return CGPoint(x: detailWidth / 2, y: detailHeight + detailGap / 2)
-        default: return CGPoint(x: detailWidth + detailGap / 2, y: detailHeight / 2)
+        case "bottom": return CGPoint(x: detailWidth / 2, y: selectedDetailHeight + detailGap / 2)
+        default: return CGPoint(x: detailWidth + detailGap / 2, y: selectedDetailHeight / 2)
         }
     }
 
@@ -4830,7 +4854,7 @@ struct SideNotchView: View {
         let index = Array(entries.prefix(6)).firstIndex { $0.provider == selectedEntry?.provider } ?? 0
         let center = 28 + CGFloat(index) * itemStride + itemStride / 2
         let length = isVertical ? railLength : railLength
-        let detailLength = isVertical ? detailHeight : detailWidth + detailGap
+        let detailLength = isVertical ? selectedDetailHeight : detailWidth + detailGap
         return max(8, min(length - detailLength - 8, center - detailLength / 2))
     }
 
@@ -4893,6 +4917,8 @@ struct QuotaRing: View {
 struct SideNotchDetailView: View {
     let entry: SideNotchEntry
     let metric: String
+    let width: CGFloat
+    let height: CGFloat
 
     struct Row: Identifiable {
         let id: String
@@ -4951,7 +4977,7 @@ struct SideNotchDetailView: View {
                 .padding(.top, 2)
         }
         .padding(16)
-        .frame(maxHeight: .infinity, alignment: .topLeading)
+        .frame(width: width, height: height, alignment: .topLeading)
         .background(Color.black.opacity(0.97), in: RoundedRectangle(cornerRadius: 18))
         .clipShape(RoundedRectangle(cornerRadius: 18))
     }
@@ -5000,6 +5026,90 @@ struct SideNotchPointer: Shape {
             path.addLine(to: CGPoint(x: rect.maxX, y: rect.midY))
             path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY))
         }
+        path.closeSubpath()
+        return path
+    }
+}
+
+/// The expanded rail keeps its free side softly rounded while the edge-facing
+/// side necks into a concave shoulder. That silhouette is what makes the
+/// expanded rail read as one surface grown from the tiny edge handle.
+struct SideNotchRailShape: Shape {
+    let edge: String
+    let shoulderDepth: CGFloat
+
+    func path(in rect: CGRect) -> Path {
+        let isVertical = edge == "left" || edge == "right"
+        let canonicalRect = CGRect(
+            x: 0,
+            y: 0,
+            width: isVertical ? rect.width : rect.height,
+            height: isVertical ? rect.height : rect.width,
+        )
+        let canonical = rightRailPath(in: canonicalRect)
+        let transform: CGAffineTransform
+        switch edge {
+        case "left":
+            transform = CGAffineTransform(
+                a: -1,
+                b: 0,
+                c: 0,
+                d: 1,
+                tx: canonicalRect.width + rect.minX,
+                ty: rect.minY,
+            )
+        case "bottom":
+            transform = CGAffineTransform(
+                a: 0,
+                b: 1,
+                c: 1,
+                d: 0,
+                tx: rect.minX,
+                ty: rect.minY,
+            )
+        case "top":
+            transform = CGAffineTransform(
+                a: 0,
+                b: -1,
+                c: 1,
+                d: 0,
+                tx: rect.minX,
+                ty: canonicalRect.width + rect.minY,
+            )
+        default:
+            transform = CGAffineTransform(translationX: rect.minX, y: rect.minY)
+        }
+        return canonical.applying(transform)
+    }
+
+    private func rightRailPath(in rect: CGRect) -> Path {
+        let freeRadius = min(22, rect.height / 2, rect.width * 0.45)
+        let contactRadius = min(
+            shoulderDepth * 0.6,
+            rect.height * 0.22,
+            max(0, rect.height / 2 - freeRadius),
+        )
+        var path = Path()
+        path.move(to: CGPoint(x: rect.maxX, y: rect.minY))
+        path.addQuadCurve(
+            to: CGPoint(x: rect.maxX - contactRadius, y: rect.minY + contactRadius),
+            control: CGPoint(x: rect.maxX, y: rect.minY + contactRadius),
+        )
+        path.addLine(to: CGPoint(x: rect.minX + freeRadius, y: rect.minY + contactRadius))
+        path.addQuadCurve(
+            to: CGPoint(x: rect.minX, y: rect.minY + contactRadius + freeRadius),
+            control: CGPoint(x: rect.minX, y: rect.minY + contactRadius),
+        )
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY - contactRadius - freeRadius))
+        path.addQuadCurve(
+            to: CGPoint(x: rect.minX + freeRadius, y: rect.maxY - contactRadius),
+            control: CGPoint(x: rect.minX, y: rect.maxY - contactRadius),
+        )
+        path.addLine(to: CGPoint(x: rect.maxX - contactRadius, y: rect.maxY - contactRadius))
+        path.addQuadCurve(
+            to: CGPoint(x: rect.maxX, y: rect.maxY),
+            control: CGPoint(x: rect.maxX, y: rect.maxY - contactRadius),
+        )
         path.closeSubpath()
         return path
     }
