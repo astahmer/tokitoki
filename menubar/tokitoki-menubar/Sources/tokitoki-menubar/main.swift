@@ -4,10 +4,6 @@ import AppKit
 import UserNotifications
 import Darwin
 
-extension Notification.Name {
-    static let tokitokiOpenAPIKeys = Notification.Name("dev.tokitoki.open-api-keys")
-}
-
 private final class TokitokiInstanceLock {
     private let descriptor: Int32
 
@@ -524,6 +520,7 @@ final class Model: ObservableObject {
     @Published var burnWarningRatio = 0.8
     @Published var disabledNotifications: Set<String> = []
     @Published var privacyHideIdentities = false
+    @Published var apiKeysRequested = false
     @Published var notificationStatus: String?
     @Published var notificationHistory: [NotificationRecord] = []
     @Published var sessionRows: [PopoverSessionRow] = []
@@ -3666,10 +3663,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func openAPIKeysFromSideNotch() {
+        model?.apiKeysRequested = true
         if !popover.isShown { openPopoverFromSideNotch() }
-        DispatchQueue.main.async {
-            NotificationCenter.default.post(name: .tokitokiOpenAPIKeys, object: nil)
-        }
     }
 
     @objc private func openUpstreamConsole(_ sender: NSMenuItem) {
@@ -5139,7 +5134,7 @@ struct SideNotchView: View {
     }
 
     private var railHeader: some View {
-        Image(systemName: "chart.bar.xaxis")
+        Image(systemName: SideNotchMode(rawValue: model.sideNotchMode)?.icon ?? "chart.bar.xaxis")
             .font(.system(size: 11, weight: .bold))
             .foregroundStyle(.white.opacity(0.55))
             .frame(width: isVertical ? railWidth - 20 : 26, height: isVertical ? 28 : railWidth - 20)
@@ -5154,7 +5149,21 @@ struct SideNotchView: View {
 
     private func providerItem(_ entry: SideNotchEntry) -> some View {
         VStack(spacing: 5) {
-            QuotaRing(provider: entry.provider, remaining: entry.remaining, size: 44)
+            ZStack(alignment: .topTrailing) {
+                QuotaRing(provider: entry.provider, remaining: entry.remaining, size: 44)
+                if let authState = model.sideNotchAuthState(for: entry.provider) {
+                    Circle()
+                        .fill(Color.orange)
+                        .frame(width: 10, height: 10)
+                        .overlay {
+                            Image(systemName: authState == "api-key-required" ? "key.fill" : "exclamationmark")
+                                .font(.system(size: 6, weight: .black))
+                                .foregroundStyle(.black)
+                        }
+                        .offset(x: 2, y: -2)
+                        .help(authState == "api-key-required" ? "API key required" : "Provider access needs attention")
+                }
+            }
             Text(valueText(for: entry))
                 .font(.system(size: 11, weight: .semibold, design: .monospaced))
                 .foregroundStyle(.white.opacity(0.92))
@@ -5179,6 +5188,7 @@ struct SideNotchView: View {
                     guard !model.privacyHideIdentities else { return nil }
                     return session.title ?? session.repos.first ?? session.snippet
                 },
+                fallbackProvider: model.sideNotchFallbackProvider(excluding: entry.provider),
                 fallbackText: model.sideNotchFallbackProvider(excluding: entry.provider).map { provider in
                     let remaining = model.sideNotchRemaining(for: provider).map { "\(Int($0.rounded()))%" } ?? "—"
                     return "\(SideNotchView.providerTitle(for: provider)) · \(remaining) headroom"
@@ -5190,6 +5200,11 @@ struct SideNotchView: View {
                 onFix: { model.fixSideNotchProvider(entry.provider) },
                 onOpenProvider: { model.openSideNotchProvider(entry.provider) },
                 onOpenSession: { model.focusSideNotchSession(entry.provider) },
+                onOpenFallback: {
+                    if let fallback = model.sideNotchFallbackProvider(excluding: entry.provider) {
+                        model.openSideNotchProvider(fallback)
+                    }
+                },
             )
                 .position(x: detailCardPosition.x, y: detailCardPosition.y)
                 .matchedGeometryEffect(id: "side-notch-detail", in: notchNamespace, properties: .position, anchor: .center, isSource: true)
@@ -5300,6 +5315,7 @@ struct SideNotchDetailView: View {
     let authState: String?
     let activityText: String
     let activityDetail: String?
+    let fallbackProvider: String?
     let fallbackText: String?
     let hasSession: Bool
     let width: CGFloat
@@ -5308,6 +5324,7 @@ struct SideNotchDetailView: View {
     let onFix: () -> Void
     let onOpenProvider: () -> Void
     let onOpenSession: () -> Void
+    let onOpenFallback: () -> Void
 
     struct Row: Identifiable {
         let id: String
@@ -5403,6 +5420,9 @@ struct SideNotchDetailView: View {
                     }
                     if hasSession {
                         actionButton("text.bubble", help: "Open latest \(SideNotchView.providerTitle(for: entry.provider)) session", action: onOpenSession)
+                    }
+                    if notchMode == .runway, let fallbackProvider {
+                        actionButton("arrow.up.right", help: "Open best headroom provider \(SideNotchView.providerTitle(for: fallbackProvider))", action: onOpenFallback)
                     }
                     actionButton("arrow.up.right.square", help: "Open \(SideNotchView.providerTitle(for: entry.provider)) console", action: onOpenProvider)
                 }
@@ -6312,10 +6332,8 @@ struct ContentView: View {
         .frame(minWidth: 400, idealWidth: 420, maxWidth: 520,
                minHeight: 560, idealHeight: 700, maxHeight: 860)
         .background(.thinMaterial)
-        .onReceive(NotificationCenter.default.publisher(for: .tokitokiOpenAPIKeys)) { _ in
-            activeSubview = .settings
-            showAPIKeys = true
-        }
+        .onAppear(perform: consumePendingAPIKeysRequest)
+        .onChange(of: model.apiKeysRequested) { _ in consumePendingAPIKeysRequest() }
         .sheet(isPresented: $showCustomize) {
             CustomizeSheet(model: model, isPresented: $showCustomize)
         }
@@ -6334,6 +6352,13 @@ struct ContentView: View {
                 model.loadCustomTokenBreakdowns(from: from, to: to)
             })
         }
+    }
+
+    private func consumePendingAPIKeysRequest() {
+        guard model.apiKeysRequested else { return }
+        activeSubview = .settings
+        showAPIKeys = true
+        model.apiKeysRequested = false
     }
 
     private var navigationHeader: some View {
