@@ -355,6 +355,14 @@ fires once per period.
   `<data-dir>/menubar-quota-state.json`
 - **spend guard** in Settings: month-to-date spend, daily burn rate, projected
   month-end spend, and warning/exceeded state against `[budgets].monthly`
+- **actionable usage side-notch**: the edge rail can run in Quota, Activity,
+  or Runway mode. Hovering a provider shows its remaining windows plus compact
+  actions to refresh, fix login/API-key access, open the provider console, or
+  jump to its latest indexed session. Activity is intentionally labelled as
+  indexed/recent activity rather than pretending to be a live provider hook.
+- **attention state on the rail**: providers that need login or an API key get
+  an orange badge and an explicit recovery action; right-clicking a provider
+  exposes the same actions without opening the popover.
 
 Menubar notification preferences are stored in a top-level `[notifications]`
 section:
@@ -367,6 +375,20 @@ quotaCriticalPercent = 10
 burnWarnings = true
 burnWarningRatio = 0.8
 ```
+
+The side-notch is configured independently from the menubar preview:
+
+```toml
+[ui]
+sideNotchEnabled = true
+sideNotchMode = "runway"       # quota | activity | runway
+sideNotchMetric = "smart"      # percent | tokens | smart
+sideNotchPlacement = "right"   # any of the 12 perimeter anchors
+```
+
+`sideNotchSyncPreview = true` mirrors the preview's enabled state, provider
+visibility, and metric when that is more convenient. The notch's mode and
+placement remain independent so the two surfaces can serve different jobs.
 
 ## Pricing data
 
