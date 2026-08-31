@@ -169,6 +169,14 @@ import Testing
         #expect(topLeft.maxY == visible.maxY)
     }
 
+    @Test func sideNotchDetailHeightTracksVisibleQuotaRows() {
+        #expect(SideNotchGeometry.dynamicDetailHeight(forRowCount: 0) == 132)
+        #expect(SideNotchGeometry.dynamicDetailHeight(forRowCount: 1) == 138)
+        #expect(SideNotchGeometry.dynamicDetailHeight(forRowCount: 2) == 188)
+        #expect(SideNotchGeometry.dynamicDetailHeight(forRowCount: 3) == 238)
+        #expect(SideNotchGeometry.dynamicDetailHeight(forRowCount: 5) == 238)
+    }
+
     // MARK: percent mode (default)
 
     @Test func percentModeShowsOnlyRealQuotas() {
