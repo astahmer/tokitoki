@@ -2253,6 +2253,7 @@ private func humanCount(_ n: Double) -> String {
 enum SideNotchGeometry {
     static let collapsedThickness: CGFloat = 20
     static let collapsedLength: CGFloat = 66
+    static let hoverActivationInset: CGFloat = 14
     static let railWidth: CGFloat = 84
     static let railLength: CGFloat = 480
     static let detailWidth: CGFloat = 292
@@ -2338,7 +2339,21 @@ private enum SideNotchMotion {
 }
 
 private enum SideNotchAnimation {
-    static let expansion = Animation.spring(response: 0.24, dampingFraction: 0.88, blendDuration: 0.04)
+    static let expansion = Animation.spring(response: 0.27, dampingFraction: 0.84, blendDuration: 0.02)
+}
+
+/// The side-notch window keeps the full expanded footprint so SwiftUI can
+/// scale one stable composition from the edge. Only the visible handle should
+/// be interactive while collapsed; otherwise the transparent footprint would
+/// steal clicks from the app underneath it.
+private final class SideNotchHitTestView: NSView {
+    var interactionRect = NSRect.zero
+    var allowsFullInteraction = false
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard allowsFullInteraction || interactionRect.contains(point) else { return nil }
+        return super.hitTest(point)
+    }
 }
 
 @MainActor
@@ -2402,6 +2417,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var sideNotchDragOrigin = NSPoint.zero
     private var sideNotchIgnoredHoverPoint: NSPoint?
     private var sideNotchSpringDriver: SideNotchSpringDriver?
+    private var sideNotchHitView: SideNotchHitTestView?
     private var sideNotchPendingMotion: SideNotchMotion?
     private var sideNotchHasLaidOut = false
     private var sideNotchDisplayID: CGDirectDisplayID?
@@ -2720,6 +2736,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             sideNotchIgnoredHoverPoint = nil
             sideNotchPendingMotion = nil
             sideNotchHasLaidOut = false
+            sideNotchHitView?.allowsFullInteraction = false
+            sideNotchHitView?.interactionRect = .zero
             sideNotchPanel?.orderOut(nil)
             return
         }
@@ -2811,13 +2829,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             model: model,
             onOpen: { [weak self] in self?.openPopoverFromSideNotch() },
         )))
-        // The default hosting sizing options resize the NSPanel when the
-        // SwiftUI state changes. That would jump straight to the expanded
-        // dimensions at the collapsed origin before our edge spring gets a
-        // chance to move it. AppKit must own this panel's frame exclusively.
+        // The panel owns a stable expanded footprint. SwiftUI scales the
+        // content from the edge; resizing the window at the same time creates
+        // the old "card appears on the left, then slides right" artifact.
         host.sizingOptions = []
-        panel.contentViewController = host
+        let hitView = SideNotchHitTestView(frame: NSRect(origin: .zero, size: panel.frame.size))
+        hitView.autoresizingMask = [.width, .height]
+        host.view.frame = hitView.bounds
+        host.view.autoresizingMask = [.width, .height]
+        hitView.addSubview(host.view)
+        panel.contentView = hitView
         sideNotchHost = host
+        sideNotchHitView = hitView
         sideNotchPanel = panel
     }
 
@@ -2853,7 +2876,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard hypot(pointer.x - ignored.x, pointer.y - ignored.y) >= 2 else { return }
             sideNotchIgnoredHoverPoint = nil
         }
-        let inside = panel.frame.contains(pointer)
+        let inside: Bool
+        if model.sideNotchExpanded {
+            inside = panel.frame.contains(pointer)
+        } else if let screen = sideNotchScreen() {
+            let collapsed = SideNotchGeometry.frame(
+                in: screen.visibleFrame,
+                placement: model.sideNotchPlacement,
+                expanded: false,
+                hasDetail: false,
+                screenFrame: screen.frame,
+            )
+            inside = collapsed.insetBy(
+                dx: -SideNotchGeometry.hoverActivationInset,
+                dy: -SideNotchGeometry.hoverActivationInset,
+            ).contains(pointer)
+        } else {
+            inside = false
+        }
         if inside && !model.sideNotchExpanded {
             // The pointer is entering the collapsed handle, but the item it
             // will hover after the rail unfolds is already knowable from its
@@ -2876,7 +2916,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         switch event.type {
         case .leftMouseDown:
-            guard panel.frame.contains(location) else { return event }
+            guard sideNotchPointIsInteractive(location, model: model, panel: panel) else { return event }
             sideNotchPointerDown = true
             sideNotchDragStart = location
             sideNotchDragOrigin = panel.frame.origin
@@ -2930,6 +2970,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.setSideNotchPlacement(placement)
     }
 
+    private func sideNotchPointIsInteractive(_ point: NSPoint, model: Model, panel: NSPanel) -> Bool {
+        if model.sideNotchExpanded { return panel.frame.contains(point) }
+        guard let screen = sideNotchScreen() else { return false }
+        return SideNotchGeometry.frame(
+            in: screen.visibleFrame,
+            placement: model.sideNotchPlacement,
+            expanded: false,
+            hasDetail: false,
+            screenFrame: screen.frame,
+        ).contains(point)
+    }
+
+    private func updateSideNotchHitTesting() {
+        guard let hitView = sideNotchHitView,
+              let panel = sideNotchPanel,
+              let model,
+              let screen = sideNotchScreen() else { return }
+        hitView.allowsFullInteraction = model.sideNotchExpanded
+        let collapsed = SideNotchGeometry.frame(
+            in: screen.visibleFrame,
+            placement: model.sideNotchPlacement,
+            expanded: false,
+            hasDetail: false,
+            screenFrame: screen.frame,
+        )
+        hitView.interactionRect = NSRect(
+            x: collapsed.minX - panel.frame.minX,
+            y: collapsed.minY - panel.frame.minY,
+            width: collapsed.width,
+            height: collapsed.height,
+        )
+    }
+
     private func layoutSideNotch() {
         guard !sideNotchIsDragging, let panel = sideNotchPanel, let model else { return }
         guard let screen = sideNotchScreen() else { return }
@@ -2938,24 +3011,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if model.sideNotchHidesCollapsedHandle != hidesCollapsedHandle {
             model.sideNotchHidesCollapsedHandle = hidesCollapsedHandle
         }
-        let expanded = model.sideNotchExpanded
-        let hasDetail = model.sideNotchSelectedProvider != nil
+        // Keep the AppKit window at the full composition size in both visual
+        // states. Its transparent area is filtered by SideNotchHitTestView;
+        // the visible opening is now a pure edge-anchored SwiftUI transform.
         let frame = SideNotchGeometry.frame(
             in: visible,
             placement: model.sideNotchPlacement,
-            expanded: expanded,
-            hasDetail: hasDetail,
+            expanded: true,
+            hasDetail: true,
             screenFrame: screen.frame,
         )
         if sideNotchHasLaidOut, panel.frame != frame {
             let start = panel.frame
             let startIsCollapsed = min(start.width, start.height) <= SideNotchGeometry.collapsedThickness + 2
                 && max(start.width, start.height) <= SideNotchGeometry.collapsedLength + 2
-            let targetIsCollapsed = !expanded
+            let targetIsCollapsed = false
             let sameSize = abs(start.width - frame.width) < 1 && abs(start.height - frame.height) < 1
             let motion = sideNotchPendingMotion
-                ?? (startIsCollapsed && !targetIsCollapsed ? .opening
-                    : !startIsCollapsed && targetIsCollapsed ? .closing
+                ?? (startIsCollapsed && !targetIsCollapsed ? .snap
                     : sameSize ? .snap
                     : .resize)
             sideNotchPendingMotion = nil
@@ -2964,6 +3037,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             sideNotchPendingMotion = nil
             panel.setFrame(frame, display: true)
         }
+        updateSideNotchHitTesting()
         sideNotchHasLaidOut = true
     }
 
@@ -3002,6 +3076,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // start of the close animation.
             model?.sideNotchSelectedProvider = nil
         }
+        updateSideNotchHitTesting()
         handleSideNotchPointer()
     }
 
@@ -4526,9 +4601,7 @@ struct SideNotchView: View {
     }
 
     private var frameWidth: CGFloat {
-        guard model.sideNotchExpanded else { return collapsedWidth }
-        if isVertical { return railWidth + (selectedEntry == nil ? 0 : detailWidth + detailGap) }
-        return railLength
+        isVertical ? railWidth + detailWidth + detailGap : railLength
     }
 
     private var collapsedWidth: CGFloat {
@@ -4541,26 +4614,54 @@ struct SideNotchView: View {
 
     private var surfaceAlignment: Alignment {
         switch model.sideNotchEdge {
-        case "left": return .leading
-        case "top": return .top
-        case "bottom": return .bottom
-        default: return .trailing
+        case "left":
+            switch Model.sideNotchAnchor(for: model.sideNotchPlacement) {
+            case "top": return .topLeading
+            case "bottom": return .bottomLeading
+            default: return .leading
+            }
+        case "top":
+            switch Model.sideNotchAnchor(for: model.sideNotchPlacement) {
+            case "left": return .topLeading
+            case "right": return .topTrailing
+            default: return .top
+            }
+        case "bottom":
+            switch Model.sideNotchAnchor(for: model.sideNotchPlacement) {
+            case "left": return .bottomLeading
+            case "right": return .bottomTrailing
+            default: return .bottom
+            }
+        default:
+            switch Model.sideNotchAnchor(for: model.sideNotchPlacement) {
+            case "top": return .topTrailing
+            case "bottom": return .bottomTrailing
+            default: return .trailing
+            }
         }
     }
 
     private var transitionAnchor: UnitPoint {
-        switch model.sideNotchEdge {
-        case "left": return .leading
+        switch model.sideNotchPlacement {
+        case "top-left": return .topLeading
+        case "top-right": return .topTrailing
         case "top": return .top
+        case "right-top": return .topTrailing
+        case "right-bottom": return .bottomTrailing
+        case "right": return .trailing
+        case "bottom-left": return .bottomLeading
+        case "bottom-right": return .bottomTrailing
         case "bottom": return .bottom
+        case "left-top": return .topLeading
+        case "left-bottom": return .bottomLeading
+        case "left": return .leading
         default: return .trailing
         }
     }
 
     private var frameHeight: CGFloat {
-        guard model.sideNotchExpanded else { return collapsedHeight }
         if isVertical { return railLength }
-        return railWidth + (selectedEntry == nil ? 0 : detailHeight + detailGap)
+        return railWidth + detailHeight + detailGap
     }
 
     private var collapsedHandle: some View {
@@ -4606,24 +4707,26 @@ struct SideNotchView: View {
     private var verticalExpanded: some View {
         ZStack(alignment: .topLeading) {
             expandedRail
-                .offset(x: model.sideNotchEdge == "right" && selectedEntry != nil ? detailWidth + detailGap : 0)
+                .offset(x: model.sideNotchEdge == "right" ? detailWidth + detailGap : 0)
             if let selectedEntry {
                 detailCallout(selectedEntry)
                     .offset(x: model.sideNotchEdge == "right" ? 0 : railWidth, y: detailOffset)
             }
         }
+        .frame(width: railWidth + detailWidth + detailGap, height: railLength, alignment: .topLeading)
         .animation(.interactiveSpring(response: 0.32, dampingFraction: 0.88, blendDuration: 0.08), value: model.sideNotchSelectedProvider)
     }
 
     private var horizontalExpanded: some View {
         ZStack(alignment: .topLeading) {
             expandedRail
-                .offset(y: model.sideNotchEdge == "bottom" && selectedEntry != nil ? detailHeight + detailGap : 0)
+                .offset(y: model.sideNotchEdge == "bottom" ? detailHeight + detailGap : 0)
             if let selectedEntry {
                 detailCallout(selectedEntry)
                     .offset(x: detailOffset, y: model.sideNotchEdge == "top" ? railWidth : 0)
             }
         }
+        .frame(width: railLength, height: railWidth + detailHeight + detailGap, alignment: .topLeading)
         .animation(.interactiveSpring(response: 0.32, dampingFraction: 0.88, blendDuration: 0.08), value: model.sideNotchSelectedProvider)
     }
 
