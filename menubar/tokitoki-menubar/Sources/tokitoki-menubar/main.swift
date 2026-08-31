@@ -183,6 +183,8 @@ struct LimitWindow: Codable {
 struct AccountLimits: Codable, Identifiable {
     let provider: String
     let accountKey: String
+    /// User-facing label for configured synthetic accounts; never a secret.
+    var label: String? = nil
     /// Stable provider account id; never use reset timestamps as identity.
     var accountId: String? = nil
     let email: String?
@@ -2011,6 +2013,9 @@ final class Model: ObservableObject {
     private func sideNotchAccountLabel(for limits: [AccountLimits]) -> String {
         if privacyHideIdentities { return "Private account" }
         guard let limit = limits.sorted(by: { $0.id < $1.id }).first else { return "Account" }
+        if let label = limit.label?.trimmingCharacters(in: .whitespacesAndNewlines), !label.isEmpty {
+            return String(label.prefix(48))
+        }
         if let email = limit.email, !email.isEmpty { return email }
         if let planLabel = limit.planLabel, !planLabel.isEmpty { return planLabel }
         return limit.accountKey == "default" ? "Default account" : limit.accountKey
@@ -4490,6 +4495,7 @@ struct ApiKeysSheet: View {
     @State private var keys: [ProviderKey] = []
     @State private var showAdd = false
     @State private var newId = ""
+    @State private var newLabel = ""
     @State private var newProvider = "opencode-go"
     @State private var newValue = ""
 
@@ -4558,6 +4564,7 @@ struct ApiKeysSheet: View {
                     }
                     Button("Add API key…") {
                         newId = ""
+                        newLabel = ""
                         newProvider = "opencode-go"
                         newValue = ""
                         showAdd = true
@@ -4567,7 +4574,7 @@ struct ApiKeysSheet: View {
                 } header: {
                     Text("Saved keys")
                 } footer: {
-                    Text("Each key is polled separately and appears as its own quota card. Use Refresh quotas now after adding one.")
+                    Text("Each key is polled separately and appears as its own account in the quota rail and detail-card switcher.")
                 }
             }
             .listStyle(.inset)
@@ -4585,7 +4592,9 @@ struct ApiKeysSheet: View {
                 Text("OpenRouter").tag("openrouter")
             }
             .pickerStyle(.menu)
-            TextField("name (e.g. work)", text: $newId)
+            TextField("Stable id (e.g. work)", text: $newId)
+                .textFieldStyle(.roundedBorder)
+            TextField("Display name (optional, e.g. Work)", text: $newLabel)
                 .textFieldStyle(.roundedBorder)
             HStack(spacing: 6) {
                 SecureField("API key", text: $newValue)
@@ -4645,7 +4654,13 @@ struct ApiKeysSheet: View {
 
     private func add() {
         guard inputValid else { return }
-        keys.append(ProviderKey(id: newId, provider: newProvider, key: newValue))
+        let label = newLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+        keys.append(ProviderKey(
+            id: newId,
+            label: label.isEmpty ? nil : String(label.prefix(48)),
+            provider: newProvider,
+            key: newValue,
+        ))
         persist()
         showAdd = false
     }

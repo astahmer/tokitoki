@@ -2526,13 +2526,26 @@ function runMenubarPayload(parsed: ParsedInvocation): void {
           } catch { /* probe only */ }
         }
       }
-      // Manual provider keys get a card even with zero scanned events; the
-      // poller stores OpenCode Go under pi/<id> and OpenRouter under
-      // openrouter/<id>.
+      // Manual provider keys get a card even with zero scanned events. Keep
+      // them in the upstream provider group so multiple OpenCode Go or
+      // OpenRouter keys can use the same account switcher as OAuth accounts.
       for (const mk of config.poll?.extraKeys ?? []) {
         const provider = mk.provider ?? "opencode-go";
-        const cardProvider = provider === "openrouter" ? "openrouter" : "pi";
-        if (withOrigin.some((l) => l.provider === cardProvider && l.accountKey === mk.id)) continue;
+        const cardProvider = provider === "openrouter" ? "openrouter" : "opencode";
+        const matchingProviders = provider === "openrouter" ? ["openrouter"] : ["pi", "opencode"];
+        const label = mk.label?.trim();
+        const existingIndex = withOrigin.findIndex((l) => matchingProviders.includes(l.provider) && l.accountKey === mk.id);
+        if (existingIndex >= 0) {
+          const existing = withOrigin[existingIndex]!;
+          withOrigin[existingIndex] = {
+            ...existing,
+            provider: cardProvider,
+            origin: "manual",
+            credential: existing.credential ?? redactCredential(mk.key),
+            ...(label !== undefined && label.length > 0 ? { label: label.slice(0, 48) } : {}),
+          };
+          continue;
+        }
         const snaps = cache.latestQuotaSnapshots(cardProvider, mk.id);
         const windows = snaps.map((snap) => ({
           kind: embeddedKind(snap.windowMinutes),
@@ -2549,6 +2562,7 @@ function runMenubarPayload(parsed: ParsedInvocation): void {
           credential: redactCredential(mk.key),
           origin: "manual",
           windows,
+          ...(label !== undefined && label.length > 0 ? { label: label.slice(0, 48) } : {}),
         });
       }
       // Polled-only providers (Copilot/Cursor) may have no local event rows,

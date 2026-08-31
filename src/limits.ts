@@ -41,6 +41,8 @@ export interface LimitWindow {
 export interface AccountLimits {
   provider: string;
   accountKey: string;
+  /** User-facing label for configured synthetic accounts (never a secret). */
+  label?: string;
   /** Stable provider account id when the quota source exposes one. */
   accountId?: string;
   /** Best-effort logged-in email for disambiguating multiple accounts. */
@@ -84,6 +86,7 @@ export function dedupeAccountLimits(limits: AccountLimits[]): AccountLimits[] {
       ...existing,
       ...incoming,
       accountId: incoming.accountId ?? existing.accountId,
+      label: incoming.label ?? existing.label,
       email: incoming.email ?? existing.email,
       planLabel: incoming.planLabel ?? existing.planLabel,
       credential: incoming.credential ?? existing.credential,

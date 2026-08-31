@@ -125,6 +125,7 @@ describe("computeLimits", () => {
         provider: "copilot",
         accountKey: "default",
         email: "github@example.com",
+        label: "Work account",
         windows: [{ kind: "month", source: "derived", tokens: 1, cost: 0, requests: 1 }],
       },
       {
@@ -136,6 +137,7 @@ describe("computeLimits", () => {
     ]);
     expect(limits).toHaveLength(1);
     expect(limits[0]?.email).toBe("github@example.com");
+    expect(limits[0]?.label).toBe("Work account");
     expect(limits[0]?.origin).toBe("polled");
     expect(limits[0]?.windows[0]?.source).toBe("embedded");
     expect(limits[0]?.windows[0]?.usedPct).toBe(40);
