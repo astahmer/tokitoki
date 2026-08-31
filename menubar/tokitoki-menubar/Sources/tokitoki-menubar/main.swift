@@ -851,7 +851,18 @@ final class Model: ObservableObject {
         if let command {
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-            process.arguments = ["-e", "tell application \"Terminal\" to do script \(Self.appleScriptString(command))"]
+            let terminalScript = """
+            tell application "Terminal"
+                activate
+                set targetTab to do script \(Self.appleScriptString(command))
+                try
+                    set selected tab of window of targetTab to targetTab
+                    set index of window of targetTab to 1
+                end try
+                set frontmost to true
+            end tell
+            """
+            process.arguments = ["-e", terminalScript]
             process.standardOutput = FileHandle.nullDevice
             process.standardError = FileHandle.nullDevice
             do {
