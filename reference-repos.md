@@ -8,3 +8,4 @@
 | lidge-jun/opencodex | ~/.references/opencodex | Multi-account codex proxy: ~/.opencodex file formats (codex-accounts.json pool ledger, codex-quota-cache.json), oauth multiauth store shape |
 | sst/opencode | ~/.references/opencode | Harness we ingest: sqlite store schema + session_usage migration (confirms message.data JSON as usage ground truth), models.dev catalog-driven provider registry (@ai-sdk: bedrock/azure/copilot/vertex), auth.json key store |
 | kcosr/provider-pulse | ~/.references/provider-pulse | Loopback provider monitor patterns: reset-aware state, heartbeat scheduling, stale-data handling, provider adapters, and compact status surfaces |
+| getagentseal/codeburn | ~/.references/codeburn | macOS notch reveal, edge anchoring, and auto-sized detail-card interaction patterns |
