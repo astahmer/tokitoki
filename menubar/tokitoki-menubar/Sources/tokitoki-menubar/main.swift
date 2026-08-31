@@ -5090,6 +5090,8 @@ struct SideNotchEntry: Identifiable {
     let limits: [AccountLimits]
     let remaining: Double?
     let tokenTotal: Double
+    let freshness: String
+    let observedAt: Date?
 }
 
 struct SideNotchView: View {
@@ -5114,6 +5116,12 @@ struct SideNotchView: View {
                 Model.sideNotchWindow(limit, preference: model.sideNotchWindow)?.usedPct.map { max(0, min(100, 100 - $0)) }
             }.min()
             let tokenTotal = limits.compactMap { Model.sideNotchWindow($0, preference: model.sideNotchWindow)?.tokens }.reduce(0, +)
+            let freshness = limits.contains(where: { $0.freshness == "stale" })
+                ? "stale"
+                : limits.contains(where: { $0.freshness == "fresh" }) ? "fresh" : "unknown"
+            let observedAt = limits
+                .compactMap { $0.observedAt.flatMap(parseISO) }
+                .max()
             return SideNotchEntry(
                 id: group.id,
                 provider: group.provider,
@@ -5123,6 +5131,8 @@ struct SideNotchView: View {
                 limits: limits,
                 remaining: remaining,
                 tokenTotal: tokenTotal,
+                freshness: freshness,
+                observedAt: observedAt,
             )
         }
     }
@@ -5421,6 +5431,17 @@ struct SideNotchView: View {
                         }
                         .offset(x: 2, y: -2)
                         .help(authState == "api-key-required" ? "API key required" : "Provider access needs attention")
+                } else if entry.freshness == "stale" {
+                    Circle()
+                        .fill(Color.orange)
+                        .frame(width: 10, height: 10)
+                        .overlay {
+                            Image(systemName: "clock")
+                                .font(.system(size: 6, weight: .black))
+                                .foregroundStyle(.black)
+                        }
+                        .offset(x: 2, y: -2)
+                        .help("Stale provider data · click to refresh")
                 }
             }
             Text(valueText(for: entry))
@@ -5438,13 +5459,15 @@ struct SideNotchView: View {
     private func detailCallout(_ entry: SideNotchEntry) -> some View {
         let latestSession = model.latestSession(forEntryID: entry.id)
         let displayName = model.sideNotchDisplayName(for: entry.id)
-            ?? (entry.isMultiAccount
-                ? "\(SideNotchView.providerTitle(for: entry.provider)) · \(entry.accountLabel)"
-                : "\(SideNotchView.providerTitle(for: entry.provider)) Usage")
+            ?? "\(SideNotchView.providerTitle(for: entry.provider)) Usage"
+        let accountChoices = entries
+            .filter { $0.provider == entry.provider }
+            .map { SideNotchDetailView.AccountChoice(id: $0.id, label: $0.accountLabel) }
         return ZStack {
             SideNotchDetailView(
                 entry: entry,
                 displayName: displayName,
+                accountChoices: accountChoices,
                 metric: model.sideNotchMetric,
                 windowPreference: model.sideNotchWindow,
                 mode: model.sideNotchMode,
@@ -5466,6 +5489,7 @@ struct SideNotchView: View {
                 onFix: { model.fixSideNotchProvider(entry.provider) },
                 onOpenProvider: { model.openSideNotchProvider(entry.provider) },
                 onOpenSession: { model.focusSideNotchSession(forEntryID: entry.id) },
+                onSelectAccount: { model.setSideNotchSelectedEntryID($0) },
                 onOpenFallback: {
                     if let fallback = model.sideNotchFallbackProvider(excluding: entry.provider) {
                         model.openSideNotchProvider(fallback)
@@ -5577,6 +5601,7 @@ struct QuotaRing: View {
 struct SideNotchDetailView: View {
     let entry: SideNotchEntry
     let displayName: String
+    let accountChoices: [AccountChoice]
     let metric: String
     let windowPreference: String
     let mode: String
@@ -5592,6 +5617,7 @@ struct SideNotchDetailView: View {
     let onFix: () -> Void
     let onOpenProvider: () -> Void
     let onOpenSession: () -> Void
+    let onSelectAccount: (String) -> Void
     let onOpenFallback: () -> Void
 
     @State private var hoveredAction: String?
@@ -5602,6 +5628,11 @@ struct SideNotchDetailView: View {
         let remaining: Double?
         let tokens: Double
         let reset: String
+    }
+
+    struct AccountChoice: Identifiable {
+        let id: String
+        let label: String
     }
 
     private var rows: [Row] {
@@ -5667,6 +5698,87 @@ struct SideNotchDetailView: View {
         }
     }
 
+    private var freshnessLabel: String {
+        guard let observedAt = entry.observedAt else {
+            return entry.freshness == "unknown" ? "No provider update" : "Update time unavailable"
+        }
+        let age = compactAge(observedAt)
+        return entry.freshness == "stale" ? "Stale · updated \(age)" : "Updated \(age)"
+    }
+
+    private var freshnessColor: Color {
+        switch entry.freshness {
+        case "stale": return .orange
+        case "fresh": return .white.opacity(0.48)
+        default: return .secondary
+        }
+    }
+
+    private func compactAge(_ date: Date) -> String {
+        let seconds = max(0, Int(Date().timeIntervalSince(date)))
+        if seconds < 60 { return "just now" }
+        let minutes = seconds / 60
+        if minutes < 60 { return "\(minutes)m ago" }
+        let hours = minutes / 60
+        if hours < 24 { return "\(hours)h ago" }
+        return "\(hours / 24)d ago"
+    }
+
+    @ViewBuilder private var accountControl: some View {
+        if accountChoices.count > 1 {
+            Menu {
+                ForEach(accountChoices) { choice in
+                    Button {
+                        onSelectAccount(choice.id)
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: choice.id == entry.id ? "checkmark" : "person.crop.circle")
+                            Text(choice.label)
+                        }
+                    }
+                }
+            } label: {
+                accountLabel(showMenuIndicator: true)
+            }
+            .menuStyle(.borderlessButton)
+        } else {
+            accountLabel(showMenuIndicator: false)
+        }
+    }
+
+    private func accountLabel(showMenuIndicator: Bool) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: accountChoices.count > 1 ? "person.2.fill" : "person.crop.circle")
+                .font(.system(size: 9, weight: .semibold))
+            Text(entry.accountLabel)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            if showMenuIndicator {
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 7, weight: .bold))
+            }
+        }
+        .font(.system(size: 10, weight: .medium))
+        .foregroundStyle(.white.opacity(0.58))
+        .contentShape(Rectangle())
+    }
+
+    private func inlineStateButton(_ title: String, icon: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Label(title, systemImage: icon)
+                .font(.system(size: 9, weight: .semibold))
+                .lineLimit(1)
+        }
+        .buttonStyle(.borderless)
+        .foregroundStyle(Color.orange)
+        .padding(.horizontal, 6)
+        .padding(.vertical, 3)
+        .background(Color.orange.opacity(0.13), in: Capsule())
+        .overlay {
+            Capsule().stroke(Color.orange.opacity(0.28), lineWidth: 0.7)
+        }
+    }
+
     private func compactActivityDetail(_ value: String) -> String {
         let flattened = value
             .replacingOccurrences(of: #"https?://\S+"#, with: "link", options: .regularExpression)
@@ -5725,55 +5837,76 @@ struct SideNotchDetailView: View {
                 }
                 .shadow(color: .black.opacity(0.45), radius: 8, y: 3)
                 .frame(maxWidth: 210, alignment: .trailing)
-                .offset(y: 25)
                 .transition(.identity)
+                .allowsHitTesting(false)
                 .zIndex(10)
         }
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 11) {
-            HStack(alignment: .top, spacing: 8) {
-                VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(alignment: .top, spacing: 8) {
                     HStack(spacing: 8) {
                         ProviderLogo(provider: SideNotchView.logoProvider(for: entry.provider)).scaleEffect(1.45)
                         Text(displayName)
                             .font(.system(size: 14, weight: .semibold))
                             .lineLimit(1)
                     }
+                    Spacer(minLength: 2)
+                    HStack(spacing: 1) {
+                        actionButton("arrow.clockwise", help: "Refresh \(SideNotchView.providerTitle(for: entry.provider)) quotas", action: onRefresh)
+                        if authState != nil {
+                            actionButton(fixIcon, help: fixTitle, action: onFix)
+                        }
+                        if hasSession {
+                            actionButton("text.bubble", help: "Open latest \(SideNotchView.providerTitle(for: entry.provider)) session", action: onOpenSession)
+                        }
+                        if notchMode == .runway, let fallbackProvider {
+                            actionButton("arrow.up.right", help: "Open best headroom provider \(SideNotchView.providerTitle(for: fallbackProvider))", action: onOpenFallback)
+                        }
+                        actionButton("arrow.up.right.square", help: "Open \(SideNotchView.providerTitle(for: entry.provider)) console", action: onOpenProvider)
+                    }
+                }
+                HStack(spacing: 5) {
+                    accountControl
+                        .layoutPriority(1)
+                    Spacer(minLength: 3)
                     HStack(spacing: 4) {
-                        Image(systemName: notchMode.icon)
-                            .font(.system(size: 8, weight: .bold))
-                            .foregroundStyle(summaryColor)
-                        Text(summaryTitle)
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(summaryColor)
-                        if let summaryDetail {
-                            Text("·").foregroundStyle(.tertiary)
-                            Text(summaryDetail)
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
+                        Circle()
+                            .fill(freshnessColor)
+                            .frame(width: 4, height: 4)
+                        Text(freshnessLabel)
+                            .font(.system(size: 9, weight: .medium))
+                            .foregroundStyle(freshnessColor)
+                            .lineLimit(1)
+                            .truncationMode(.head)
+                        if authState != nil {
+                            inlineStateButton(
+                                authState == "api-key-required" ? "Manage key" : "Log in",
+                                icon: authState == "api-key-required" ? "key.fill" : "person.crop.circle.badge.plus",
+                                action: onFix,
+                            )
+                        } else if entry.freshness == "stale" {
+                            inlineStateButton("Refresh", icon: "arrow.clockwise", action: onRefresh)
                         }
                     }
                 }
-                Spacer(minLength: 2)
-                HStack(spacing: 1) {
-                    actionButton("arrow.clockwise", help: "Refresh \(SideNotchView.providerTitle(for: entry.provider)) quotas", action: onRefresh)
-                    if authState != nil {
-                        actionButton(fixIcon, help: fixTitle, action: onFix)
+                HStack(spacing: 4) {
+                    Image(systemName: notchMode.icon)
+                        .font(.system(size: 8, weight: .bold))
+                        .foregroundStyle(summaryColor)
+                    Text(summaryTitle)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(summaryColor)
+                    if let summaryDetail {
+                        Text("·").foregroundStyle(.tertiary)
+                        Text(summaryDetail)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
                     }
-                    if hasSession {
-                        actionButton("text.bubble", help: "Open latest \(SideNotchView.providerTitle(for: entry.provider)) session", action: onOpenSession)
-                    }
-                    if notchMode == .runway, let fallbackProvider {
-                        actionButton("arrow.up.right", help: "Open best headroom provider \(SideNotchView.providerTitle(for: fallbackProvider))", action: onOpenFallback)
-                    }
-                    actionButton("arrow.up.right.square", help: "Open \(SideNotchView.providerTitle(for: entry.provider)) console", action: onOpenProvider)
-                }
-                .overlay(alignment: .topTrailing) {
-                    actionTooltip
                 }
             }
             if rows.isEmpty {
@@ -5801,6 +5934,9 @@ struct SideNotchDetailView: View {
         .frame(width: width, height: height, alignment: .topLeading)
         .background(Color.black.opacity(0.97), in: RoundedRectangle(cornerRadius: 18))
         .clipShape(RoundedRectangle(cornerRadius: 18))
+        .overlay(alignment: .topTrailing) {
+            actionTooltip.offset(y: 26)
+        }
     }
 }
 
