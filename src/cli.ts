@@ -2386,6 +2386,7 @@ function runMenubarPayload(parsed: ParsedInvocation): void {
           sideNotchEnabled: config.ui?.sideNotchEnabled === true,
           sideNotchHidden: config.ui?.sideNotchHidden ?? [],
           sideNotchMetric: config.ui?.sideNotchMetric ?? "percent",
+          sideNotchWindow: config.ui?.sideNotchWindow ?? "smart",
           sideNotchMode: config.ui?.sideNotchMode ?? "quota",
           sideNotchSyncPreview: config.ui?.sideNotchSyncPreview === true,
           sideNotchPlacement: config.ui?.sideNotchPlacement ?? "right",

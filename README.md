@@ -383,6 +383,7 @@ The side-notch is configured independently from the menubar preview:
 sideNotchEnabled = true
 sideNotchMode = "runway"       # quota | activity | runway
 sideNotchMetric = "smart"      # percent | tokens | smart
+sideNotchWindow = "smart"      # smart | day | week | month
 sideNotchPlacement = "right"   # any of the 12 perimeter anchors
 ```
 

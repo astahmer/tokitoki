@@ -136,6 +136,8 @@ export interface TokitokiConfig {
     sideNotchHidden?: string[];
     /** Side-notch display metric: "percent" (default) | "tokens" | "smart". */
     sideNotchMetric?: "percent" | "tokens" | "smart";
+    /** Quota window that drives the side-notch ring/value; smart follows the provider's governing window. */
+    sideNotchWindow?: "smart" | "day" | "week" | "month";
     /** Side-notch information mode: quota glance, recent activity, or runway guidance. */
     sideNotchMode?: "quota" | "activity" | "runway";
     /** Mirror enabled/providers/metric between the side-notch and menubar preview. */

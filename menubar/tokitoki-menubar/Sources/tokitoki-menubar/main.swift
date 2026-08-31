@@ -219,6 +219,7 @@ struct UiPreviewConfig: Codable {
     let sideNotchEnabled: Bool?
     let sideNotchHidden: [String]?
     let sideNotchMetric: String?
+    var sideNotchWindow: String? = nil
     var sideNotchMode: String? = nil
     let sideNotchSyncPreview: Bool?
     let sideNotchPlacement: String?
@@ -457,6 +458,7 @@ final class Model: ObservableObject {
     @Published var sideNotchEnabled = false
     @Published var sideNotchHidden: Set<String> = []
     @Published var sideNotchMetric: String = "percent"
+    @Published var sideNotchWindow: String = "smart"
     @Published var sideNotchMode: String = "quota"
     @Published var sideNotchSyncPreview = false
     @Published var sideNotchPlacement: String = "right"
@@ -875,6 +877,11 @@ final class Model: ObservableObject {
 
     nonisolated static func canonicalSideNotchMode(_ raw: String?) -> String {
         SideNotchMode.canonical(raw)
+    }
+
+    nonisolated static func canonicalSideNotchWindow(_ raw: String?) -> String {
+        guard let raw, ["day", "week", "month"].contains(raw) else { return "smart" }
+        return raw
     }
 
     /// Resolve the same writable config file as the CLI. An existing TOML
@@ -1341,6 +1348,7 @@ final class Model: ObservableObject {
                     self.sideNotchEnabled = ui.sideNotchEnabled ?? false
                     self.sideNotchHidden = Set(ui.sideNotchHidden ?? [])
                     self.sideNotchMetric = ["tokens", "smart"].contains(ui.sideNotchMetric ?? "percent") ? (ui.sideNotchMetric ?? "percent") : "percent"
+                    self.sideNotchWindow = Self.canonicalSideNotchWindow(ui.sideNotchWindow ?? "smart")
                     self.sideNotchMode = Self.canonicalSideNotchMode(ui.sideNotchMode ?? "quota")
                     self.sideNotchSyncPreview = ui.sideNotchSyncPreview ?? false
                     self.sideNotchPlacement = Self.canonicalSideNotchPlacement(ui.sideNotchPlacement ?? "right")
@@ -1954,6 +1962,12 @@ final class Model: ObservableObject {
         persistUISetting(path: "ui.sideNotchMetric", json: "\"\(sideNotchMetric)\"")
     }
 
+    func setSideNotchWindow(_ value: String) {
+        sideNotchWindow = Self.canonicalSideNotchWindow(value)
+        persistUISetting(path: "ui.sideNotchWindow", json: "\"\(sideNotchWindow)\"")
+        AppDelegate.shared?.refreshSideNotch()
+    }
+
     func setSideNotchMode(_ value: String) {
         sideNotchMode = Self.canonicalSideNotchMode(value)
         persistUISetting(path: "ui.sideNotchMode", json: "\"\(sideNotchMode)\"")
@@ -1971,13 +1985,11 @@ final class Model: ObservableObject {
         let providers = Set(sideNotchAccounts(for: upstream).map(\.provider))
         let aliases = providers.union([upstream])
         if aliases.contains(where: { authRequiredProviders.contains($0) }) { return "login-required" }
-        for provider in providers {
-            if let state = providerAuthStates[provider] { return state }
-        }
-        for alias in aliases {
-            if let state = providerAuthStates[alias] { return state }
-        }
-        return nil
+        let states = aliases.compactMap { providerAuthStates[$0] }
+        if states.contains("login-required") { return "login-required" }
+        if states.contains("api-key-required") { return "api-key-required" }
+        if states.contains("temporarily-unavailable") { return "temporarily-unavailable" }
+        return states.first
     }
 
     func latestSession(for upstream: String) -> PopoverSessionRow? {
@@ -2007,7 +2019,7 @@ final class Model: ObservableObject {
 
     func sideNotchRemaining(for upstream: String) -> Double? {
         sideNotchAccounts(for: upstream)
-            .compactMap { Self.primaryWindow($0)?.usedPct.map { max(0, min(100, 100 - $0)) } }
+            .compactMap { Self.sideNotchWindow($0, preference: sideNotchWindow)?.usedPct.map { max(0, min(100, 100 - $0)) } }
             .min()
     }
 
@@ -2242,6 +2254,23 @@ final class Model: ObservableObject {
 
     static func primaryWindow(_ l: AccountLimits) -> LimitWindow? {
         l.windows.first { $0.usedPct != nil } ?? l.windows.first
+    }
+
+    /// Choose the quota window used by the rail's compact ring/value. A
+    /// missing requested window falls back to the provider's normal primary
+    /// window instead of making a healthy provider look unavailable.
+    static func sideNotchWindow(_ l: AccountLimits, preference: String) -> LimitWindow? {
+        let kind: String?
+        switch preference {
+        case "day": kind = "day"
+        case "week": kind = "week"
+        case "month": kind = "month"
+        default: kind = nil
+        }
+        if let kind, let selected = l.windows.first(where: { $0.kind == kind }) {
+            return selected
+        }
+        return primaryWindow(l)
     }
 
     /// Status-item preview: per account, every quota-bearing window's remaining
@@ -4853,9 +4882,9 @@ struct SideNotchView: View {
         return grouped.compactMap { provider, limits in
             guard !model.sideNotchHidden.contains(provider) else { return nil }
             let remaining = limits.compactMap { limit in
-                Model.primaryWindow(limit)?.usedPct.map { max(0, min(100, 100 - $0)) }
+                Model.sideNotchWindow(limit, preference: model.sideNotchWindow)?.usedPct.map { max(0, min(100, 100 - $0)) }
             }.min()
-            let tokenTotal = limits.compactMap { Model.primaryWindow($0)?.tokens }.reduce(0, +)
+            let tokenTotal = limits.compactMap { Model.sideNotchWindow($0, preference: model.sideNotchWindow)?.tokens }.reduce(0, +)
             return SideNotchEntry(id: provider, provider: provider, limits: limits, remaining: remaining, tokenTotal: tokenTotal)
         }
         // Quota values change frequently; they must never decide visual order.
@@ -5356,7 +5385,11 @@ struct SideNotchDetailView: View {
 
     private var subtitle: String? {
         if let authState {
-            return authState == "api-key-required" ? "API key required" : "Login required"
+            switch authState {
+            case "api-key-required": return "API key required"
+            case "login-required": return "Login required"
+            default: return "Provider unavailable"
+            }
         }
         switch notchMode {
         case .activity:
@@ -5807,6 +5840,17 @@ struct SideNotchSettingsSheet: View {
                     }
                     Text(SideNotchMode(rawValue: model.sideNotchMode)?.description ?? SideNotchMode.quota.description)
                         .font(.caption2).foregroundStyle(.secondary)
+                    Picker("Primary window", selection: Binding(
+                        get: { model.sideNotchWindow },
+                        set: { model.setSideNotchWindow($0) },
+                    )) {
+                        Text("Smart / governing").tag("smart")
+                        Text("Session / day").tag("day")
+                        Text("Weekly").tag("week")
+                        Text("Monthly").tag("month")
+                    }
+                    Text("Pins the quota window used by the rail ring and value; Smart follows the provider's governing window.")
+                        .font(.caption2).foregroundStyle(.secondary)
                 } header: {
                     Text("Display")
                 }
@@ -6089,6 +6133,17 @@ struct SideNotchSettingsInline: View {
                 }
             }
             Text(SideNotchMode(rawValue: model.sideNotchMode)?.description ?? SideNotchMode.quota.description)
+                .font(.caption2).foregroundStyle(.secondary)
+            Picker("Primary window", selection: Binding(
+                get: { model.sideNotchWindow },
+                set: { model.setSideNotchWindow($0) },
+            )) {
+                Text("Smart / governing").tag("smart")
+                Text("Session / day").tag("day")
+                Text("Weekly").tag("week")
+                Text("Monthly").tag("month")
+            }
+            Text("Pins the quota window used by the rail ring and value; Smart follows the provider's governing window.")
                 .font(.caption2).foregroundStyle(.secondary)
             Divider().opacity(0.35)
             Text("Screen anchor").font(.caption.weight(.semibold)).foregroundStyle(.secondary)

@@ -70,6 +70,18 @@ import Testing
         #expect(Model.upstreamProvider(for: "opencode-go", accountKey: "default") == "opencode")
     }
 
+    @Test func sideNotchWindowCanPinAQuotaKindAndFallsBackSafely() {
+        let limits = account(provider: "codex", accountKey: "default", windows: [
+            window(kind: "day", tokens: 1, usedPct: 10),
+            window(kind: "week", tokens: 2, usedPct: 20),
+            window(kind: "month", tokens: 3, usedPct: 30),
+        ])
+        #expect(Model.sideNotchWindow(limits, preference: "week")?.kind == "week")
+        #expect(Model.sideNotchWindow(limits, preference: "month")?.kind == "month")
+        #expect(Model.sideNotchWindow(limits, preference: "unknown")?.kind == "day")
+        #expect(Model.sideNotchWindow(account(provider: "codex", accountKey: "default", windows: [window(kind: "week", tokens: 2)]), preference: "day")?.kind == "week")
+    }
+
     @Test func sideNotchAnchorDerivesItsEdge() {
         #expect(Model.sideNotchEdge(for: "top-left") == "top")
         #expect(Model.sideNotchEdge(for: "top-right") == "top")
