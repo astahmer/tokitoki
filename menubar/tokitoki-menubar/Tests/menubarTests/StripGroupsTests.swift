@@ -170,10 +170,10 @@ import Testing
     }
 
     @Test func sideNotchDetailHeightTracksVisibleQuotaRows() {
-        #expect(SideNotchGeometry.dynamicDetailHeight(forRowCount: 0) == 132)
-        #expect(SideNotchGeometry.dynamicDetailHeight(forRowCount: 1) == 138)
-        #expect(SideNotchGeometry.dynamicDetailHeight(forRowCount: 2) == 188)
-        #expect(SideNotchGeometry.dynamicDetailHeight(forRowCount: 3) == 238)
+        #expect(SideNotchGeometry.dynamicDetailHeight(forRowCount: 0) == 110)
+        #expect(SideNotchGeometry.dynamicDetailHeight(forRowCount: 1) == 110)
+        #expect(SideNotchGeometry.dynamicDetailHeight(forRowCount: 2) == 156)
+        #expect(SideNotchGeometry.dynamicDetailHeight(forRowCount: 3) == 206)
         #expect(SideNotchGeometry.dynamicDetailHeight(forRowCount: 5) == 238)
     }
 

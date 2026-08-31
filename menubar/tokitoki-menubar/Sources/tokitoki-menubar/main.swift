@@ -2,6 +2,27 @@ import SwiftUI
 import UniformTypeIdentifiers
 import AppKit
 import UserNotifications
+import Darwin
+
+private final class TokitokiInstanceLock {
+    private let descriptor: Int32
+
+    init?() {
+        let path = (NSTemporaryDirectory() as NSString).appendingPathComponent("dev.tokitoki.menubar.lock")
+        let descriptor = open(path, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR)
+        guard descriptor >= 0 else { return nil }
+        guard flock(descriptor, LOCK_EX | LOCK_NB) == 0 else {
+            close(descriptor)
+            return nil
+        }
+        self.descriptor = descriptor
+    }
+
+    deinit {
+        flock(descriptor, LOCK_UN)
+        close(descriptor)
+    }
+}
 
 // tokitoki menu-bar extra: AppKit NSStatusItem + NSPopover hosting the SwiftUI
 // ContentView. Deliberately NOT SwiftUI MenuBarExtra: mutating a MenuBarExtra
@@ -2278,7 +2299,7 @@ enum SideNotchGeometry {
 
     static func dynamicDetailHeight(forRowCount rowCount: Int) -> CGFloat {
         let rows = min(max(rowCount, 0), 5)
-        return min(detailHeight, max(132, 88 + CGFloat(rows) * 50))
+        return min(detailHeight, max(110, 56 + CGFloat(rows) * 50))
     }
 
     static func frame(
@@ -3667,6 +3688,10 @@ func resolveInvocation() -> CLIInvocation {
 }
 
 MainActor.assumeIsolated {
+    guard let instanceLock = TokitokiInstanceLock() else {
+        FileHandle.standardError.write(Data("[tokitoki-menubar] another instance is already running\n".utf8))
+        return
+    }
     let model = Model()
     model.start(invocation: resolveInvocation())
     let app = NSApplication.shared
@@ -3674,7 +3699,9 @@ MainActor.assumeIsolated {
     delegate.model = model
     app.delegate = delegate
     app.setActivationPolicy(.accessory)
-    app.run()
+    withExtendedLifetime(instanceLock) {
+        app.run()
+    }
 }
 
 /// openusage-style "Customize" sheet: every popover card with a drag handle
@@ -5042,7 +5069,9 @@ struct SideNotchDetailView: View {
                 }
             }
         }
-        .padding(16)
+        .padding(.top, 16)
+        .padding(.horizontal, 16)
+        .padding(.bottom, 8)
         .frame(width: width, height: height, alignment: .topLeading)
         .background(Color.black.opacity(0.97), in: RoundedRectangle(cornerRadius: 18))
         .clipShape(RoundedRectangle(cornerRadius: 18))
