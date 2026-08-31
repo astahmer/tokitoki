@@ -2901,9 +2901,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // along-edge coordinate. Set it before the first layout pass so
             // the opening spring has one target that includes the callout.
             if let screen = sideNotchScreen() {
-                model.sideNotchSelectedProvider = model.sideNotchProvider(at: pointer, screen: screen)
+                // The previous provider remains mounted through the closing
+                // fade. Swap it silently before the next opening so the
+                // opening transform contains one card instead of crossfading
+                // a stale card into the newly hovered one.
+                withAnimation(nil) {
+                    model.sideNotchSelectedProvider = model.sideNotchProvider(at: pointer, screen: screen)
+                }
             } else {
-                model.sideNotchSelectedProvider = nil
+                withAnimation(nil) {
+                    model.sideNotchSelectedProvider = nil
+                }
             }
             setSideNotchExpanded(true)
         } else if !inside && model.sideNotchExpanded {
