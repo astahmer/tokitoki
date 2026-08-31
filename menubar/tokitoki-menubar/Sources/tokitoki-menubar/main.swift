@@ -2307,15 +2307,11 @@ enum SideNotchGeometry {
 }
 
 private enum SideNotchMotion {
-    case opening
-    case closing
     case snap
     case resize
 
     var duration: TimeInterval {
         switch self {
-        case .opening: return 0.24
-        case .closing: return 0.20
         case .snap: return 0.26
         case .resize: return 0.26
         }
@@ -2323,8 +2319,6 @@ private enum SideNotchMotion {
 
     var naturalFrequency: Double {
         switch self {
-        case .opening: return 29
-        case .closing: return 31
         case .snap: return 28
         case .resize: return 28
         }
@@ -2332,7 +2326,6 @@ private enum SideNotchMotion {
 
     var dampingRatio: Double {
         switch self {
-        case .opening, .closing: return 0.90
         case .snap, .resize: return 0.90
         }
     }
@@ -3023,14 +3016,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         if sideNotchHasLaidOut, panel.frame != frame {
             let start = panel.frame
-            let startIsCollapsed = min(start.width, start.height) <= SideNotchGeometry.collapsedThickness + 2
-                && max(start.width, start.height) <= SideNotchGeometry.collapsedLength + 2
-            let targetIsCollapsed = false
             let sameSize = abs(start.width - frame.width) < 1 && abs(start.height - frame.height) < 1
             let motion = sideNotchPendingMotion
-                ?? (startIsCollapsed && !targetIsCollapsed ? .snap
-                    : sameSize ? .snap
-                    : .resize)
+                ?? (sameSize ? .snap : .resize)
             sideNotchPendingMotion = nil
             animateSideNotch(to: frame, motion: motion)
         } else {
