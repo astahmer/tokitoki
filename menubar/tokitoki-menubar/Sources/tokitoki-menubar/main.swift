@@ -4574,11 +4574,6 @@ struct SideNotchView: View {
         ZStack(alignment: surfaceAlignment) {
             expandedContent
                 .opacity(model.sideNotchExpanded ? 1 : 0)
-                // The reference reveal starts as a compact, translucent
-                // surface at the edge and settles into the full rail/card;
-                // keeping the footprint fixed makes this a true scale rather
-                // than a window resize followed by a slide.
-                .scaleEffect(model.sideNotchExpanded ? 1 : 0.68, anchor: transitionAnchor)
                 .allowsHitTesting(model.sideNotchExpanded)
             collapsedHandle
                 .frame(width: collapsedWidth, height: collapsedHeight)
@@ -4665,6 +4660,33 @@ struct SideNotchView: View {
         }
     }
 
+    private var railRevealCrossScale: CGFloat {
+        guard !model.sideNotchExpanded else { return 1 }
+        return isVertical
+            ? SideNotchGeometry.collapsedThickness / railWidth
+            : SideNotchGeometry.collapsedLength / railLength
+    }
+
+    private var railRevealAlongScale: CGFloat {
+        guard !model.sideNotchExpanded else { return 1 }
+        return isVertical
+            ? SideNotchGeometry.collapsedLength / railLength
+            : SideNotchGeometry.collapsedThickness / railWidth
+    }
+
+    private var detailRevealScale: CGFloat {
+        model.sideNotchExpanded ? 1 : 0.96
+    }
+
+    private var detailRevealAnchor: UnitPoint {
+        switch model.sideNotchEdge {
+        case "left": return .leading
+        case "top": return .top
+        case "bottom": return .bottom
+        default: return .trailing
+        }
+    }
+
     private var frameHeight: CGFloat {
         if isVertical { return railLength }
         return railWidth + detailMaxHeight + detailGap
@@ -4713,9 +4735,15 @@ struct SideNotchView: View {
     private var verticalExpanded: some View {
         ZStack(alignment: .topLeading) {
             expandedRail
+                .scaleEffect(
+                    x: railRevealCrossScale,
+                    y: railRevealAlongScale,
+                    anchor: transitionAnchor,
+                )
                 .offset(x: model.sideNotchEdge == "right" ? detailWidth + detailGap : 0)
             if let selectedEntry {
                 detailCallout(selectedEntry)
+                    .scaleEffect(x: detailRevealScale, y: detailRevealScale, anchor: detailRevealAnchor)
                     .offset(x: model.sideNotchEdge == "right" ? 0 : railWidth, y: detailOffset)
             }
         }
@@ -4726,9 +4754,15 @@ struct SideNotchView: View {
     private var horizontalExpanded: some View {
         ZStack(alignment: .topLeading) {
             expandedRail
+                .scaleEffect(
+                    x: railRevealCrossScale,
+                    y: railRevealAlongScale,
+                    anchor: transitionAnchor,
+                )
                 .offset(y: model.sideNotchEdge == "bottom" ? detailMaxHeight + detailGap : 0)
             if let selectedEntry {
                 detailCallout(selectedEntry)
+                    .scaleEffect(x: detailRevealScale, y: detailRevealScale, anchor: detailRevealAnchor)
                     .offset(x: detailOffset, y: model.sideNotchEdge == "top" ? railWidth : 0)
             }
         }
