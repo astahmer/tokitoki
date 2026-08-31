@@ -4563,16 +4563,18 @@ struct SideNotchView: View {
     }
 
     var body: some View {
-        // Keep both surfaces mounted in one edge-anchored composition. A
-        // conditional transition has its own temporary layout container; as
-        // the AppKit window shrinks that container can briefly resolve at
-        // (0, 0), which is the top/left flash seen during close. Opacity and
-        // scale keep the handle and card in the same coordinate space for the
-        // entire spring.
+        // Keep both surfaces mounted in one full-footprint, edge-anchored
+        // composition. The transparent AppKit footprint stays put while
+        // opacity and scale carry the handle/card through the entire spring;
+        // there is no second window-resize motion to make the card slide.
         ZStack(alignment: surfaceAlignment) {
             expandedContent
                 .opacity(model.sideNotchExpanded ? 1 : 0)
-                .scaleEffect(model.sideNotchExpanded ? 1 : 0.84, anchor: transitionAnchor)
+                // The reference reveal starts as a compact, translucent
+                // surface at the edge and settles into the full rail/card;
+                // keeping the footprint fixed makes this a true scale rather
+                // than a window resize followed by a slide.
+                .scaleEffect(model.sideNotchExpanded ? 1 : 0.68, anchor: transitionAnchor)
                 .allowsHitTesting(model.sideNotchExpanded)
             collapsedHandle
                 .frame(width: collapsedWidth, height: collapsedHeight)
