@@ -2618,6 +2618,14 @@ enum SideNotchGeometry {
             + railFooterLength
             + railAlongPadding * 2
     }
+
+    /// The AppKit window covers the full expanded composition even while the
+    /// notch is collapsed. Let the underlying app receive scroll/click events
+    /// until the rail is visible, except while a drag is actively moving it.
+    static func panelIgnoresMouseEvents(expanded: Bool, dragging: Bool) -> Bool {
+        !expanded && !dragging
+    }
+
     static let railLength: CGFloat = railLength(forVisibleEntryCount: maxVisibleEntries)
     static let railShoulderDepth: CGFloat = 42
     static let detailWidth: CGFloat = 292
@@ -2722,9 +2730,9 @@ private enum SideNotchAnimation {
 }
 
 /// The side-notch window keeps the full expanded footprint so SwiftUI can
-/// scale one stable composition from the edge. Only the visible handle should
-/// be interactive while collapsed; otherwise the transparent footprint would
-/// steal clicks from the app underneath it.
+/// scale one stable composition from the edge. AppKit also gets an explicit
+/// `ignoresMouseEvents` toggle while collapsed; the view-level hit test alone
+/// is not enough to let scrolling reach the window underneath it.
 private final class SideNotchHitTestView: NSView {
     var interactionRect = NSRect.zero
     var allowsFullInteraction = false
@@ -3117,6 +3125,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             sideNotchHasLaidOut = false
             sideNotchHitView?.allowsFullInteraction = false
             sideNotchHitView?.interactionRect = .zero
+            sideNotchPanel?.ignoresMouseEvents = true
             sideNotchPanel?.orderOut(nil)
             return
         }
@@ -3125,6 +3134,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 && screen.safeAreaInsets.top > 0
         }
         installSideNotchIfNeeded(model: model)
+        sideNotchPanel?.ignoresMouseEvents = SideNotchGeometry.panelIgnoresMouseEvents(
+            expanded: model.sideNotchExpanded,
+            dragging: sideNotchIsDragging,
+        )
         installSideNotchHoverMonitorIfNeeded()
         layoutSideNotch()
         sideNotchPanel?.orderFrontRegardless()
@@ -3202,7 +3215,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.hasShadow = false
         panel.becomesKeyOnlyIfNeeded = true
         panel.isMovable = false
-        panel.ignoresMouseEvents = false
+        // The stable expanded footprint is click-through while collapsed;
+        // otherwise the transparent area would prevent scrolling in the app
+        // underneath the notch. Hover/drag monitors still detect the small
+        // collapsed handle and turn interaction back on when needed.
+        panel.ignoresMouseEvents = true
 
         let host = NSHostingController(rootView: AnyView(SideNotchView(
             model: model,
@@ -3246,7 +3263,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         if sideNotchGlobalDragMonitor == nil {
-            sideNotchGlobalDragMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDragged, .leftMouseUp]) { [weak self] event in
+            sideNotchGlobalDragMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .leftMouseDragged, .leftMouseUp, .rightMouseUp]) { [weak self] event in
                 _ = self?.handleSideNotchDrag(event)
             }
         }
@@ -3328,13 +3345,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 sideNotchIgnoredHoverPoint = nil
                 sideNotchSpringDriver?.invalidate()
                 sideNotchSpringDriver = nil
+                // A collapsed rail is normally click-through so the full
+                // expanded footprint cannot block scrolling underneath it.
+                // Once a drag is unambiguously underway, make the moving
+                // surface interactive again for the remainder of the drag.
+                panel.ignoresMouseEvents = false
+                sideNotchHitView?.allowsFullInteraction = true
             }
             panel.setFrameOrigin(NSPoint(x: sideNotchDragOrigin.x + delta.x, y: sideNotchDragOrigin.y + delta.y))
             return nil
         case .leftMouseUp:
             guard sideNotchPointerDown else { return event }
             sideNotchPointerDown = false
-            guard sideNotchIsDragging else { return event }
+            guard sideNotchIsDragging else {
+                // The collapsed surface is mouse-transparent, so preserve
+                // the normal click-to-expand affordance in the monitor too.
+                if !model.sideNotchExpanded && sideNotchPointIsInteractive(location, model: model, panel: panel) {
+                    setSideNotchExpanded(true)
+                }
+                return event
+            }
             sideNotchIsDragging = false
             snapSideNotch(to: location)
             return nil
@@ -3386,6 +3416,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
               let model,
               let screen = sideNotchScreen() else { return }
         hitView.allowsFullInteraction = model.sideNotchExpanded
+        panel.ignoresMouseEvents = SideNotchGeometry.panelIgnoresMouseEvents(
+            expanded: model.sideNotchExpanded,
+            dragging: sideNotchIsDragging,
+        )
         let collapsed = SideNotchGeometry.frame(
             in: screen.visibleFrame,
             placement: model.sideNotchPlacement,
@@ -3411,8 +3445,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             model.sideNotchHidesCollapsedHandle = hidesCollapsedHandle
         }
         // Keep the AppKit window at the full composition size in both visual
-        // states. Its transparent area is filtered by SideNotchHitTestView;
-        // the visible opening is now a pure edge-anchored SwiftUI transform.
+        // states. AppKit makes that footprint click-through while collapsed;
+        // the visible opening is a pure edge-anchored SwiftUI transform.
         let frame = SideNotchGeometry.frame(
             in: visible,
             placement: model.sideNotchPlacement,

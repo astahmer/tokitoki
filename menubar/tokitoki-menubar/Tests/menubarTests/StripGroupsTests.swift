@@ -232,6 +232,12 @@ import Testing
         #expect(SideNotchGeometry.railLength(forVisibleEntryCount: 8) == 476)
     }
 
+    @Test func collapsedSideNotchFootprintIsClickThrough() {
+        #expect(SideNotchGeometry.panelIgnoresMouseEvents(expanded: false, dragging: false))
+        #expect(!SideNotchGeometry.panelIgnoresMouseEvents(expanded: true, dragging: false))
+        #expect(!SideNotchGeometry.panelIgnoresMouseEvents(expanded: false, dragging: true))
+    }
+
     // MARK: percent mode (default)
 
     @Test func percentModeShowsOnlyRealQuotas() {
