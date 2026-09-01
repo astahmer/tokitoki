@@ -217,8 +217,18 @@ export function apiTable(
   if (!TABLE_DIMS.includes(by as (typeof TABLE_DIMS)[number])) {
     throw new Error(`invalid dimension: ${by} (valid: ${TABLE_DIMS.join(", ")})`);
   }
-  if (!PERIODS.includes((wp.last ?? legacyPeriod) as (typeof PERIODS)[number]) && wp.last !== undefined && !/^\d+\s*[a-z]+$/i.test(wp.last)) {
-    throw new Error(`invalid period: ${wp.last} (valid: ${PERIODS.join(", ")} or durations like 24h)`);
+  // wp.last (when given) may be a named period OR a duration string
+  // ("24h"); legacyPeriod (the `?period=` query param, used whenever wp.last
+  // is absent) is a named period only. The old check only ever validated
+  // wp.last, so the common case — just `?period=<typo>` with no `last` —
+  // skipped validation entirely and silently fell through to resolveTimeWindow's
+  // 365-day "year" fallback for any unrecognized string.
+  if (wp.last !== undefined) {
+    if (!PERIODS.includes(wp.last as (typeof PERIODS)[number]) && !/^\d+\s*[a-z]+$/i.test(wp.last)) {
+      throw new Error(`invalid period: ${wp.last} (valid: ${PERIODS.join(", ")} or durations like 24h)`);
+    }
+  } else if (!PERIODS.includes(legacyPeriod as (typeof PERIODS)[number])) {
+    throw new Error(`invalid period: ${legacyPeriod} (valid: ${PERIODS.join(", ")})`);
   }
   const w = resolveTimeWindow({ ...wp, fallbackPeriod: legacyPeriod as Period });
   const providerFilter = providers.length > 0 ? providers : undefined;
