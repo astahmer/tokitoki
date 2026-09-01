@@ -84,6 +84,24 @@ describe("previousWindow", () => {
     expect(untilIso).toBe(new Date(2024, 5, 20).toISOString());
     expect(sinceIso).toBe(new Date(2024, 5, 19).toISOString());
   });
+  it("day returns the exact previous LOCAL midnight even across a DST spring-forward", () => {
+    // The day immediately after a spring-forward is a 23-hour calendar day.
+    // Subtracting a fixed 24h in ms from today's midnight (instead of doing
+    // local-date arithmetic) lands 1 hour before the true previous
+    // midnight on exactly that day.
+    const prevTz = process.env.TZ;
+    process.env.TZ = "America/New_York";
+    try {
+      const now = new Date(2024, 2, 11, 14, 30); // Mar 11 2024, 14:30 local
+      const { sinceIso, untilIso } = previousWindow("day", now);
+      expect(untilIso).toBe(new Date(2024, 2, 11).toISOString());
+      expect(sinceIso).toBe(new Date(2024, 2, 10).toISOString());
+    } finally {
+      if (prevTz === undefined) delete process.env.TZ;
+      else process.env.TZ = prevTz;
+    }
+  });
+
   it("week windows are exactly 7 days wide", () => {
     const now = new Date(Date.UTC(2024, 5, 20, 12));
     const { sinceIso, untilIso } = previousWindow("week", now);

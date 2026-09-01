@@ -34,8 +34,12 @@ export function previousWindow(
   now: Date = new Date(),
 ): { sinceIso: string; untilIso: string } {
   if (period === "day") {
+    // Local-date arithmetic, not a fixed 24h subtraction — the day right
+    // after a DST spring-forward is only 23 hours long, so subtracting
+    // 24×3600_000ms from today's midnight lands 1 hour before the true
+    // previous local midnight on exactly that day.
     const dayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    const prevStart = new Date(dayStart.getTime() - 24 * 3600_000);
+    const prevStart = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
     return { sinceIso: prevStart.toISOString(), untilIso: dayStart.toISOString() };
   }
   const ms = period === "week"
