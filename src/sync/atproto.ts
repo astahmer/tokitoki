@@ -84,19 +84,24 @@ export class AtprotoAdapter implements SyncAdapter {
         event: JSON.parse(trimmed),
         syncedAt: new Date().toISOString(),
       };
-      const res = await this.request("/xrpc/com.atproto.repo.putRecord", {
-        method: "POST",
-        body: JSON.stringify({
-          repo: this.did,
-          collection: this.collection,
-          rkey: tidLike(),
-          record,
-        }),
-      });
+      const putRecord = () =>
+        this.request("/xrpc/com.atproto.repo.putRecord", {
+          method: "POST",
+          body: JSON.stringify({
+            repo: this.did,
+            collection: this.collection,
+            rkey: tidLike(),
+            record,
+          }),
+        });
+      let res = await putRecord();
       if (res.status === 401) {
+        // Retry only this line after re-auth, then continue the batch —
+        // an earlier `return this.push([line])` here exited the whole
+        // outer call, silently dropping every line after this one.
         this.accessJwt = undefined;
         await this.ensureSession(true);
-        return this.push([line]); // single-line retry after re-auth
+        res = await putRecord();
       }
       if (!res.ok && res.status !== 400) {
         throw new Error(`atproto putRecord failed (${res.status}): ${await res.text()}`);
