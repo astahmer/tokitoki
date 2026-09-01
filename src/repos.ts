@@ -40,8 +40,12 @@ export function findRepoRoot(
   let current = path.resolve(dir);
   const homeRoot = path.resolve(home);
   // Walk at most until the filesystem root; never escape above $HOME so a
-  // stray ~/.git can't claim everything.
-  while (current.startsWith(homeRoot)) {
+  // stray ~/.git can't claim everything. A raw string prefix would also
+  // match a sibling dir whose name happens to start with the home path
+  // (e.g. "/Users/melody" vs. home "/Users/me") — require an exact match
+  // or a real path-separator boundary.
+  const isWithinHome = (p: string): boolean => p === homeRoot || p.startsWith(`${homeRoot}${path.sep}`);
+  while (isWithinHome(current)) {
     if (exists(path.join(current, ".git"))) return current;
     const parent = path.dirname(current);
     if (parent === current) break;

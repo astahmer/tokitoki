@@ -20,6 +20,14 @@ describe("findRepoRoot", () => {
     // .git at / would be ignored because walk stops before leaving home
     expect(findRepoRoot("/Users/me/dev/x", HOME, existsIn("/.git"))).toBeNull();
   });
+
+  it("treats a sibling dir that textually starts with $HOME as outside it", () => {
+    // "/Users/melody" is not under "/Users/me" — the boundary check must be
+    // path-aware (require a separator or exact match), not a raw string
+    // prefix, or any home path that's a string-prefix of a sibling
+    // user/dir name defeats the "never escape $HOME" guarantee above.
+    expect(findRepoRoot("/Users/melody/project", HOME, existsIn("/Users/melody/.git"))).toBeNull();
+  });
 });
 
 describe("fallbackKey", () => {
