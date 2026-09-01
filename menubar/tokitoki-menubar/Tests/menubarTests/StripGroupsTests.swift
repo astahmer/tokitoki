@@ -399,6 +399,23 @@ import Testing
         #expect(preview == "session 60% weekly 100% monthly 88%")
     }
 
+    @Test func hoverPreviewLabelsCommandCodeDayWindowAsSessionLikeCodexAndClaude() {
+        // windowDisplayName (used by the popover/detail rows) calls
+        // commandcode's daily window "Session", same as codex and
+        // claude-code. The hover strip label must agree, not fall back to
+        // the generic "day" label.
+        let limits = [
+            account(provider: "commandcode", accountKey: "default", windows: [
+                window(kind: "day", source: "polled", tokens: 0, usedPct: 40),
+            ]),
+        ]
+        let preview = Model.previewText(limits, cfg: UiPreviewConfig(
+            previewLines: 3, previewEnabled: nil, previewMode: "hover", sideNotchEnabled: nil, sideNotchHidden: nil, sideNotchMetric: nil, sideNotchSyncPreview: nil, sideNotchPlacement: nil, providers: nil, menubarHidden: nil,
+            cards: nil, pollAuto: nil, pollIntervalMinutes: nil, previewHidden: nil, stripMetric: nil, stripExhausted: nil,
+        ), labeled: true)
+        #expect(preview == "session 60%")
+    }
+
     @Test func localDashboardRoutesUseTheSharedServer() {
         #expect(AppDelegate.localDashboardURL(path: "/")?.absoluteString == "http://localhost:7788/")
         #expect(AppDelegate.localDashboardURL(path: "/?view=sources")?.absoluteString == "http://localhost:7788/?view=sources")

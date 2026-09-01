@@ -2498,7 +2498,7 @@ final class Model: ObservableObject {
                 guard labeled else { return "\(remaining)%" }
                 let label: String
                 switch w.kind {
-                case "day": label = (l.provider == "codex" || l.provider == "claude-code") ? "session" : "day"
+                case "day": label = (l.provider == "codex" || l.provider == "claude-code" || l.provider == "commandcode") ? "session" : "day"
                 case "week": label = "weekly"
                 case "month": label = "monthly"
                 default: label = w.kind
