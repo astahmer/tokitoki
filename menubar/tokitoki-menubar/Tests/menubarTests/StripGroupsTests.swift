@@ -404,6 +404,25 @@ import Testing
         #expect(model.composeTitle(today: nil, preview: "42%", hovering: false, mode: "always") == "42%")
     }
 
+    @Test func applyVisibilityRepaintsTheStripImmediately() {
+        // rebuildStripPreview's doc comment is explicit: any setter that
+        // changes what the strip shows must call it, or the strip stays
+        // stale until the next poll tick. applyVisibility (the context-menu
+        // hide/show path) mutated menubarHidden but never called it, unlike
+        // its siblings hideAccount/setPreviewVisible.
+        let model = Model()
+        model.limits = [
+            account(provider: "codex", accountKey: "default", windows: [
+                window(kind: "day", source: "polled", tokens: 0, usedPct: 40),
+            ]),
+        ]
+        model.rebuildStripPreview()
+        #expect(model.previewGroups.contains { $0.provider == "codex" })
+
+        model.applyVisibility(["codex:default"], visible: false)
+        #expect(!model.previewGroups.contains { $0.provider == "codex" })
+    }
+
     @Test func hoverPreviewLabelsQuotaWindows() {
         let limits = [
             account(provider: "codex", accountKey: "openai:plus", windows: [

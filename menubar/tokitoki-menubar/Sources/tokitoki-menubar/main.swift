@@ -1917,6 +1917,13 @@ final class Model: ObservableObject {
             for t in targets { set.insert(t) }
         }
         menubarHidden = set
+        // The status-bar strip is an imperatively-rendered NSImage, not a
+        // SwiftUI view bound to menubarHidden — without this it only
+        // repaints on the next poll/refresh cycle, so a context-menu toggle
+        // visibly lags behind the equivalent hideAccount/setPreviewVisible
+        // flows, which already repaint immediately.
+        rebuildStripPreview()
+        refreshTitleNow()
     }
 
     func providerVisibilityItems() -> [VisibilityItem]? {
