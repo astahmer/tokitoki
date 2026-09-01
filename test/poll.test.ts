@@ -882,6 +882,50 @@ describe("pollQuotas", () => {
     }
   });
 
+  it("persists the same reset-time fallback it returns for OpenRouter's key-based account", async () => {
+    // OpenRouter's /key endpoint carries no reset timestamp (resetsAtEpoch
+    // is always 0 from pollOpenRouter itself). The pi-store branch patches
+    // this to "now" for display, but previously persisted the RAW,
+    // unpatched windows — so the immediately-returned account object and
+    // the row actually written to quota_snapshots disagreed.
+    const dir = mkdtempSync(path.join(os.tmpdir(), "tk-poll-or-reset-"));
+    const cache = new EventCache(path.join(dir, "cache.db"));
+    try {
+      const piAuth = piAuthFixture(dir);
+      const fetcher = (async (input: unknown) => {
+        const url = String(input);
+        if (url.includes("openrouter.ai/api/v1/key")) {
+          return new Response(
+            JSON.stringify({ data: { limit: 100, limit_remaining: 40, limit_reset: "monthly" } }),
+            { status: 200 },
+          );
+        }
+        throw new Error(`unexpected fetch: ${url}`);
+      }) as unknown as typeof fetch;
+
+      const res = await pollQuotas({
+        providers: ["openrouter"],
+        fetcher,
+        cache,
+        ...hermeticPaths(),
+        authPath: path.join(os.tmpdir(), `missing-${Date.now()}.json`),
+        piAuthPath: piAuth,
+      });
+      const acc = res.accounts.find((a) => a.accountKey === "openrouter");
+      expect(acc).toBeDefined();
+      const returnedResetsAt = acc!.windows[0]!.resetsAtEpoch;
+      expect(returnedResetsAt).toBeGreaterThan(0); // patched to "now", not the raw 0
+
+      const row = cache.database
+        .query("SELECT resets_at FROM quota_snapshots WHERE provider = 'pi' AND account_key = 'openrouter'")
+        .get() as { resets_at: number } | undefined;
+      expect(row).toBeDefined();
+      expect(row!.resets_at).toBe(returnedResetsAt);
+    } finally {
+      cache.close();
+    }
+  });
+
   it("merges opencodex pooled quotas when codex yields nothing fresh", async () => {
     const dir = mkdtempSync(path.join(os.tmpdir(), "tk-poll-pool-"));
     const cache = new EventCache(path.join(dir, "cache.db"));

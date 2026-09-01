@@ -1237,11 +1237,19 @@ async function pollQuotasLocked(opts: PollOptions = {}): Promise<PollResult> {
       } else if (r.skip !== undefined) {
         addReason("openrouter", r.skip);
       } else {
+        // OpenRouter's /key endpoint has no reset timestamp, only a period
+        // string — fall back to "now" so a real reset isn't rendered as a
+        // sentinel 0 ("no reset"/epoch). Compute the patched windows once
+        // and persist that SAME array; persisting the raw, unpatched
+        // r.windows here previously stored resets_at=0 while the returned
+        // account object showed the patched value — the poll's own
+        // immediate output disagreed with what was actually saved.
+        const windows = r.windows.map((w) => ({ ...w, resetsAtEpoch: w.resetsAtEpoch || Math.round(now / 1000) }));
         accounts.push({
           accountKey: "openrouter",
           harnesses: ["pi"],
-          windows: r.windows.map((w) => ({ ...w, resetsAtEpoch: w.resetsAtEpoch || Math.round(now / 1000) })),
-          inserted: persistWindows(r.windows, [["pi", "openrouter"]], ["pi"]),
+          windows,
+          inserted: persistWindows(windows, [["pi", "openrouter"]], ["pi"]),
         });
       }
     }
