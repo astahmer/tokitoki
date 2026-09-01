@@ -294,6 +294,42 @@ describe("pollQuotas", () => {
     }
   });
 
+  it("clamps a reported burst-overage usedPct to 100, like every other provider parser", async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "tk-poll-codex-clamp-"));
+    const cache = new EventCache(path.join(dir, "cache.db"));
+    try {
+      const fetcher = (async (input: unknown) => {
+        const url = String(input);
+        if (url.includes("wham/usage")) {
+          return new Response(
+            JSON.stringify({
+              account_id: "acct-123",
+              plan_type: "plus",
+              rate_limit: {
+                primary_window: { used_percent: 130, reset_at: 1_800_000_100, limit_window_seconds: 18_000 },
+              },
+            }),
+            { status: 200 },
+          );
+        }
+        if (url.includes("rate-limit-reset-credits")) {
+          return new Response(JSON.stringify({ credits: [], available_count: 0 }), { status: 200 });
+        }
+        throw new Error(`unexpected fetch: ${url}`);
+      }) as unknown as typeof fetch;
+      const piAuth = path.join(dir, "pi-auth.json");
+      writeFileSync(piAuth, JSON.stringify({}));
+
+      const res = await pollQuotas({ authPath: fixtureAuth(), piAuthPath: piAuth, fetcher, cache, ...hermeticPaths() });
+      expect(res.accounts.length).toBeGreaterThan(0);
+      const acc = res.accounts[0]!;
+      expect(acc.accountKey).toBe("openai:plus");
+      expect(acc.windows[0]!.usedPct).toBeLessThanOrEqual(100);
+    } finally {
+      cache.close();
+    }
+  });
+
   it("refreshes the token once on 401 and retries", async () => {
     const dir = mkdtempSync(path.join(os.tmpdir(), "tk-poll-r-"));
     const cache = new EventCache(path.join(dir, "cache.db"));

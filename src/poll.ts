@@ -235,7 +235,12 @@ function parseWindows(rateLimit: WhamUsageResponse["rate_limit"]): PolledWindow[
       seconds <= 0
     )
       continue;
-    out.push({ windowMinutes: Math.round(seconds / 60), usedPct, resetsAtEpoch });
+    // Every other provider parser clamps usedPct to [0,100] before pushing
+    // a PolledWindow — this one didn't, so a reported burst-overage percent
+    // (>100) flowed straight into the immediate CLI output while limits.ts
+    // clamps on read, making the same window show two different numbers
+    // depending which view you looked at.
+    out.push({ windowMinutes: Math.round(seconds / 60), usedPct: Math.max(0, Math.min(100, usedPct)), resetsAtEpoch });
   }
   return out;
 }
