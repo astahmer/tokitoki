@@ -143,6 +143,35 @@ export function embeddedKind(windowMinutes: number): string {
 }
 
 /**
+ * Bucket a window length into an approximate calendar granularity — unlike
+ * embeddedKind's exact match (which drives display naming for fixed-length
+ * windows like codex's precise 300/10080/43200min), this is only for
+ * deciding whether a real window already covers a calendar-row concept.
+ * Needed because e.g. Cursor's billing cycle is anniversary-based (~31
+ * days = 44640min, not exactly 43200) and would otherwise never match.
+ */
+function roughCalendarKind(windowMinutes: number): WindowKind | undefined {
+  const days = windowMinutes / 1440;
+  if (days <= 1.5) return "day";
+  if (days <= 9) return "week";
+  if (days <= 35) return "month";
+  return undefined;
+}
+
+/**
+ * Calendar granularities a provider structurally has no limit for —
+ * verified against each provider's own quota API, not assumed. A derived
+ * "Day"/"Weekly" estimate row under these providers would only mislead:
+ * both only ever report one monthly-ish billing cycle, never a separate
+ * day or week window (Cursor: GetCurrentPeriodUsage has a single
+ * billingCycleStart/End; Copilot: one rolling ~monthly meter).
+ */
+const NO_LIMIT_CONCEPT: Partial<Record<string, ReadonlySet<WindowKind>>> = {
+  cursor: new Set(["day", "week"]),
+  copilot: new Set(["day", "week"]),
+};
+
+/**
  * Foreign quota fingerprints: window resets reported by the opencodex
  * account pool (~/.opencodex/codex-quota-cache.json), i.e. OTHER ChatGPT
  * logins that ran through the proxy on this machine. An account whose
@@ -234,12 +263,18 @@ export function computeLimits(
     const quotaAccountIds = cache.quotaAccountIds(provider, accountKey);
     const accountId = quotaAccountIds.size === 1 ? quotaAccountIds.values().next().value : undefined;
     const embeddedKinds = new Set<string>();
+    // Duration-mapped coverage, independent of label — so Cursor's 3
+    // real, differently-labeled monthly-cycle buckets still suppress a
+    // redundant derived "month" estimate row below.
+    const embeddedCalendarKinds = new Set<WindowKind>();
     for (const s of snaps) {
       // A label distinguishes same-duration windows on one account (e.g.
       // Cursor's "Cursor Models" vs "Other Models" quota buckets) — prefer
       // it over the duration-derived kind, which would otherwise collide.
       const kind = s.label.length > 0 ? s.label : embeddedKind(s.windowMinutes);
       embeddedKinds.add(kind);
+      const roughKind = roughCalendarKind(s.windowMinutes);
+      if (roughKind !== undefined) embeddedCalendarKinds.add(roughKind);
       const usage =
         cache.windowUsageForAccount(
           provider,
@@ -294,6 +329,8 @@ export function computeLimits(
     ];
     for (const c of cal) {
       if (embeddedKinds.has(c.kind)) continue; // real data already covers it
+      if (embeddedCalendarKinds.has(c.kind)) continue; // covered by a differently-labeled real window of the same duration
+      if (NO_LIMIT_CONCEPT[provider]?.has(c.kind) === true) continue; // no such limit exists for this provider
       const usage =
         cache.windowUsageForAccount(provider, accountKey, iso(c.start)) ?? ZERO;
       // Monthly cap pro-rates into shorter windows by elapsed fraction.

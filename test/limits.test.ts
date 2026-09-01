@@ -244,6 +244,54 @@ describe("computeLimits", () => {
     }
   });
 
+  it("suppresses spurious Day/Weekly rows for providers with no real day/week limit", () => {
+    const cache = limitsCache();
+    try {
+      // Cursor: anniversary billing cycle (~31 days = 44640min, not exactly
+      // 43200) split into three differently-labeled real buckets.
+      cache.insertPolledSnapshots({
+        provider: "cursor",
+        accountKey: "default",
+        windows: [
+          { windowMinutes: 44640, usedPct: 38.5, resetsAtEpoch: 1790148296, label: "Cursor Models" },
+          { windowMinutes: 44640, usedPct: 0, resetsAtEpoch: 1790148296, label: "Other Models" },
+          { windowMinutes: 44640, usedPct: 11.6, resetsAtEpoch: 1790148296, label: "On-Demand" },
+        ],
+        capturedAtIso: new Date().toISOString(),
+        eventId: "poll:test:cursor",
+      });
+      // Copilot: one real rolling ~monthly meter, no separate day/week.
+      cache.insertPolledSnapshots({
+        provider: "copilot",
+        accountKey: "default",
+        windows: [{ windowMinutes: 43200, usedPct: 55, resetsAtEpoch: 1790148296 }],
+        capturedAtIso: new Date().toISOString(),
+        eventId: "poll:test:copilot",
+      });
+      const limits = computeLimits(cache, {}, new Date(), [
+        { provider: "cursor", accountKey: "default" },
+        { provider: "copilot", accountKey: "default" },
+        { provider: "grok", accountKey: "default" },
+      ]);
+
+      const cursor = limits.find((l) => l.provider === "cursor")!;
+      expect(cursor.windows.map((w) => w.kind).sort()).toEqual(["Cursor Models", "On-Demand", "Other Models"]);
+      // No redundant derived "month" row alongside the three real buckets,
+      // and no fabricated "day"/"week" rows — Cursor has neither.
+      expect(cursor.windows.some((w) => w.kind === "day" || w.kind === "week" || w.kind === "month")).toBe(false);
+
+      const copilot = limits.find((l) => l.provider === "copilot")!;
+      expect(copilot.windows.map((w) => w.kind)).toEqual(["month"]);
+
+      // Providers with no known limit shape keep their full estimate set —
+      // this fix must not suppress the genuinely-only signal they have.
+      const grok = limits.find((l) => l.provider === "grok")!;
+      expect(grok.windows.map((w) => w.kind)).toEqual(["day", "week", "month"]);
+    } finally {
+      cache.close();
+    }
+  });
+
   it("uses monthly plan caps as the denominator when configured", () => {
     const cache = limitsCache();
     try {
