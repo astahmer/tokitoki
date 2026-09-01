@@ -93,8 +93,17 @@ export const opencodeProvider: Provider = {
         if (row.time_updated > watermark) ctx.state.watermark = row.time_updated;
         const parsed = parseMessageData(row.data);
         if (parsed === null) continue;
-        const { role, inputTokens, outputTokens, cacheRead, cacheWrite, costUsd, model, account } = parsed;
+        const { role, inputTokens, outputTokens, cacheRead, cacheWrite, costUsd, model, account, completed } = parsed;
         if (role !== "assistant") continue;
+        // A streaming response keeps bumping time_updated with growing
+        // partial token counts. Downstream dedupe is first-write-wins
+        // (cache.ts: INSERT OR IGNORE on event id), so a scan that catches
+        // a message mid-stream would otherwise lock in an undercount
+        // forever — the real, final numbers arriving later get silently
+        // discarded as a "duplicate" of the same id. Wait for time.completed
+        // instead; time_updated bumps again on completion, so the row is
+        // naturally re-selected by the watermark query once it's done.
+        if (!completed) continue;
         if (inputTokens === 0 && outputTokens === 0) continue;
         events.push({
           id: eventId(PROVIDER_ID, account, row.session_id, row.id),
@@ -217,6 +226,8 @@ interface ParsedMessage {
   costUsd: number;
   model: string;
   account: string;
+  /** True once opencode has finalized this message (time.completed is set). */
+  completed: boolean;
 }
 
 /** Parse one message.data JSON blob; null when unusable. */
@@ -237,15 +248,18 @@ function parseMessageData(raw: string): ParsedMessage | null {
   const outputTokens = toNum(tokens.output) + toNum(tokens.reasoning);
   const cacheRead = toNum(cache.read);
   const cacheWrite = toNum(cache.write);
-  const reasoning = toNum(tokens.reasoning);
-  const reportedCost = typeof data.cost === "number" && Number.isFinite(data.cost) ? data.cost : 0;
   const model = typeof data.modelID === "string" && data.modelID.length > 0 ? data.modelID : "unknown";
   const account =
     typeof data.providerID === "string" && data.providerID.length > 0 ? data.providerID : "default";
+  // A harness-reported cost of exactly $0 (e.g. a fully cached turn) is real
+  // and must be trusted, not treated as "absent" and overwritten with an
+  // estimate — only fall back when cost genuinely isn't a number at all.
   const costUsd =
-    reportedCost > 0
-      ? reportedCost
+    typeof data.cost === "number" && Number.isFinite(data.cost)
+      ? data.cost
       : estimateCost(model, { inputTokens, outputTokens, cacheReadTokens: cacheRead, cacheWriteTokens: cacheWrite }) ||
         0;
-  return { role, inputTokens, outputTokens, cacheRead, cacheWrite, costUsd, model, account };
+  const time = (data.time ?? {}) as Record<string, unknown>;
+  const completed = typeof time.completed === "number" && Number.isFinite(time.completed);
+  return { role, inputTokens, outputTokens, cacheRead, cacheWrite, costUsd, model, account, completed };
 }

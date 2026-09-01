@@ -140,7 +140,7 @@ describe("opencode provider", () => {
         tokens: { input: 11, output: 7, cache: {} },
         modelID: "deepseek-v4-flash-free",
         providerID: "opencode",
-        time: { created: 3_000 },
+        time: { created: 3_000, completed: 3_100 },
       }),
     );
     db.close();
@@ -173,5 +173,76 @@ describe("opencode provider", () => {
   it("is registered in the provider registry", async () => {
     const { PROVIDERS } = await import("../src/providers/index.ts");
     expect(PROVIDERS.some((p) => p.id === "opencode")).toBe(true);
+  });
+
+  it("waits for time.completed instead of locking in a mid-stream partial count", () => {
+    // A scan can catch an assistant message while it's still streaming:
+    // time_updated already bumped, but tokens are a partial snapshot and
+    // time.completed isn't set yet. Downstream dedupe is first-write-wins
+    // (cache.ts INSERT OR IGNORE), so emitting here would permanently lock
+    // in an undercount — the real final row later would be silently
+    // discarded as a duplicate of the same event id.
+    const dbPath = path.join(rootDir, "opencode-streaming.db");
+    createOpencodeStore(dbPath);
+    const db = new Database(dbPath);
+    db.prepare(
+      "INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES ('msg_stream', 'ses_1', 5000, 5050, ?)",
+    ).run(
+      JSON.stringify({
+        role: "assistant",
+        tokens: { input: 5, output: 3, cache: {} },
+        modelID: "kimi-k2.7-code",
+        providerID: "opencode-go",
+        time: { created: 5_000 }, // still streaming — no completed yet
+      }),
+    );
+    db.close();
+
+    const state: Record<string, unknown> = {};
+    const midStream = scanDb(dbPath, { state, freshFile: true, machineId: MACHINE });
+    expect(midStream.find((e) => e.id.includes("msg_stream"))).toBeUndefined();
+
+    const db2 = new Database(dbPath);
+    db2.prepare("UPDATE message SET time_updated = 5200, data = ? WHERE id = 'msg_stream'").run(
+      JSON.stringify({
+        role: "assistant",
+        cost: 0.4,
+        tokens: { input: 20, output: 30, cache: {} },
+        modelID: "kimi-k2.7-code",
+        providerID: "opencode-go",
+        time: { created: 5_000, completed: 5_200 },
+      }),
+    );
+    db2.close();
+
+    const finished = scanDb(dbPath, { state, freshFile: false, machineId: MACHINE });
+    const final = finished.find((e) => e.id.includes("msg_stream"));
+    expect(final).toBeDefined();
+    expect(final!.inputTokens).toBe(20);
+    expect(final!.outputTokens).toBe(30);
+  });
+
+  it("trusts an honest $0 reported cost instead of substituting an estimate", () => {
+    const dbPath = path.join(rootDir, "opencode-zerocost.db");
+    createOpencodeStore(dbPath);
+    const db = new Database(dbPath);
+    db.prepare(
+      "INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES ('msg_cached', 'ses_1', 6000, 6050, ?)",
+    ).run(
+      JSON.stringify({
+        role: "assistant",
+        cost: 0, // fully served from cache — a real, honest zero
+        tokens: { input: 500, output: 10, cache: { read: 5000 } },
+        modelID: "kimi-k2.7-code",
+        providerID: "opencode-go",
+        time: { created: 6_000, completed: 6_050 },
+      }),
+    );
+    db.close();
+
+    const events = scanDb(dbPath, { state: {}, freshFile: true, machineId: MACHINE });
+    const event = events.find((e) => e.id.includes("msg_cached"));
+    expect(event).toBeDefined();
+    expect(event!.costUsd).toBe(0);
   });
 });
