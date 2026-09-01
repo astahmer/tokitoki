@@ -97,7 +97,10 @@ describe("menubar config persistence", () => {
     expect(cfg.notifications?.resetAware).toBe(true);
     expect(cfg.notifications?.burnWarningRatio).toBe(0.9);
     expect(cfg.privacy?.hideIdentities).toBe(true);
-  });
+  }, 20_000);
+  // ^ 21 sequential `bun cli.ts` spawns, ~120ms each with zero contention —
+  // the 5s default budget has near-zero margin and flakes under any real
+  // parallel-test-suite CPU load. Real hangs still fail well before 20s.
 
   it("rejects a foreign config section without touching the file", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tokitoki-config-e2e-"));
