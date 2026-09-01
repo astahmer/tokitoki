@@ -1,36 +1,228 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import type { SessionDoc } from "./types.ts";
+import { Database } from "bun:sqlite";
+
+import type { UsageEvent } from "../types.ts";
+import type { DbScanContext, SessionDoc } from "./types.ts";
+import { eventId } from "../machine.ts";
+import { estimateCost, estimateTokensFromChars } from "../pricing.ts";
 import { providerConfig } from "../config.ts";
 import { homePath, type EntryContext, type Provider } from "./types.ts";
 
 /**
- * T3 Code (Electron IDE) keeps its thread store inside an IndexedDB LevelDB
- * under ~/Library/Application Support/t3code. Each record embeds a JSON
- * thread snapshot:
+ * T3 Code's real source of truth is a local event-sourced SQLite database at
+ * ~/.t3/userdata/state.sqlite, run by T3 Code's own local server (confirmed
+ * against pingdotgg/t3code's docs/internals/scripts.md, and by matching real
+ * thread titles on disk, 2026-09-01). The Electron app's IndexedDB store
+ * (used by an earlier version of this provider) is only renderer-side UI
+ * scratch state — sparse, sometimes empty, not the actual thread data.
  *
- *   {"schemaVersion":2,"environmentId":...,"threadId":"<uuid>",
- *    "snapshot":{"snapshotSequence":N,"thread":{
- *      "id":"<uuid>","title":"...","modelSelection":{"instanceId":...,
- *      "model":"..."},"messages":[{"role":"user","text":"..."},...]}}}
+ * Relevant tables:
+ *   projection_threads         — thread_id, title, model_selection_json,
+ *                                 created_at/updated_at, deleted_at
+ *   projection_thread_messages — message_id, thread_id, role
+ *                                 ('user'|'assistant'), text, created_at
+ *   provider_session_runtime   — thread_id, provider_name,
+ *                                 provider_instance_id (fallback for threads
+ *                                 with no model_selection_json yet)
  *
- * Inspected 2026-08-24: snapshots carry titles, model selections and user
- * messages but NO token usage or cost fields — so this provider is
- * search-index only (sessions page), never a source of UsageEvents.
+ * `model_selection_json.instanceId` (e.g. "cursor", "claudeAgent") is which
+ * backend a thread is routed through — T3 Code is bring-your-own-subscription,
+ * so a "cursor" thread bills against the user's own Cursor account, not a
+ * separate T3 Code allocation.
+ *
+ * Inspected 2026-09-01: unlike Cursor's own local stores, T3 Code DOES carry
+ * real per-call `usage`/`typedUsage` token counts in
+ * projection_thread_activities — but only for Claude-routed subagent
+ * Task-tool calls. Cursor-routed (grok) threads carry none anywhere in this
+ * database either, confirmed by grepping their own activity payloads. So
+ * usage below stays a chars/4 estimate for every thread — for consistent,
+ * comparable numbers rather than some threads exact and most not.
  */
-export const T3CODE_NO_USAGE_NOTE = "no usage data exposed (thread metadata only)";
+export const T3CODE_NO_USAGE_NOTE =
+  "no exact token/cost data for cursor-routed threads — usage below is estimated from message length";
 
-export function t3codeLevelDbDir(): string {
-  return path.join(
-    homePath("T3CODE_DIR", "/Library/Application Support/t3code"),
-    "IndexedDB/t3code_app_0.indexeddb.leveldb",
-  );
+export function t3codeStateDbDir(): string {
+  return homePath("T3CODE_DIR", "/.t3/userdata");
 }
 
-/** .ldb (compacted) + .log (write-ahead) are the two data file kinds. */
-function isLevelDbDataFile(name: string): boolean {
-  return name.endsWith(".ldb") || name.endsWith(".log");
+function stateDbFile(root: string): string {
+  return path.join(root, "state.sqlite");
+}
+
+/** Open read-only, falling back to immutable mode for a WAL db with no live writer. */
+function openStore(storePath: string): Database | undefined {
+  if (!fs.existsSync(storePath)) return undefined;
+  try {
+    const db = new Database(storePath, { readonly: true });
+    db.query("SELECT 1 AS ok").get();
+    return db;
+  } catch {
+    try {
+      const db = new Database(`file:${encodeURI(storePath)}?immutable=1`, { readonly: true });
+      db.query("SELECT 1 AS ok").get();
+      return db;
+    } catch {
+      return undefined;
+    }
+  }
+}
+
+function hasTables(db: Database, names: string[]): boolean {
+  const stmt = db.query<{ name: string }, [string]>("SELECT name FROM sqlite_master WHERE type='table' AND name = ?");
+  return names.every((n) => stmt.get(n) !== undefined);
+}
+
+/** `{instanceId, model}` from a thread's model_selection_json, falling back to its runtime row. */
+function threadRouting(
+  modelSelectionJson: string | null,
+  runtimeInstanceId: string | null,
+  runtimeProviderName: string | null,
+): { instanceId: string; model: string } {
+  let instanceId = runtimeInstanceId ?? runtimeProviderName ?? "default";
+  let model = "unknown";
+  if (modelSelectionJson !== null) {
+    try {
+      const parsed = JSON.parse(modelSelectionJson) as { instanceId?: string; model?: string };
+      if (typeof parsed.instanceId === "string" && parsed.instanceId.length > 0) instanceId = parsed.instanceId;
+      if (typeof parsed.model === "string" && parsed.model.length > 0) model = parsed.model;
+    } catch {
+      // malformed JSON — keep the runtime-row fallback
+    }
+  }
+  return { instanceId, model };
+}
+
+const BODY_CAP = 512 * 1024;
+
+export function extractT3SessionDocs(storePath: string): SessionDoc[] {
+  const db = openStore(storePath);
+  if (db === undefined) return [];
+  try {
+    if (!hasTables(db, ["projection_threads", "projection_thread_messages"])) return [];
+
+    const threads = db
+      .prepare(
+        `SELECT t.thread_id, t.title, t.created_at, t.model_selection_json,
+                r.provider_instance_id, r.provider_name
+         FROM projection_threads t
+         LEFT JOIN provider_session_runtime r ON r.thread_id = t.thread_id
+         WHERE t.deleted_at IS NULL`,
+      )
+      .all() as Array<{
+      thread_id: string;
+      title: string;
+      created_at: string;
+      model_selection_json: string | null;
+      provider_instance_id: string | null;
+      provider_name: string | null;
+    }>;
+
+    const bodyStmt = db.prepare(
+      `SELECT role, text FROM projection_thread_messages WHERE thread_id = ? ORDER BY created_at ASC LIMIT 4000`,
+    );
+    const docs: SessionDoc[] = [];
+    for (const t of threads) {
+      const rows = bodyStmt.all(t.thread_id) as Array<{ role: string; text: string }>;
+      const parts: string[] = [];
+      let len = 0;
+      for (const r of rows) {
+        if (r.text.length === 0) continue;
+        parts.push(r.text);
+        len += r.text.length;
+        if (len >= BODY_CAP) break;
+      }
+      const body = parts.join("\n").slice(0, BODY_CAP);
+      if (t.title.length === 0 && body.length === 0) continue;
+      const { instanceId } = threadRouting(t.model_selection_json, t.provider_instance_id, t.provider_name);
+      docs.push({ sessionId: t.thread_id, accountKey: instanceId, startedAt: t.created_at, title: t.title, body });
+    }
+    return docs;
+  } finally {
+    db.close();
+  }
+}
+
+interface MessageRow {
+  rowid: number;
+  message_id: string;
+  thread_id: string;
+  role: string;
+  text: string;
+  created_at: string;
+}
+
+/**
+ * Estimated per-turn UsageEvents (chars/4, both sides — see module doc for
+ * why this is an estimate, not real usage). Incremental via a rowid
+ * watermark; the user/assistant pairing map persists in ctx.state so a turn
+ * split across two scans still pairs correctly.
+ */
+function scanT3CodeUsageEvents(storePath: string, ctx: DbScanContext): UsageEvent[] {
+  const db = openStore(storePath);
+  if (db === undefined) return [];
+  try {
+    if (!hasTables(db, ["projection_thread_messages", "projection_threads"])) return [];
+
+    const watermark = typeof ctx.state.msgRowid === "number" ? ctx.state.msgRowid : 0;
+    const rows = db
+      .prepare(
+        `SELECT rowid, message_id, thread_id, role, text, created_at
+         FROM projection_thread_messages
+         WHERE rowid > ? ORDER BY rowid ASC LIMIT 50000`,
+      )
+      .all(watermark) as MessageRow[];
+    if (rows.length === 0) return [];
+
+    const routingStmt = db.prepare(
+      `SELECT t.model_selection_json, r.provider_instance_id, r.provider_name
+       FROM projection_threads t
+       LEFT JOIN provider_session_runtime r ON r.thread_id = t.thread_id
+       WHERE t.thread_id = ?`,
+    );
+    const routingCache = new Map<string, { instanceId: string; model: string }>();
+    const routingFor = (threadId: string): { instanceId: string; model: string } => {
+      const cached = routingCache.get(threadId);
+      if (cached !== undefined) return cached;
+      const row = routingStmt.get(threadId) as
+        | { model_selection_json: string | null; provider_instance_id: string | null; provider_name: string | null }
+        | undefined;
+      const routing = threadRouting(row?.model_selection_json ?? null, row?.provider_instance_id ?? null, row?.provider_name ?? null);
+      routingCache.set(threadId, routing);
+      return routing;
+    };
+
+    const lastUserChars = (ctx.state.lastUserChars ??= {}) as Record<string, number>;
+    const events: UsageEvent[] = [];
+    for (const row of rows) {
+      ctx.state.msgRowid = row.rowid;
+      if (row.role === "user") {
+        lastUserChars[row.thread_id] = row.text.length;
+        continue;
+      }
+      if (row.role !== "assistant" || row.text.length === 0) continue;
+      const inputTokens = estimateTokensFromChars(lastUserChars[row.thread_id] ?? 0);
+      delete lastUserChars[row.thread_id];
+      const outputTokens = estimateTokensFromChars(row.text.length);
+      const { instanceId, model } = routingFor(row.thread_id);
+      events.push({
+        id: eventId("t3code", instanceId, row.thread_id, row.message_id),
+        ts: row.created_at,
+        machineId: ctx.machineId,
+        provider: "t3code",
+        accountKey: instanceId,
+        model,
+        inputTokens,
+        outputTokens,
+        costUsd: estimateCost(model, { inputTokens, outputTokens, cacheReadTokens: 0, cacheWriteTokens: 0 }),
+        sessionId: row.thread_id,
+      });
+    }
+    return events;
+  } finally {
+    db.close();
+  }
 }
 
 export const t3CodeProvider: Provider = {
@@ -42,92 +234,25 @@ export const t3CodeProvider: Provider = {
   discoverRoots(): string[] {
     const override = providerConfig(this.id)?.paths;
     if (override !== undefined && override.length > 0) return override;
-    return [t3codeLevelDbDir()];
+    return [t3codeStateDbDir()];
   },
 
   listFiles(root: string): string[] {
-    let entries: fs.Dirent[];
+    const file = stateDbFile(root);
     try {
-      entries = fs.readdirSync(root, { withFileTypes: true });
+      return fs.statSync(file).isFile() ? [file] : [];
     } catch {
       return [];
     }
-    return entries.filter((e) => e.isFile() && isLevelDbDataFile(e.name)).map((e) => path.join(root, e.name));
   },
 
-  // Binary LevelDB — the JSONL scan loop finds no parseable lines. Search
-  // indexing goes through extractSessionDocs instead.
+  // SQLite — the JSONL scan loop finds no parseable lines. scanDb below
+  // replaces it; this is never called.
   parseLine(_line: string, _ctx: EntryContext): [] {
     return [];
   },
 
+  scanDb: scanT3CodeUsageEvents,
+
   extractSessionDocs: extractT3SessionDocs,
 };
-
-const SNAPSHOT_MARKER = '{"schemaVersion":';
-const WINDOW_BYTES = 256 * 1024;
-const BODY_CAP = 512 * 1024;
-const ISO_TIMESTAMP_RE = /20\d{2}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})/g;
-
-/**
- * Pull thread snapshots out of raw LevelDB bytes. Records can straddle chunk
- * boundaries and contain partial JSON, so this is deliberately regex-based
- * over an unescaped latin1 view rather than JSON.parse.
- */
-export function extractT3SessionDocs(file: string): SessionDoc[] {
-  let buf: Buffer;
-  try {
-    buf = fs.readFileSync(file);
-  } catch {
-    return [];
-  }
-  if (buf.length === 0) return [];
-  const text = buf.toString("latin1");
-
-  const byThread = new Map<string, SessionDoc>();
-  let idx = text.indexOf(SNAPSHOT_MARKER);
-  while (idx !== -1) {
-    const next = text.indexOf(SNAPSHOT_MARKER, idx + SNAPSHOT_MARKER.length);
-    const windowEnd = Math.min(next === -1 ? text.length : next, idx + WINDOW_BYTES);
-    const window = text.slice(idx, windowEnd);
-
-    const idMatch = /"threadId":"([0-9a-f-]{36})"/.exec(window);
-    if (idMatch !== null) {
-      const sessionId = idMatch[1]!;
-      const title = unescapeJson(/"title":"((?:[^"\\]|\\.)*)"/.exec(window)?.[1] ?? "");
-      const bodyParts: string[] = [];
-      for (const m of window.matchAll(/"role":"user","text":"((?:[^"\\]|\\.)*)"/g)) {
-        bodyParts.push(unescapeJson(m[1] ?? ""));
-        if (bodyParts.join("\n").length > BODY_CAP) break;
-      }
-      const explicitStartedAt = /"createdAt":"([^"]+)"/.exec(window)?.[1];
-      // Some compacted LevelDB records preserve the timestamp value but
-      // damage/interleave the surrounding property name. Keep those T3
-      // sessions in the correct date window by falling back to the earliest
-      // ISO timestamp embedded in the snapshot.
-      const timestamps = [...window.matchAll(ISO_TIMESTAMP_RE)].map((match) => match[0]).sort();
-      const startedAt = explicitStartedAt ?? timestamps[0];
-      const model = /"modelSelection":\{"instanceId":"([^"]*)","model":"([^"]*)"/.exec(window);
-      const accountKey = model?.[1];
-      const prev = byThread.get(sessionId);
-      const body = bodyParts.join("\n").slice(0, BODY_CAP);
-      // Later snapshots of the same thread are newer — keep whichever has more text.
-      if (body.length > (prev?.body.length ?? -1)) {
-        byThread.set(sessionId, { sessionId, accountKey, startedAt, title, body });
-      }
-    }
-    idx = next;
-  }
-
-  return [...byThread.values()].filter((d) => d.title.length > 0 || d.body.length > 0);
-}
-
-function unescapeJson(raw: string): string {
-  let out: string;
-  try {
-    out = JSON.parse(`"${raw}"`) as string;
-  } catch {
-    out = raw;
-  }
-  return out.replace(/\s+/g, " ").trim();
-}

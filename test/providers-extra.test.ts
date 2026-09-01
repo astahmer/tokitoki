@@ -3,6 +3,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+import { Database } from "bun:sqlite";
+
 import { antigravityCliProvider } from "../src/providers/antigravity-cli.ts";
 import { SKELETON_PROVIDERS } from "../src/providers/skeletons.ts";
 import { grokProvider } from "../src/providers/grok.ts";
@@ -13,36 +15,47 @@ import {
 } from "../src/providers/t3code.ts";
 import { renderSources, collectSources } from "../src/sources.ts";
 
-// Modeled on a real snapshot inspected in
-// ~/Library/Application Support/t3code/IndexedDB/*.leveldb (2026-08-24).
-const THREAD_A =
-  '{"schemaVersion":2,"environmentId":"695d1d4c","threadId":"' +
-  "e34f88a5-7e25-4d56-8f68-33eae4844122" +
-  '","snapshot":{"snapshotSequence":1041,"thread":{"id":"e34f88a5-7e25-4d56-8f68-33eae4844122",' +
-  '"projectId":"29f69879","title":"if it works just say \\"ok\\"","modelSelection":{"instanceId":"opencode",' +
-  '"model":"commandcode/deepseek-v4-flash"},"createdAt":"2026-08-04T16:19:17.793Z","messages":' +
-  '[{"id":"1","role":"user","text":"if it works just say \\"ok\\""},{"id":"2","role":"user","text":"say ok if it works"}]}}}';
-
-const THREAD_B =
-  '{"schemaVersion":2,"environmentId":"695d1d4c","threadId":"' +
-  "0228aba2-07fc-4699-a632-d41c038b8d92" +
-  '","snapshot":{"snapshotSequence":7,"thread":{"id":"0228aba2-07fc-4699-a632-d41c038b8d92",' +
-  '"title":"fix flaky test","modelSelection":{"instanceId":"claudeAgent","model":"claude-sonnet-5"},' +
-  '"createdAt":"2026-08-20T09:00:00.000Z","messages":[{"role":"user","text":"make the test pass"}]}}}';
-
-const THREAD_C =
-  '{"schemaVersion":2,"environmentId":"695d1d4c","threadId":"c8b1c6df-1ee8-42ec-9f3f-8d53686f0fd2",' +
-  '"snapshot":{"snapshotSequence":8,"thread":{"title":"fallback timestamp",' +
-  '"latestTurn":{"requestedAt":"2026-08-21T11:12:13.000Z"}}}}';
-
-function tmpLevelDbWith(contents: string): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "t3code-ldb-"));
-  // .log = LevelDB write-ahead; content is binary junk + embedded JSON.
-  const junk = Buffer.from([0x00, 0x9e, 0xff, 0x1f, 0x0a]);
-  fs.writeFileSync(
-    path.join(dir, "000458.log"),
-    Buffer.concat([junk, Buffer.from(contents, "latin1"), junk]),
+/**
+ * Modeled on ~/.t3/userdata/state.sqlite's real schema (inspected
+ * 2026-09-01) — T3 Code's actual local server database, not the Electron
+ * IndexedDB store an earlier version of this provider read.
+ */
+function tmpT3StateDbWith(
+  threads: Array<{ threadId: string; title: string; createdAt: string; modelSelectionJson: string | null }>,
+  messages: Array<{ messageId: string; threadId: string; role: string; text: string; createdAt: string }>,
+  runtimes: Array<{ threadId: string; providerName: string; providerInstanceId: string }>,
+): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "t3code-sqlite-"));
+  const dbPath = path.join(dir, "state.sqlite");
+  const db = new Database(dbPath);
+  db.exec(`
+    CREATE TABLE projection_threads (
+      thread_id TEXT PRIMARY KEY, title TEXT NOT NULL, created_at TEXT NOT NULL,
+      model_selection_json TEXT, deleted_at TEXT
+    );
+    CREATE TABLE projection_thread_messages (
+      message_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, role TEXT NOT NULL,
+      text TEXT NOT NULL, created_at TEXT NOT NULL
+    );
+    CREATE TABLE provider_session_runtime (
+      thread_id TEXT PRIMARY KEY, provider_name TEXT NOT NULL, provider_instance_id TEXT
+    );
+  `);
+  const insertThread = db.query(
+    "INSERT INTO projection_threads VALUES ($id, $title, $createdAt, $modelSelectionJson, NULL)",
   );
+  for (const t of threads) {
+    insertThread.run({ $id: t.threadId, $title: t.title, $createdAt: t.createdAt, $modelSelectionJson: t.modelSelectionJson });
+  }
+  const insertMsg = db.query("INSERT INTO projection_thread_messages VALUES ($id, $threadId, $role, $text, $createdAt)");
+  for (const m of messages) {
+    insertMsg.run({ $id: m.messageId, $threadId: m.threadId, $role: m.role, $text: m.text, $createdAt: m.createdAt });
+  }
+  const insertRuntime = db.query("INSERT INTO provider_session_runtime VALUES ($threadId, $providerName, $providerInstanceId)");
+  for (const r of runtimes) {
+    insertRuntime.run({ $threadId: r.threadId, $providerName: r.providerName, $providerInstanceId: r.providerInstanceId });
+  }
+  db.close();
   return dir;
 }
 
@@ -63,27 +76,61 @@ void (async () => {
   await t3codeExtraction();
 
   async function t3codeExtraction(): Promise<void> {
-    const dir = tmpLevelDbWith(THREAD_A + "\xff\x02junk" + THREAD_B + THREAD_C);
+    const THREAD_A = "e34f88a5-7e25-4d56-8f68-33eae4844122";
+    const THREAD_B = "0228aba2-07fc-4699-a632-d41c038b8d92";
+    const THREAD_C = "c8b1c6df-1ee8-42ec-9f3f-8d53686f0fd2";
+    const dir = tmpT3StateDbWith(
+      [
+        {
+          threadId: THREAD_A,
+          title: 'if it works just say "ok"',
+          createdAt: "2026-08-04T16:19:17.793Z",
+          modelSelectionJson: '{"instanceId":"opencode","model":"commandcode/deepseek-v4-flash"}',
+        },
+        {
+          threadId: THREAD_B,
+          title: "fix flaky test",
+          createdAt: "2026-08-20T09:00:00.000Z",
+          modelSelectionJson: '{"instanceId":"claudeAgent","model":"claude-sonnet-5"}',
+        },
+        { threadId: THREAD_C, title: "fallback thread, no model yet", createdAt: "2026-08-21T11:12:13.000Z", modelSelectionJson: null },
+      ],
+      [
+        { messageId: "a1", threadId: THREAD_A, role: "user", text: 'if it works just say "ok"', createdAt: "2026-08-04T16:19:17.793Z" },
+        { messageId: "a2", threadId: THREAD_A, role: "assistant", text: "ok", createdAt: "2026-08-04T16:19:20.000Z" },
+        { messageId: "a3", threadId: THREAD_A, role: "user", text: "say ok if it works", createdAt: "2026-08-04T16:19:25.000Z" },
+        { messageId: "b1", threadId: THREAD_B, role: "user", text: "make the test pass", createdAt: "2026-08-20T09:00:00.000Z" },
+        {
+          messageId: "b2",
+          threadId: THREAD_B,
+          role: "assistant",
+          text: "Fixed the flaky test by adding a retry around the screenshot assertion.",
+          createdAt: "2026-08-20T09:00:05.000Z",
+        },
+      ],
+      [{ threadId: THREAD_A, providerName: "opencode", providerInstanceId: "opencode" }],
+    );
     try {
       const files = t3CodeProvider.listFiles(dir);
-      assert.equal(files.length, 1, "lists the .log data file");
+      assert.equal(files.length, 1, "lists the state.sqlite file");
 
       const docs = extractT3SessionDocs(files[0]!);
       assert.equal(docs.length, 3, `all threads found, got ${docs.length}`);
-      const a = docs.find((d) => d.sessionId === "e34f88a5-7e25-4d56-8f68-33eae4844122");
-      const b = docs.find((d) => d.sessionId === "0228aba2-07fc-4699-a632-d41c038b8d92");
-      const c = docs.find((d) => d.sessionId === "c8b1c6df-1ee8-42ec-9f3f-8d53686f0fd2");
+      const a = docs.find((d) => d.sessionId === THREAD_A);
+      const b = docs.find((d) => d.sessionId === THREAD_B);
+      const c = docs.find((d) => d.sessionId === THREAD_C);
       assert.ok(a && b && c, "docs keyed by threadId");
       assert.equal(a!.title, 'if it works just say "ok"');
-      assert.ok(a!.body.includes('if it works just say "ok"') && a!.body.includes("say ok if it works"));
+      assert.ok(a!.body.includes('if it works just say "ok"') && a!.body.includes("say ok if it works") && a!.body.includes("ok"));
       assert.equal(a!.accountKey, "opencode");
       assert.equal(a!.startedAt, "2026-08-04T16:19:17.793Z");
       assert.equal(b!.title, "fix flaky test");
       assert.equal(b!.accountKey, "claudeAgent");
-      assert.equal(c!.startedAt, "2026-08-21T11:12:13.000Z");
+      // No runtime row and no model_selection_json yet → falls back to "default".
+      assert.equal(c!.accountKey, "default");
 
-      // parseLine never emits — no usage data in this store.
-      const events = t3CodeProvider.parseLine(THREAD_A, {
+      // parseLine never emits — usage comes from scanDb instead.
+      const events = t3CodeProvider.parseLine("{}", {
         path: files[0]!,
         state: {},
         freshFile: true,
@@ -91,6 +138,28 @@ void (async () => {
       });
       assert.deepEqual(events, []);
       assert.equal(t3CodeProvider.usageNote, T3CODE_NO_USAGE_NOTE);
+
+      // scanDb estimates usage from both sides of each turn (real user AND
+      // assistant text, unlike the old IndexedDB-based extraction) — one
+      // event per assistant reply, paired with its preceding user message.
+      const dbCtx = { state: {}, freshFile: true, machineId: "test" };
+      const usageEvents = t3CodeProvider.scanDb!(files[0]!, dbCtx);
+      assert.equal(usageEvents.length, 2, "one estimated event per assistant reply across threads A+B");
+      for (const e of usageEvents) {
+        assert.ok(e.inputTokens > 0, "estimated input tokens from the paired user message");
+        assert.ok(e.outputTokens > 0, "estimated output tokens from real assistant text");
+        assert.equal(e.provider, "t3code");
+      }
+      const aEvent = usageEvents.find((e) => e.sessionId === THREAD_A);
+      assert.ok(aEvent);
+      assert.equal(aEvent!.accountKey, "opencode");
+      assert.equal(aEvent!.model, "commandcode/deepseek-v4-flash");
+      const bEvent = usageEvents.find((e) => e.sessionId === THREAD_B);
+      assert.ok(bEvent);
+      assert.equal(bEvent!.accountKey, "claudeAgent");
+
+      // Rowid watermark: no new rows since last scan → no re-emission.
+      assert.deepEqual(t3CodeProvider.scanDb!(files[0]!, dbCtx), []);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
