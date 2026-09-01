@@ -312,6 +312,24 @@ describe("computeLimits", () => {
     }
   });
 
+  it("day pace gauge compares spend to its own pro-rated share of the monthly cap, not the whole cap", () => {
+    const cache = limitsCache();
+    try {
+      cache.insert([
+        // Half of Aug 24 has elapsed by noon. A $310 monthly cap over
+        // August's 31 days is a $10/day budget, so $5 spent by noon is
+        // exactly on pace (100%) — not ~3% of the full monthly cap.
+        makeEvent({ id: "1", ts: "2026-08-24T06:00:00.000Z", costUsd: 5 }),
+      ]);
+      const config = { plans: { "openai:*": { monthlyCostCap: 310 } } };
+      const limits = computeLimits(cache, config as never, new Date(2026, 7, 24, 12, 0));
+      const day = limits[0]!.windows.find((w) => w.kind === "day")!;
+      expect(day.usedPct).toBeCloseTo(100, 0);
+    } finally {
+      cache.close();
+    }
+  });
+
   it("latest snapshot wins per window length", () => {
     const cache = limitsCache();
     try {

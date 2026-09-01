@@ -336,10 +336,7 @@ export function computeLimits(
       if (NO_LIMIT_CONCEPT[provider]?.has(c.kind) === true) continue; // no such limit exists for this provider
       const usage =
         cache.windowUsageForAccount(provider, accountKey, iso(c.start)) ?? ZERO;
-      // Monthly cap pro-rates into shorter windows by elapsed fraction.
-      const monthElapsed =
-        (now.getTime() - monthStart.getTime()) /
-        Math.max(1, nextMonthStart(now).getTime() - monthStart.getTime());
+      const monthDurationMs = Math.max(1, nextMonthStart(now).getTime() - monthStart.getTime());
       let usedPct: number | undefined;
       if (c.kind === "month") {
         if (caps?.monthlyCostCap !== undefined && caps.monthlyCostCap > 0)
@@ -354,13 +351,16 @@ export function computeLimits(
         // Pace gauge: >100 means burning faster than a rate that would exactly
         // exhaust the monthly cap by reset. 100 = exactly on pace. Zero-cost
         // windows carry no pace signal.
-        const elapsedFrac = Math.max(
-          0.001,
-          c.kind === "day"
-            ? (now.getTime() - dayStart.getTime()) / 86_400_000
-            : (now.getTime() - weekStart.getTime()) / (7 * 86_400_000),
-        );
-        usedPct = (usage.cost / (caps.monthlyCostCap * elapsedFrac)) * 100;
+        //
+        // The budget available "so far" for a day/week is its own pro-rated
+        // share of the monthly cap (elapsed time in the period, as a
+        // fraction of the whole month) — not the entire monthly cap, which
+        // would only be reached by a rate ~daysInMonth times higher than
+        // the true pace threshold.
+        const periodStart = c.kind === "day" ? dayStart : weekStart;
+        const elapsedMs = Math.max(monthDurationMs * 0.0001, now.getTime() - periodStart.getTime());
+        const budgetSoFar = caps.monthlyCostCap * (elapsedMs / monthDurationMs);
+        usedPct = (usage.cost / budgetSoFar) * 100;
       }
       windows.push({
         kind: c.kind,
