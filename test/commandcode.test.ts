@@ -134,6 +134,19 @@ describe("commandcode provider", () => {
     expect((events[0]!.costUsd ?? 0)).toBeGreaterThanOrEqual(0);
   });
 
+  it("trusts an honest $0 reported cost instead of substituting an estimate", () => {
+    // A fully cached turn can honestly report costUsd: 0 — that must be
+    // trusted, not treated as "no cost data" and replaced with a fabricated
+    // non-zero estimate.
+    const zeroCost = JSON.parse(USAGE_LINE) as Record<string, unknown>;
+    (zeroCost.usage as Record<string, unknown>).costUsd = 0;
+    const state: Record<string, unknown> = {};
+    commandcodeProvider.parseLine(SESSION_LINE, ctx(state));
+    const events = commandcodeProvider.parseLine(JSON.stringify(zeroCost), ctx(state));
+    expect(events).toHaveLength(1);
+    expect(events[0]!.costUsd).toBe(0);
+  });
+
   it("skips user messages and zero-usage entries", () => {
     const state: Record<string, unknown> = {};
     commandcodeProvider.parseLine(SESSION_LINE, ctx(state));

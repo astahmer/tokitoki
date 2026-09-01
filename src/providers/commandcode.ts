@@ -69,7 +69,12 @@ export const commandcodeProvider: Provider = {
 
     const cacheRead = toNum(usage?.cacheReadTokens);
     const cacheWrite = toNum(usage?.cacheWriteTokens);
-    const reportedCost = toNum(usage?.costUsd);
+    // toNum() collapses "absent" and "reported as exactly 0" into the same
+    // 0 — fine for token counts, wrong for cost: a fully cached turn can
+    // honestly report costUsd: 0, which must be trusted, not treated as
+    // "no data" and replaced with a fabricated non-zero estimate.
+    const reportedCostRaw = usage?.costUsd;
+    const hasReportedCost = typeof reportedCostRaw === "number" && Number.isFinite(reportedCostRaw);
 
     const sessionId = typeof state.sessionId === "string" ? state.sessionId : "unknown-session";
     const model =
@@ -82,10 +87,9 @@ export const commandcodeProvider: Provider = {
     // comes from auth.json, not the transcript.
     const accountKey = "default";
 
-    const costUsd =
-      reportedCost > 0
-        ? reportedCost
-        : estimateCost(model, { inputTokens, outputTokens, cacheReadTokens: cacheRead, cacheWriteTokens: cacheWrite });
+    const costUsd = hasReportedCost
+      ? reportedCostRaw
+      : estimateCost(model, { inputTokens, outputTokens, cacheReadTokens: cacheRead, cacheWriteTokens: cacheWrite });
 
     const message = entry.message as Record<string, unknown> | undefined;
     const tool = toolNameFromContent(message?.content);
