@@ -235,7 +235,10 @@ export function computeLimits(
     const accountId = quotaAccountIds.size === 1 ? quotaAccountIds.values().next().value : undefined;
     const embeddedKinds = new Set<string>();
     for (const s of snaps) {
-      const kind = embeddedKind(s.windowMinutes);
+      // A label distinguishes same-duration windows on one account (e.g.
+      // Cursor's "Cursor Models" vs "Other Models" quota buckets) — prefer
+      // it over the duration-derived kind, which would otherwise collide.
+      const kind = s.label.length > 0 ? s.label : embeddedKind(s.windowMinutes);
       embeddedKinds.add(kind);
       const usage =
         cache.windowUsageForAccount(

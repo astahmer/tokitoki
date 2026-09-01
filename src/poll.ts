@@ -51,6 +51,8 @@ export interface PolledWindow {
   windowMinutes: number;
   usedPct: number;
   resetsAtEpoch: number;
+  /** Distinguishes same-duration windows on one account (e.g. Cursor's "Cursor Models" vs "Other Models"). */
+  label?: string;
 }
 
 export interface PollAccountResult {
@@ -823,12 +825,34 @@ function cursorAccessToken(opts: PollOptions): string | null {
   return cursorCliAuthToken(opts) ?? cursorIdeAuthToken(opts);
 }
 
+/**
+ * Cursor dashboard Connect POST → three included-usage buckets, verified
+ * against a real account's live response 2026-09-01 (this is what
+ * GetCurrentPeriodUsage actually returns — an earlier guessed shape
+ * {billingPeriodInfo:{usagePercent,...}} never matched any real account
+ * and always fell through to "response shape unrecognized"):
+ *
+ *   {"billingCycleStart":"<epoch ms>","billingCycleEnd":"<epoch ms>",
+ *    "planUsage":{"autoPercentUsed":38.5,"apiPercentUsed":0,
+ *                 "totalPercentUsed":32.4,...},
+ *    "spendLimitUsage":{"pooledUsed":34770,"pooledLimit":300000,
+ *                        "limitType":"team"},...}
+ *
+ * autoPercentUsed is Cursor's own bundled/auto model bucket (grok/composer/
+ * vega — see autoBucketModels); apiPercentUsed is explicitly-named models
+ * outside that bucket. Confirmed against the human-readable
+ * autoModelSelectedDisplayMessage/namedModelSelectedDisplayMessage strings
+ * the same response carries. spendLimitUsage is the pooled on-demand/overage
+ * tracker beyond the included plan — absent entirely on accounts with no
+ * team pool or on-demand spending enabled, so it's optional here too.
+ */
 interface CursorUsageResult {
-  usagePercent?: number;
-  nextResetTimestampUtc?: string;
+  billingCycleStart?: string;
+  billingCycleEnd?: string;
+  planUsage?: { autoPercentUsed?: number; apiPercentUsed?: number };
+  spendLimitUsage?: { pooledUsed?: number; pooledLimit?: number };
 }
 
-/** Cursor dashboard Connect POST → billing-period percent when recognizable. */
 async function pollCursorQuotas(opts: PollOptions, fetcher: typeof fetch, now: number): Promise<PollAccountResult | string> {
   const token = cursorAccessToken(opts);
   if (token === null) return "cursor auth not found (no cursor-agent CLI login and no Cursor IDE login)";
@@ -851,38 +875,35 @@ async function pollCursorQuotas(opts: PollOptions, fetcher: typeof fetch, now: n
     return String(e);
   }
 
-  // Defensive shape walk — the Connect payload nests the billing period under
-  // either {billingPeriodInfo:{...}} or a bare usage object.
-  const root = (body ?? {}) as Record<string, unknown>;
-  const candidates: Array<Record<string, unknown>> = [];
-  if (typeof root.billingPeriodInfo === "object" && root.billingPeriodInfo !== null) {
-    candidates.push(root.billingPeriodInfo as Record<string, unknown>);
+  const root = body as CursorUsageResult;
+  const startMs = Number(root.billingCycleStart);
+  const endMs = Number(root.billingCycleEnd);
+  const hasCycle = Number.isFinite(startMs) && Number.isFinite(endMs) && endMs > startMs;
+  const resetsAtEpoch = hasCycle ? Math.round(endMs / 1000) : 0;
+  const windowMinutes = hasCycle ? Math.max(60, Math.round((endMs - startMs) / 60_000)) : 43_200;
+
+  const windows: PolledWindow[] = [];
+  const pushPct = (label: string, pct: number | undefined): void => {
+    if (typeof pct !== "number" || !Number.isFinite(pct)) return;
+    windows.push({ windowMinutes, usedPct: Math.max(0, Math.min(100, pct)), resetsAtEpoch, label });
+  };
+  pushPct("Cursor Models", root.planUsage?.autoPercentUsed);
+  pushPct("Other Models", root.planUsage?.apiPercentUsed);
+  const { pooledUsed, pooledLimit } = root.spendLimitUsage ?? {};
+  if (typeof pooledUsed === "number" && typeof pooledLimit === "number" && pooledLimit > 0) {
+    pushPct("On-Demand", (pooledUsed / pooledLimit) * 100);
   }
-  if (typeof root.usage === "object" && root.usage !== null) {
-    candidates.push(root.usage as Record<string, unknown>);
-  }
-  candidates.push(root);
-  for (const c of candidates) {
-    const pct = typeof c.usagePercent === "number" ? c.usagePercent : typeof c.percentUsed === "number" ? c.percentUsed : null;
-    if (pct === null) continue;
-    const resetRaw = typeof c.nextResetTimestampUtc === "string" ? c.nextResetTimestampUtc : undefined;
-    const resetMs = resetRaw !== undefined ? Date.parse(resetRaw) : NaN;
-    const resetsAtEpoch = Number.isFinite(resetMs) ? Math.round(resetMs / 1000) : 0;
-    const windowMinutes = Number.isFinite(resetMs)
-      ? Math.max(60, Math.min(43_200, Math.round((resetMs - now) / 60_000)))
-      : 43_200;
-    const windows = [{ windowMinutes, usedPct: Math.max(0, Math.min(100, pct)), resetsAtEpoch }];
-    const capturedAtIso = new Date(now).toISOString();
-    const inserted = opts.cache?.insertPolledSnapshots({
-      provider: "cursor",
-      accountKey: "default",
-      windows,
-      capturedAtIso,
-      eventId: `poll:${capturedAtIso}:cursor`,
-    }) ?? 0;
-    return { accountKey: "default", harnesses: ["cursor"], windows, inserted };
-  }
-  return "cursor response shape unrecognized";
+  if (windows.length === 0) return "cursor response shape unrecognized";
+
+  const capturedAtIso = new Date(now).toISOString();
+  const inserted = opts.cache?.insertPolledSnapshots({
+    provider: "cursor",
+    accountKey: "default",
+    windows,
+    capturedAtIso,
+    eventId: `poll:${capturedAtIso}:cursor`,
+  }) ?? 0;
+  return { accountKey: "default", harnesses: ["cursor"], windows, inserted };
 }
 
 export interface OpencodexAccountIdentity {

@@ -576,12 +576,22 @@ describe("pollQuotas", () => {
       db.query("INSERT INTO ItemTable VALUES ('cursorAuth/accessToken', 'ide-token-123')").run();
       db.close();
 
-      const reset = new Date(Date.now() + 5 * 24 * 3600_000).toISOString();
+      const endMs = Date.now() + 5 * 24 * 3600_000;
       const fetcher = (async (input: unknown, init?: RequestInit) => {
         const url = String(input);
         if (url.includes("api2.cursor.sh")) {
           expect((init?.headers as Record<string, string>).authorization).toBe("Bearer ide-token-123");
-          return new Response(JSON.stringify({ usagePercent: 42, nextResetTimestampUtc: reset }), { status: 200 });
+          // Real GetCurrentPeriodUsage shape (verified against a live account
+          // 2026-09-01) — not the {usagePercent,...} shape the old parser guessed.
+          return new Response(
+            JSON.stringify({
+              billingCycleStart: String(Date.now() - 25 * 24 * 3600_000),
+              billingCycleEnd: String(endMs),
+              planUsage: { autoPercentUsed: 38.5, apiPercentUsed: 0, totalPercentUsed: 32.4 },
+              spendLimitUsage: { pooledUsed: 34_770, pooledLimit: 300_000, limitType: "team" },
+            }),
+            { status: 200 },
+          );
         }
         throw new Error(`unexpected fetch: ${url}`);
       }) as unknown as typeof fetch;
@@ -598,7 +608,57 @@ describe("pollQuotas", () => {
       });
       const acc = res.accounts.find((a) => a.harnesses?.includes("cursor"));
       expect(acc).toBeDefined();
-      expect(acc!.windows[0]!.usedPct).toBeCloseTo(42);
+      // Three labeled buckets, not one blended percent.
+      expect(acc!.windows).toHaveLength(3);
+      expect(acc!.windows.find((w) => w.label === "Cursor Models")?.usedPct).toBeCloseTo(38.5);
+      expect(acc!.windows.find((w) => w.label === "Other Models")?.usedPct).toBeCloseTo(0);
+      // On-Demand is expressed as % of the pooled limit (34770/300000).
+      expect(acc!.windows.find((w) => w.label === "On-Demand")?.usedPct).toBeCloseTo(11.59, 1);
+    } finally {
+      cache.close();
+    }
+  });
+
+  it("skips the On-Demand window when the account has no pooled spend limit", async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "tk-cursor-no-pool-"));
+    const cache = new EventCache(path.join(dir, "cache.db"));
+    try {
+      const vscdb = path.join(dir, "state.vscdb");
+      const db = new Database(vscdb);
+      db.exec("CREATE TABLE ItemTable (key TEXT PRIMARY KEY, value BLOB)");
+      db.query("INSERT INTO ItemTable VALUES ('cursorAuth/accessToken', 'ide-token-456')").run();
+      db.close();
+
+      const fetcher = (async (input: unknown) => {
+        const url = String(input);
+        if (url.includes("api2.cursor.sh")) {
+          // Personal account: no team pool, so no spendLimitUsage at all.
+          return new Response(
+            JSON.stringify({
+              billingCycleStart: String(Date.now() - 25 * 24 * 3600_000),
+              billingCycleEnd: String(Date.now() + 5 * 24 * 3600_000),
+              planUsage: { autoPercentUsed: 12, apiPercentUsed: 3, totalPercentUsed: 10 },
+            }),
+            { status: 200 },
+          );
+        }
+        throw new Error(`unexpected fetch: ${url}`);
+      }) as unknown as typeof fetch;
+
+      const res = await pollQuotas({
+        ...hermeticPaths(),
+        providers: ["cursor"],
+        authPath: path.join(os.tmpdir(), `missing-${Date.now()}.json`),
+        piAuthPath: path.join(os.tmpdir(), `missing-pi-${Date.now()}.json`),
+        cursorAuthPath: path.join(dir, "missing-cli-auth.json"),
+        cursorStateVscdbPath: vscdb,
+        fetcher,
+        cache,
+      });
+      const acc = res.accounts.find((a) => a.harnesses?.includes("cursor"));
+      expect(acc).toBeDefined();
+      expect(acc!.windows).toHaveLength(2);
+      expect(acc!.windows.some((w) => w.label === "On-Demand")).toBe(false);
     } finally {
       cache.close();
     }

@@ -1845,7 +1845,8 @@ async function runPoll(parsed: ParsedInvocation): Promise<void> {
     for (const acc of result.accounts) {
       console.log(`${acc.accountKey}${acc.email !== undefined ? ` (${acc.email})` : ""}:`);
       for (const w of acc.windows) {
-        console.log(`  ${w.windowMinutes}min window · ${w.usedPct}% used · resets ${new Date(w.resetsAtEpoch * 1000).toLocaleString()}`);
+        const label = w.label !== undefined ? `${w.label} — ` : "";
+        console.log(`  ${label}${w.windowMinutes}min window · ${w.usedPct}% used · resets ${new Date(w.resetsAtEpoch * 1000).toLocaleString()}`);
       }
       if (acc.credits?.hasCredits && !acc.credits.unlimited && Number(acc.credits.balance) > 0) {
         console.log(`  ${acc.credits.balance} banked reset(s)${acc.credits.expiresAt !== undefined ? ` · expires ${new Date(acc.credits.expiresAt).toLocaleString()}` : ""}`);
@@ -2548,7 +2549,7 @@ function runMenubarPayload(parsed: ParsedInvocation): void {
         }
         const snaps = cache.latestQuotaSnapshots(cardProvider, mk.id);
         const windows = snaps.map((snap) => ({
-          kind: embeddedKind(snap.windowMinutes),
+          kind: snap.label.length > 0 ? snap.label : embeddedKind(snap.windowMinutes),
           source: "embedded" as const,
           tokens: 0,
           cost: 0,

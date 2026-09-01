@@ -48,6 +48,8 @@ export interface QuotaSnapshotRow {
   /** Provider account identity when the snapshot came from an authenticated poll. */
   accountId: string | null;
   windowMinutes: number;
+  /** Distinguishes same-duration windows on one account (Cursor's "Cursor Models" vs "Other Models"). Empty when unlabeled. */
+  label: string;
   usedPct: number;
   resetsAt: number;
   creditsJson: string | null;
@@ -136,12 +138,13 @@ export class EventCache {
         account_key TEXT NOT NULL,
         account_id TEXT,
         window_minutes INTEGER NOT NULL,
+        label TEXT NOT NULL DEFAULT '',
         used_pct REAL NOT NULL,
         resets_at INTEGER NOT NULL,
         captured_at TEXT NOT NULL,
         event_id TEXT NOT NULL,
         credits_json TEXT,
-        PRIMARY KEY (provider, account_key, window_minutes, captured_at)
+        PRIMARY KEY (provider, account_key, window_minutes, label, captured_at)
       );
       CREATE INDEX IF NOT EXISTS idx_quota_lookup
         ON quota_snapshots(provider, account_key, captured_at);
@@ -164,6 +167,35 @@ export class EventCache {
     const quotaCols = this.db.query("PRAGMA table_info(quota_snapshots)").all() as Array<{ name: string }>;
     if (!quotaCols.some((c) => c.name === "account_id")) {
       this.db.exec("ALTER TABLE quota_snapshots ADD COLUMN account_id TEXT");
+    }
+    // `label` must join the PRIMARY KEY (same-duration windows on one
+    // account, e.g. Cursor's "Cursor Models" vs "Other Models", would
+    // otherwise overwrite each other) — SQLite can't ALTER a PK in place,
+    // so rebuild the table. Idempotent-guarded like the account_id ALTER.
+    if (!quotaCols.some((c) => c.name === "label")) {
+      this.db.exec(`
+        ALTER TABLE quota_snapshots RENAME TO quota_snapshots_old;
+        CREATE TABLE quota_snapshots (
+          provider TEXT NOT NULL,
+          account_key TEXT NOT NULL,
+          account_id TEXT,
+          window_minutes INTEGER NOT NULL,
+          label TEXT NOT NULL DEFAULT '',
+          used_pct REAL NOT NULL,
+          resets_at INTEGER NOT NULL,
+          captured_at TEXT NOT NULL,
+          event_id TEXT NOT NULL,
+          credits_json TEXT,
+          PRIMARY KEY (provider, account_key, window_minutes, label, captured_at)
+        );
+        INSERT INTO quota_snapshots
+          (provider, account_key, account_id, window_minutes, label, used_pct, resets_at, captured_at, event_id, credits_json)
+          SELECT provider, account_key, account_id, window_minutes, '', used_pct, resets_at, captured_at, event_id, credits_json
+          FROM quota_snapshots_old;
+        DROP TABLE quota_snapshots_old;
+        CREATE INDEX IF NOT EXISTS idx_quota_lookup
+          ON quota_snapshots(provider, account_key, captured_at);
+      `);
     }
     try {
       ensureSessionFts(this.db);
@@ -268,28 +300,30 @@ export class EventCache {
     provider: string;
     accountKey: string;
     accountId?: string;
-    windows: Array<{ windowMinutes: number; usedPct: number; resetsAtEpoch: number }>;
+    windows: Array<{ windowMinutes: number; usedPct: number; resetsAtEpoch: number; label?: string }>;
     credits?: { hasCredits: boolean; unlimited: boolean; balance: string; expiresAt?: string };
     capturedAtIso: string;
     eventId: string;
   }): number {
     const stmt = this.db.prepare(`
       INSERT OR REPLACE INTO quota_snapshots (
-        provider, account_key, account_id, window_minutes, used_pct, resets_at,
+        provider, account_key, account_id, window_minutes, label, used_pct, resets_at,
         captured_at, event_id, credits_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const tx = this.db.transaction(() => {
       for (const w of input.windows) {
+        const label = w.label ?? "";
         stmt.run(
           input.provider,
           input.accountKey,
           input.accountId ?? null,
           Math.round(w.windowMinutes),
+          label,
           w.usedPct,
           Math.round(w.resetsAtEpoch),
           input.capturedAtIso,
-          `${input.eventId}:${w.windowMinutes}`,
+          `${input.eventId}:${w.windowMinutes}:${label}`,
           input.credits !== undefined ? JSON.stringify(input.credits) : null,
         );
       }
@@ -309,9 +343,9 @@ export class EventCache {
     if (rows.length === 0) return;
     const stmt = this.db.prepare(`
       INSERT OR REPLACE INTO quota_snapshots (
-        provider, account_key, window_minutes, used_pct, resets_at,
+        provider, account_key, window_minutes, label, used_pct, resets_at,
         captured_at, event_id, credits_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const tx = this.db.transaction(() => {
       for (const { e, w } of rows) {
@@ -319,6 +353,7 @@ export class EventCache {
           e.provider,
           e.accountKey,
           Math.round(w.windowMinutes),
+          "",
           w.usedPct,
           Math.round(w.resetsAtEpoch),
           e.ts,
@@ -619,7 +654,7 @@ export class EventCache {
         return this.db
           .query(
             `SELECT account_key AS accountKey, account_id AS accountId,
-                    window_minutes AS windowMinutes,
+                    window_minutes AS windowMinutes, label AS label,
                     used_pct AS usedPct, resets_at AS resetsAt,
                     credits_json AS creditsJson, captured_at AS capturedAt,
                     event_id AS eventId
@@ -633,7 +668,7 @@ export class EventCache {
       return this.db
       .query(
           `SELECT qs.account_key AS accountKey, qs.account_id AS accountId,
-                  qs.window_minutes AS windowMinutes,
+                  qs.window_minutes AS windowMinutes, qs.label AS label,
                   qs.used_pct AS usedPct, qs.resets_at AS resetsAt,
                   qs.credits_json AS creditsJson, qs.captured_at AS capturedAt,
                   qs.event_id AS eventId
