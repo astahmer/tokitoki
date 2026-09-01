@@ -58,6 +58,11 @@ describe("session display text", () => {
     expect(sessionTitle(raw)).toBe("index pi and claude conversations");
   });
 
+  it("prefers the substantive request paragraph over a trailing sign-off", () => {
+    const raw = "## My request:\nPlease refactor the auth module to use JWTs instead of sessions.\n\nThanks!";
+    expect(sessionTitle(raw)).toContain("refactor the auth module");
+  });
+
   it("removes unwrapped Codex instructions and keeps the full provider conversation", () => {
     const file = path.join(os.tmpdir(), `tokitoki-codex-${Date.now()}.jsonl`);
     fs.writeFileSync(

@@ -44,7 +44,12 @@ export function sessionTitle(raw: string, fallback = ""): string {
   }
   const requestText = marker >= 0 ? cleaned.slice(marker + "my request:".length) : cleaned;
   const parts = requestText.split(/\n{2,}|\n(?=(?:[-*#]|\d+[.)])\s)/).map((part) => part.trim()).filter(Boolean);
-  const candidate = [...parts].reverse().find((part) => {
+  // The substantive request is the first real paragraph after the marker —
+  // searching from the end (as this used to) let a short trailing sign-off
+  // ("Thanks!") win over the actual request whenever one happened to follow
+  // it. Forward search still skips known injected boilerplate wherever it
+  // appears in the list.
+  const candidate = parts.find((part) => {
     const lower = part.toLowerCase();
     return part.length >= 3 && !lower.startsWith("here is a list of plugins") && !lower.startsWith("you are chatgpt");
   });
