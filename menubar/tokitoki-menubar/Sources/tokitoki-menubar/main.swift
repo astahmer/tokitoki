@@ -6248,7 +6248,7 @@ struct HoverPreviewView: View {
         model.limits
             .filter { !model.menubarHidden.contains($0.provider) && !model.menubarHidden.contains("\($0.provider):\($0.accountKey)") }
             .flatMap { limit in
-                let account = limit.email ?? limit.credential ?? limit.accountKey
+                let account = model.privacyHideIdentities ? "Private account" : (limit.email ?? limit.credential ?? limit.accountKey)
                 return limit.windows.prefix(3).map { window in
                     let remaining = window.usedPct.map { max(0, min(100, 100 - $0)) }
                     return Entry(
