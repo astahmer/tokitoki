@@ -5,7 +5,7 @@ import { Database } from "bun:sqlite";
 
 import { afterAll, describe, expect, test } from "bun:test";
 
-import { cursorFiles, extractCursorSessionDocs, cursorProvider } from "../src/providers/cursor.ts";
+import { cursorFiles, cursorRoots, extractCursorSessionDocs, cursorProvider } from "../src/providers/cursor.ts";
 import { grokProvider } from "../src/providers/grok.ts";
 import { geminiCliProvider } from "../src/providers/gemini.ts";
 import type { EntryContext } from "../src/providers/types.ts";
@@ -32,6 +32,14 @@ describe("cursor provider", () => {
   fs.mkdirSync(path.join(root, "ai-tracking"), { recursive: true });
   const vscdb = path.join(root, "User/globalStorage/state.vscdb");
   const tracking = path.join(root, "ai-tracking/ai-code-tracking.db");
+
+  test("roots include the real IDE data dir, not just ~/.cursor", () => {
+    const roots = cursorRoots();
+    expect(roots).toContain(`${process.env.HOME ?? "~"}/.cursor`);
+    if (process.platform === "darwin") {
+      expect(roots).toContain(`${process.env.HOME ?? "~"}/Library/Application Support/Cursor`);
+    }
+  });
 
   test("lists only existing store files", () => {
     // real (empty) sqlite files: reused by the indexing tests below
@@ -100,8 +108,44 @@ describe("cursor provider", () => {
     expect(docs[0]!.body).not.toContain("uninteresting");
   });
 
-  test("sources note stays honest about missing usage", () => {
-    expect(cursorProvider.usageNote).toMatch(/no token usage exposed/i);
+  test("sources note stays honest about estimated usage", () => {
+    expect(cursorProvider.usageNote).toMatch(/estimated/i);
+  });
+
+  test("scanDb estimates a per-turn event from cursorDiskKV bubbles (real token counts are always 0 there)", () => {
+    const db = new Database(vscdb);
+    db.exec("CREATE TABLE cursorDiskKV (key TEXT PRIMARY KEY, value BLOB)");
+    const composerId = "3fe1136d-4749-4613-a3fc-e57f038cd9a6";
+    const insert = db.query("INSERT INTO cursorDiskKV VALUES ($k, $v)");
+    insert.run({
+      $k: `bubbleId:${composerId}:6ef83a7d-bbdc-466f-86ca-cfbfaf27f269`,
+      $v: JSON.stringify({ type: 1, text: "why does this test keep flaking?", createdAt: "2026-08-30T10:00:00.000Z" }),
+    });
+    insert.run({
+      $k: `bubbleId:${composerId}:f05d991a-f055-44d0-a9e7-3474818e2b7f`,
+      $v: JSON.stringify({
+        type: 2,
+        text: "It's a race between the fixture teardown and the assertion.",
+        modelInfo: { modelName: "grok-4.6" },
+        tokenCount: { inputTokens: 0, outputTokens: 0 },
+        createdAt: "2026-08-30T10:00:05.000Z",
+      }),
+    });
+    db.close();
+
+    const ctx = { state: {}, freshFile: true, machineId: "test-mac" };
+    const events = cursorProvider.scanDb!(vscdb, ctx);
+    expect(events).toHaveLength(1);
+    const e = events[0]!;
+    expect(e.sessionId).toBe(composerId);
+    expect(e.model).toBe("grok-4.6");
+    expect(e.provider).toBe("cursor");
+    expect(e.inputTokens).toBeGreaterThan(0);
+    expect(e.outputTokens).toBeGreaterThan(0);
+    expect(e.ts).toBe("2026-08-30T10:00:05.000Z");
+
+    // Rowid watermark: no new rows since last scan → no re-emission.
+    expect(cursorProvider.scanDb!(vscdb, ctx)).toEqual([]);
   });
 });
 

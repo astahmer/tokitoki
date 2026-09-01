@@ -3,34 +3,59 @@ import path from "node:path";
 
 import { Database } from "bun:sqlite";
 
+import type { UsageEvent } from "../types.ts";
+import { eventId } from "../machine.ts";
+import { estimateCost, estimateTokensFromChars } from "../pricing.ts";
 import { providerConfig } from "../config.ts";
-import { homePath, type EntryContext, type Provider, type SessionDoc } from "./types.ts";
+import { homePath, type DbScanContext, type EntryContext, type Provider, type SessionDoc } from "./types.ts";
 
 /**
- * Cursor keeps its data in two sqlite databases under ~/.cursor:
+ * Cursor's data is split across two directories:
  *
- *   User/globalStorage/state.vscdb   — IDE state; composer/chat transcripts
- *                                      live under ItemTable keys like
- *                                      `composerData:<uuid>` (JSON blobs)
- *   ai-tracking/ai-code-tracking.db  — AI activity tracking:
+ *   ~/.cursor/ai-tracking/ai-code-tracking.db  — AI activity tracking:
  *                                      ai_code_hashes (one row per generated
  *                                      file hash: requestId, conversationId,
  *                                      timestamp ms, model),
  *                                      conversation_summaries (title/tldr/
  *                                      overview/summaryBullets/model/mode)
+ *   <IDE data dir>/User/globalStorage/state.vscdb — VS Code-style IDE state.
+ *                                      `composerData:<uuid>` ItemTable keys
+ *                                      hold composer transcripts; the
+ *                                      `cursorDiskKV` table holds per-message
+ *                                      `bubbleId:<composerId>:<uuid>` rows.
+ *                                      IDE data dir: macOS
+ *                                      `~/Library/Application Support/Cursor`,
+ *                                      Windows `%APPDATA%/Cursor`, else
+ *                                      `~/.config/Cursor` — NOT `~/.cursor`,
+ *                                      which only holds CLI/agent config.
  *
- * Inspected 2026-08-24 (ai-code-tracking.db, 199k hash rows): NEITHER store
- * carries token counts or costs — only request/activity traces. Per repo rule
- * this provider never fabricates UsageEvents; it contributes search-index
- * docs (summaries + transcript text when readable) and honest provenance.
+ * Inspected 2026-09-01: neither store carries a real cost, and bubble rows'
+ * `tokenCount` field is always `{inputTokens:0,outputTokens:0}` — Cursor's
+ * local IDE build never populates it. So this provider never reports an
+ * exact cost; scanDb below estimates tokens from message length instead
+ * (chars/4, same heuristic as other local Cursor-usage trackers) rather than
+ * silently reporting sessions as zero-cost.
  */
 export const CURSOR_NO_USAGE_NOTE =
-  "no token usage exposed (activity hashes + summaries only — no token counts in any inspected store)";
+  "no exact token/cost data exposed locally — usage is estimated from message length";
+
+/** Cursor IDE's VS Code-style data dir (state.vscdb lives under here) — also used by poll.ts's quota fetch. */
+export function cursorIdeDir(): string {
+  if (process.platform === "darwin") return `${process.env.HOME ?? "~"}/Library/Application Support/Cursor`;
+  if (process.platform === "win32") {
+    const appData = process.env.APPDATA;
+    if (appData !== undefined && appData.length > 0) return path.join(appData, "Cursor");
+    return `${process.env.HOME ?? "~"}/AppData/Roaming/Cursor`;
+  }
+  return `${process.env.HOME ?? "~"}/.config/Cursor`;
+}
 
 export function cursorRoots(): string[] {
   const override = providerConfig("cursor")?.paths;
   if (override !== undefined && override.length > 0) return override;
-  return [homePath("CURSOR_DIR", "/.cursor")];
+  const cliDir = homePath("CURSOR_DIR", "/.cursor");
+  const ideDir = cursorIdeDir();
+  return ideDir === cliDir ? [cliDir] : [cliDir, ideDir];
 }
 
 export function cursorFiles(root: string): string[] {
@@ -165,6 +190,97 @@ function collectText(value: unknown, depth = 0): string {
   return "";
 }
 
+/** Extract `<composerId>` from a `bubbleId:<composerId>:<bubbleUuid>` key. */
+function composerIdFromBubbleKey(key: string): string | null {
+  const parts = key.split(":");
+  const id = parts[1];
+  return parts.length >= 3 && id !== undefined && /^[0-9a-f-]{36}$/i.test(id) ? id : null;
+}
+
+interface BubbleRow {
+  rowid: number;
+  key: string;
+  type: number | null;
+  text: string | null;
+  model: string | null;
+  createdAt: string | null;
+}
+
+/**
+ * Estimated per-turn UsageEvents from `cursorDiskKV` bubble rows (see the
+ * module doc for why this is an estimate, not real usage). Only state.vscdb
+ * carries this table — ai-code-tracking.db has no per-message text at all.
+ * Incremental via a rowid watermark in ctx.state, like opencode's scanDb.
+ */
+function scanCursorBubbleUsage(storePath: string, ctx: DbScanContext): UsageEvent[] {
+  if (!storePath.endsWith("state.vscdb")) return [];
+  const db = openReadonly(storePath);
+  if (db === undefined) return [];
+  try {
+    let hasKV = false;
+    try {
+      hasKV =
+        db
+          .query<{ name: string }, []>("SELECT name FROM sqlite_master WHERE type='table' AND name='cursorDiskKV'")
+          .get() !== undefined;
+    } catch {
+      hasKV = false;
+    }
+    if (!hasKV) return [];
+
+    const watermark = typeof ctx.state.bubbleRowid === "number" ? ctx.state.bubbleRowid : 0;
+    const rows = db
+      .prepare(
+        `SELECT rowid, key,
+                json_extract(value, '$.type') as type,
+                json_extract(value, '$.text') as text,
+                json_extract(value, '$.modelInfo.modelName') as model,
+                json_extract(value, '$.createdAt') as createdAt
+         FROM cursorDiskKV
+         WHERE key LIKE 'bubbleId:%' AND rowid > ?
+         ORDER BY rowid ASC LIMIT 50000`,
+      )
+      .all(watermark) as BubbleRow[];
+
+    const events: UsageEvent[] = [];
+    // type 1 = user turn, type 2 = assistant reply (verified against a real
+    // store 2026-09-01). Pair each assistant reply with the char length of
+    // the user turn that immediately preceded it in the same composer.
+    const lastUserChars = (ctx.state.lastUserChars ??= {}) as Record<string, number>;
+    for (const row of rows) {
+      ctx.state.bubbleRowid = row.rowid;
+      const composerId = composerIdFromBubbleKey(row.key);
+      if (composerId === null) continue;
+      const text = row.text ?? "";
+      if (row.type === 1) {
+        lastUserChars[composerId] = text.length;
+        continue;
+      }
+      if (row.type !== 2 || text.length === 0) continue;
+      const inputTokens = estimateTokensFromChars(lastUserChars[composerId] ?? 0);
+      delete lastUserChars[composerId];
+      const outputTokens = estimateTokensFromChars(text.length);
+      const model = row.model ?? "cursor-auto";
+      const costUsd = estimateCost(model, { inputTokens, outputTokens, cacheReadTokens: 0, cacheWriteTokens: 0 });
+      events.push({
+        id: eventId("cursor", "default", composerId, row.key),
+        ts: row.createdAt ?? new Date(0).toISOString(),
+        machineId: ctx.machineId,
+        provider: "cursor",
+        accountKey: "default",
+        model,
+        inputTokens,
+        outputTokens,
+        costUsd,
+        sessionId: composerId,
+      });
+    }
+    return events;
+  } finally {
+    db.close();
+  }
+}
+
 export const cursorProvider: Provider = {
   id: "cursor",
   label: "Cursor",
@@ -174,11 +290,13 @@ export const cursorProvider: Provider = {
   discoverRoots: cursorRoots,
   listFiles: cursorFiles,
 
-  // Binary sqlite — the JSONL scan loop finds no parseable lines. Search
-  // indexing goes through extractSessionDocs instead.
+  // Binary sqlite — the JSONL scan loop finds no parseable lines. scanDb
+  // below replaces it; this is never called.
   parseLine(_line: string, _ctx: EntryContext): [] {
     return [];
   },
+
+  scanDb: scanCursorBubbleUsage,
 
   extractSessionDocs: extractCursorSessionDocs,
 };

@@ -286,4 +286,12 @@ export function estimateCost(model: string, tokens: TokenCounts): number {
   );
 }
 
+/** Chars-per-token used only where a store never records real counts (Cursor, T3 Code). */
+const CHARS_PER_TOKEN = 4;
+
+/** Rough token count from message length, for stores with no real token data. */
+export function estimateTokensFromChars(chars: number): number {
+  return Math.ceil(chars / CHARS_PER_TOKEN);
+}
+
 initFromCache();
