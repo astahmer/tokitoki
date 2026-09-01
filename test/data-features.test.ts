@@ -73,6 +73,16 @@ describe("matchPrice", () => {
   it("returns undefined for unknown models", () => {
     expect(matchPrice(table, "deepseek-v4")).toBeUndefined();
   });
+  it("does not conflate a distinct model-tier name with an unrelated prefix (o3 vs o3-mini)", () => {
+    const narrowTable: PricingTable = {
+      o3: { inputPerMtok: 2, outputPerMtok: 8, cacheReadPerMtok: 0.5, cacheWritePerMtok: 0 },
+      "o4-mini": { inputPerMtok: 1.1, outputPerMtok: 4.4, cacheReadPerMtok: 0.275, cacheWritePerMtok: 0 },
+    };
+    // "o3-mini" is a real, separately-priced model — not "o3" with a
+    // version/date suffix. Falling through to undefined (no pricing data)
+    // is more honest than silently mispricing it as "o3".
+    expect(matchPrice(narrowTable, "o3-mini")).toBeUndefined();
+  });
   it("estimateCost uses the live table when set", () => {
     setTableForTests({ testmodel: { inputPerMtok: 1, outputPerMtok: 10, cacheReadPerMtok: 0.1, cacheWritePerMtok: 0 } });
     const cost = estimateCost("testmodel", { inputTokens: 1e6, outputTokens: 1e6, cacheReadTokens: 0, cacheWriteTokens: 0 });

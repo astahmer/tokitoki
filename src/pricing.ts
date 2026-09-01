@@ -137,6 +137,18 @@ export function buildLiteLlmTable(raw: unknown): PricingTable {
   return out;
 }
 
+/**
+ * A prefix match is only safe when the leftover suffix looks like
+ * version/date metadata (an optional separator then a digit, e.g.
+ * "-20250929" or "-4-5"), not a letter — a letter starts a genuinely
+ * different model-tier name ("o3" + "-mini" is a distinct, separately
+ * priced model, not "o3 plus some suffix"), which a plain
+ * `str.startsWith(key)` can't otherwise distinguish from a dated snapshot.
+ */
+function isSafeVersionSuffix(rest: string): boolean {
+  return rest.length === 0 || /^[-._]?\d/.test(rest);
+}
+
 /** Exact → longest-prefix → substring match on the lowercased model name. */
 export function matchPrice(table: PricingTable, model: string): ModelPrice | undefined {
   const lower = model.toLowerCase();
@@ -147,7 +159,7 @@ export function matchPrice(table: PricingTable, model: string): ModelPrice | und
   }
   let bestKey: string | undefined;
   for (const key of Object.keys(table)) {
-    if (!lower.startsWith(key)) continue;
+    if (!lower.startsWith(key) || !isSafeVersionSuffix(lower.slice(key.length))) continue;
     if (bestKey === undefined || key.length > bestKey.length) bestKey = key;
   }
   if (bestKey !== undefined) return table[bestKey]!;
@@ -155,7 +167,7 @@ export function matchPrice(table: PricingTable, model: string): ModelPrice | und
   let bestCanonicalLength = 0;
   for (const key of Object.keys(table)) {
     for (const normalizedKey of canonicalModelAliases(key)) {
-      if (!canonical.startsWith(normalizedKey)) continue;
+      if (!canonical.startsWith(normalizedKey) || !isSafeVersionSuffix(canonical.slice(normalizedKey.length))) continue;
       if (normalizedKey.length > bestCanonicalLength) {
         bestCanonicalKey = key;
         bestCanonicalLength = normalizedKey.length;
