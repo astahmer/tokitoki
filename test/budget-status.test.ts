@@ -6,18 +6,19 @@ import type { BudgetsConfig } from "../src/budgets.ts";
 
 // Minimal EventCache stand-in: computeBudgetStatus only calls hybridUsage() /
 // hybridAggregate() with cost-shaped rows.
+//
+// Track call order instead of inferring scope from the `since` date:
+// computeBudgetStatus always calls hybridUsage exactly 3x, in the fixed
+// order day (midnight) → week (weekAgo) → month (monthStart). A date-based
+// heuristic can't work here — on day 1 of a calendar month, monthStart and
+// today's midnight are literally the same instant, not just close.
 function fakeCache(spends: { day: number; week: number; month: number }, accounts: Array<{ key: string; usd: number }> = []): EventCache {
   const agg = (_since: string, dim: string) =>
     dim === "account" ? accounts.map((a) => ({ bucket: a.key, costUsd: a.usd })) : [];
+  const order = [spends.day, spends.week, spends.month];
+  let call = 0;
   return {
-    hybridUsage: (sinceIso: string) => {
-      const now = Date.now();
-      const t = new Date(sinceIso).getTime();
-      const spanDays = Math.max(1, (now - t) / 86_400_000);
-      if (spanDays <= 1.5) return { costUsd: spends.day };
-      if (spanDays <= 8) return { costUsd: spends.week };
-      return { costUsd: spends.month };
-    },
+    hybridUsage: (_sinceIso: string) => ({ costUsd: order[call++ % 3] }),
     hybridAggregate: agg,
   } as unknown as EventCache;
 }
