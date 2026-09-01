@@ -28,6 +28,7 @@ interface BlockEvent {
   inputTokens: number;
   outputTokens: number;
   cacheReadTokens: number;
+  cacheWriteTokens: number;
   costUsd: number;
 }
 
@@ -56,7 +57,7 @@ export function partitionBlocks(
       b = { start: e.ts, tokens: 0, cost: 0, requests: 0 };
       open.set(e.accountKey, b);
     }
-    b.tokens += e.inputTokens + e.outputTokens + e.cacheReadTokens;
+    b.tokens += e.inputTokens + e.outputTokens + e.cacheReadTokens + e.cacheWriteTokens;
     b.cost += e.costUsd;
     b.requests += 1;
   }

@@ -28,11 +28,11 @@ const iso = (ms: number) => new Date(ms).toISOString();
 describe("partitionBlocks", () => {
   it("keeps events within 5h in one block, opens a new block after the gap", () => {
     const rows = partitionBlocks([
-      { ts: T0, accountKey: "a", inputTokens: 1, outputTokens: 0, cacheReadTokens: 0, costUsd: 0.5 },
+      { ts: T0, accountKey: "a", inputTokens: 1, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0.5 },
       // +4h59m — still inside
-      { ts: T0 + BLOCK_MS - 60_000, accountKey: "a", inputTokens: 2, outputTokens: 0, cacheReadTokens: 0, costUsd: 0.25 },
+      { ts: T0 + BLOCK_MS - 60_000, accountKey: "a", inputTokens: 2, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0.25 },
       // +6h — outside → new block
-      { ts: T0 + 6 * 3_600_000, accountKey: "a", inputTokens: 4, outputTokens: 0, cacheReadTokens: 0, costUsd: 1 },
+      { ts: T0 + 6 * 3_600_000, accountKey: "a", inputTokens: 4, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 1 },
     ]);
     expect(rows).toHaveLength(2);
     expect(rows[0]!.startIso).toBe(iso(T0));
@@ -44,10 +44,17 @@ describe("partitionBlocks", () => {
     expect(rows[1]!.costUsd).toBeCloseTo(1);
   });
 
+  it("counts cache_write_tokens toward the block token total", () => {
+    const rows = partitionBlocks([
+      { ts: T0, accountKey: "a", inputTokens: 1, outputTokens: 2, cacheReadTokens: 3, cacheWriteTokens: 40, costUsd: 0.1 },
+    ]);
+    expect(rows[0]!.tokens).toBe(46); // 1 + 2 + 3 + 40 — a prompt-caching write is real spend-relevant usage
+  });
+
   it("partitions per account — same window never merges across accounts", () => {
     const rows = partitionBlocks([
-      { ts: T0, accountKey: "a", inputTokens: 1, outputTokens: 0, cacheReadTokens: 0, costUsd: 0 },
-      { ts: T0 + 1000, accountKey: "b", inputTokens: 2, outputTokens: 0, cacheReadTokens: 0, costUsd: 0 },
+      { ts: T0, accountKey: "a", inputTokens: 1, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0 },
+      { ts: T0 + 1000, accountKey: "b", inputTokens: 2, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0 },
     ]);
     expect(rows).toHaveLength(2);
     expect(rows.map((r) => r.accountKey).sort()).toEqual(["a", "b"]);
@@ -55,12 +62,12 @@ describe("partitionBlocks", () => {
 
   it("marks a still-open block active relative to injected now", () => {
     const rows = partitionBlocks(
-      [{ ts: T0, accountKey: "a", inputTokens: 1, outputTokens: 0, cacheReadTokens: 0, costUsd: 0 }],
+      [{ ts: T0, accountKey: "a", inputTokens: 1, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0 }],
       T0 + 60_000, // now = 1 minute into the block
     );
     expect(rows[0]!.isActive).toBe(true);
     const later = partitionBlocks(
-      [{ ts: T0, accountKey: "a", inputTokens: 1, outputTokens: 0, cacheReadTokens: 0, costUsd: 0 }],
+      [{ ts: T0, accountKey: "a", inputTokens: 1, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0 }],
       T0 + BLOCK_MS + 1000,
     );
     expect(later[0]!.isActive).toBe(false);
@@ -97,14 +104,35 @@ describe("EventCache.blockWindows", () => {
       delete process.env.TOKITOKI_DATA_DIR;
     }
   });
+
+  it("includes cache_write_tokens read from the events table in the block total", () => {
+    const { cache } = setupCache([
+      ev({
+        id: "1",
+        ts: iso(T0),
+        accountKey: "alpha",
+        inputTokens: 1,
+        outputTokens: 2,
+        cacheReadTokens: 3,
+        cacheWriteTokens: 40,
+      }),
+    ]);
+    try {
+      const rows = cache.blockWindows(iso(T0 - 1000), undefined, "alpha", { now: T0 + 5000 });
+      expect(rows[0]!.tokens).toBe(46);
+    } finally {
+      cache.close();
+      delete process.env.TOKITOKI_DATA_DIR;
+    }
+  });
 });
 
 describe("renderBlocks / describeBlock", () => {
   it("renders table and an ACTIVE gauge line with countdown", () => {
     const rows = partitionBlocks(
       [
-        { ts: T0, accountKey: "a", inputTokens: 100, outputTokens: 0, cacheReadTokens: 0, costUsd: 0.4 },
-        { ts: T0 + 3_600_000 * 6, accountKey: "a", inputTokens: 10, outputTokens: 0, cacheReadTokens: 0, costUsd: 0.05 },
+        { ts: T0, accountKey: "a", inputTokens: 100, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0.4 },
+        { ts: T0 + 3_600_000 * 6, accountKey: "a", inputTokens: 10, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0.05 },
       ],
       T0 + 3_600_000 * 6,
     );

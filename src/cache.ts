@@ -1000,7 +1000,7 @@ export class EventCache {
     const rows = this.db
       .query(
         `SELECT account_key, ts, input_tokens, output_tokens,
-                cache_read_tokens, cost_usd
+                cache_read_tokens, cache_write_tokens, cost_usd
          FROM events WHERE ${conds.join(" AND ")}`,
       )
       .all(...params) as Array<{
@@ -1009,6 +1009,7 @@ export class EventCache {
         input_tokens: number;
         output_tokens: number;
         cache_read_tokens: number | null;
+        cache_write_tokens: number | null;
         cost_usd: number | null;
       }>;
     return partitionBlocks(
@@ -1018,6 +1019,7 @@ export class EventCache {
         inputTokens: r.input_tokens,
         outputTokens: r.output_tokens,
         cacheReadTokens: r.cache_read_tokens ?? 0,
+        cacheWriteTokens: r.cache_write_tokens ?? 0,
         costUsd: r.cost_usd ?? 0,
       })),
       opts?.now ?? Date.now(),
