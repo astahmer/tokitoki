@@ -612,8 +612,59 @@ describe("pollQuotas", () => {
       expect(acc!.windows).toHaveLength(3);
       expect(acc!.windows.find((w) => w.label === "Cursor Models")?.usedPct).toBeCloseTo(38.5);
       expect(acc!.windows.find((w) => w.label === "Other Models")?.usedPct).toBeCloseTo(0);
-      // On-Demand is expressed as % of the pooled limit (34770/300000).
-      expect(acc!.windows.find((w) => w.label === "On-Demand")?.usedPct).toBeCloseTo(11.59, 1);
+      // On-Demand shows a real dollar amount (matching Cursor's own dashboard,
+      // which never shows a percent for it) — usedPct still drives the bar
+      // fill since a real pooled cap exists here (34770/300000).
+      const onDemand = acc!.windows.find((w) => w.label === "On-Demand");
+      expect(onDemand?.amountUsd).toBeCloseTo(347.7);
+      expect(onDemand?.usedPct).toBeCloseTo(11.59, 1);
+    } finally {
+      cache.close();
+    }
+  });
+
+  it("still reports On-Demand spend as a dollar amount when there's no pooled cap to bound it", async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "tk-cursor-uncapped-ondemand-"));
+    const cache = new EventCache(path.join(dir, "cache.db"));
+    try {
+      const vscdb = path.join(dir, "state.vscdb");
+      const db = new Database(vscdb);
+      db.exec("CREATE TABLE ItemTable (key TEXT PRIMARY KEY, value BLOB)");
+      db.query("INSERT INTO ItemTable VALUES ('cursorAuth/accessToken', 'ide-token-789')").run();
+      db.close();
+
+      const fetcher = (async (input: unknown) => {
+        const url = String(input);
+        if (url.includes("api2.cursor.sh")) {
+          return new Response(
+            JSON.stringify({
+              billingCycleStart: String(Date.now() - 25 * 24 * 3600_000),
+              billingCycleEnd: String(Date.now() + 5 * 24 * 3600_000),
+              planUsage: { autoPercentUsed: 12, apiPercentUsed: 3 },
+              // Real spend exists, but no pooled limit configured — an
+              // open-ended on-demand allowance, common for solo accounts.
+              spendLimitUsage: { pooledUsed: 1250 },
+            }),
+            { status: 200 },
+          );
+        }
+        throw new Error(`unexpected fetch: ${url}`);
+      }) as unknown as typeof fetch;
+
+      const res = await pollQuotas({
+        ...hermeticPaths(),
+        providers: ["cursor"],
+        authPath: path.join(os.tmpdir(), `missing-${Date.now()}.json`),
+        piAuthPath: path.join(os.tmpdir(), `missing-pi-${Date.now()}.json`),
+        cursorAuthPath: path.join(dir, "missing-cli-auth.json"),
+        cursorStateVscdbPath: vscdb,
+        fetcher,
+        cache,
+      });
+      const acc = res.accounts.find((a) => a.harnesses?.includes("cursor"));
+      const onDemand = acc!.windows.find((w) => w.label === "On-Demand");
+      expect(onDemand?.amountUsd).toBeCloseTo(12.5);
+      expect(onDemand?.usedPct).toBe(0);
     } finally {
       cache.close();
     }

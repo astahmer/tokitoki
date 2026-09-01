@@ -175,6 +175,9 @@ struct LimitWindow: Codable {
     let cost: Double
     let requests: Int
     let usedPct: Double?
+    /// Real USD spend for open-ended windows (e.g. Cursor's On-Demand) —
+    /// shown instead of usedPct's "N% left" framing when present.
+    let amountUsd: Double? = nil
     let resetsAt: String?
     let windowStart: String?
     let windowEnd: String?
@@ -1805,8 +1808,14 @@ final class Model: ObservableObject {
             }
             var accountPcts: [Int] = []
             var accountResets: [Date] = []
+            // Open-ended spend (e.g. Cursor's On-Demand) isn't a percent of a
+            // fixed cap — keep it out of the exhaustion/reset math below and
+            // just append its dollar figure to whatever percent lines exist.
+            var amountLines: [String] = []
             for w in l.windows {
-                if let pct = w.usedPct {
+                if let amount = w.amountUsd {
+                    amountLines.append(String(format: "$%.2f", amount))
+                } else if let pct = w.usedPct {
                     let remaining = Int(max(0, min(100, 100 - pct)).rounded())
                     accountPcts.append(remaining)
                     if remaining == 0, let reset = w.resetsAt, let date = parseISO(reset) {
@@ -1815,25 +1824,27 @@ final class Model: ObservableObject {
                 }
                 groups[up]!.estByKind[w.kind, default: 0] += w.tokens
             }
-            if metric != "tokens" && !accountPcts.isEmpty {
+            if metric != "tokens" && (!accountPcts.isEmpty || !amountLines.isEmpty) {
                 let percentLines: [String]
-                if let nextReset = nextUnblockingReset(
+                if accountPcts.isEmpty {
+                    percentLines = amountLines
+                } else if let nextReset = nextUnblockingReset(
                     pcts: accountPcts,
                     resets: accountResets,
                     exhaustedBehavior: exhaustedBehavior
                 ) {
-                    percentLines = [countdown(nextReset)]
+                    percentLines = [countdown(nextReset)] + amountLines
                 } else if exhaustedBehavior == "hide" && accountPcts.allSatisfy({ $0 == 0 }) {
-                    percentLines = []
+                    percentLines = amountLines
                 } else {
-                    percentLines = accountPcts.map { "\($0)%" }
+                    percentLines = accountPcts.map { "\($0)%" } + amountLines
                 }
                 if !percentLines.isEmpty {
                     let smartLine = nextUnblockingReset(
                         pcts: accountPcts,
                         resets: accountResets,
                         exhaustedBehavior: "reset"
-                    ).map(countdown) ?? "\(accountPcts.min()!)%"
+                    ).map(countdown) ?? (accountPcts.isEmpty ? amountLines[0] : "\(accountPcts.min()!)%")
                     groups[up]!.accounts.append(AccountPreview(
                         percentLines: percentLines,
                         smartLine: smartLine
@@ -1950,25 +1961,32 @@ final class Model: ObservableObject {
         )
     }
 
-    func setPreviewMode(_ value: String) {
-        previewMode = value == "hover" ? "hover" : "inline"
+    /// Recompute the compact title from current preview state and repaint the
+    /// status item immediately. Any setter that changes what the strip should
+    /// show (visibility, metric, exhausted behavior, mode) must call this —
+    /// updating `previewGroups`/`previewMode` alone only changes in-memory
+    /// state; it does not, by itself, trigger `setTitleIfChanged` → the
+    /// `syncButtonTitle`/`applyTemplateStrip` pipeline that actually repaints
+    /// the NSStatusItem button. Without it, the strip stays stale until the
+    /// next poll tick or an explicit "Refresh & Scan".
+    private func refreshTitleNow() {
         let preview = previewEnabled ? Self.previewText(
             currentPayloadForTitle?.limits ?? limits,
             cfg: currentPreviewCfg,
             labeled: previewMode == "hover",
         ) : nil
         setTitleIfChanged(composeTitle(today: currentPayloadForTitle?.today, preview: preview, hovering: isHovering, mode: previewMode))
+    }
+
+    func setPreviewMode(_ value: String) {
+        previewMode = value == "hover" ? "hover" : "inline"
+        refreshTitleNow()
         persistUISetting(path: "ui.menubarPreviewMode", json: "\"\(previewMode)\"")
     }
 
     func setPreviewEnabled(_ enabled: Bool) {
         previewEnabled = enabled
-        let preview = previewEnabled ? Self.previewText(
-            currentPayloadForTitle?.limits ?? limits,
-            cfg: currentPreviewCfg,
-            labeled: previewMode == "hover",
-        ) : nil
-        setTitleIfChanged(composeTitle(today: currentPayloadForTitle?.today, preview: preview, hovering: isHovering, mode: previewMode))
+        refreshTitleNow()
         AppDelegate.shared?.refreshPreviewBehavior()
         persistUISetting(path: "ui.menubarPreviewEnabled", json: enabled ? "true" : "false")
         if sideNotchSyncPreview {
@@ -2379,6 +2397,7 @@ final class Model: ObservableObject {
     func setStripMetric(_ value: String) {
         stripMetric = ["tokens", "smart"].contains(value) ? value : "percent"
         rebuildStripPreview()
+        refreshTitleNow()
         persistUISetting(path: "ui.stripMetric", json: "\"\(stripMetric)\"")
         if sideNotchSyncPreview {
             sideNotchMetric = stripMetric
@@ -2389,6 +2408,7 @@ final class Model: ObservableObject {
     func setStripExhausted(_ value: String) {
         stripExhausted = ["show", "hide", "reset"].contains(value) ? value : "reset"
         rebuildStripPreview()
+        refreshTitleNow()
         persistUISetting(path: "ui.stripExhausted", json: "\"\(stripExhausted)\"")
     }
 
@@ -2396,6 +2416,7 @@ final class Model: ObservableObject {
         if visible { previewHidden.remove(provider) } else { previewHidden.insert(provider) }
         invalidateRefreshes()
         rebuildStripPreview()
+        refreshTitleNow()
         let json = "[" + previewHidden.sorted().map { "\"\($0)\"" }.joined(separator: ",") + "]"
         persistUISetting(path: "ui.previewHidden", json: json)
         if sideNotchSyncPreview {
@@ -2445,6 +2466,12 @@ final class Model: ObservableObject {
         var groups: [String] = []
         for l in limits {
             let pcts = l.windows.compactMap { w -> String? in
+                // Open-ended spend (e.g. Cursor's On-Demand): a dollar figure,
+                // never a percent — matches the provider's own dashboard.
+                if let amount = w.amountUsd {
+                    let value = String(format: "$%.2f", amount)
+                    return labeled ? "\(w.kind) \(value)" : value
+                }
                 guard let pct = w.usedPct else { return nil }
                 let remaining = Int(max(0, min(100, 100 - pct)).rounded())
                 guard labeled else { return "\(remaining)%" }
@@ -9787,7 +9814,18 @@ struct AccountLimitCard: View {
                 Text(windowDisplayName(w.kind, provider: limits.provider))
                     .font(.caption2.weight(.medium)).foregroundStyle(.secondary)
                 Spacer()
-                if let pct = w.usedPct {
+                if let amount = w.amountUsd {
+                    // Open-ended spend (e.g. Cursor's On-Demand) — Cursor's own
+                    // dashboard shows this as a dollar figure, never a percent.
+                    HStack(spacing: 4) {
+                        Text(w.source == "embedded" ? "Reported" : "Estimated")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        Text(String(format: "$%.2f", amount))
+                            .font(.caption2.monospacedDigit().weight(.semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                } else if let pct = w.usedPct {
                     let remaining = max(0, min(100, 100 - pct))
                     HStack(spacing: 4) {
                         Text(w.source == "embedded" ? "Reported" : "Estimated")

@@ -31,6 +31,8 @@ export interface LimitWindow {
   requests: number;
   /** 0–100 when a denominator exists (embedded quota or plan cap), else undefined. */
   usedPct?: number;
+  /** Real USD spend for open-ended (not percent-bounded) windows, e.g. Cursor's On-Demand — shown instead of usedPct when present. */
+  amountUsd?: number;
   /** ISO-8601 instant this window resets. */
   resetsAt?: string;
   /** ISO-8601 calendar-window bounds (derived windows only). */
@@ -288,6 +290,7 @@ export function computeLimits(
         cost: usage.cost,
         requests: usage.requests,
         usedPct: Math.max(0, Math.min(100, s.usedPct)),
+        amountUsd: s.amountUsd ?? undefined,
         // Command Code returns resetAt=0 when a rolling window has not
         // started yet; never render that sentinel as January 1970.
         resetsAt: s.resetsAt > 0 ? new Date(s.resetsAt * 1000).toISOString() : undefined,

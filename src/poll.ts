@@ -53,6 +53,8 @@ export interface PolledWindow {
   resetsAtEpoch: number;
   /** Distinguishes same-duration windows on one account (e.g. Cursor's "Cursor Models" vs "Other Models"). */
   label?: string;
+  /** Real USD spend for open-ended windows (e.g. Cursor's On-Demand) — displayed instead of usedPct when present. */
+  amountUsd?: number;
 }
 
 export interface PollAccountResult {
@@ -890,8 +892,19 @@ async function pollCursorQuotas(opts: PollOptions, fetcher: typeof fetch, now: n
   pushPct("Cursor Models", root.planUsage?.autoPercentUsed);
   pushPct("Other Models", root.planUsage?.apiPercentUsed);
   const { pooledUsed, pooledLimit } = root.spendLimitUsage ?? {};
-  if (typeof pooledUsed === "number" && typeof pooledLimit === "number" && pooledLimit > 0) {
-    pushPct("On-Demand", (pooledUsed / pooledLimit) * 100);
+  if (typeof pooledUsed === "number" && Number.isFinite(pooledUsed)) {
+    // Cursor's own dashboard shows this as a dollar amount, not a percent
+    // (confirmed against a real account's settings page) — open-ended
+    // on-demand spend isn't bounded the way the two model buckets are.
+    // usedPct still drives the bar fill when a real pooled cap exists.
+    const hasPooledCap = typeof pooledLimit === "number" && pooledLimit > 0;
+    windows.push({
+      windowMinutes,
+      usedPct: hasPooledCap ? Math.max(0, Math.min(100, (pooledUsed / pooledLimit) * 100)) : 0,
+      resetsAtEpoch,
+      label: "On-Demand",
+      amountUsd: pooledUsed / 100,
+    });
   }
   if (windows.length === 0) return "cursor response shape unrecognized";
 

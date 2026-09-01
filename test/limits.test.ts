@@ -255,7 +255,7 @@ describe("computeLimits", () => {
         windows: [
           { windowMinutes: 44640, usedPct: 38.5, resetsAtEpoch: 1790148296, label: "Cursor Models" },
           { windowMinutes: 44640, usedPct: 0, resetsAtEpoch: 1790148296, label: "Other Models" },
-          { windowMinutes: 44640, usedPct: 11.6, resetsAtEpoch: 1790148296, label: "On-Demand" },
+          { windowMinutes: 44640, usedPct: 11.6, resetsAtEpoch: 1790148296, label: "On-Demand", amountUsd: 34.77 },
         ],
         capturedAtIso: new Date().toISOString(),
         eventId: "poll:test:cursor",
@@ -276,6 +276,7 @@ describe("computeLimits", () => {
 
       const cursor = limits.find((l) => l.provider === "cursor")!;
       expect(cursor.windows.map((w) => w.kind).sort()).toEqual(["Cursor Models", "On-Demand", "Other Models"]);
+      expect(cursor.windows.find((w) => w.kind === "On-Demand")?.amountUsd).toBeCloseTo(34.77);
       // No redundant derived "month" row alongside the three real buckets,
       // and no fabricated "day"/"week" rows — Cursor has neither.
       expect(cursor.windows.some((w) => w.kind === "day" || w.kind === "week" || w.kind === "month")).toBe(false);
