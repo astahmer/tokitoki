@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 
 /**
  * Async loader with stale-while-revalidate semantics:
@@ -18,18 +18,22 @@ export function useAsyncStaleWhileRevalidate<T>(
   deps: unknown[],
 ): AsyncState<T> {
   const [state, setState] = useState<AsyncState<T>>({ state: "loading" });
-  const alive = useRef(true);
   useEffect(() => {
-    alive.current = true;
+    // A per-run local flag, not a ref shared across every effect run: a
+    // shared ref gets reset to true by a NEW run even while an OLDER,
+    // slower run is still in flight, so that older run's `.then` would
+    // still see itself as "alive" and could clobber the newer run's
+    // already-rendered result once it finally resolves.
+    let cancelled = false;
     setState((prev) =>
       prev.state === "ok" ? { ...prev, refreshing: true } : { state: "loading" },
     );
     fn().then(
       (data) => {
-        if (alive.current) setState({ state: "ok", data });
+        if (!cancelled) setState({ state: "ok", data });
       },
       (err) => {
-        if (!alive.current) return;
+        if (cancelled) return;
         setState((prev) => {
           if (prev.state === "ok") return { ...prev, refreshing: false };
           return { state: "error", error: err instanceof Error ? err.message : String(err) };
@@ -37,7 +41,7 @@ export function useAsyncStaleWhileRevalidate<T>(
       },
     );
     return () => {
-      alive.current = false;
+      cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, deps);
