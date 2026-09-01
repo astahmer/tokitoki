@@ -248,7 +248,7 @@ function parseWindows(rateLimit: WhamUsageResponse["rate_limit"]): PolledWindow[
 async function refreshToken(
   refreshToken: string,
   fetcher: typeof fetch,
-): Promise<{ ok: boolean; accessToken?: string }> {
+): Promise<{ ok: boolean; accessToken?: string; refreshToken?: string }> {
   try {
     const res = await fetcher(TOKEN_REFRESH_URL, {
       method: "POST",
@@ -260,12 +260,47 @@ async function refreshToken(
       }),
     });
     if (!res.ok) return { ok: false };
-    const json = (await res.json()) as { access_token?: string };
-    return json.access_token !== undefined && json.access_token.length > 0
-      ? { ok: true, accessToken: json.access_token }
-      : { ok: false };
+    const json = (await res.json()) as { access_token?: string; refresh_token?: string };
+    if (json.access_token === undefined || json.access_token.length === 0) return { ok: false };
+    return {
+      ok: true,
+      accessToken: json.access_token,
+      // If OpenAI's endpoint also rotates refresh tokens (the same
+      // realistic assumption already confirmed for Anthropic's — see
+      // persistClaudeCredentials), capture it so we can save it back.
+      ...(json.refresh_token !== undefined && json.refresh_token.length > 0
+        ? { refreshToken: json.refresh_token }
+        : {}),
+    };
   } catch {
     return { ok: false };
+  }
+}
+
+/**
+ * Write a rotated Codex access/refresh token back to ~/.codex/auth.json,
+ * merging into the existing tokens object (never dropping sibling fields
+ * like id_token/account_id, or the top-level auth_mode/OPENAI_API_KEY keys)
+ * so the codex CLI's own next read still sees a valid, current session.
+ * Best-effort and silent — same rationale as persistClaudeCredentials: a
+ * failed persist here must never fail the poll itself.
+ */
+function persistCodexCredentials(opts: PollOptions, updated: { accessToken: string; refreshToken?: string }): void {
+  if (updated.refreshToken === undefined) return; // nothing rotated — nothing to persist
+  const filePath = authPath(opts);
+  try {
+    const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as Record<string, unknown>;
+    const tokens = (parsed.tokens ?? {}) as Record<string, unknown>;
+    const merged = {
+      ...parsed,
+      tokens: { ...tokens, access_token: updated.accessToken, refresh_token: updated.refreshToken },
+      last_refresh: new Date().toISOString(),
+    };
+    const tmp = `${filePath}.tmp-${process.pid}`;
+    fs.writeFileSync(tmp, JSON.stringify(merged, null, 2));
+    fs.renameSync(tmp, filePath); // same filesystem — atomic, no partial-write window
+  } catch {
+    // best-effort — see doc comment above
   }
 }
 
@@ -1539,6 +1574,7 @@ async function pollCodexCredential(
     if (!renewed.ok) {
       return `unauthorized (${res.status}) and token refresh failed`;
     }
+    persistCodexCredentials(opts, { accessToken: renewed.accessToken!, refreshToken: renewed.refreshToken });
     access = renewed.accessToken!;
     res = await fetchUsage(access, accountId, fetcher);
   }

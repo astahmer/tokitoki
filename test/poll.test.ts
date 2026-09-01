@@ -356,6 +356,45 @@ describe("pollQuotas", () => {
     }
   });
 
+  it("persists a rotated Codex refresh token instead of discarding it", async () => {
+    // If OpenAI's token endpoint also rotates refresh tokens (the same
+    // realistic assumption already confirmed for Anthropic's, and already
+    // fixed for Claude this session), refreshing here without saving the
+    // new one means the NEXT poll re-reads the same now-stale refresh
+    // token from disk and permanently fails, forcing a full re-login even
+    // though a valid rotated session was obtained and thrown away.
+    const authFile = fixtureAuth();
+    const dir = mkdtempSync(path.join(os.tmpdir(), "tk-poll-codex-rotate-"));
+    const cache = new EventCache(path.join(dir, "cache.db"));
+    try {
+      const fetcher = (async (input: unknown, init?: RequestInit) => {
+        const url = String(input);
+        if (url.includes("oauth/token")) {
+          return new Response(
+            JSON.stringify({ access_token: "at-refreshed", refresh_token: "rt-refreshed" }),
+            { status: 200 },
+          );
+        }
+        const auth = String((init?.headers as Record<string, string>)?.authorization ?? "");
+        const stale = auth.includes("at-test");
+        return new Response(stale ? "{}" : JSON.stringify(USAGE_BODY), { status: stale ? 401 : 200 });
+      }) as unknown as typeof fetch;
+
+      await pollQuotas({ authPath: authFile, fetcher, cache, ...hermeticPaths() });
+
+      const saved = JSON.parse(readFileSync(authFile, "utf8")) as {
+        tokens: { access_token: string; refresh_token: string; id_token: string; account_id: string };
+      };
+      expect(saved.tokens.access_token).toBe("at-refreshed");
+      expect(saved.tokens.refresh_token).toBe("rt-refreshed");
+      // Sibling token fields must survive the rewrite untouched.
+      expect(saved.tokens.id_token).toBe(ID_TOKEN);
+      expect(saved.tokens.account_id).toBe("acct-123");
+    } finally {
+      cache.close();
+    }
+  });
+
   it("persists banked Codex reset credits from live wham polling", async () => {
     const dir = mkdtempSync(path.join(os.tmpdir(), "tk-poll-credits-"));
     const cache = new EventCache(path.join(dir, "cache.db"));
