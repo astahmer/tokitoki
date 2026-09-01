@@ -7,6 +7,21 @@ const TIERS: Array<[number, string]> = [
   [1e3, "K"],
 ];
 
+// Palette readable on both light and dark backgrounds.
+export const SERIES_COLORS = ["#3b82f6", "#10b981", "#f59e0b", "#f43f5e", "#06b6d4", "#8b5cf6", "#84cc16"];
+
+/**
+ * Stable color for a timeseries bucket, keyed by its position in the FULL,
+ * unfiltered series list — not the list currently being rendered. The
+ * chart only draws visible series and the legend renders all of them, so
+ * indexing color by position in either one's own (differently-filtered)
+ * list would desync them the moment a series is toggled off.
+ */
+export function seriesColor(bucket: string, allBuckets: readonly string[]): string {
+  const idx = allBuckets.indexOf(bucket);
+  return SERIES_COLORS[(idx < 0 ? 0 : idx) % SERIES_COLORS.length]!;
+}
+
 export function humanCount(n: number): string {
   const abs = Math.abs(n);
   for (const [threshold, suffix] of TIERS) {

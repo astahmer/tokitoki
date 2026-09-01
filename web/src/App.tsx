@@ -15,6 +15,7 @@ import {
   type WindowSelection,
 } from "./lib/api";
 import { useAsyncStaleWhileRevalidate } from "./lib/useAsync";
+import { seriesColor } from "./lib/fmt";
 import type { GridMetric } from "./components/CalendarGrid";
 import { MultiSelect } from "./components/MultiSelect";
 import { ShareButton } from "./components/ShareButton";
@@ -356,7 +357,7 @@ export function App() {
                   <TimeseriesChart data={timeseries.data} metric={tsMetric} visible={visibleSeries} />
                   {/* Clickable legend: toggle series visibility. */}
                   <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1">
-                    {timeseries.data.series.slice(0, 5).map((s, i) => (
+                    {timeseries.data.series.slice(0, 5).map((s) => (
                       <button
                         key={s.bucket}
                         onClick={() => toggleSeries(s.bucket)}
@@ -367,7 +368,11 @@ export function App() {
                         <span
                           aria-hidden="true"
                           className="inline-block size-2 rounded-sm"
-                          style={{ background: visibleSeries.has(s.bucket) ? SERIES_COLORS[i % SERIES_COLORS.length]! : "currentColor" }}
+                          style={{
+                            background: visibleSeries.has(s.bucket)
+                              ? seriesColor(s.bucket, timeseries.data.series.map((x) => x.bucket))
+                              : "currentColor",
+                          }}
                         />
                         {s.bucket}
                       </button>
@@ -448,8 +453,6 @@ function PageLoading() {
     </Panel>
   );
 }
-
-const SERIES_COLORS = ["#3b82f6", "#10b981", "#f59e0b", "#f43f5e", "#06b6d4", "#8b5cf6", "#84cc16"];
 
 function formatWindow(w: { since: string; until: string | null; label: string }): string {
   const fmt: Intl.DateTimeFormatOptions = { dateStyle: "short", timeStyle: "short" };

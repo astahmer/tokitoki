@@ -7,24 +7,22 @@ import { defineChart, type ChartPoint } from "@tanstack/charts";
 import { useMemo } from "react";
 
 import type { TimeseriesPayload } from "../lib/api";
-import { humanCount } from "../lib/fmt";
-
-// Palette readable on both light and dark backgrounds.
-const COLORS = ["#3b82f6", "#10b981", "#f59e0b", "#f43f5e", "#06b6d4", "#8b5cf6", "#84cc16"];
+import { humanCount, seriesColor } from "../lib/fmt";
 
 function buildDefinition(
   payload: TimeseriesPayload,
   metric: "tokens" | "cost",
   show: Set<string>,
 ) {
+  const allBuckets = payload.series.map((s) => s.bucket);
   const marks = payload.series
     .filter((s) => show.has(s.bucket))
-    .map((s, i) => {
+    .map((s) => {
       const rows = payload.days.map((day, j) => ({ day, value: s.values[j] ?? 0 }));
       return lineY(rows, {
         x: "day",
         y: "value",
-        stroke: COLORS[i % COLORS.length]!,
+        stroke: seriesColor(s.bucket, allBuckets),
         key: () => s.bucket,
       });
     });
