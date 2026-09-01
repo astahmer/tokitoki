@@ -177,7 +177,7 @@ struct LimitWindow: Codable {
     let usedPct: Double?
     /// Real USD spend for open-ended windows (e.g. Cursor's On-Demand) —
     /// shown instead of usedPct's "N% left" framing when present.
-    let amountUsd: Double? = nil
+    var amountUsd: Double? = nil
     let resetsAt: String?
     let windowStart: String?
     let windowEnd: String?
@@ -791,6 +791,8 @@ final class Model: ObservableObject {
         let target = "\(account.provider):\(account.accountKey)"
         menubarHidden.insert(target)
         invalidateRefreshes()
+        rebuildStripPreview()
+        refreshTitleNow()
         let cli = invocation
         Task { @MainActor [weak self] in
             guard let self else { return }
@@ -1446,9 +1448,10 @@ final class Model: ObservableObject {
                     from: p.limits ?? [],
                     metric: stripMetric,
                     previewHidden: previewHidden,
-                    exhaustedBehavior: stripExhausted
+                    exhaustedBehavior: stripExhausted,
+                    menubarHidden: menubarHidden
                 )
-                let newTitle = composeTitle(today: p.today, preview: self.previewEnabled ? Self.previewText(p.limits ?? [], cfg: p.uiPreview, labeled: self.previewMode == "hover") : nil, hovering: isHovering, mode: self.previewMode)
+                let newTitle = composeTitle(today: p.today, preview: self.previewEnabled ? Self.previewText(p.limits ?? [], cfg: p.uiPreview, labeled: self.previewMode == "hover", menubarHidden: menubarHidden) : nil, hovering: isHovering, mode: self.previewMode)
                 setTitleIfChanged(newTitle)
                 self.errorText = nil
                 self.errorDetails = nil
@@ -1783,7 +1786,14 @@ final class Model: ObservableObject {
         metric: String,
         previewHidden: Set<String>,
         exhaustedBehavior: String = "show",
+        menubarHidden: Set<String> = [],
     ) -> [(provider: String, lines: [String])] {
+        // Same visibility rule as the popover's own account-card list
+        // (accountCardVisible) — an account switched off in the Customize
+        // sheet's USAGE CARDS list must not still contribute a number here.
+        let limits = limits.filter {
+            !menubarHidden.contains($0.provider) && !menubarHidden.contains("\($0.provider):\($0.accountKey)")
+        }
         var maxima: [String: Double] = [:]
         for l in limits {
             for w in l.windows { maxima[w.kind] = max(maxima[w.kind] ?? 0, w.tokens) }
@@ -1958,6 +1968,7 @@ final class Model: ObservableObject {
             metric: stripMetric,
             previewHidden: previewHidden,
             exhaustedBehavior: stripExhausted,
+            menubarHidden: menubarHidden,
         )
     }
 
@@ -1969,11 +1980,12 @@ final class Model: ObservableObject {
     /// `syncButtonTitle`/`applyTemplateStrip` pipeline that actually repaints
     /// the NSStatusItem button. Without it, the strip stays stale until the
     /// next poll tick or an explicit "Refresh & Scan".
-    private func refreshTitleNow() {
+    func refreshTitleNow() {
         let preview = previewEnabled ? Self.previewText(
             currentPayloadForTitle?.limits ?? limits,
             cfg: currentPreviewCfg,
             labeled: previewMode == "hover",
+            menubarHidden: menubarHidden,
         ) : nil
         setTitleIfChanged(composeTitle(today: currentPayloadForTitle?.today, preview: preview, hovering: isHovering, mode: previewMode))
     }
@@ -2460,9 +2472,18 @@ final class Model: ObservableObject {
     /// Status-item preview: per account, every quota-bearing window's remaining
     /// percentage. Hover mode labels each value so session/weekly/monthly are
     /// not ambiguous; compact inline mode keeps the old short form.
-    static func previewText(_ limits: [AccountLimits], cfg: UiPreviewConfig?, labeled: Bool = false) -> String? {
+    static func previewText(
+        _ limits: [AccountLimits],
+        cfg: UiPreviewConfig?,
+        labeled: Bool = false,
+        menubarHidden: Set<String> = [],
+    ) -> String? {
         let maxLines = cfg?.previewLines ?? 3
         guard maxLines > 0 else { return nil }
+        // Same visibility rule as the popover's own account-card list.
+        let limits = limits.filter {
+            !menubarHidden.contains($0.provider) && !menubarHidden.contains("\($0.provider):\($0.accountKey)")
+        }
         var groups: [String] = []
         for l in limits {
             let pcts = l.windows.compactMap { w -> String? in
@@ -2502,7 +2523,7 @@ final class Model: ObservableObject {
             guard oldValue != isHovering else { return }
             let p = currentPayloadForTitle
             let t = composeTitle(today: p?.today,
-                                 preview: previewEnabled ? Self.previewText(p?.limits ?? [], cfg: currentPreviewCfg, labeled: previewMode == "hover") : nil,
+                                 preview: previewEnabled ? Self.previewText(p?.limits ?? [], cfg: currentPreviewCfg, labeled: previewMode == "hover", menubarHidden: menubarHidden) : nil,
                                  hovering: isHovering,
                                  mode: previewMode)
             setTitleIfChanged(t)
@@ -4501,6 +4522,8 @@ struct CustomizeSheet: View {
         model.invalidateRefreshes()
         model.accountOrderOverride = order
         model.menubarHidden = newHidden
+        model.rebuildStripPreview()
+        model.refreshTitleNow()
         Task {
             do {
                 for args in argsList {
