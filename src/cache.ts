@@ -898,30 +898,47 @@ export class EventCache {
     accounts: Array<{ key: string; day: number; week: number; month: number }>;
   } {
     // Reads daily_rollups (maintained transactionally by insert()) so budget
-    // banners stay O(rollup rows) regardless of archive size. Windows are
-    // day-granular: an ISO boundary maps to its UTC calendar day, inclusive.
-    // Self-heal first: pre-upgrade caches have an empty rollup table.
+    // banners stay O(rollup rows) regardless of archive size. week/month
+    // windows are day-granular: an ISO boundary maps to its UTC calendar
+    // day, inclusive. Self-heal first: pre-upgrade caches have an empty
+    // rollup table.
     this.checkRollups();
-    const cond = (a: string, b: string, c: string): string =>
+    const cond = (a: string, b: string): string =>
       `SUM(CASE WHEN day >= ? THEN cost_usd ELSE 0 END) AS ${a},` +
-      `SUM(CASE WHEN day >= ? THEN cost_usd ELSE 0 END) AS ${b},` +
-      `SUM(CASE WHEN day >= ? THEN cost_usd ELSE 0 END) AS ${c}`;
-    const params = [rollupDay(dayIso), rollupDay(weekIso), rollupDay(monthIso)];
+      `SUM(CASE WHEN day >= ? THEN cost_usd ELSE 0 END) AS ${b}`;
+    const params = [rollupDay(weekIso), rollupDay(monthIso)];
     const totalRow = this.db
       .query(
-        `SELECT ${cond("d", "w", "m")} FROM daily_rollups`,
+        `SELECT ${cond("w", "m")} FROM daily_rollups`,
       )
-      .get(...params) as { d: number; w: number; m: number };
+      .get(...params) as { w: number; m: number };
     const accountRows = this.db
       .query(
-        `SELECT account_key AS key, ${cond("d", "w", "m")}
+        `SELECT account_key AS key, ${cond("w", "m")}
          FROM daily_rollups WHERE account_key != ''
          GROUP BY account_key`,
       )
-      .all(...params) as Array<{ key: string; d: number; w: number; m: number }>;
+      .all(...params) as Array<{ key: string; w: number; m: number }>;
+    // "day" is read straight from events (not daily_rollups) because
+    // rollups only bucket by UTC calendar day: for any timezone whose local
+    // midnight doesn't land on a UTC day boundary, `day >= rollupDay(dayIso)`
+    // would pull in the whole preceding UTC day too — e.g. UTC+2 local
+    // midnight is 22:00 UTC the day before, so the old query counted almost
+    // 22 hours of yesterday's spend as "today". The ts index keeps this a
+    // cheap range scan regardless of archive size.
+    const dayTotal = this.totals(dayIso).costUsd;
+    const dayByAccount = new Map(
+      this.aggregate(dayIso, "account")
+        .filter((r) => r.bucket !== "")
+        .map((r) => [r.bucket, r.costUsd]),
+    );
+    const accountKeys = new Set([...accountRows.map((r) => r.key), ...dayByAccount.keys()]);
     return {
-      totals: { day: totalRow.d ?? 0, week: totalRow.w ?? 0, month: totalRow.m ?? 0 },
-      accounts: accountRows.map((r) => ({ key: r.key, day: r.d, week: r.w, month: r.m })),
+      totals: { day: dayTotal, week: totalRow.w ?? 0, month: totalRow.m ?? 0 },
+      accounts: [...accountKeys].map((key) => {
+        const r = accountRows.find((x) => x.key === key);
+        return { key, day: dayByAccount.get(key) ?? 0, week: r?.w ?? 0, month: r?.m ?? 0 };
+      }),
     };
   }
 

@@ -327,6 +327,28 @@ describe("daily_rollups", () => {
     }
   });
 
+  it("spendSnapshot's day total uses the exact local-midnight instant, not the whole UTC day it starts in", () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "tk-rollup-day-tz-"));
+    const cache = new EventCache(path.join(dir, "cache.db"));
+    try {
+      cache.insert([
+        // Local midnight for a UTC+2 timezone is 2026-08-25T22:00:00Z. This
+        // event lands earlier the same UTC calendar day but before that
+        // instant, so it is still "yesterday" for that timezone.
+        makeEvent({ id: "before-local-midnight", ts: "2026-08-25T10:00:00.000Z", accountKey: "acct-a", costUsd: 5 }),
+        // At/after local midnight — genuinely "today".
+        makeEvent({ id: "after-local-midnight", ts: "2026-08-25T23:00:00.000Z", accountKey: "acct-a", costUsd: 2 }),
+      ]);
+      const dayIso = "2026-08-25T22:00:00.000Z"; // local midnight, UTC+2
+      const snap = cache.spendSnapshot(dayIso, dayIso, dayIso);
+      expect(snap.totals.day).toBeCloseTo(2);
+      const acctA = snap.accounts.find((a) => a.key === "acct-a")!;
+      expect(acctA.day).toBeCloseTo(2);
+    } finally {
+      cache.close();
+    }
+  });
+
   it("rollupAggregate groups by provider and day buckets", () => {
     const dir = mkdtempSync(path.join(os.tmpdir(), "tk-rollup-6-"));
     const cache = new EventCache(path.join(dir, "cache.db"));
