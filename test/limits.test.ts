@@ -376,6 +376,15 @@ describe("ui toggles", () => {
     expect(isVisibleOn(base, "menubar", "anything", "anyone")).toBe(true);
   });
 
+  it("matches accountKey by suffix only, not substring anywhere", () => {
+    // Docstring contract: "codex:plus" matches by suffix on accountKey.
+    // Hiding it must not also hide an unrelated account that merely
+    // contains "plus" somewhere in the middle.
+    const hidden = { ui: { hidden: { menubar: ["codex:plus"] } } } as never;
+    expect(isVisibleOn(hidden, "menubar", "codex", "plus-team-extra")).toBe(true);
+    expect(isVisibleOn(hidden, "menubar", "codex", "openai:plus")).toBe(false); // real suffix match still works
+  });
+
   it("setSurfaceVisibility writes canonical json config", () => {
     const dir = mkdtempSync(path.join(os.tmpdir(), "tk-ui-"));
     process.env.TOKITOKI_CONFIG = path.join(dir, "config.json");

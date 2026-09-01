@@ -23,7 +23,11 @@ export function parseToggleTarget(raw: string): UiToggleTarget {
 function matches(target: UiToggleTarget, provider: string, accountKey: string): boolean {
   if (target.provider !== provider) return false;
   if (target.accountKey === undefined) return true;
-  return accountKey.endsWith(target.accountKey) || accountKey.includes(target.accountKey);
+  // Suffix only, per the documented contract above — a substring match
+  // would also hide an unrelated account that merely contains the target
+  // text somewhere in the middle (e.g. hiding "codex:plus" hiding
+  // "plus-team-extra" too).
+  return accountKey.endsWith(target.accountKey);
 }
 
 /** True when the pair passes the ui filter for a surface. */
