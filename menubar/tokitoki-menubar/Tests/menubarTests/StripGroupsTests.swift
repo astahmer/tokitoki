@@ -384,6 +384,26 @@ import Testing
         #expect(Model.conciseCLIError("error: provider is not configured\n at cli.ts:1") == "provider is not configured")
     }
 
+    @Test func titleCarriesTheBudgetSeverityBadge() {
+        // composeTitle drives both the plain-text title AND applyTemplateStrip's
+        // rendered-image badge (it inspects the composed title for a leading
+        // 🔴/🟠). Without wiring worstState through here, the whole severity
+        // badge feature never fires no matter how over-budget the user is.
+        let model = Model()
+        model.worstState = "exceeded"
+        #expect(model.composeTitle(today: nil, preview: nil, hovering: false, mode: "always") == "🔴 tokitoki")
+        #expect(model.composeTitle(today: nil, preview: "42%", hovering: false, mode: "always") == "🔴 42%")
+
+        model.worstState = "warn"
+        #expect(model.composeTitle(today: nil, preview: "42%", hovering: false, mode: "always") == "🟠 42%")
+
+        model.worstState = "ok"
+        #expect(model.composeTitle(today: nil, preview: "42%", hovering: false, mode: "always") == "42%")
+
+        model.worstState = nil
+        #expect(model.composeTitle(today: nil, preview: "42%", hovering: false, mode: "always") == "42%")
+    }
+
     @Test func hoverPreviewLabelsQuotaWindows() {
         let limits = [
             account(provider: "codex", accountKey: "openai:plus", windows: [

@@ -2513,8 +2513,8 @@ final class Model: ObservableObject {
     }
 
     func composeTitle(today: ReportPayload?, preview: String?, hovering: Bool, mode: String) -> String {
-        guard let preview, mode != "hover" || hovering else { return "tokitoki" }
-        return preview
+        guard let preview, mode != "hover" || hovering else { return Self.badged("tokitoki", worst: worstState) }
+        return Self.badged(preview, worst: worstState)
     }
 
     /// Hover expansion seam (hover-only preview mode + tests).
