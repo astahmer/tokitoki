@@ -968,6 +968,73 @@ describe("pollQuotas", () => {
     }
   });
 
+  it("does not merge a pool entry into an existing account with a different known id", async () => {
+    // Two real accounts can legitimately reset at the same second (e.g. a
+    // shared/calendar-aligned reset schedule) — a reset-time collision
+    // alone is not proof of identity, exactly like the comment right above
+    // this matching loop already says for the seenPoolIds dedup above it.
+    const dir = mkdtempSync(path.join(os.tmpdir(), "tk-poll-pool-wrong-merge-"));
+    const cache = new EventCache(path.join(dir, "cache.db"));
+    try {
+      const sharedResetAt = 1_800_000_000;
+      // detectedAccounts() (the merge loop's candidate source) reads from
+      // real usage events, not quota_snapshots alone — give the existing
+      // card at least one so it's actually considered as a merge candidate.
+      cache.insert([
+        {
+          id: "seed-event-1",
+          ts: new Date().toISOString(),
+          machineId: "mac",
+          provider: "codex",
+          accountKey: "codex:existing-work",
+          model: "gpt-5",
+          inputTokens: 100,
+          outputTokens: 50,
+          costUsd: 0.01,
+        },
+      ]);
+      // Pre-existing card with a KNOWN, real account id from an earlier poll.
+      cache.insertPolledSnapshots({
+        provider: "codex",
+        accountKey: "codex:existing-work",
+        accountId: "existing-real-id",
+        windows: [{ windowMinutes: 10_080, usedPct: 30, resetsAtEpoch: sharedResetAt }],
+        capturedAtIso: new Date().toISOString(),
+        eventId: "poll:seed:codex",
+      });
+
+      const ocCache = path.join(dir, "codex-quota-cache.json");
+      const ocAccounts = path.join(dir, "codex-accounts.json");
+      writeFileSync(
+        ocCache,
+        JSON.stringify({
+          quotas: { "chatgpt-newperson": { weeklyPercent: 55, weeklyResetAt: sharedResetAt } },
+        }),
+      );
+      writeFileSync(
+        ocAccounts,
+        JSON.stringify({
+          "chatgpt-newperson": { credential: { chatgptAccountId: "totally-different-real-id" } },
+        }),
+      );
+      const fetcher = (async () => new Response("{}", { status: 200 })) as unknown as typeof fetch;
+      const res = await pollQuotas({
+        ...hermeticPaths(),
+        authPath: path.join(os.tmpdir(), `missing-${Date.now()}.json`),
+        piAuthPath: path.join(os.tmpdir(), `missing-pi-${Date.now()}.json`),
+        opencodexCachePath: ocCache,
+        opencodexAccountsPath: ocAccounts,
+        fetcher,
+        cache,
+      });
+      const workAccount = res.accounts.find((a) => a.accountId === "totally-different-real-id");
+      expect(workAccount).toBeDefined();
+      expect(workAccount!.accountKey).toBe("codex:chatgpt-newperson");
+    } finally {
+      cache.close();
+    }
+  });
+
   it("polls pooled Codex OAuth accounts directly so 5-hour and weekly stay distinct", async () => {
     const dir = mkdtempSync(path.join(os.tmpdir(), "tk-poll-pool-live-"));
     const cache = new EventCache(path.join(dir, "cache.db"));

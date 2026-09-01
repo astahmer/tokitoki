@@ -1428,13 +1428,23 @@ async function pollQuotasLocked(opts: PollOptions = {}): Promise<PollResult> {
         : 300;
       for (const existing of cache.detectedAccounts().filter((a) => a.provider === "codex")) {
         const snapshots = cache.latestQuotaSnapshots("codex", existing.accountKey);
-        if (snapshots.some((w) =>
+        const resetMatches = snapshots.some((w) =>
           (w.windowMinutes === 10_080 && w.resetsAt === weeklyResetAt) ||
           (w.windowMinutes === shortMinutes && w.resetsAt === q.shortResetAt)
-        )) {
-          accountKey = existing.accountKey;
-          break;
+        );
+        if (!resetMatches) continue;
+        // Same "reset epochs are quota data, not identity" principle as
+        // above: a reset-time collision alone isn't proof of identity. If
+        // this existing card already has a KNOWN stable account id and it's
+        // not this pool entry's id, it's a different account that merely
+        // resets at the same second — don't merge. Legacy entries with no
+        // known id yet keep the old reset-based match (nothing better to go on).
+        if (poolAccountId !== undefined) {
+          const knownIds = cache.quotaAccountIds("codex", existing.accountKey);
+          if (knownIds.size > 0 && !knownIds.has(poolAccountId)) continue;
         }
+        accountKey = existing.accountKey;
+        break;
       }
     }
     const windows: PolledWindow[] = [{
