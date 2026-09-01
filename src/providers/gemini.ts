@@ -59,14 +59,24 @@ export const geminiCliProvider: Provider = {
   },
 
   /**
-   * Session files are whole-file JSON (often pretty-printed), not JSONL.
-   * The scan loop feeds lines; we parse once on the first complete line by
-   * re-reading the file, then mark state.done so remaining lines are skipped.
+   * Session files are whole-file JSON (often pretty-printed), not JSONL, and
+   * gemini-cli rewrites the file in place as a session continues — it never
+   * gets replaced or truncated. The scan loop feeds one call per line; we
+   * only need to actually re-read the file once per distinct file size (not
+   * once per line, and not just once ever — state.lastReadSize is part of
+   * the cursor persisted to disk, so a boolean "done" flag would survive
+   * reload across scans and permanently stop picking up new turns).
    */
   parseLine(line: string, ctx: EntryContext): UsageEvent[] {
     const state = ctx.state as Record<string, unknown>;
-    if (state.done === true) return [];
-    state.done = true;
+    let currentSize: number;
+    try {
+      currentSize = fs.statSync(ctx.path).size;
+    } catch {
+      return [];
+    }
+    if (state.lastReadSize === currentSize) return [];
+    state.lastReadSize = currentSize;
     try {
       JSON.parse(line); // single-line JSON files parse directly
     } catch {

@@ -278,4 +278,29 @@ describe("gemini-cli provider", () => {
     const found = geminiCliProvider.listFiles(roots);
     expect(found.some((f) => f.endsWith("session-1724000000000.json"))).toBe(true);
   });
+
+  test("re-reads a still-growing session on a later scan, instead of staying done forever", () => {
+    // gemini-cli rewrites this file in place as the session continues, so
+    // the SAME persisted state object gets reloaded across separate scan
+    // invocations — exactly like scan.ts does via the on-disk cursor file.
+    const file = path.join(hashDir, "session-growing.json");
+    fs.writeFileSync(
+      file,
+      JSON.stringify([{ type: "gemini", text: "first turn", tokens: { input: 100, output: 50 } }]),
+    );
+    const state: Record<string, unknown> = {};
+    const pass1 = geminiCliProvider.parseLine("[", { path: file, state, freshFile: true, machineId: "test-mac" });
+    expect(pass1).toHaveLength(1);
+
+    // Session grows with a second turn — same file, same persisted state.
+    fs.writeFileSync(
+      file,
+      JSON.stringify([
+        { type: "gemini", text: "first turn", tokens: { input: 100, output: 50 } },
+        { type: "gemini", text: "second turn", tokens: { input: 200, output: 80 } },
+      ]),
+    );
+    const pass2 = geminiCliProvider.parseLine("[", { path: file, state, freshFile: false, machineId: "test-mac" });
+    expect(pass2.length).toBeGreaterThan(0);
+  });
 });
