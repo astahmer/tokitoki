@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -453,6 +453,61 @@ describe("pollQuotas", () => {
     const acc = res.accounts.find((a) => a.harnesses?.includes("claude-code"));
     expect(acc).toBeDefined();
     expect(acc!.windows.length).toBeGreaterThan(0);
+  });
+
+  it("persists a rotated refresh token so Claude Code's own session doesn't get invalidated", async () => {
+    // Anthropic's refresh tokens are single-use and rotate on every refresh —
+    // a tool that refreshes without saving the new one silently breaks
+    // Claude Code's (or another device's) next refresh attempt.
+    const dir = mkdtempSync(path.join(os.tmpdir(), "tk-poll-claude-rotate-"));
+    const credPath = path.join(dir, "claude.json");
+    writeFileSync(
+      credPath,
+      JSON.stringify({
+        claudeAiOauth: { accessToken: "stale", refreshToken: "rt-old", scopes: ["user:inference"], subscriptionType: "max" },
+        mcpOAuth: { untouched: true },
+      }),
+    );
+    let usageCalls = 0;
+    const fetcher = (async (input: unknown) => {
+      const url = String(input);
+      if (url.includes("/v1/oauth/token")) {
+        return new Response(
+          JSON.stringify({ access_token: "fresh", refresh_token: "rt-new", expires_in: 3600 }),
+          { status: 200 },
+        );
+      }
+      if (url.includes("/api/oauth/usage")) {
+        usageCalls += 1;
+        if (usageCalls === 1) return new Response("unauthorized", { status: 401 });
+        return new Response(
+          JSON.stringify({ five_hour: { utilization: 10, resets_at: "2026-09-01T00:00:00Z" } }),
+          { status: 200 },
+        );
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    }) as unknown as typeof fetch;
+
+    await pollQuotas({
+      ...hermeticPaths(),
+      authPath: path.join(os.tmpdir(), `missing-${Date.now()}.json`),
+      piAuthPath: path.join(os.tmpdir(), `missing-pi-${Date.now()}.json`),
+      claudeCredentialsPath: credPath,
+      fetcher,
+    });
+
+    const saved = JSON.parse(readFileSync(credPath, "utf8")) as {
+      claudeAiOauth: { accessToken: string; refreshToken: string; scopes: string[]; subscriptionType: string; expiresAt: number };
+      mcpOAuth: { untouched: boolean };
+    };
+    expect(saved.claudeAiOauth.accessToken).toBe("fresh");
+    expect(saved.claudeAiOauth.refreshToken).toBe("rt-new");
+    // Sibling fields (this account's own, and the unrelated mcpOAuth key)
+    // must survive the rewrite untouched.
+    expect(saved.claudeAiOauth.scopes).toEqual(["user:inference"]);
+    expect(saved.claudeAiOauth.subscriptionType).toBe("max");
+    expect(saved.mcpOAuth).toEqual({ untouched: true });
+    expect(saved.claudeAiOauth.expiresAt).toBeGreaterThan(Date.now());
   });
 
   it("marks Claude as requiring login when its refresh token is rejected", async () => {

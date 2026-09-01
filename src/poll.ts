@@ -435,10 +435,65 @@ export function loadClaudeCredentials(opts: PollOptions): { accessToken?: string
   }
 }
 
+/**
+ * Write a rotated access/refresh token back to wherever it was read from —
+ * merging into the existing claudeAiOauth object (never dropping sibling
+ * fields like scopes/subscriptionType, or the unrelated top-level mcpOAuth
+ * key) so Claude Code's own next read still sees a valid, current session.
+ * Best-effort and silent: a failed persist here must never fail the poll
+ * itself, since the freshly-fetched quota data is already in hand either way.
+ */
+function persistClaudeCredentials(
+  opts: PollOptions,
+  updated: { accessToken: string; refreshToken?: string; expiresAt?: number },
+): void {
+  if (updated.refreshToken === undefined) return; // nothing rotated — nothing to persist
+  const mergeOauth = (parsed: Record<string, unknown>): Record<string, unknown> => {
+    const oauth = (parsed.claudeAiOauth ?? {}) as Record<string, unknown>;
+    return {
+      ...parsed,
+      claudeAiOauth: {
+        ...oauth,
+        accessToken: updated.accessToken,
+        refreshToken: updated.refreshToken,
+        ...(updated.expiresAt !== undefined ? { expiresAt: updated.expiresAt } : {}),
+      },
+    };
+  };
+
+  const explicit = opts.claudeCredentialsPath !== undefined;
+  const path = opts.claudeCredentialsPath ?? `${process.env.HOME ?? "~"}/.claude/.credentials.json`;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(path, "utf8")) as Record<string, unknown>;
+    const tmp = `${path}.tmp-${process.pid}`;
+    fs.writeFileSync(tmp, JSON.stringify(mergeOauth(parsed), null, 2));
+    fs.renameSync(tmp, path); // same filesystem — atomic, no partial-write window
+    return;
+  } catch {
+    // File absent or unreadable — fall through to the Keychain, unless a
+    // fixture path was given (tests must never touch the real Keychain).
+  }
+  if (explicit || process.platform !== "darwin") return;
+  try {
+    const raw = execFileSync("security", ["find-generic-password", "-s", "Claude Code-credentials", "-w"], {
+      stdio: ["ignore", "pipe", "ignore"],
+    }).toString();
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const account = execFileSync("whoami", []).toString().trim();
+    execFileSync(
+      "security",
+      ["add-generic-password", "-U", "-s", "Claude Code-credentials", "-a", account, "-w", JSON.stringify(mergeOauth(parsed))],
+      { stdio: ["ignore", "ignore", "ignore"] },
+    );
+  } catch {
+    // best-effort — see doc comment above
+  }
+}
+
 async function refreshClaudeToken(
   refreshToken: string,
   fetcher: typeof fetch,
-): Promise<{ ok: boolean; accessToken?: string; error?: string }> {
+): Promise<{ ok: boolean; accessToken?: string; refreshToken?: string; expiresAt?: number; error?: string }> {
   try {
     const res = await fetcher(CLAUDE_REFRESH_URL, {
       method: "POST",
@@ -448,14 +503,31 @@ async function refreshClaudeToken(
       headers: { "content-type": "application/json", accept: "application/json" },
       body: JSON.stringify({ grant_type: "refresh_token", refresh_token: refreshToken, client_id: CLAUDE_CLIENT_ID }),
     });
-    const json = (await res.json()) as { access_token?: string; error?: string; error_description?: string };
+    const json = (await res.json()) as {
+      access_token?: string;
+      refresh_token?: string;
+      expires_in?: number;
+      error?: string;
+      error_description?: string;
+    };
     if (!res.ok) {
       const detail = json.error_description ?? json.error;
       return { ok: false, ...(detail !== undefined ? { error: detail } : {}) };
     }
-    return json.access_token !== undefined && json.access_token.length > 0
-      ? { ok: true, accessToken: json.access_token }
-      : { ok: false };
+    if (json.access_token === undefined || json.access_token.length === 0) return { ok: false };
+    return {
+      ok: true,
+      accessToken: json.access_token,
+      // Anthropic's refresh tokens are single-use and rotate on every
+      // refresh (confirmed: github.com/anthropics/claude-code#54443,
+      // steipete/CodexBar#1161 — a tool that refreshes without persisting
+      // the rotation silently invalidates Claude Code's own stored session,
+      // forcing re-login there or on any other device sharing the account).
+      ...(json.refresh_token !== undefined && json.refresh_token.length > 0
+        ? { refreshToken: json.refresh_token }
+        : {}),
+      ...(typeof json.expires_in === "number" ? { expiresAt: Date.now() + json.expires_in * 1000 } : {}),
+    };
   } catch {
     return { ok: false };
   }
@@ -509,6 +581,7 @@ async function pollClaudeQuotas(opts: PollOptions, fetcher: typeof fetch): Promi
     if (!renewed.ok || renewed.accessToken === undefined) {
       return `unauthorized (${res.status}) and token refresh failed${renewed.error !== undefined ? `: ${renewed.error}` : ""}`;
     }
+    persistClaudeCredentials(opts, { accessToken: renewed.accessToken, refreshToken: renewed.refreshToken, expiresAt: renewed.expiresAt });
     res = await fetchOnce(renewed.accessToken);
   }
   if (res.status < 200 || res.status >= 300 || res.body === null) {
