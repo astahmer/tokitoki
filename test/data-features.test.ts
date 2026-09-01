@@ -183,6 +183,25 @@ describe("alert dedupe", () => {
     const k4 = alertStateKey({ ...base, scope: "daily", pattern: "(global)" }, new Date("2026-08-24"));
     expect(new Set([k1, k2, k3, k4]).size).toBe(4);
   });
+  it("weekly key stays stable across the day regardless of DST transitions since Jan 1", () => {
+    // A raw ms/86_400_000 division between Jan 1 and `now` assumes every
+    // elapsed day is exactly 24h — after a spring-forward, every date for
+    // the rest of the year is "short" by ~1 hour of elapsed-day-count,
+    // which can push the week-id rollover past local midnight. Calling
+    // this at two different times of the SAME calendar day must produce
+    // the same week id either way.
+    const prevTz = process.env.TZ;
+    process.env.TZ = "America/New_York";
+    try {
+      const base = { spend: 90, cap: 100, pct: 0.9, level: 80 as const, pattern: "(global)", scope: "weekly" as const };
+      const keyEarly = alertStateKey(base, new Date(2024, 2, 16, 0, 0, 1)); // Sat Mar 16, 00:00:01
+      const keyLate = alertStateKey(base, new Date(2024, 2, 16, 23, 59, 0)); // same day, 23:59
+      expect(keyEarly).toBe(keyLate);
+    } finally {
+      if (prevTz === undefined) delete process.env.TZ;
+      else process.env.TZ = prevTz;
+    }
+  });
 });
 
 // ---------------------------------------------------------------- import

@@ -57,9 +57,20 @@ export function alertStateKey(alert: BudgetAlert, now: Date): string {
   const y = now.getFullYear();
   if (alert.scope === "daily") return `daily:${y}-${now.getMonth() + 1}-${now.getDate()}:${alert.pattern}`;
   if (alert.scope === "weekly") {
-    // ISO-ish week id: year + week number
+    // ISO-ish week id: year + week number. Count LOCAL calendar days via
+    // Date.UTC of each date's own y/m/d (not a raw ms difference, which
+    // assumes every elapsed day is exactly 24h) — a plain ms/86_400_000
+    // division drifts by an hour across any DST transition between Jan 1
+    // and `now`, which can compute a different week id for the same
+    // calendar day depending what time of day this runs, letting a budget
+    // alert re-arm or stay wrongly suppressed at the wrong moment.
     const first = new Date(y, 0, 1);
-    const week = Math.ceil(((now.getTime() - first.getTime()) / 86_400_000 + first.getDay() + 1) / 7);
+    const daysSinceFirst = Math.round(
+      (Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()) -
+        Date.UTC(first.getFullYear(), first.getMonth(), first.getDate())) /
+        86_400_000,
+    );
+    const week = Math.ceil((daysSinceFirst + first.getDay() + 1) / 7);
     return `weekly:${y}-w${week}:${alert.pattern}`;
   }
   return `monthly:${y}-${now.getMonth() + 1}:${alert.pattern}`;
