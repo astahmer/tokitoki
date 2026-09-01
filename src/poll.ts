@@ -2,7 +2,10 @@ import fs from "node:fs";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
 
+import { Database } from "bun:sqlite";
+
 import type { EventCache } from "./cache.ts";
+import { cursorIdeDir } from "./providers/cursor.ts";
 import { dataDir } from "./store.ts";
 
 /**
@@ -120,6 +123,8 @@ export interface PollOptions {
   copilotAuthPath?: string;
   /** Absolute path to a cursor cli-auth.json fixture (tests). Default ~/.cursor/cli-auth.json. */
   cursorAuthPath?: string;
+  /** Absolute path to a cursor state.vscdb fixture (tests). Default platform IDE data dir. */
+  cursorStateVscdbPath?: string;
   /** Absolute path to an opencodex codex-quota-cache.json fixture (tests). Default ~/.opencodex/codex-quota-cache.json. */
   opencodexCachePath?: string;
   /** Absolute path to opencodex's pooled account credentials (tests). */
@@ -770,16 +775,52 @@ async function pollCopilotQuotas(opts: PollOptions, fetcher: typeof fetch, now: 
   return { accountKey: "default", harnesses: ["copilot"], windows, inserted };
 }
 
-/** Best-effort cursor access token from ~/.cursor/cli-auth.json (sqlite/keychain unsupported). */
-function cursorAccessToken(opts: PollOptions): string | null {
-  const path = opts.cursorAuthPath ?? `${process.env.HOME ?? "~"}/.cursor/cli-auth.json`;
+/** cursor-agent CLI's login file — present when the user ran `cursor-agent login`. */
+function cursorCliAuthToken(opts: PollOptions): string | null {
+  const authPath = opts.cursorAuthPath ?? `${process.env.HOME ?? "~"}/.cursor/cli-auth.json`;
   try {
-    const parsed = JSON.parse(fs.readFileSync(path, "utf8")) as { accessToken?: string; api_key?: string };
+    const parsed = JSON.parse(fs.readFileSync(authPath, "utf8")) as { accessToken?: string; api_key?: string };
     const t = parsed.accessToken ?? parsed.api_key;
     return typeof t === "string" && t.length > 0 ? t : null;
   } catch {
     return null;
   }
+}
+
+/**
+ * Cursor IDE's own login token, read from state.vscdb's `cursorAuth/accessToken`
+ * ItemTable row — same store the cursor provider reads for session data. Falls
+ * back here when there's no cursor-agent CLI login (common for IDE-only /
+ * T3-Code-driven usage, since T3 Code just launches the CLI using this same
+ * account under the hood).
+ */
+function cursorIdeAuthToken(opts: PollOptions): string | null {
+  const dbPath = opts.cursorStateVscdbPath ?? path.join(cursorIdeDir(), "User", "globalStorage", "state.vscdb");
+  if (!fs.existsSync(dbPath)) return null;
+  let db: Database;
+  try {
+    db = new Database(dbPath, { readonly: true });
+  } catch {
+    try {
+      db = new Database(`file:${encodeURI(dbPath)}?immutable=1`, { readonly: true });
+    } catch {
+      return null;
+    }
+  }
+  try {
+    const row = db.query<{ value: string }, []>("SELECT value FROM ItemTable WHERE key = 'cursorAuth/accessToken'").get();
+    const t = row?.value;
+    return typeof t === "string" && t.length > 0 ? t : null;
+  } catch {
+    return null;
+  } finally {
+    db.close();
+  }
+}
+
+/** Best-effort cursor access token: cursor-agent CLI login, else the IDE's own login. */
+function cursorAccessToken(opts: PollOptions): string | null {
+  return cursorCliAuthToken(opts) ?? cursorIdeAuthToken(opts);
 }
 
 interface CursorUsageResult {
@@ -790,7 +831,7 @@ interface CursorUsageResult {
 /** Cursor dashboard Connect POST → billing-period percent when recognizable. */
 async function pollCursorQuotas(opts: PollOptions, fetcher: typeof fetch, now: number): Promise<PollAccountResult | string> {
   const token = cursorAccessToken(opts);
-  if (token === null) return "cursor auth not found (cli-auth.json missing; sqlite/keychain unsupported)";
+  if (token === null) return "cursor auth not found (no cursor-agent CLI login and no Cursor IDE login)";
 
   let body: unknown;
   try {

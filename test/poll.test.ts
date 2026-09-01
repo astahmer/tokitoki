@@ -3,6 +3,8 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+import { Database } from "bun:sqlite";
+
 import { EventCache } from "../src/cache.ts";
 import {
   opencodeCredentials,
@@ -69,6 +71,7 @@ function hermeticPaths(): Record<string, string> {
     claudeCredentialsPath: miss("claude.json"),
     copilotAuthPath: miss("copilot-apps.json"),
     cursorAuthPath: miss("cursor-auth.json"),
+    cursorStateVscdbPath: miss("cursor-state.vscdb"),
     opencodexCachePath: miss("opencodex-cache.json"),
     opencodexAccountsPath: miss("opencodex-accounts.json"),
     commandcodeAuthPath: miss("commandcode-auth.json"),
@@ -558,6 +561,44 @@ describe("pollQuotas", () => {
       expect(acc!.windows).toHaveLength(1);
       expect(acc!.windows[0]!.usedPct).toBeCloseTo(50);
       expect(acc!.inserted).toBe(1);
+    } finally {
+      cache.close();
+    }
+  });
+
+  it("falls back to the Cursor IDE's own login (state.vscdb) when there's no cursor-agent CLI login", async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "tk-cursor-ide-auth-"));
+    const cache = new EventCache(path.join(dir, "cache.db"));
+    try {
+      const vscdb = path.join(dir, "state.vscdb");
+      const db = new Database(vscdb);
+      db.exec("CREATE TABLE ItemTable (key TEXT PRIMARY KEY, value BLOB)");
+      db.query("INSERT INTO ItemTable VALUES ('cursorAuth/accessToken', 'ide-token-123')").run();
+      db.close();
+
+      const reset = new Date(Date.now() + 5 * 24 * 3600_000).toISOString();
+      const fetcher = (async (input: unknown, init?: RequestInit) => {
+        const url = String(input);
+        if (url.includes("api2.cursor.sh")) {
+          expect((init?.headers as Record<string, string>).authorization).toBe("Bearer ide-token-123");
+          return new Response(JSON.stringify({ usagePercent: 42, nextResetTimestampUtc: reset }), { status: 200 });
+        }
+        throw new Error(`unexpected fetch: ${url}`);
+      }) as unknown as typeof fetch;
+
+      const res = await pollQuotas({
+        ...hermeticPaths(),
+        providers: ["cursor"],
+        authPath: path.join(os.tmpdir(), `missing-${Date.now()}.json`),
+        piAuthPath: path.join(os.tmpdir(), `missing-pi-${Date.now()}.json`),
+        cursorAuthPath: path.join(dir, "missing-cli-auth.json"),
+        cursorStateVscdbPath: vscdb,
+        fetcher,
+        cache,
+      });
+      const acc = res.accounts.find((a) => a.harnesses?.includes("cursor"));
+      expect(acc).toBeDefined();
+      expect(acc!.windows[0]!.usedPct).toBeCloseTo(42);
     } finally {
       cache.close();
     }
