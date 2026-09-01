@@ -39,8 +39,11 @@ export function ToolsView({ win, providers }: {
     return Array.from(byProvider.values());
   }, [table]);
 
-  if (table.state === "loading" || table.state === "error") {
+  if (table.state === "loading") {
     return <SkeletonBlock className="h-72 w-full" />;
+  }
+  if (table.state === "error") {
+    return <p className="text-xs text-kumo-danger">{table.error}</p>;
   }
   if (items.length === 0) {
     return (
