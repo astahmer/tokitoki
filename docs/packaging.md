@@ -94,110 +94,36 @@ swift build -c release
 
 No Xcode project needed; Command Line Tools suffice.
 
-## Nix packaging (nixfiles-style repos)
+## Nix package and Home Manager
 
-`packages/tokitoki/default.nix` — two viable approaches.
+The root `flake.nix` exposes a source-built package for Linux and macOS:
 
-### Option A: build from source in nix (hermetic-ish)
-
-```nix
-{
-  lib,
-  bun,
-  stdenv,
-  fetchFromGitHub,
-}:
-stdenv.mkDerivation (finalAttrs: {
-  pname = "tokitoki";
-  version = "0.2.0";
-
-  src = fetchFromGitHub {
-    owner = "astahmer";
-    repo = "tokitoki";
-    rev = "v${finalAttrs.version}";
-    hash = ""; # lib.fakeHash on first build, then paste real hash
-  };
-
-  nativeBuildInputs = [ bun ];
-
-  # Bun needs network at build time for install; vendor deps first:
-  #   bun install --production --copy-lockfile  → commit bun.lock
-  offlineCache = bun.fetchDeps { inherit (finalAttrs) src; };
-
-  buildPhase = ''
-    export HOME=$TMPDIR
-    bun install --frozen-lockfile
-    bun build --compile src/cli.ts --outfile dist/tokitoki
-  '';
-
-  installPhase = ''
-    install -Dm755 dist/tokitoki $out/bin/tokitoki
-  '';
-
-  meta = {
-    description = "Unified coding-agent usage analytics across machines and harnesses";
-    platforms = [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" ];
-  };
-})
+```sh
+nix build .#tokitoki
+nix run .#tokitoki -- --version
 ```
 
-Notes:
-- `bun.fetchDeps` requires a recent nixpkgs bun; on older setups use
-  `fetchurl` of the lockfile + `BUN_INSTALL_CACHE_DIR` prewarm instead
-- Keep `finalAttrs` so `nix-update` can find the package
+The package vendors the Bun dependency tree in a fixed-output derivation,
+builds both `dist/cli.js` and `dist/web`, and wraps the result with the Nix
+Bun runtime. Runtime installations do not need `node_modules` or a network.
 
-### Option B: package the prebuilt binary (fastest, mac-first)
+For a custom flake, add the repository as an input and use either the package
+directly:
 
 ```nix
-{ lib, stdenvNoCC, fetchurl }:
-stdenvNoCC.mkDerivation (finalAttrs: {
-  pname = "tokitoki";
-  version = "0.2.0";
+inputs.tokitoki.url = "github:astahmer/tokitoki";
 
-  src = fetchurl {
-    url = "https://github.com/astahmer/tokitoki/releases/download/v${finalAttrs.version}/tokitoki-darwin-arm64";
-    hash = ""; # fakeHash first, real hash after
-  };
-
-  dontUnpack = true;
-  installPhase = ''
-    install -Dm755 $src $out/bin/tokitoki
-  '';
-
-  meta.platforms = [ "aarch64-darwin" ];
-})
+home.packages = [ inputs.tokitoki.packages.${system}.default ];
 ```
 
-### Wiring into nixfiles
+Or import the included Home Manager module:
 
-1. Drop the file in `packages/tokitoki/default.nix`
-2. Expose it where packages are collected (`perSystem.packages` via
-   `pkgs.callPackage`, matching how other custom packages are wired)
-3. Add `pkgs.tokitoki` to the relevant `home.packages`
-4. **Cockpit reminder**: adding a CLI to `home.packages` means also updating
-   `assets/cli-tools/cli-tools.sh` (`list_term`) + `assets/cli-tools/overview.html`
-   tool card — keep the map curated
-5. `nixcheck` before applying
+```nix
+imports = [ inputs.tokitoki.homeManagerModules.default ];
+programs.tokitoki.enable = true;
+```
 
-## Updating pins later
-
-- Bump versions in `package.json` (exact-pinned, no `^`)
-- Re-run compile, refresh hashes, update both Option A/B files if both exist
-- `nix run .#update-pins` picks up the new rev/hash automatically once the
-  GitHub release exists
-
-## nixfiles package (prebuilt route)
-
-`~/dev/nixfiles/packages/tokitoki/default.nix` is a template with placeholder
-hashes (deliberately NOT wired into flake.nix — it would break evaluation).
-Bootstrap flow:
-
-1. `bun run compile && bun build --compile --target=bun-linux-x64 src/cli.ts --outfile dist/tokitoki-linux`
-2. Cut a GitHub release with the binaries; note the URL
-3. `nix store prefetch-file <url>` (or `nix hash file <local>`) → real hash
-4. Fill `version`/`url`/`hash` in `packages/tokitoki/default.nix`, extend platforms
-5. Wire into `flake.nix`: `tokitoki = pkgs'.callPackage ./packages/tokitoki { };`
-6. Repo convention: add to `assets/cli-tools/cli-tools.sh` (`list_term`) +
-   `assets/cli-tools/overview.html` tool card, then `nixapply`
-
-A source-build derivation waits on a bunDeps-style builder in nixpkgs.
+The flake also exposes `overlays.default`, `apps.${system}.default`, and the
+existing `devShells.${system}.default`. If `package.json` or `bun.lock`
+changes, regenerate the fixed-output dependency hash by temporarily using
+`lib.fakeHash` and copying the hash reported by `nix build .#tokitoki`.
