@@ -69,6 +69,42 @@ The shell provides Bun, pnpm, Git, jq, ripgrep, and (on Darwin) Swift for the
 native menu-bar target. Set `TOKITOKI_SKIP_INSTALL=1` to enter without running
 the dependency install hook.
 
+## Installation
+
+### Nix
+
+The root flake provides a source-built `tokitoki` package for Linux and macOS
+(Intel and Apple Silicon). It can be used directly without direnv:
+
+```sh
+nix run github:astahmer/tokitoki -- --version
+nix build github:astahmer/tokitoki#tokitoki
+```
+
+To install it through Home Manager, add the repository to your flake inputs:
+
+```nix
+inputs.tokitoki.url = "github:astahmer/tokitoki";
+```
+
+Then either install the package directly:
+
+```nix
+home.packages = [ inputs.tokitoki.packages.${pkgs.system}.default ];
+```
+
+Or use the provided Home Manager module:
+
+```nix
+imports = [ inputs.tokitoki.homeManagerModules.default ];
+programs.tokitoki.enable = true;
+```
+
+The Nix package builds the CLI and web assets ahead of time and includes its
+Bun runtime. The installed command does not need `node_modules`, Bun, or
+network access at runtime. direnv remains available separately for repository
+development through the `devShells` output.
+
 ## Publishing
 
 ```sh
