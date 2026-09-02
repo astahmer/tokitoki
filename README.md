@@ -53,14 +53,21 @@ accounts. Merges the best of `ccusage`, CodexBar, and openusage.ai.
 
 ## Setup
 
-Requires [Bun](https://bun.sh) (no Node toolchain needed):
+The repository includes a Nix dev shell and direnv entrypoint. With
+[Nix](https://nixos.org/) and [direnv](https://direnv.net/) installed:
 
 ```sh
-bun install
+direnv allow
+# entering the directory installs dependencies from bun.lock automatically
+
 # run ad hoc:
 bun src/cli.ts scan
 bun link          # optional, exposes `tokitoki`
 ```
+
+The shell provides Bun, pnpm, Git, jq, ripgrep, and (on Darwin) Swift for the
+native menu-bar target. Set `TOKITOKI_SKIP_INSTALL=1` to enter without running
+the dependency install hook.
 
 ## Publishing
 
