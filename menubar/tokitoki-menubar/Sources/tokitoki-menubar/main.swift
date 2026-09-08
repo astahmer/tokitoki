@@ -166,7 +166,7 @@ struct ToolsPayload: Codable {
     let tools: [ToolRow]
 }
 
-// MARK: - limits contract (menubar-payload v2 `limits`, from src/limits.ts)
+// MARK: - limits contract (widget-payload v2 `limits`, from src/limits.ts)
 
 struct LimitWindow: Codable {
     let kind: String
@@ -300,7 +300,7 @@ enum SideNotchMode: String, CaseIterable, Identifiable {
     }
 }
 
-// Combined snapshot from `tokitoki menubar-payload --json` (single CLI
+// Combined widget payload from `tokitoki widget-payload --json` (single CLI
 // process instead of seven parallel ones that thrashed memory).
 /// Token rows for one selectable period (today|yesterday|week|month|year).
 /// The payload carries separate harness, inferred-provider, and model series.
@@ -431,7 +431,7 @@ struct PopoverSessionDetail: Codable {
     let cacheDuration: CacheDurationEstimate?
 }
 
-struct MenubarPayload: Decodable {
+struct WidgetPayload: Decodable {
     let snapshotAt: String?
     let today: ReportPayload
     let rollingDay: ReportPayload?
@@ -1358,9 +1358,9 @@ final class Model: ObservableObject {
             }
             do {
                 let args = cached
-                    ? ["menubar-payload", "--cached", "--json"]
-                    : ["menubar-payload", "--json"]
-                let p = try await Self.runJSON(MenubarPayload.self, invocation, args)!
+                    ? ["widget-payload", "--cached", "--json"]
+                    : ["widget-payload", "--json"]
+                let p = try await Self.runJSON(WidgetPayload.self, invocation, args)!
                 guard generation == self.refreshGeneration else {
                     self.dbg("discarded stale payload generation \(generation)")
                     return
@@ -2536,7 +2536,7 @@ final class Model: ObservableObject {
             setTitleIfChanged(t)
         }
     }
-    var currentPayloadForTitle: MenubarPayload?
+    var currentPayloadForTitle: WidgetPayload?
     var currentPreviewCfg: UiPreviewConfig?
     var trackingArea: NSTrackingArea?
 

@@ -57,7 +57,7 @@ Legend: ✅ yes · 🟨 partial/beta · ❌ no · ❓ unverified
 4. **5-hour billing-blocks report** — ccusage's most-referenced feature;
    we already store per-event ts so it's a windowing change, plus an
    "active block" gauge for menubar/web.
-5. **Statusline integration** — tiny (emit one line from menubar-payload);
+5. **Statusline integration** — tiny (emit one line from widget-payload);
    free distribution inside every Claude Code session.
 6. **Zero-install story** — `npx tokitoki`-style runner or brew tap; our
    compile step already produces a single binary, just needs packaging +

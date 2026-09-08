@@ -1,0 +1,11 @@
+{
+  "id": "tokitoki",
+  "name": "Tokitoki Usage",
+  "version": "0.1.0",
+  "author": "Tokitoki",
+  "description": "Small usage statistics from tokitoki",
+  "license": "MIT",
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  }
+}

@@ -7,6 +7,7 @@ import { accountEmailMap } from "../accounts.ts";
 import type { BudgetsConfig } from "../budgets.ts";
 import {
   computeBudgetStatus,
+  gaugesForMenubar,
   matchesBudgetPattern,
   type BudgetStatusPayload,
 } from "../budget-status.ts";
@@ -34,6 +35,10 @@ import { collectMachines } from "../presence.ts";
 import { searchSessions, sessionConversation, sessionPreview, updateSessionIndex } from "../sessionIndex.ts";
 import { detectAnomalies, type AnomalyMetric } from "../anomalies.ts";
 import type { CacheDurationEstimate } from "../session-insights.ts";
+import {
+  WIDGET_STATUS_SCHEMA,
+  type WidgetStatusPayload,
+} from "../widget-status.ts";
 
 /** JSON responses reuse the exact CLI aggregation — no duplicated SQL. */
 
@@ -96,6 +101,49 @@ export function apiSummary(wp: WindowParams = {}): SummaryPayload {
       prevWeekCost: prevTotals !== null && prevTotals.requests > 0 ? round2(prevTotals.costUsd) : null,
       burnPerDay: round2(b.perDay),
       projectedMonthEnd: round2(b.projected),
+    };
+  });
+}
+
+/** Small, host-neutral projection for shell widgets and status bars. */
+export function apiWidgetStatus(wp: WindowParams = {}): WidgetStatusPayload {
+  return withCache((cache) => {
+    const w = resolveTimeWindow({ ...wp, fallbackPeriod: "day" });
+    const total = cache.totals(w.sinceIso, undefined, w.untilIso);
+    const providers = cache
+      .aggregate(w.sinceIso, "provider", undefined, w.untilIso)
+      .sort((a, b) => b.costUsd - a.costUsd || b.requests - a.requests)
+      .slice(0, 8)
+      .map((row) => ({
+        id: row.bucket,
+        costUsd: round2(row.costUsd),
+        requests: row.requests,
+        sessions: row.sessions,
+        tokens: totalTokens(row),
+      }));
+    const budgetPayload = computeBudgetStatus(cache, loadConfig().budgets);
+    return {
+      schema: WIDGET_STATUS_SCHEMA,
+      app: "tokitoki",
+      generatedAt: new Date().toISOString(),
+      window: toApiWindow(w),
+      stats: {
+        costUsd: round2(total.costUsd),
+        requests: total.requests,
+        sessions: total.sessions,
+        tokens: totalTokens(total),
+        cachePct: cachePct(total.inputTokens, total.cacheReadTokens),
+      },
+      providers,
+      budgets: gaugesForMenubar(budgetPayload).map((gauge) => ({
+        scope: gauge.scope,
+        label: gauge.label,
+        ratio: gauge.ratio,
+        state: gauge.state,
+        used: gauge.used,
+        cap: gauge.cap,
+        daysLeft: gauge.daysLeft,
+      })),
     };
   });
 }

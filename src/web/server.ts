@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import { apiAnomalies, apiBreakdown, apiBudgets, apiExport, apiGrid, apiNotificationHistory, apiSessionDetail, apiSessionSearch, apiSessions, apiSources, apiSummary, apiTable, apiTimeseries, type WindowParams } from "./api.ts";
+import { apiAnomalies, apiBreakdown, apiBudgets, apiExport, apiGrid, apiNotificationHistory, apiSessionDetail, apiSessionSearch, apiSessions, apiSources, apiSummary, apiTable, apiTimeseries, apiWidgetStatus, type WindowParams } from "./api.ts";
 import { atprotoConfig, buildSharePayload, describePayload, publishShare, readShareState, writeShareState } from "../share.ts";
 
 export interface WebServerOptions {
@@ -157,6 +157,9 @@ export function startWebServer(options: WebServerOptions = {}): Bun.Server<undef
           }),
         });
       }
+      case "/v1/status":
+      case "/api/widget-status":
+        return json(apiWidgetStatus(win()));
       case "/api/timeseries": {
         const by = url.searchParams.get("by") ?? "provider";
         const days = Number(url.searchParams.get("days") ?? "30");

@@ -132,8 +132,9 @@
           installPhase = ''
             runHook preInstall
 
-            mkdir -p "$out/bin" "$out/dist"
+            mkdir -p "$out/bin" "$out/dist" "$out/share/tokitoki"
             cp -R dist/. "$out/dist/"
+            cp -R integrations "$out/share/tokitoki/"
             install -Dm644 package.json "$out/package.json"
 
             makeWrapper ${lib.getExe pkgs.bun} "$out/bin/tokitoki" \

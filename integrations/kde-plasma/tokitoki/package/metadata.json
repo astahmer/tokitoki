@@ -1,0 +1,18 @@
+{
+  "KPlugin": {
+    "Authors": [
+      {
+        "Name": "Tokitoki"
+      }
+    ],
+    "Category": "System Information",
+    "Description": "Small usage statistics from tokitoki",
+    "Icon": "view-statistics",
+    "Id": "com.github.astahmer.tokitoki",
+    "Name": "Tokitoki Usage",
+    "Version": "0.1.0",
+    "Website": "https://github.com/astahmer/tokitoki"
+  },
+  "X-Plasma-API-Minimum-Version": "6.0",
+  "KPackageStructure": "Plasma/Applet"
+}

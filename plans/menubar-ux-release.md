@@ -2,7 +2,7 @@
 
 ## Context
 
-- TokiToki is a native macOS menubar app backed by the existing `menubar-payload --json` contract and a local web dashboard.
+- TokiToki is a native macOS menubar app backed by the existing `widget-payload --json` contract and a local web dashboard.
 - The popover is a fixed 380×620 SwiftUI surface with native Home, Quotas, Reports, Sources, and Settings subviews.
 - Home currently combines freshness, search, a dashboard handoff row, configurable analytics cards, quota cards, and a sticky footer.
 - Quota cards can contain provider-reported windows or scan-derived relative estimates. Account identity is `provider@accountKey`, with optional email, plan, origin, and credential hint.
@@ -96,7 +96,7 @@ Browser dashboard
 flowchart LR
   Sources[Local logs, OAuth, APIs, databases] --> CLI[Tokitoki CLI]
   CLI --> Canonical[Canonical accounts + quota windows]
-  Canonical --> Payload[menubar-payload JSON]
+    Canonical --> Payload[widget-payload JSON]
   Payload --> Model[SwiftUI model/cache]
   Model --> Preview[Menubar preview]
   Model --> Popover[Native popover]

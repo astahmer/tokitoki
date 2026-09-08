@@ -1,0 +1,10 @@
+// Merge this module into your Waybar configuration.
+{
+  "modules-right": ["custom/tokitoki"],
+  "custom/tokitoki": {
+    "exec": "/absolute/path/to/tokitoki/integrations/waybar/tokitoki-status.sh",
+    "interval": 30,
+    "return-type": "json",
+    "on-click": "xdg-open http://127.0.0.1:7788/"
+  }
+}

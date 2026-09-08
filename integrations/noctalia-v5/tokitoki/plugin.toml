@@ -1,0 +1,10 @@
+id = "tokitoki/usage"
+name = "Tokitoki Usage"
+version = "0.1.0"
+plugin_api = 3
+author = "Tokitoki"
+description = "Small usage statistics from tokitoki"
+
+[[widget]]
+id = "usage"
+entry = "widget.luau"

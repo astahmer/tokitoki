@@ -27,8 +27,14 @@ describe("cli help completeness", () => {
     expect(commandHelpText("sessions")).toContain("--cached");
   });
 
-  it("documents the cached menubar snapshot read path", () => {
-    expect(commandHelpText("menubar-payload")).toContain("--cached");
+  it("documents the shared cached widget payload read path", () => {
+    expect(commandHelpText("widget-payload")).toContain("--cached");
+    expect(commandHelpText("widget-payload")).toContain("--json");
+  });
+
+  it("does not retain the temporary widget commands", () => {
+    expect(COMMAND_HELP["widget"]).toBeUndefined();
+    expect(COMMAND_HELP["menubar-payload"]).toBeUndefined();
   });
 
   it("every command's help documents all of its known flags", () => {

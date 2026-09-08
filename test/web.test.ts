@@ -76,6 +76,27 @@ describe("web api + server", () => {
     expect(text).toContain("tokitoki_requests_total");
   });
 
+  test("host-neutral widget status stays small and versioned", async () => {
+    const res = await fetch(`http://localhost:${server.port}/v1/status?last=week`);
+    const body = (await res.json()) as {
+      schema: number;
+      app: string;
+      stats: { requests: number; sessions: number; tokens: number; costUsd: number; cachePct: number };
+      providers: Array<{ id: string }>;
+      budgets: unknown[];
+    };
+    expect(res.status).toBe(200);
+    expect(body.schema).toBe(1);
+    expect(body.app).toBe("tokitoki");
+    expect(body.stats.requests).toBeGreaterThanOrEqual(3);
+    expect(body.stats.sessions).toBeGreaterThanOrEqual(3);
+    expect(body.stats.tokens).toBeGreaterThan(0);
+    expect(body.stats.costUsd).toBeGreaterThan(0);
+    expect(typeof body.stats.cachePct).toBe("number");
+    expect(body.providers.some((row) => row.id === "pi")).toBe(true);
+    expect(Array.isArray(body.budgets)).toBe(true);
+  });
+
   test("/api/table groups and exposes account tabs", async () => {
     const res = await fetch(`http://localhost:${server.port}/api/table?by=model&period=week`);
     const body = (await res.json()) as {

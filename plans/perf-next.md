@@ -31,7 +31,7 @@ CREATE TABLE daily_rollups (
   UPDATE). Cost: one extra upsert per event batch — negligible vs parse.
 - `rebuild()` recomputes it from scratch in one pass.
 - Reports with day-or-coarser granularity (`today`, `week`, `month`, chart,
-  pie, grid, budgets, menubar-payload) switch to reading rollups:
+  pie, grid, budgets, widget-payload) switch to reading rollups:
   O(days × accounts) rows instead of O(events). Sessions/tools/per-request
   views keep using `events`.
 - Correctness guard: `COUNT(events) == SUM(requests)` consistency check on

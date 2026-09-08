@@ -1,0 +1,7 @@
+{
+  "uuid": "tokitoki@local",
+  "name": "Tokitoki Usage",
+  "description": "Small usage statistics from tokitoki",
+  "version": 1,
+  "shell-version": ["45", "46", "47", "48", "49", "50"]
+}

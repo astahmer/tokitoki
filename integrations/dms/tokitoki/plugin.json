@@ -1,0 +1,14 @@
+{
+  "id": "tokitoki",
+  "name": "Tokitoki Usage",
+  "description": "Small usage statistics from tokitoki",
+  "version": "0.1.0",
+  "author": "Tokitoki",
+  "icon": "monitoring",
+  "type": "widget",
+  "capabilities": ["dankbar-widget"],
+  "component": "./TokitokiWidget.qml",
+  "settings": "./TokitokiSettings.qml",
+  "permissions": ["settings_read", "settings_write"],
+  "requires_dms": ">=1.5.0"
+}

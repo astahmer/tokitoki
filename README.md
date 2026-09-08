@@ -59,15 +59,18 @@ The repository includes a Nix dev shell and direnv entrypoint. With
 ```sh
 direnv allow
 # entering the directory installs dependencies from bun.lock automatically
+# and puts the source `tokitoki` shim on PATH
 
 # run ad hoc:
 bun src/cli.ts scan
-bun link          # optional, exposes `tokitoki`
+tokitoki scan
 ```
 
 The shell provides Bun, pnpm, Git, jq, ripgrep, and (on Darwin) Swift for the
 native menu-bar target. Set `TOKITOKI_SKIP_INSTALL=1` to enter without running
-the dependency install hook.
+the dependency install hook. The `bin/tokitoki.js` source shim is available as
+`tokitoki` while the directory is active; no global install is needed for CLI
+development.
 
 ## Installation
 
@@ -102,8 +105,35 @@ programs.tokitoki.enable = true;
 
 The Nix package builds the CLI and web assets ahead of time and includes its
 Bun runtime. The installed command does not need `node_modules`, Bun, or
-network access at runtime. direnv remains available separately for repository
-development through the `devShells` output.
+network access at runtime. It also installs the shell adapter files under
+`<tokitoki-store-path>/share/tokitoki/integrations`. direnv remains available
+separately for repository development through the `devShells` output.
+
+### Shell integrations
+
+Shell integrations consume the same versioned JSON payload as the native
+apps instead of reimplementing provider parsing:
+
+```sh
+tokitoki scan
+tokitoki widget-payload --cached --json
+```
+
+For the first DMS test, from a checkout:
+
+```sh
+mkdir -p ~/.config/DankMaterialShell/plugins
+ln -sfn "$PWD/integrations/dms/tokitoki" \
+  ~/.config/DankMaterialShell/plugins/tokitoki
+dms ipc call plugins reload tokitoki
+```
+
+Then enable `Tokitoki Usage` in DMS Settings → Plugins and add it to DankBar.
+The remaining experimental adapters and their host-specific installation notes
+are documented in [`integrations/README.md`](integrations/README.md). The
+adapter source is intentionally kept separate from the host-neutral contract,
+so the same data can be reused by DMS, Noctalia, Quickshell, Plasma, Waybar,
+GNOME, and COSMIC.
 
 ## Publishing
 
@@ -155,6 +185,7 @@ tokitoki pie --by model                     # share-of-tokens legend with cost b
 
 tokitoki budgets                            # [budgets] gauge state (day/week/month caps)
 tokitoki budgets --json                     # menubar/web contract: [{scope,label,cap,used,unit,ratio,state,daysLeft}]
+tokitoki widget-payload --cached --json     # shared native-app/shell payload
 tokitoki sources                            # provenance: store paths, files/events scanned, accounts, models per provider
 ```
 

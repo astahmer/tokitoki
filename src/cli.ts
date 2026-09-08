@@ -91,6 +91,7 @@ function readVersion(): string {
 }
 
 const VERSION = readVersion();
+const WIDGET_PAYLOAD_SCHEMA = 1;
 const CHART_DIMENSIONS = ["provider", "model", "tool"] as const;
 
 const DIMENSION_LIST = "model|provider|account|machine|project|repo|tool";
@@ -258,10 +259,12 @@ Rows always show every configured scope×pattern; state is ok | warn (≥80%)
     flags: "  --json                print the effective config without changing it\n  value                 parsed as JSON; bare words become strings",
     example: "tokitoki config set ui.stripMetric \"tokens\"",
   },
-  "menubar-payload": {
-    usage: "tokitoki menubar-payload [--cached] --json",
-    flags: "  internal: combined json snapshot consumed by the menu-bar app\n  --cached              read the persisted snapshot without scanning harness stores",
-    example: "tokitoki menubar-payload --json",
+  "widget-payload": {
+    usage: "tokitoki widget-payload [--cached] --json",
+    flags: `  versioned JSON payload consumed by native apps and shell integrations
+  --cached              read the persisted payload without scanning harness stores
+  --json                required for this machine-readable contract`,
+    example: "tokitoki widget-payload --cached --json",
   },
   ui: {
     usage: "tokitoki ui [--list] [--hide <provider[:account]>] [--show <provider[:account]>]\n                  [--menubar-only <provider>...] [--tabs <id,...>] [--surface menubar|dashboard]",
@@ -371,7 +374,7 @@ Commands:
   share      opt-in sanitized public stats via atproto (--enable|--disable|--status)
   export     dump any report as json/csv/markdown
   config     set a config value by dotted path (value parsed as JSON)
-  menubar-payload  combined json snapshot for the menu-bar app (internal)
+  widget-payload  versioned JSON payload for native apps and shell integrations
   ui         show/hide providers per surface (menubar preview, dashboard)
   import     backfill usage CSVs from provider consoles
   reindex    force-rebuild the session search index (full-text)
@@ -422,11 +425,11 @@ export async function main(argv: string[]): Promise<void> {
       case "sessions": runSessions(parsed); break;
       case "reindex": runReindex(parsed); break;
       case "anomalies": runAnomalies(parsed); break;
-    case "budgets": runBudgets(parsed); break;
-    case "menubar-payload": runMenubarPayload(parsed); break;
-    case "ui": runUi(parsed); break;
-    case "presence": runPresence(parsed); break;
-    case "tools": runTools(parsed); break;
+      case "budgets": runBudgets(parsed); break;
+      case "widget-payload": runWidgetPayload(parsed); break;
+      case "ui": runUi(parsed); break;
+      case "presence": runPresence(parsed); break;
+      case "tools": runTools(parsed); break;
       case "repos": runRepos(parsed); break;
       case "import": runImport(parsed); break;
       case "sync": runSyncCommand(parsed); break;
@@ -455,7 +458,7 @@ export async function main(argv: string[]): Promise<void> {
 
 /** Flags each command accepts — anything else is a typo we can suggest around. */
 const KNOWN_FLAGS: Record<string, string[]> = {
-  "menubar-payload": ["cached", "json"],
+  "widget-payload": ["cached", "json"],
   ui: ["list", "hide", "show", "surface", "menubar-only", "card-set", "account-order", "tabs"],
   scan: ["provider", "if-needed"],
   sources: [],
@@ -549,12 +552,12 @@ function withCache<T>(fn: (cache: EventCache) => T): T {
   }
 }
 
-// A cached menubar read is intentionally a pure SQLite projection. The
-// regular CLI keeps syncing by default; only the short-lived payload process
-// opts into this flag so the popover can paint from the last snapshot first.
-let menubarReadOnly = false;
+// A cached payload read is intentionally a pure SQLite projection. The
+// regular CLI keeps syncing by default; only short-lived payload consumers
+// opt into this flag so they can paint from the last payload first.
+let widgetPayloadReadOnly = false;
 function syncCache(cache: EventCache, files: string[]): void {
-  if (!menubarReadOnly) cache.sync(files);
+  if (!widgetPayloadReadOnly) cache.sync(files);
 }
 
 // ---------------------------------------------------------------- scan
@@ -2165,8 +2168,8 @@ function captureStdoutJson(fn: () => void): unknown {
   return JSON.parse(chunks.join("\n"));
 }
 
-/** Keep composed menubar payloads valid when a child command adds diagnostics. */
-function parseMenubarCapture(key: string, chunks: string[]): unknown {
+/** Keep composed payloads valid when a child command adds diagnostics. */
+function parseWidgetPayloadCapture(key: string, chunks: string[]): unknown {
   const candidates = [...chunks.slice().reverse(), chunks.join("\n")];
   for (const candidate of candidates) {
     const text = candidate.trim();
@@ -2185,7 +2188,7 @@ function parseMenubarCapture(key: string, chunks: string[]): unknown {
       }
     }
   }
-  throw new Error(`menubar payload capture '${key}' did not produce valid JSON`);
+  throw new Error(`widget payload capture '${key}' did not produce valid JSON`);
 }
 
 function inv(command: string, flags: Record<string, FlagValue | string[]> = {}): ParsedInvocation {
@@ -2198,15 +2201,48 @@ function localDateKey(offsetDays = 0): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
-function runMenubarPayload(parsed: ParsedInvocation): void {
+type WidgetPayloadMetricRow = {
+  bucket?: unknown;
+  requests?: unknown;
+  sessions?: unknown;
+  inputTokens?: unknown;
+  outputTokens?: unknown;
+  cacheReadTokens?: unknown;
+  cacheWriteTokens?: unknown;
+  costUsd?: unknown;
+};
+
+type WidgetPayloadReport = {
+  total?: WidgetPayloadMetricRow;
+  rows?: WidgetPayloadMetricRow[];
+};
+
+function numericWidgetPayloadValue(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function widgetPayloadTokens(row: WidgetPayloadMetricRow): number {
+  return numericWidgetPayloadValue(row.inputTokens) +
+    numericWidgetPayloadValue(row.outputTokens) +
+    numericWidgetPayloadValue(row.cacheReadTokens) +
+    numericWidgetPayloadValue(row.cacheWriteTokens);
+}
+
+function runWidgetPayload(parsed: ParsedInvocation): void {
+  if (!flagBool(parsed, "json")) {
+    throw new UserError(
+      "the widget-payload contract is JSON-only",
+      "tokitoki widget-payload --cached --json",
+    );
+  }
   const readOnlyPayload = flagBool(parsed, "cached");
-  menubarReadOnly = readOnlyPayload;
+  widgetPayloadReadOnly = readOnlyPayload;
   // Sequential single-process composition: the menu bar previously spawned
   // 7 CLIs at once (~1GB RSS each) and thrashed memory.
   // Ingest changed harness stores before any report is composed. This is
   // incremental (provider cursors make unchanged files cheap) and prevents
   // the popover from showing a stale/zero token period after a session ends.
-  if (!menubarReadOnly) {
+  if (!widgetPayloadReadOnly) {
     const machineId = localMachineId();
     for (const provider of PROVIDERS) {
       scanProviderCore(provider, machineId, {
@@ -2222,10 +2258,10 @@ function runMenubarPayload(parsed: ParsedInvocation): void {
   let recentSessions: unknown = null;
   withCache((cache) => {
     syncCache(cache, resolveExtraFiles(loadConfig()));
-    if (!menubarReadOnly) updateSessionIndex(cache.database);
-    // The cached snapshot is the first-frame path. A live payload must stay
+    if (!widgetPayloadReadOnly) updateSessionIndex(cache.database);
+    // The cached payload is the first-frame path. A live payload must stay
     // focused on quota/report refresh; it can reuse the recent-session page
-    // already hydrated from the cached snapshot instead of repeating the
+    // already hydrated from the cached payload instead of repeating the
     // large event-grouping query while scans are still settling.
     if (readOnlyPayload) {
       const sessionWindow = resolveTimeWindow({ last: "month", fallbackPeriod: "month" });
@@ -2245,7 +2281,7 @@ function runMenubarPayload(parsed: ParsedInvocation): void {
       };
     }
       snapshotAt = cache.metaValue("menubar_snapshot_at");
-    if (!menubarReadOnly) {
+    if (!widgetPayloadReadOnly) {
       snapshotAt = new Date().toISOString();
       cache.setMetaValue("menubar_snapshot_at", snapshotAt);
     }
@@ -2254,7 +2290,7 @@ function runMenubarPayload(parsed: ParsedInvocation): void {
   // Keeping these reads explicitly read-only avoids reopening and rechecking
   // every harness log once per card (which made live payloads take tens of
   // seconds on a large local history).
-  menubarReadOnly = true;
+  widgetPayloadReadOnly = true;
   const parts: Record<string, unknown> = { snapshotAt: snapshotAt ?? null, recentSessions };
   const capture = (key: string, fn: () => void): void => {
     const orig = console.log;
@@ -2265,7 +2301,7 @@ function runMenubarPayload(parsed: ParsedInvocation): void {
     } finally {
       console.log = orig;
     }
-    parts[key] = parseMenubarCapture(key, chunks);
+    parts[key] = parseWidgetPayloadCapture(key, chunks);
   };
   // "today" = local CALENDAR day, not a rolling 24h window — a rolling
   // window makes the hero number drift DOWN as yesterday's hours fall out.
@@ -2332,11 +2368,10 @@ function runMenubarPayload(parsed: ParsedInvocation): void {
   capture("anomalies", () => runAnomalies(inv("anomalies", { json: true })));
   capture("topTools", () => runTools(inv("tools", { last: "day", top: "3", json: true })));
   capture("presence", () => runPresence(inv("presence", { json: true })));
-  capture("history", () => {
+  const captureProviderHistory = (sinceIso: string): void => {
     const config = loadConfig();
     withCache((cache) => {
       syncCache(cache, config.extraEventFiles ?? []);
-      const sinceIso = new Date(Date.now() - 29 * 86_400_000).toISOString();
       const buckets = cache.seriesDaily(sinceIso, "provider", 6, "tokens");
       const days = [...new Set(buckets.flatMap((bucket) => bucket.days))].sort();
       console.log(JSON.stringify({
@@ -2350,7 +2385,9 @@ function runMenubarPayload(parsed: ParsedInvocation): void {
         })),
       }));
     });
-  });
+  };
+  capture("history", () => captureProviderHistory(sinceIsoForDays(29)));
+  capture("historyYear", () => captureProviderHistory(sinceIsoForDays(364)));
   capture("blocks", () => {
     const config = loadConfig();
     withCache((cache) => {
@@ -2723,6 +2760,34 @@ function runMenubarPayload(parsed: ParsedInvocation): void {
     parts["modelPeriods"] = tokenBreakdowns.modelPeriods ?? [];
     parts["providerPeriods"] = tokenBreakdowns.providerPeriods ?? [];
   }
+  const report = parts["rollingDay"] as WidgetPayloadReport | undefined;
+  const total = report?.total ?? {};
+  const rollingWindow = resolveTimeWindow({ last: "day" });
+  parts.schema = WIDGET_PAYLOAD_SCHEMA;
+  parts.app = "tokitoki";
+  parts.generatedAt = new Date().toISOString();
+  parts.window = {
+    since: rollingWindow.sinceIso,
+    until: rollingWindow.untilIso ?? null,
+    label: rollingWindow.label,
+  };
+  parts.stats = {
+    costUsd: Math.round(numericWidgetPayloadValue(total.costUsd) * 100) / 100,
+    requests: numericWidgetPayloadValue(total.requests),
+    sessions: numericWidgetPayloadValue(total.sessions),
+    tokens: widgetPayloadTokens(total),
+    cachePct: cachePct(
+      numericWidgetPayloadValue(total.inputTokens),
+      numericWidgetPayloadValue(total.cacheReadTokens),
+    ),
+  };
+  parts.providers = (report?.rows ?? []).slice(0, 8).map((row) => ({
+    id: typeof row.bucket === "string" ? row.bucket : "(unknown)",
+    costUsd: Math.round(numericWidgetPayloadValue(row.costUsd) * 100) / 100,
+    requests: numericWidgetPayloadValue(row.requests),
+    sessions: numericWidgetPayloadValue(row.sessions),
+    tokens: widgetPayloadTokens(row),
+  }));
   console.log(JSON.stringify(parts));
 }
 

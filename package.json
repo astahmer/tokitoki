@@ -27,7 +27,7 @@
     "menubar": "bun src/cli.ts menubar --rebuild",
     "menubar:dev": "bun src/cli.ts menubar --rebuild",
     "menubar:restart": "bun src/cli.ts menubar --rebuild",
-    "menubar:payload": "bun src/cli.ts menubar-payload --json",
+    "widget-payload": "bun src/cli.ts widget-payload --json",
     "menubar:status": "bun src/cli.ts menubar --status",
     "menubar:stop": "bun src/cli.ts menubar --stop",
     "menubar:e2e": "bun menubar/e2e.mjs",
@@ -56,6 +56,7 @@
   },
   "files": [
     "bin",
-    "dist"
+    "dist",
+    "integrations"
   ]
 }
