@@ -21,6 +21,9 @@ import { dataDir } from "./store.ts";
  *
  * The menubar runs this only when the user enables background polling. Tokens
  * are never logged; refreshed tokens stay in-memory for the current process.
+ * These provider calls read usage/entitlement metadata only: they do not send
+ * model prompts or consume model tokens. Providers may still enforce their
+ * ordinary request-rate limits.
  */
 
 const WHAM_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";

@@ -71,7 +71,7 @@ export interface TokitokiConfig {
   poll?: {
     /** Menubar app runs `tokitoki poll` every ~15 minutes when true. */
     enabled?: boolean;
-    /** Menubar background poll cadence in minutes (default 15). */
+    /** Menubar background poll cadence in minutes (minimum 1; default 15). */
     intervalMinutes?: number;
     /** Adapt the cadence to upcoming quota resets (bounded 5–30 minutes). */
     adaptive?: boolean;
