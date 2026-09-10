@@ -12,3 +12,6 @@ dist/
 # nix-build result symlink
 /result
 /web/**/*.js
+
+/result
+/e2e/out

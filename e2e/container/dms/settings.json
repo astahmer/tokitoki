@@ -1,0 +1,25 @@
+{
+  "barConfigs": [
+    {
+      "centerWidgets": [],
+      "enabled": true,
+      "id": "default",
+      "innerPadding": 4,
+      "leftWidgets": [
+        {
+          "enabled": true,
+          "id": "tokitoki"
+        }
+      ],
+      "name": "Main Bar",
+      "position": 0,
+      "rightWidgets": [],
+      "screenPreferences": [
+        "all"
+      ],
+      "showOnLastDisplay": true,
+      "widgetPadding": 8
+    }
+  ],
+  "barConfigsVersion": 1
+}

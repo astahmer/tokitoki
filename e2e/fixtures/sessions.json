@@ -1,0 +1,575 @@
+{
+  "hasMore": true,
+  "page": 1,
+  "rows": [
+    {
+      "accountKey": "base_model_inference",
+      "cachePct": 49,
+      "cacheReadTokens": 180780288,
+      "cacheWriteTokens": 0,
+      "costUsd": 202.660029852,
+      "inputTokens": 187406654,
+      "lastRequestAt": "2026-09-10T15:20:11.437Z",
+      "models": [
+        "gpt-5.6-luna",
+        "gpt-5.4-mini",
+        "gpt-5.6-terra",
+        "Deepseek/deepseek-flash"
+      ],
+      "outputTokens": 859116,
+      "provider": "codex",
+      "repos": [
+        "lab/tokitoki"
+      ],
+      "requests": 1546,
+      "sessionId": "01a0618a-70b1-7691-94bd-f7dcc84c8bb8",
+      "snippet": "### User \u00b7 2026-01-01 00:00:00 e2e fixture prompt ### Assistant \u00b7 2026-01-01 00:00:01",
+      "startedAt": "2026-09-02T09:54:50.658Z",
+      "title": "e2e fixture session",
+      "totalTokens": 369046058
+    },
+    {
+      "accountKey": "codex",
+      "cachePct": 49,
+      "cacheReadTokens": 43845760,
+      "cacheWriteTokens": 0,
+      "costUsd": 175.89045307199999,
+      "inputTokens": 45118897,
+      "lastRequestAt": "2026-09-10T14:54:47.862Z",
+      "models": [
+        "gpt-5.6-sol",
+        "Deepseek/deepseek-flash"
+      ],
+      "outputTokens": 209483,
+      "provider": "codex",
+      "repos": [
+        "project-1"
+      ],
+      "requests": 366,
+      "sessionId": "01a04ccf-d262-7ae0-95b8-f46e26a9eb9b",
+      "snippet": "### User \u00b7 2026-01-01 00:00:00 e2e fixture prompt ### Assistant \u00b7 2026-01-01 00:00:01",
+      "startedAt": "2026-08-29T09:20:23.145Z",
+      "title": "e2e fixture session",
+      "totalTokens": 89174140
+    },
+    {
+      "accountKey": "codex",
+      "cachePct": 48,
+      "cacheReadTokens": 3811072,
+      "cacheWriteTokens": 0,
+      "costUsd": 1.4460338400000001,
+      "inputTokens": 4072220,
+      "lastRequestAt": "2026-09-10T13:10:26.696Z",
+      "models": [
+        "gpt-5.6-terra",
+        "gpt-5.6-luna"
+      ],
+      "outputTokens": 14169,
+      "provider": "codex",
+      "repos": [
+        "project-1"
+      ],
+      "requests": 45,
+      "sessionId": "01a082ac-17c0-78d3-bd3b-80a8afd2e7eb",
+      "snippet": "### User \u00b7 2026-01-01 00:00:00 e2e fixture prompt ### Assistant \u00b7 2026-01-01 00:00:01",
+      "startedAt": "2026-09-08T20:19:36.637Z",
+      "title": "e2e fixture session",
+      "totalTokens": 7897461
+    },
+    {
+      "accountKey": "base_model_inference",
+      "cachePct": 49,
+      "cacheReadTokens": 274941312,
+      "cacheWriteTokens": 0,
+      "costUsd": 272.639067,
+      "inputTokens": 283311267,
+      "lastRequestAt": "2026-09-10T02:28:33.852Z",
+      "models": [
+        "gpt-5.6-luna"
+      ],
+      "outputTokens": 914184,
+      "provider": "codex",
+      "repos": [
+        "project-2"
+      ],
+      "requests": 2244,
+      "sessionId": "01a05ef6-274d-7960-b99f-779c8d810a24",
+      "snippet": "### User \u00b7 2026-01-01 00:00:00 e2e fixture prompt ### Assistant \u00b7 2026-01-01 00:00:01",
+      "startedAt": "2026-09-01T21:53:50.397Z",
+      "title": "e2e fixture session",
+      "totalTokens": 559166763
+    },
+    {
+      "accountKey": "codex",
+      "cachePct": 49,
+      "cacheReadTokens": 13930368,
+      "cacheWriteTokens": 0,
+      "costUsd": 12.029908240000001,
+      "inputTokens": 14608673,
+      "lastRequestAt": "2026-09-09T23:49:01.800Z",
+      "models": [
+        "gpt-5.6-terra",
+        "gpt-5.6-luna"
+      ],
+      "outputTokens": 45063,
+      "provider": "codex",
+      "repos": [
+        "project-4"
+      ],
+      "requests": 143,
+      "sessionId": "01a08732-657d-74e0-bb0d-24cda0368470",
+      "snippet": "### User \u00b7 2026-01-01 00:00:00 e2e fixture prompt ### Assistant \u00b7 2026-01-01 00:00:01",
+      "startedAt": "2026-09-09T17:23:49.369Z",
+      "title": "e2e fixture session",
+      "totalTokens": 28584104
+    },
+    {
+      "accountKey": "codex",
+      "cachePct": 47,
+      "cacheReadTokens": 1616384,
+      "cacheWriteTokens": 0,
+      "costUsd": 0.40511908,
+      "inputTokens": 1799727,
+      "lastRequestAt": "2026-09-09T23:37:06.172Z",
+      "models": [
+        "gpt-5.6-luna"
+      ],
+      "outputTokens": 10705,
+      "provider": "codex",
+      "repos": [
+        "project-3"
+      ],
+      "requests": 18,
+      "sessionId": "01a08884-2004-7b53-ab9d-3b4ae0724adc",
+      "snippet": "### User \u00b7 2026-01-01 00:00:00 e2e fixture prompt ### Assistant \u00b7 2026-01-01 00:00:01",
+      "startedAt": "2026-09-09T23:33:09.150Z",
+      "title": "e2e fixture session",
+      "totalTokens": 3426816
+    },
+    {
+      "accountKey": "default",
+      "cachePct": 0,
+      "cacheReadTokens": 0,
+      "cacheWriteTokens": 0,
+      "costUsd": 0.0054111,
+      "inputTokens": 1220,
+      "lastRequestAt": "2026-09-09T16:03:54.624Z",
+      "models": [
+        "cursor-auto"
+      ],
+      "outputTokens": 2822,
+      "provider": "cursor",
+      "repos": [
+        "(no repo)"
+      ],
+      "requests": 26,
+      "sessionId": "bec76c89-0201-4fec-bee5-8aebfd33434e",
+      "startedAt": "2026-09-09T10:39:53.501Z",
+      "totalTokens": 4042
+    },
+    {
+      "accountKey": "default",
+      "cachePct": 0,
+      "cacheReadTokens": 0,
+      "cacheWriteTokens": 0,
+      "costUsd": 0.0006979000000000001,
+      "inputTokens": 26,
+      "lastRequestAt": "2026-09-09T11:00:07.557Z",
+      "models": [
+        "cursor-auto"
+      ],
+      "outputTokens": 436,
+      "provider": "cursor",
+      "repos": [
+        "(no repo)"
+      ],
+      "requests": 6,
+      "sessionId": "6b56808e-ecd3-4688-a4ac-1f5528d6c1b9",
+      "startedAt": "2026-09-09T10:58:54.204Z",
+      "totalTokens": 462
+    },
+    {
+      "accountKey": "codex",
+      "cachePct": 0,
+      "cacheReadTokens": 0,
+      "cacheWriteTokens": 0,
+      "costUsd": 3.703248,
+      "inputTokens": 1684656,
+      "lastRequestAt": "2026-09-08T17:38:39.849Z",
+      "models": [
+        "cursor/grok-4.6"
+      ],
+      "outputTokens": 55656,
+      "provider": "codex",
+      "repos": [
+        "project-1"
+      ],
+      "requests": 21,
+      "sessionId": "01a08202-191c-7dc0-a11f-41c3943a98ad",
+      "snippet": "### User \u00b7 2026-01-01 00:00:00 e2e fixture prompt ### Assistant \u00b7 2026-01-01 00:00:01",
+      "startedAt": "2026-09-08T17:25:44.221Z",
+      "title": "e2e fixture session",
+      "totalTokens": 1740312
+    },
+    {
+      "accountKey": "codex",
+      "cachePct": 49,
+      "cacheReadTokens": 44485888,
+      "cacheWriteTokens": 0,
+      "costUsd": 79.2610232,
+      "inputTokens": 46304285,
+      "lastRequestAt": "2026-09-08T15:14:41.984Z",
+      "models": [
+        "gpt-5.6-sol",
+        "gpt-5.6-luna",
+        "gpt-5.6-terra"
+      ],
+      "outputTokens": 132909,
+      "provider": "codex",
+      "repos": [
+        "project-1"
+      ],
+      "requests": 306,
+      "sessionId": "01a04dfc-9711-7c72-8aa9-f2902dd4e7ff",
+      "snippet": "### User \u00b7 2026-01-01 00:00:00 e2e fixture prompt ### Assistant \u00b7 2026-01-01 00:00:01",
+      "startedAt": "2026-08-29T14:48:15.371Z",
+      "title": "e2e fixture session",
+      "totalTokens": 90923082
+    },
+    {
+      "accountKey": "codex",
+      "cachePct": 49,
+      "cacheReadTokens": 8891392,
+      "cacheWriteTokens": 0,
+      "costUsd": 2.04290964,
+      "inputTokens": 9131159,
+      "lastRequestAt": "2026-09-08T15:02:11.075Z",
+      "models": [
+        "gpt-5.6-luna"
+      ],
+      "outputTokens": 32375,
+      "provider": "codex",
+      "repos": [
+        "project-1"
+      ],
+      "requests": 72,
+      "sessionId": "01a08172-beac-7fa0-a923-5264702660b7",
+      "snippet": "### User \u00b7 2026-01-01 00:00:00 e2e fixture prompt ### Assistant \u00b7 2026-01-01 00:00:01",
+      "startedAt": "2026-09-08T14:36:30.171Z",
+      "title": "e2e fixture session",
+      "totalTokens": 18054926
+    },
+    {
+      "accountKey": "codex",
+      "cachePct": 47,
+      "cacheReadTokens": 1139840,
+      "cacheWriteTokens": 0,
+      "costUsd": 2.881114,
+      "inputTokens": 1260543,
+      "lastRequestAt": "2026-09-08T14:53:54.542Z",
+      "models": [
+        "gpt-5.6-sol"
+      ],
+      "outputTokens": 13206,
+      "provider": "codex",
+      "repos": [
+        "project-1"
+      ],
+      "requests": 16,
+      "sessionId": "01a0817a-d5d0-7790-8aa9-23f259e8efdc",
+      "snippet": "### User \u00b7 2026-01-01 00:00:00 e2e fixture prompt ### Assistant \u00b7 2026-01-01 00:00:01",
+      "startedAt": "2026-09-08T14:45:26.070Z",
+      "title": "e2e fixture session",
+      "totalTokens": 2413589
+    },
+    {
+      "accountKey": "codex",
+      "cachePct": 47,
+      "cacheReadTokens": 2451200,
+      "cacheWriteTokens": 0,
+      "costUsd": 2.20170524,
+      "inputTokens": 2729105,
+      "lastRequestAt": "2026-09-08T14:38:46.253Z",
+      "models": [
+        "gpt-5.6-luna"
+      ],
+      "outputTokens": 12349,
+      "provider": "codex",
+      "repos": [
+        "project-1"
+      ],
+      "requests": 29,
+      "sessionId": "01a07284-a7af-7b80-8072-7f7a620aec19",
+      "snippet": "### User \u00b7 2026-01-01 00:00:00 e2e fixture prompt ### Assistant \u00b7 2026-01-01 00:00:01",
+      "startedAt": "2026-09-05T17:02:12.684Z",
+      "title": "e2e fixture session",
+      "totalTokens": 5192654
+    },
+    {
+      "accountKey": "default",
+      "cachePct": 0,
+      "cacheReadTokens": 0,
+      "cacheWriteTokens": 0,
+      "costUsd": 0.3015731,
+      "inputTokens": 38694,
+      "lastRequestAt": "2026-09-08T14:33:38.516Z",
+      "models": [
+        "cursor-auto"
+      ],
+      "outputTokens": 173344,
+      "provider": "cursor",
+      "repos": [
+        "(no repo)"
+      ],
+      "requests": 1593,
+      "sessionId": "35ee2041-86ba-4043-a97d-234ab5a3eeda",
+      "startedAt": "2026-08-18T13:50:46.500Z",
+      "totalTokens": 212038
+    },
+    {
+      "accountKey": "codex",
+      "cachePct": 49,
+      "cacheReadTokens": 283994496,
+      "cacheWriteTokens": 0,
+      "costUsd": 265.16661406000003,
+      "inputTokens": 294582867,
+      "lastRequestAt": "2026-09-07T23:36:26.567Z",
+      "models": [
+        "gpt-5.6-luna",
+        "gpt-5.6-terra"
+      ],
+      "outputTokens": 849714,
+      "provider": "codex",
+      "repos": [
+        "project-1"
+      ],
+      "requests": 1848,
+      "sessionId": "01a03b2b-34b9-7822-a8c7-59a6d9a1e16d",
+      "snippet": "### User \u00b7 2026-01-01 00:00:00 e2e fixture prompt ### Assistant \u00b7 2026-01-01 00:00:01",
+      "startedAt": "2026-08-25T23:04:42.511Z",
+      "title": "e2e fixture session",
+      "totalTokens": 579427077
+    },
+    {
+      "accountKey": "default",
+      "cachePct": 0,
+      "cacheReadTokens": 0,
+      "cacheWriteTokens": 0,
+      "costUsd": 0.00348435,
+      "inputTokens": 175,
+      "lastRequestAt": "2026-09-07T13:10:34.446Z",
+      "models": [
+        "cursor-auto"
+      ],
+      "outputTokens": 2152,
+      "provider": "cursor",
+      "repos": [
+        "(no repo)"
+      ],
+      "requests": 17,
+      "sessionId": "d4552cc8-d6e5-451c-8f15-acd8b6fc104e",
+      "startedAt": "2026-09-07T12:43:52.930Z",
+      "totalTokens": 2327
+    },
+    {
+      "accountKey": "default",
+      "cachePct": 0,
+      "cacheReadTokens": 0,
+      "cacheWriteTokens": 0,
+      "costUsd": 0.0008783999999999999,
+      "inputTokens": 180,
+      "lastRequestAt": "2026-09-06T23:43:26.723Z",
+      "models": [
+        "cursor-auto"
+      ],
+      "outputTokens": 468,
+      "provider": "cursor",
+      "repos": [
+        "(no repo)"
+      ],
+      "requests": 5,
+      "sessionId": "e74994c3-a5c8-4592-98e7-12a6f14350b2",
+      "startedAt": "2026-09-06T23:41:45.942Z",
+      "totalTokens": 648
+    },
+    {
+      "accountKey": "default",
+      "cachePct": 0,
+      "cacheReadTokens": 0,
+      "cacheWriteTokens": 0,
+      "costUsd": 0.0009405500000000001,
+      "inputTokens": 182,
+      "lastRequestAt": "2026-09-06T23:43:12.917Z",
+      "models": [
+        "cursor-auto"
+      ],
+      "outputTokens": 507,
+      "provider": "cursor",
+      "repos": [
+        "(no repo)"
+      ],
+      "requests": 5,
+      "sessionId": "6a27f28e-a6b3-4c6a-a2b5-653dbb9bd65c",
+      "startedAt": "2026-09-06T23:41:45.638Z",
+      "totalTokens": 689
+    },
+    {
+      "accountKey": "default",
+      "cachePct": 0,
+      "cacheReadTokens": 0,
+      "cacheWriteTokens": 0,
+      "costUsd": 0.0006803,
+      "inputTokens": 184,
+      "lastRequestAt": "2026-09-06T23:42:44.810Z",
+      "models": [
+        "cursor-auto"
+      ],
+      "outputTokens": 338,
+      "provider": "cursor",
+      "repos": [
+        "(no repo)"
+      ],
+      "requests": 3,
+      "sessionId": "de7df2d0-c886-41c0-a872-ef16e0afba48",
+      "startedAt": "2026-09-06T23:41:45.827Z",
+      "totalTokens": 522
+    },
+    {
+      "accountKey": "codex",
+      "cachePct": 49,
+      "cacheReadTokens": 124614656,
+      "cacheWriteTokens": 0,
+      "costUsd": 152.2883403,
+      "inputTokens": 127996807,
+      "lastRequestAt": "2026-09-06T23:34:37.080Z",
+      "models": [
+        "gpt-5.6-luna",
+        "gpt-5.6-terra"
+      ],
+      "outputTokens": 453554,
+      "provider": "codex",
+      "repos": [
+        "project-1"
+      ],
+      "requests": 1026,
+      "sessionId": "01a07264-f0e4-7ff2-ba84-14a4d745fc34",
+      "snippet": "### User \u00b7 2026-01-01 00:00:00 e2e fixture prompt ### Assistant \u00b7 2026-01-01 00:00:01",
+      "startedAt": "2026-09-05T16:28:06.675Z",
+      "title": "e2e fixture session",
+      "totalTokens": 253065017
+    },
+    {
+      "accountKey": "codex",
+      "cachePct": 46,
+      "cacheReadTokens": 284672,
+      "cacheWriteTokens": 0,
+      "costUsd": 0.3635972,
+      "inputTokens": 328050,
+      "lastRequestAt": "2026-09-06T23:28:09.996Z",
+      "models": [
+        "gpt-5.6-luna"
+      ],
+      "outputTokens": 1180,
+      "provider": "codex",
+      "repos": [
+        "project-1"
+      ],
+      "requests": 8,
+      "sessionId": "01a0790a-9ac0-7ca2-8b87-aa04839b891e",
+      "snippet": "### User \u00b7 2026-01-01 00:00:00 e2e fixture prompt ### Assistant \u00b7 2026-01-01 00:00:01",
+      "startedAt": "2026-09-06T23:26:06.268Z",
+      "title": "e2e fixture session",
+      "totalTokens": 613902
+    },
+    {
+      "accountKey": "default",
+      "cachePct": 0,
+      "cacheReadTokens": 0,
+      "cacheWriteTokens": 0,
+      "costUsd": 0.0015344,
+      "inputTokens": 877,
+      "lastRequestAt": "2026-09-06T21:52:52.351Z",
+      "models": [
+        "cursor-auto"
+      ],
+      "outputTokens": 509,
+      "provider": "cursor",
+      "repos": [
+        "(no repo)"
+      ],
+      "requests": 5,
+      "sessionId": "d8c35a61-017c-4957-9891-11081d37931f",
+      "startedAt": "2026-09-06T21:46:28.301Z",
+      "totalTokens": 1386
+    },
+    {
+      "accountKey": "default",
+      "cachePct": 0,
+      "cacheReadTokens": 0,
+      "cacheWriteTokens": 0,
+      "costUsd": 0.0017433,
+      "inputTokens": 924,
+      "lastRequestAt": "2026-09-06T21:51:52.877Z",
+      "models": [
+        "cursor-auto"
+      ],
+      "outputTokens": 618,
+      "provider": "cursor",
+      "repos": [
+        "(no repo)"
+      ],
+      "requests": 6,
+      "sessionId": "f48b206f-465d-4e85-8418-9e2496ffea4a",
+      "startedAt": "2026-09-06T21:46:42.192Z",
+      "totalTokens": 1542
+    },
+    {
+      "accountKey": "default",
+      "cachePct": 0,
+      "cacheReadTokens": 0,
+      "cacheWriteTokens": 0,
+      "costUsd": 0.00132815,
+      "inputTokens": 793,
+      "lastRequestAt": "2026-09-06T21:51:30.661Z",
+      "models": [
+        "cursor-auto"
+      ],
+      "outputTokens": 422,
+      "provider": "cursor",
+      "repos": [
+        "(no repo)"
+      ],
+      "requests": 5,
+      "sessionId": "e4315f25-e64a-4b6a-942d-464228fd8a4a",
+      "startedAt": "2026-09-06T21:46:43.941Z",
+      "totalTokens": 1215
+    },
+    {
+      "accountKey": "default",
+      "cachePct": 0,
+      "cacheReadTokens": 0,
+      "cacheWriteTokens": 0,
+      "costUsd": 0.00113515,
+      "inputTokens": 710,
+      "lastRequestAt": "2026-09-06T21:49:25.535Z",
+      "models": [
+        "cursor-auto"
+      ],
+      "outputTokens": 343,
+      "provider": "cursor",
+      "repos": [
+        "(no repo)"
+      ],
+      "requests": 4,
+      "sessionId": "0cbaeda6-0b6c-4679-aef1-aa090a5be55d",
+      "startedAt": "2026-09-06T21:46:05.021Z",
+      "totalTokens": 1053
+    }
+  ],
+  "top": 25,
+  "window": {
+    "label": "rolling month",
+    "since": "2026-08-11T21:19:45.482Z",
+    "until": null
+  }
+}

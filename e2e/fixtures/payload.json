@@ -1,0 +1,3830 @@
+{
+  "activityGrid": {
+    "cells": [
+      {
+        "costUsd": 0.01881975,
+        "day": "2026-04-05",
+        "requests": 53,
+        "tokens": 12527
+      },
+      {
+        "costUsd": 0.0549686,
+        "day": "2026-04-06",
+        "requests": 189,
+        "tokens": 38848
+      },
+      {
+        "costUsd": 0.11548885,
+        "day": "2026-04-07",
+        "requests": 473,
+        "tokens": 78055
+      },
+      {
+        "costUsd": 0.0541989,
+        "day": "2026-04-08",
+        "requests": 230,
+        "tokens": 37436
+      },
+      {
+        "costUsd": 0.0366001,
+        "day": "2026-04-09",
+        "requests": 255,
+        "tokens": 27304
+      },
+      {
+        "costUsd": 0.0053472,
+        "day": "2026-04-10",
+        "requests": 29,
+        "tokens": 3644
+      },
+      {
+        "costUsd": 0.00607625,
+        "day": "2026-04-12",
+        "requests": 7,
+        "tokens": 4071
+      },
+      {
+        "costUsd": 0.008764,
+        "day": "2026-04-13",
+        "requests": 38,
+        "tokens": 5782
+      },
+      {
+        "costUsd": 0.01602695,
+        "day": "2026-04-14",
+        "requests": 80,
+        "tokens": 10741
+      },
+      {
+        "costUsd": 0.00904935,
+        "day": "2026-04-15",
+        "requests": 40,
+        "tokens": 6163
+      },
+      {
+        "costUsd": 0.01469235,
+        "day": "2026-04-16",
+        "requests": 37,
+        "tokens": 9791
+      },
+      {
+        "costUsd": 0.0049426,
+        "day": "2026-04-17",
+        "requests": 40,
+        "tokens": 3350
+      },
+      {
+        "costUsd": 0.0024156,
+        "day": "2026-04-20",
+        "requests": 67,
+        "tokens": 1656
+      },
+      {
+        "costUsd": 0.0056691499999999995,
+        "day": "2026-04-21",
+        "requests": 37,
+        "tokens": 4479
+      },
+      {
+        "costUsd": 0.0209103,
+        "day": "2026-04-22",
+        "requests": 161,
+        "tokens": 14018
+      },
+      {
+        "costUsd": 0.0261144,
+        "day": "2026-04-23",
+        "requests": 223,
+        "tokens": 17044
+      },
+      {
+        "costUsd": 0.00229135,
+        "day": "2026-04-24",
+        "requests": 17,
+        "tokens": 1509
+      },
+      {
+        "costUsd": 0.02562655,
+        "day": "2026-04-26",
+        "requests": 150,
+        "tokens": 17833
+      },
+      {
+        "costUsd": 0.04110535,
+        "day": "2026-04-27",
+        "requests": 155,
+        "tokens": 28219
+      },
+      {
+        "costUsd": 0.0056238,
+        "day": "2026-04-28",
+        "requests": 31,
+        "tokens": 4256
+      },
+      {
+        "costUsd": 0.08904305,
+        "day": "2026-05-04",
+        "requests": 619,
+        "tokens": 60337
+      },
+      {
+        "costUsd": 0.00600055,
+        "day": "2026-05-05",
+        "requests": 8,
+        "tokens": 3949
+      },
+      {
+        "costUsd": 0.0104976,
+        "day": "2026-05-06",
+        "requests": 85,
+        "tokens": 6914
+      },
+      {
+        "costUsd": 0.008534,
+        "day": "2026-05-07",
+        "requests": 39,
+        "tokens": 6036
+      },
+      {
+        "costUsd": 0.00040435,
+        "day": "2026-05-11",
+        "requests": 3,
+        "tokens": 283
+      },
+      {
+        "costUsd": 0.00281415,
+        "day": "2026-05-12",
+        "requests": 22,
+        "tokens": 1905
+      },
+      {
+        "costUsd": 0.00575335,
+        "day": "2026-05-19",
+        "requests": 20,
+        "tokens": 3883
+      },
+      {
+        "costUsd": 0.0006814,
+        "day": "2026-05-21",
+        "requests": 8,
+        "tokens": 464
+      },
+      {
+        "costUsd": 0.02005665,
+        "day": "2026-05-22",
+        "requests": 64,
+        "tokens": 13227
+      },
+      {
+        "costUsd": 0.0155986,
+        "day": "2026-05-25",
+        "requests": 41,
+        "tokens": 10242
+      },
+      {
+        "costUsd": 0.0018656,
+        "day": "2026-05-26",
+        "requests": 10,
+        "tokens": 1242
+      },
+      {
+        "costUsd": 0.00770515,
+        "day": "2026-05-27",
+        "requests": 4,
+        "tokens": 8257
+      },
+      {
+        "costUsd": 0.044930500000000005,
+        "day": "2026-05-28",
+        "requests": 191,
+        "tokens": 29906
+      },
+      {
+        "costUsd": 0.0025331,
+        "day": "2026-05-29",
+        "requests": 12,
+        "tokens": 1772
+      },
+      {
+        "costUsd": 0.0013335,
+        "day": "2026-06-04",
+        "requests": 7,
+        "tokens": 938
+      },
+      {
+        "costUsd": 0.02055335,
+        "day": "2026-06-17",
+        "requests": 77,
+        "tokens": 16753
+      },
+      {
+        "costUsd": 0.00784675,
+        "day": "2026-06-18",
+        "requests": 14,
+        "tokens": 6723
+      },
+      {
+        "costUsd": 0.0088724,
+        "day": "2026-06-19",
+        "requests": 63,
+        "tokens": 6192
+      },
+      {
+        "costUsd": 2.13731155,
+        "day": "2026-06-22",
+        "requests": 20,
+        "tokens": 560415
+      },
+      {
+        "costUsd": 0.00125065,
+        "day": "2026-06-23",
+        "requests": 10,
+        "tokens": 843
+      },
+      {
+        "costUsd": 40.46021305,
+        "day": "2026-06-24",
+        "requests": 81,
+        "tokens": 13947207
+      },
+      {
+        "costUsd": 93.94673365,
+        "day": "2026-06-29",
+        "requests": 121,
+        "tokens": 34048511
+      },
+      {
+        "costUsd": 8.431901,
+        "day": "2026-06-30",
+        "requests": 32,
+        "tokens": 5130724
+      },
+      {
+        "costUsd": 0.0428122,
+        "day": "2026-07-01",
+        "requests": 225,
+        "tokens": 28524
+      },
+      {
+        "costUsd": 0.00227195,
+        "day": "2026-07-06",
+        "requests": 10,
+        "tokens": 1529
+      },
+      {
+        "costUsd": 0.00167895,
+        "day": "2026-07-07",
+        "requests": 5,
+        "tokens": 1113
+      },
+      {
+        "costUsd": 23.2071167,
+        "day": "2026-07-08",
+        "requests": 145,
+        "tokens": 15515634
+      },
+      {
+        "costUsd": 0.0194096,
+        "day": "2026-07-09",
+        "requests": 92,
+        "tokens": 14812
+      },
+      {
+        "costUsd": 8.107006,
+        "day": "2026-07-10",
+        "requests": 83,
+        "tokens": 2673552
+      },
+      {
+        "costUsd": 5.6209233,
+        "day": "2026-07-11",
+        "requests": 49,
+        "tokens": 1859289
+      },
+      {
+        "costUsd": 413.5697977,
+        "day": "2026-07-12",
+        "requests": 755,
+        "tokens": 142152248
+      },
+      {
+        "costUsd": 400.08979665,
+        "day": "2026-07-13",
+        "requests": 591,
+        "tokens": 138614954
+      },
+      {
+        "costUsd": 620.5532825,
+        "day": "2026-07-14",
+        "requests": 937,
+        "tokens": 218873208
+      },
+      {
+        "costUsd": 138.0710626,
+        "day": "2026-07-15",
+        "requests": 623,
+        "tokens": 108472727
+      },
+      {
+        "costUsd": 579.30381386,
+        "day": "2026-07-16",
+        "requests": 747,
+        "tokens": 212495756
+      },
+      {
+        "costUsd": 752.168974,
+        "day": "2026-07-17",
+        "requests": 1341,
+        "tokens": 350925305
+      },
+      {
+        "costUsd": 594.117548,
+        "day": "2026-07-18",
+        "requests": 1254,
+        "tokens": 305330266
+      },
+      {
+        "costUsd": 74.28350941,
+        "day": "2026-07-20",
+        "requests": 486,
+        "tokens": 53836221
+      },
+      {
+        "costUsd": 192.5423044,
+        "day": "2026-07-21",
+        "requests": 561,
+        "tokens": 146440170
+      },
+      {
+        "costUsd": 31.6493085,
+        "day": "2026-07-22",
+        "requests": 277,
+        "tokens": 22387840
+      },
+      {
+        "costUsd": 80.94815415000001,
+        "day": "2026-07-23",
+        "requests": 226,
+        "tokens": 63700340
+      },
+      {
+        "costUsd": 80.2313996,
+        "day": "2026-07-24",
+        "requests": 367,
+        "tokens": 60917645
+      },
+      {
+        "costUsd": 913.3326126,
+        "day": "2026-07-25",
+        "requests": 1706,
+        "tokens": 413546711
+      },
+      {
+        "costUsd": 97.2054604,
+        "day": "2026-07-26",
+        "requests": 82,
+        "tokens": 46978264
+      },
+      {
+        "costUsd": 5.3602085,
+        "day": "2026-07-30",
+        "requests": 35,
+        "tokens": 3852913
+      },
+      {
+        "costUsd": 856.75885684,
+        "day": "2026-08-03",
+        "requests": 1393,
+        "tokens": 358715799
+      },
+      {
+        "costUsd": 705.6156923,
+        "day": "2026-08-04",
+        "requests": 1854,
+        "tokens": 588304570
+      },
+      {
+        "costUsd": 29.16075612,
+        "day": "2026-08-05",
+        "requests": 1109,
+        "tokens": 80109683
+      },
+      {
+        "costUsd": 60.34189977,
+        "day": "2026-08-06",
+        "requests": 510,
+        "tokens": 97446892
+      },
+      {
+        "costUsd": 1.4475397,
+        "day": "2026-08-07",
+        "requests": 108,
+        "tokens": 2365242
+      },
+      {
+        "costUsd": 55.55234179,
+        "day": "2026-08-08",
+        "requests": 499,
+        "tokens": 117281209
+      },
+      {
+        "costUsd": 13.09740733,
+        "day": "2026-08-09",
+        "requests": 211,
+        "tokens": 34041127
+      },
+      {
+        "costUsd": 370.62804567,
+        "day": "2026-08-10",
+        "requests": 1121,
+        "tokens": 248885083
+      },
+      {
+        "costUsd": 0.2606189,
+        "day": "2026-08-11",
+        "requests": 240,
+        "tokens": 130170
+      },
+      {
+        "costUsd": 235.52754983,
+        "day": "2026-08-12",
+        "requests": 1347,
+        "tokens": 401553087
+      },
+      {
+        "costUsd": 94.30144533,
+        "day": "2026-08-13",
+        "requests": 804,
+        "tokens": 173495814
+      },
+      {
+        "costUsd": 50.78196467,
+        "day": "2026-08-14",
+        "requests": 530,
+        "tokens": 108905455
+      },
+      {
+        "costUsd": 28.25283079,
+        "day": "2026-08-15",
+        "requests": 201,
+        "tokens": 64173403
+      },
+      {
+        "costUsd": 28.609339300000002,
+        "day": "2026-08-17",
+        "requests": 310,
+        "tokens": 77735256
+      },
+      {
+        "costUsd": 14.88132194,
+        "day": "2026-08-18",
+        "requests": 1305,
+        "tokens": 40340769
+      },
+      {
+        "costUsd": 1200.11860681,
+        "day": "2026-08-19",
+        "requests": 3295,
+        "tokens": 1168260483
+      },
+      {
+        "costUsd": 30.60065448,
+        "day": "2026-08-20",
+        "requests": 368,
+        "tokens": 66332588
+      },
+      {
+        "costUsd": 36.7381806,
+        "day": "2026-08-21",
+        "requests": 240,
+        "tokens": 63345883
+      },
+      {
+        "costUsd": 32.2308906,
+        "day": "2026-08-22",
+        "requests": 173,
+        "tokens": 56943931
+      },
+      {
+        "costUsd": 0.02060245,
+        "day": "2026-08-24",
+        "requests": 42,
+        "tokens": 13711
+      },
+      {
+        "costUsd": 31.314214670000002,
+        "day": "2026-08-25",
+        "requests": 1844,
+        "tokens": 89695623
+      },
+      {
+        "costUsd": 172.92530481,
+        "day": "2026-08-26",
+        "requests": 1445,
+        "tokens": 446241767
+      },
+      {
+        "costUsd": 42.03929633,
+        "day": "2026-08-27",
+        "requests": 406,
+        "tokens": 90031405
+      },
+      {
+        "costUsd": 14.01120195,
+        "day": "2026-08-28",
+        "requests": 203,
+        "tokens": 24456254
+      },
+      {
+        "costUsd": 252.0849543,
+        "day": "2026-08-29",
+        "requests": 560,
+        "tokens": 154239902
+      },
+      {
+        "costUsd": 7.95476505,
+        "day": "2026-08-31",
+        "requests": 144,
+        "tokens": 13643196
+      },
+      {
+        "costUsd": 105.26520762,
+        "day": "2026-09-01",
+        "requests": 857,
+        "tokens": 170522997
+      },
+      {
+        "costUsd": 230.7620371,
+        "day": "2026-09-02",
+        "requests": 1756,
+        "tokens": 406925593
+      },
+      {
+        "costUsd": 253.9415869,
+        "day": "2026-09-03",
+        "requests": 1904,
+        "tokens": 443491649
+      },
+      {
+        "costUsd": 46.6280755,
+        "day": "2026-09-04",
+        "requests": 370,
+        "tokens": 81349077
+      },
+      {
+        "costUsd": 119.71502385,
+        "day": "2026-09-05",
+        "requests": 869,
+        "tokens": 200133177
+      },
+      {
+        "costUsd": 56.2826166,
+        "day": "2026-09-06",
+        "requests": 393,
+        "tokens": 99494888
+      },
+      {
+        "costUsd": 3.74855665,
+        "day": "2026-09-07",
+        "requests": 138,
+        "tokens": 6232045
+      },
+      {
+        "costUsd": 144.71743596,
+        "day": "2026-09-08",
+        "requests": 793,
+        "tokens": 197289829
+      },
+      {
+        "costUsd": 3.1894386,
+        "day": "2026-09-09",
+        "requests": 57,
+        "tokens": 2771935
+      },
+      {
+        "costUsd": 21.921266214,
+        "day": "2026-09-10",
+        "requests": 745,
+        "tokens": 154686297
+      }
+    ],
+    "metric": "tokens"
+  },
+  "anomalies": {
+    "anomalies": [
+      {
+        "baseline": 113028060.71428572,
+        "day": "2026-09-03",
+        "metric": "tokens",
+        "ratio": 3.9237304984030987,
+        "value": 443491649
+      }
+    ],
+    "metric": "tokens",
+    "window": {
+      "label": "trailing month",
+      "since": "2026-08-11T22:00:00.000Z",
+      "until": null
+    }
+  },
+  "app": "tokitoki",
+  "blocks": {
+    "rows": [
+      {
+        "accountKey": "codex",
+        "costUsd": 17.567285960000007,
+        "endIso": "2026-09-10T03:36:08.218Z",
+        "isActive": false,
+        "requests": 416,
+        "startIso": "2026-09-09T22:36:08.218Z",
+        "tokens": 103021505
+      },
+      {
+        "accountKey": "codex",
+        "costUsd": 4.353980253999999,
+        "endIso": "2026-09-10T18:01:20.924Z",
+        "isActive": false,
+        "requests": 329,
+        "startIso": "2026-09-10T13:01:20.924Z",
+        "tokens": 51664792
+      }
+    ]
+  },
+  "budgets": [],
+  "generatedAt": "2026-09-10T21:19:45.351Z",
+  "history": {
+    "days": [
+      "2026-08-13",
+      "2026-08-14",
+      "2026-08-15",
+      "2026-08-17",
+      "2026-08-18",
+      "2026-08-19",
+      "2026-08-20",
+      "2026-08-21",
+      "2026-08-22",
+      "2026-08-24",
+      "2026-08-25",
+      "2026-08-26",
+      "2026-08-27",
+      "2026-08-28",
+      "2026-08-29",
+      "2026-08-31",
+      "2026-09-01",
+      "2026-09-02",
+      "2026-09-03",
+      "2026-09-04",
+      "2026-09-05",
+      "2026-09-06",
+      "2026-09-07",
+      "2026-09-08",
+      "2026-09-09",
+      "2026-09-10"
+    ],
+    "series": [
+      {
+        "bucket": "codex",
+        "values": [
+          173454717,
+          108895432,
+          64173166,
+          77734588,
+          40197507,
+          1168248960,
+          66312984,
+          63344873,
+          56943931,
+          0,
+          89497758,
+          446236802,
+          90021130,
+          24442267,
+          154229718,
+          13629465,
+          170493803,
+          406904831,
+          443486037,
+          81343361,
+          200133177,
+          99487652,
+          6221282,
+          197289333,
+          2767431,
+          154686297
+        ]
+      },
+      {
+        "bucket": "cursor",
+        "values": [
+          41097,
+          10023,
+          237,
+          668,
+          143262,
+          11523,
+          19604,
+          1010,
+          0,
+          13711,
+          197865,
+          4965,
+          10275,
+          13987,
+          10184,
+          13731,
+          29194,
+          20762,
+          5612,
+          5716,
+          0,
+          7236,
+          10763,
+          496,
+          4504,
+          0
+        ]
+      }
+    ]
+  },
+  "historyYear": {
+    "days": [
+      "2026-04-05",
+      "2026-04-06",
+      "2026-04-07",
+      "2026-04-08",
+      "2026-04-09",
+      "2026-04-10",
+      "2026-04-12",
+      "2026-04-13",
+      "2026-04-14",
+      "2026-04-15",
+      "2026-04-16",
+      "2026-04-17",
+      "2026-04-20",
+      "2026-04-21",
+      "2026-04-22",
+      "2026-04-23",
+      "2026-04-24",
+      "2026-04-26",
+      "2026-04-27",
+      "2026-04-28",
+      "2026-05-04",
+      "2026-05-05",
+      "2026-05-06",
+      "2026-05-07",
+      "2026-05-11",
+      "2026-05-12",
+      "2026-05-19",
+      "2026-05-21",
+      "2026-05-22",
+      "2026-05-25",
+      "2026-05-26",
+      "2026-05-27",
+      "2026-05-28",
+      "2026-05-29",
+      "2026-06-04",
+      "2026-06-17",
+      "2026-06-18",
+      "2026-06-19",
+      "2026-06-22",
+      "2026-06-23",
+      "2026-06-24",
+      "2026-06-29",
+      "2026-06-30",
+      "2026-07-01",
+      "2026-07-06",
+      "2026-07-07",
+      "2026-07-08",
+      "2026-07-09",
+      "2026-07-10",
+      "2026-07-11",
+      "2026-07-12",
+      "2026-07-13",
+      "2026-07-14",
+      "2026-07-15",
+      "2026-07-16",
+      "2026-07-17",
+      "2026-07-18",
+      "2026-07-20",
+      "2026-07-21",
+      "2026-07-22",
+      "2026-07-23",
+      "2026-07-24",
+      "2026-07-25",
+      "2026-07-26",
+      "2026-07-30",
+      "2026-08-03",
+      "2026-08-04",
+      "2026-08-05",
+      "2026-08-06",
+      "2026-08-07",
+      "2026-08-08",
+      "2026-08-09",
+      "2026-08-10",
+      "2026-08-11",
+      "2026-08-12",
+      "2026-08-13",
+      "2026-08-14",
+      "2026-08-15",
+      "2026-08-17",
+      "2026-08-18",
+      "2026-08-19",
+      "2026-08-20",
+      "2026-08-21",
+      "2026-08-22",
+      "2026-08-24",
+      "2026-08-25",
+      "2026-08-26",
+      "2026-08-27",
+      "2026-08-28",
+      "2026-08-29",
+      "2026-08-31",
+      "2026-09-01",
+      "2026-09-02",
+      "2026-09-03",
+      "2026-09-04",
+      "2026-09-05",
+      "2026-09-06",
+      "2026-09-07",
+      "2026-09-08",
+      "2026-09-09",
+      "2026-09-10"
+    ],
+    "series": [
+      {
+        "bucket": "codex",
+        "values": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          559556,
+          0,
+          13944162,
+          34048511,
+          5130724,
+          0,
+          0,
+          0,
+          15492926,
+          0,
+          2668842,
+          1858571,
+          142151923,
+          138610443,
+          218873208,
+          108465475,
+          212475842,
+          350898603,
+          305329550,
+          53810486,
+          146439046,
+          22356466,
+          63694471,
+          60909373,
+          413546711,
+          46978264,
+          3852913,
+          358710889,
+          588298476,
+          79952137,
+          97439445,
+          2356092,
+          117271490,
+          34030320,
+          248864392,
+          93052,
+          401545668,
+          173454717,
+          108895432,
+          64173166,
+          77734588,
+          40197507,
+          1168248960,
+          66312984,
+          63344873,
+          56943931,
+          0,
+          89497758,
+          446236802,
+          90021130,
+          24442267,
+          154229718,
+          13629465,
+          170493803,
+          406904831,
+          443486037,
+          81343361,
+          200133177,
+          99487652,
+          6221282,
+          197289333,
+          2767431,
+          154686297
+        ]
+      },
+      {
+        "bucket": "cursor",
+        "values": [
+          12527,
+          38848,
+          78055,
+          37436,
+          27304,
+          3644,
+          4071,
+          5782,
+          10741,
+          6163,
+          9791,
+          3350,
+          1656,
+          4479,
+          14018,
+          17044,
+          1509,
+          17833,
+          28219,
+          4256,
+          60337,
+          3949,
+          6914,
+          6036,
+          283,
+          1905,
+          3883,
+          464,
+          13227,
+          10242,
+          1242,
+          8257,
+          29906,
+          1772,
+          938,
+          16753,
+          6723,
+          6192,
+          859,
+          843,
+          3045,
+          0,
+          0,
+          28524,
+          1529,
+          1113,
+          22708,
+          14812,
+          4710,
+          718,
+          325,
+          4511,
+          0,
+          7252,
+          19914,
+          26702,
+          716,
+          25735,
+          1124,
+          31374,
+          5869,
+          8272,
+          0,
+          0,
+          0,
+          2070,
+          0,
+          157546,
+          7447,
+          9150,
+          9719,
+          10807,
+          20691,
+          37118,
+          7419,
+          41097,
+          10023,
+          237,
+          668,
+          143262,
+          11523,
+          19604,
+          1010,
+          0,
+          13711,
+          197865,
+          4965,
+          10275,
+          13987,
+          10184,
+          13731,
+          29194,
+          20762,
+          5612,
+          5716,
+          0,
+          7236,
+          10763,
+          496,
+          4504,
+          0
+        ]
+      },
+      {
+        "bucket": "t3code",
+        "values": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          2840,
+          6094,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      }
+    ]
+  },
+  "limits": [
+    {
+      "accountKey": "codex",
+      "freshness": "fresh",
+      "observedAt": "2026-09-10T13:10:26.696Z",
+      "origin": "scan",
+      "provider": "codex",
+      "windows": [
+        {
+          "cost": 0,
+          "kind": "day",
+          "requests": 0,
+          "resetsAt": "2026-09-10T13:22:19.000Z",
+          "source": "embedded",
+          "tokens": 0,
+          "usedPct": 20
+        },
+        {
+          "cost": 386.513001724,
+          "kind": "week",
+          "requests": 3079,
+          "resetsAt": "2026-09-15T08:52:15.000Z",
+          "source": "embedded",
+          "tokens": 370963707,
+          "usedPct": 37
+        },
+        {
+          "cost": 3043.562923804,
+          "kind": "month",
+          "requests": 15535,
+          "resetsAt": "2026-10-04T21:03:19.000Z",
+          "source": "embedded",
+          "tokens": 2259836229,
+          "usedPct": 94
+        },
+        {
+          "cost": 0,
+          "kind": "0min",
+          "requests": 0,
+          "resetsAt": "2026-07-24T09:05:49.000Z",
+          "source": "embedded",
+          "tokens": 0,
+          "usedPct": 0
+        }
+      ]
+    },
+    {
+      "accountKey": "base_model_inference",
+      "email": "dev@example.com",
+      "freshness": "fresh",
+      "observedAt": "2026-09-04T20:41:41.134Z",
+      "origin": "scan",
+      "provider": "codex",
+      "windows": [
+        {
+          "cost": 0,
+          "kind": "day",
+          "requests": 0,
+          "resetsAt": "2026-09-10T22:00:00.000Z",
+          "source": "derived",
+          "tokens": 0,
+          "windowEnd": "2026-09-10T22:00:00.000Z",
+          "windowStart": "2026-09-09T22:00:00.000Z"
+        },
+        {
+          "cost": 9.6506056,
+          "kind": "week",
+          "requests": 78,
+          "resetsAt": "2026-09-11T20:41:27.000Z",
+          "source": "embedded",
+          "tokens": 8653658,
+          "usedPct": 0
+        },
+        {
+          "cost": 214.1928188,
+          "kind": "month",
+          "requests": 1561,
+          "resetsAt": "2026-09-30T22:00:00.000Z",
+          "source": "derived",
+          "tokens": 191960181,
+          "windowEnd": "2026-09-30T22:00:00.000Z",
+          "windowStart": "2026-08-31T22:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "accountKey": "default",
+      "freshness": "unknown",
+      "origin": "scan",
+      "provider": "cursor",
+      "windows": [
+        {
+          "cost": 0.10832125000000001,
+          "kind": "month",
+          "requests": 469,
+          "resetsAt": "2026-09-30T22:00:00.000Z",
+          "source": "derived",
+          "tokens": 84283,
+          "windowEnd": "2026-09-30T22:00:00.000Z",
+          "windowStart": "2026-08-31T22:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "accountKey": "cursor",
+      "freshness": "unknown",
+      "origin": "scan",
+      "provider": "t3code",
+      "windows": [
+        {
+          "cost": 0,
+          "kind": "day",
+          "requests": 0,
+          "resetsAt": "2026-09-10T22:00:00.000Z",
+          "source": "derived",
+          "tokens": 0,
+          "windowEnd": "2026-09-10T22:00:00.000Z",
+          "windowStart": "2026-09-09T22:00:00.000Z"
+        },
+        {
+          "cost": 0,
+          "kind": "week",
+          "requests": 0,
+          "resetsAt": "2026-09-13T22:00:00.000Z",
+          "source": "derived",
+          "tokens": 0,
+          "windowEnd": "2026-09-13T22:00:00.000Z",
+          "windowStart": "2026-09-06T22:00:00.000Z"
+        },
+        {
+          "cost": 0,
+          "kind": "month",
+          "requests": 0,
+          "resetsAt": "2026-09-30T22:00:00.000Z",
+          "source": "derived",
+          "tokens": 0,
+          "windowEnd": "2026-09-30T22:00:00.000Z",
+          "windowStart": "2026-08-31T22:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "accountKey": "codex-lb:plus",
+      "email": "dev@example.com",
+      "freshness": "fresh",
+      "observedAt": "2026-08-02T22:21:23.333Z",
+      "origin": "scan",
+      "planLabel": "Plus",
+      "provider": "codex",
+      "windows": [
+        {
+          "cost": 0,
+          "kind": "day",
+          "requests": 0,
+          "resetsAt": "2026-07-12T21:17:06.000Z",
+          "source": "embedded",
+          "tokens": 0,
+          "usedPct": 100
+        },
+        {
+          "cost": 0,
+          "kind": "week",
+          "requests": 0,
+          "resetsAt": "2026-07-25T00:11:34.000Z",
+          "source": "embedded",
+          "tokens": 0,
+          "usedPct": 10
+        },
+        {
+          "cost": 0,
+          "kind": "month",
+          "requests": 0,
+          "resetsAt": "2026-09-30T22:00:00.000Z",
+          "source": "derived",
+          "tokens": 0,
+          "windowEnd": "2026-09-30T22:00:00.000Z",
+          "windowStart": "2026-08-31T22:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "accountKey": "openai:plus",
+      "email": "dev@example.com",
+      "freshness": "fresh",
+      "observedAt": "2026-07-25T21:23:38.601Z",
+      "origin": "scan",
+      "planLabel": "Plus",
+      "provider": "codex",
+      "windows": [
+        {
+          "cost": 0,
+          "kind": "day",
+          "requests": 0,
+          "resetsAt": "2026-07-12T22:55:26.000Z",
+          "source": "embedded",
+          "tokens": 0,
+          "usedPct": 31
+        },
+        {
+          "cost": 0,
+          "kind": "week",
+          "requests": 0,
+          "resetsAt": "2026-07-25T00:11:34.000Z",
+          "source": "embedded",
+          "tokens": 0,
+          "usedPct": 10
+        },
+        {
+          "cost": 0,
+          "kind": "month",
+          "requests": 0,
+          "resetsAt": "2026-09-30T22:00:00.000Z",
+          "source": "derived",
+          "tokens": 0,
+          "windowEnd": "2026-09-30T22:00:00.000Z",
+          "windowStart": "2026-08-31T22:00:00.000Z"
+        }
+      ]
+    }
+  ],
+  "modelPeriods": [
+    {
+      "key": "today",
+      "rows": [
+        {
+          "bucket": "Deepseek/deepseek-flash",
+          "cacheReadTokens": 21810688,
+          "cacheWriteTokens": 0,
+          "costUsd": 3.506130414,
+          "inputTokens": 22292789,
+          "outputTokens": 161300,
+          "requests": 291,
+          "sessions": 2
+        },
+        {
+          "bucket": "gpt-5.6-luna",
+          "cacheReadTokens": 51418240,
+          "cacheWriteTokens": 0,
+          "costUsd": 11.8479202,
+          "inputTokens": 53156989,
+          "outputTokens": 156798,
+          "requests": 430,
+          "sessions": 4
+        },
+        {
+          "bucket": "gpt-5.6-terra",
+          "cacheReadTokens": 2704128,
+          "cacheWriteTokens": 0,
+          "costUsd": 6.5672156,
+          "inputTokens": 2979799,
+          "outputTokens": 5566,
+          "requests": 24,
+          "sessions": 1
+        }
+      ]
+    },
+    {
+      "key": "yesterday",
+      "rows": [
+        {
+          "bucket": "Deepseek/deepseek-flash",
+          "cacheReadTokens": 21810688,
+          "cacheWriteTokens": 0,
+          "costUsd": 3.506130414,
+          "inputTokens": 22292789,
+          "outputTokens": 161300,
+          "requests": 291,
+          "sessions": 2
+        },
+        {
+          "bucket": "cursor-auto",
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "costUsd": 0.006109,
+          "inputTokens": 1246,
+          "outputTokens": 3258,
+          "requests": 32,
+          "sessions": 2
+        },
+        {
+          "bucket": "gpt-5.6-luna",
+          "cacheReadTokens": 51418240,
+          "cacheWriteTokens": 0,
+          "costUsd": 11.8479202,
+          "inputTokens": 53156989,
+          "outputTokens": 156798,
+          "requests": 430,
+          "sessions": 4
+        },
+        {
+          "bucket": "gpt-5.6-terra",
+          "cacheReadTokens": 4036096,
+          "cacheWriteTokens": 0,
+          "costUsd": 9.7505452,
+          "inputTokens": 4410661,
+          "outputTokens": 10167,
+          "requests": 49,
+          "sessions": 1
+        }
+      ]
+    },
+    {
+      "key": "week",
+      "rows": [
+        {
+          "bucket": "Deepseek/deepseek-flash",
+          "cacheReadTokens": 21810688,
+          "cacheWriteTokens": 0,
+          "costUsd": 3.506130414,
+          "inputTokens": 22292789,
+          "outputTokens": 161300,
+          "requests": 291,
+          "sessions": 2
+        },
+        {
+          "bucket": "cursor-auto",
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "costUsd": 0.03880605,
+          "inputTokens": 8146,
+          "outputTokens": 20569,
+          "requests": 208,
+          "sessions": 14
+        },
+        {
+          "bucket": "cursor/grok-4.6",
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "costUsd": 3.703248,
+          "inputTokens": 1684656,
+          "outputTokens": 55656,
+          "requests": 21,
+          "sessions": 1
+        },
+        {
+          "bucket": "gpt-5.4-mini",
+          "cacheReadTokens": 10735104,
+          "cacheWriteTokens": 0,
+          "costUsd": 10.27577955,
+          "inputTokens": 11939353,
+          "outputTokens": 114696,
+          "requests": 122,
+          "sessions": 1
+        },
+        {
+          "bucket": "gpt-5.6-luna",
+          "cacheReadTokens": 280225152,
+          "cacheWriteTokens": 0,
+          "costUsd": 252.96784596,
+          "inputTokens": 290429239,
+          "outputTokens": 1005485,
+          "requests": 2338,
+          "sessions": 13
+        },
+        {
+          "bucket": "gpt-5.6-sol",
+          "cacheReadTokens": 1139840,
+          "cacheWriteTokens": 0,
+          "costUsd": 2.881114,
+          "inputTokens": 1260543,
+          "outputTokens": 13206,
+          "requests": 16,
+          "sessions": 1
+        },
+        {
+          "bucket": "gpt-5.6-terra",
+          "cacheReadTokens": 48400384,
+          "cacheWriteTokens": 0,
+          "costUsd": 122.8294894,
+          "inputTokens": 50571175,
+          "outputTokens": 89267,
+          "requests": 369,
+          "sessions": 6
+        }
+      ]
+    },
+    {
+      "key": "month",
+      "rows": [
+        {
+          "bucket": "Deepseek/deepseek-flash",
+          "cacheReadTokens": 21810688,
+          "cacheWriteTokens": 0,
+          "costUsd": 3.506130414,
+          "inputTokens": 22292789,
+          "outputTokens": 161300,
+          "requests": 291,
+          "sessions": 2
+        },
+        {
+          "bucket": "cursor-auto",
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "costUsd": 0.8086263,
+          "inputTokens": 137617,
+          "outputTokens": 446227,
+          "requests": 4003,
+          "sessions": 84
+        },
+        {
+          "bucket": "cursor/grok-4.5",
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "costUsd": 2.3247079999999998,
+          "inputTokens": 1136110,
+          "outputTokens": 8748,
+          "requests": 7,
+          "sessions": 1
+        },
+        {
+          "bucket": "cursor/grok-4.6",
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "costUsd": 3.867326,
+          "inputTokens": 1748200,
+          "outputTokens": 61821,
+          "requests": 22,
+          "sessions": 2
+        },
+        {
+          "bucket": "gpt-5.4-mini",
+          "cacheReadTokens": 11076864,
+          "cacheWriteTokens": 0,
+          "costUsd": 10.70152305,
+          "inputTokens": 12444983,
+          "outputTokens": 119338,
+          "requests": 131,
+          "sessions": 2
+        },
+        {
+          "bucket": "gpt-5.6-luna",
+          "cacheReadTokens": 1798982272,
+          "cacheWriteTokens": 0,
+          "costUsd": 1693.41318364,
+          "inputTokens": 1873738699,
+          "outputTokens": 6770152,
+          "requests": 13359,
+          "sessions": 57
+        },
+        {
+          "bucket": "gpt-5.6-sol",
+          "cacheReadTokens": 100825216,
+          "cacheWriteTokens": 0,
+          "costUsd": 475.6223554,
+          "inputTokens": 104077269,
+          "outputTokens": 307367,
+          "requests": 677,
+          "sessions": 7
+        },
+        {
+          "bucket": "gpt-5.6-terra",
+          "cacheReadTokens": 417230720,
+          "cacheWriteTokens": 0,
+          "costUsd": 1068.3205161,
+          "inputTokens": 428058815,
+          "outputTokens": 870819,
+          "requests": 2609,
+          "sessions": 15
+        }
+      ]
+    },
+    {
+      "key": "year",
+      "rows": [
+        {
+          "bucket": "Deepseek/deepseek-flash",
+          "cacheReadTokens": 21810688,
+          "cacheWriteTokens": 0,
+          "costUsd": 3.506130414,
+          "inputTokens": 22292789,
+          "outputTokens": 161300,
+          "requests": 291,
+          "sessions": 2
+        },
+        {
+          "bucket": "codex-auto-review",
+          "cacheReadTokens": 475648,
+          "cacheWriteTokens": 0,
+          "costUsd": 0.63137215,
+          "inputTokens": 740112,
+          "outputTokens": 1469,
+          "requests": 20,
+          "sessions": 3
+        },
+        {
+          "bucket": "cursor-auto",
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "costUsd": 2.1605637,
+          "inputTokens": 356243,
+          "outputTokens": 1198553,
+          "requests": 10422,
+          "sessions": 320
+        },
+        {
+          "bucket": "cursor/grok-4.5",
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "costUsd": 101.749336,
+          "inputTokens": 49750268,
+          "outputTokens": 374800,
+          "requests": 508,
+          "sessions": 7
+        },
+        {
+          "bucket": "cursor/grok-4.6",
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "costUsd": 3.867326,
+          "inputTokens": 1748200,
+          "outputTokens": 61821,
+          "requests": 22,
+          "sessions": 2
+        },
+        {
+          "bucket": "gpt-5.4",
+          "cacheReadTokens": 23989376,
+          "cacheWriteTokens": 0,
+          "costUsd": 86.001554,
+          "inputTokens": 30781956,
+          "outputTokens": 203288,
+          "requests": 235,
+          "sessions": 11
+        },
+        {
+          "bucket": "gpt-5.4-mini",
+          "cacheReadTokens": 12006016,
+          "cacheWriteTokens": 0,
+          "costUsd": 11.9077827,
+          "inputTokens": 13789870,
+          "outputTokens": 147762,
+          "requests": 156,
+          "sessions": 4
+        },
+        {
+          "bucket": "gpt-5.5",
+          "cacheReadTokens": 315165312,
+          "cacheWriteTokens": 0,
+          "costUsd": 2011.122961,
+          "inputTokens": 362382893,
+          "outputTokens": 1387528,
+          "requests": 3002,
+          "sessions": 16
+        },
+        {
+          "bucket": "gpt-5.6-luna",
+          "cacheReadTokens": 2056484480,
+          "cacheWriteTokens": 0,
+          "costUsd": 1935.45796648,
+          "inputTokens": 2145575784,
+          "outputTokens": 7953697,
+          "requests": 15591,
+          "sessions": 87
+        },
+        {
+          "bucket": "gpt-5.6-sol",
+          "cacheReadTokens": 761480064,
+          "cacheWriteTokens": 0,
+          "costUsd": 3667.3165894,
+          "inputTokens": 791858142,
+          "outputTokens": 2244261,
+          "requests": 5440,
+          "sessions": 16
+        },
+        {
+          "bucket": "gpt-5.6-terra",
+          "cacheReadTokens": 1012546944,
+          "cacheWriteTokens": 0,
+          "costUsd": 2683.8035844,
+          "inputTokens": 1052514878,
+          "outputTokens": 2906670,
+          "requests": 6875,
+          "sessions": 61
+        },
+        {
+          "bucket": "grok-4.5",
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "costUsd": 0.037978,
+          "inputTokens": 1676,
+          "outputTokens": 5771,
+          "requests": 42,
+          "sessions": 1
+        }
+      ]
+    }
+  ],
+  "notifications": {
+    "burnWarningRatio": 0.8,
+    "burnWarnings": false,
+    "disabledNotifications": [],
+    "enabled": false,
+    "quotaCriticalPercent": 10,
+    "resetAware": false
+  },
+  "presence": [],
+  "providerPeriods": [
+    {
+      "key": "today",
+      "rows": [
+        {
+          "bucket": "openai",
+          "cacheReadTokens": 75933056,
+          "cacheWriteTokens": 0,
+          "costUsd": 21.921266214,
+          "inputTokens": 78429577,
+          "outputTokens": 323664,
+          "requests": 745,
+          "sessions": 7
+        }
+      ]
+    },
+    {
+      "key": "yesterday",
+      "rows": [
+        {
+          "bucket": "openai",
+          "cacheReadTokens": 77265024,
+          "cacheWriteTokens": 0,
+          "costUsd": 25.104595814,
+          "inputTokens": 79860439,
+          "outputTokens": 328265,
+          "requests": 770,
+          "sessions": 7
+        },
+        {
+          "bucket": "other",
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "costUsd": 0.006109,
+          "inputTokens": 1246,
+          "outputTokens": 3258,
+          "requests": 32,
+          "sessions": 2
+        }
+      ]
+    },
+    {
+      "key": "week",
+      "rows": [
+        {
+          "bucket": "openai",
+          "cacheReadTokens": 362311168,
+          "cacheWriteTokens": 0,
+          "costUsd": 396.163607324,
+          "inputTokens": 378177755,
+          "outputTokens": 1439610,
+          "requests": 3157,
+          "sessions": 26
+        },
+        {
+          "bucket": "other",
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "costUsd": 0.03880605,
+          "inputTokens": 8146,
+          "outputTokens": 20569,
+          "requests": 208,
+          "sessions": 14
+        }
+      ]
+    },
+    {
+      "key": "month",
+      "rows": [
+        {
+          "bucket": "openai",
+          "cacheReadTokens": 2349925760,
+          "cacheWriteTokens": 0,
+          "costUsd": 3257.755742604,
+          "inputTokens": 2443496865,
+          "outputTokens": 8299545,
+          "requests": 17096,
+          "sessions": 90
+        },
+        {
+          "bucket": "other",
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "costUsd": 0.8086263,
+          "inputTokens": 137617,
+          "outputTokens": 446227,
+          "requests": 4003,
+          "sessions": 84
+        }
+      ]
+    },
+    {
+      "key": "year",
+      "rows": [
+        {
+          "bucket": "openai",
+          "cacheReadTokens": 4203958528,
+          "cacheWriteTokens": 0,
+          "costUsd": 10505.364602543998,
+          "inputTokens": 4471434892,
+          "outputTokens": 15442596,
+          "requests": 32140,
+          "sessions": 234
+        },
+        {
+          "bucket": "other",
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "costUsd": 2.1605637,
+          "inputTokens": 356243,
+          "outputTokens": 1198553,
+          "requests": 10422,
+          "sessions": 320
+        },
+        {
+          "bucket": "xai",
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "costUsd": 0.037978,
+          "inputTokens": 1676,
+          "outputTokens": 5771,
+          "requests": 42,
+          "sessions": 1
+        }
+      ]
+    }
+  ],
+  "providers": [
+    {
+      "costUsd": 21.92,
+      "id": "codex",
+      "requests": 745,
+      "sessions": 6,
+      "tokens": 154686297
+    }
+  ],
+  "recentSessions": {
+    "hasMore": true,
+    "page": 1,
+    "rows": [
+      {
+        "accountKey": "base_model_inference",
+        "cachePct": 49,
+        "cacheReadTokens": 180780288,
+        "cacheWriteTokens": 0,
+        "costUsd": 202.660029852,
+        "inputTokens": 187406654,
+        "lastRequestAt": "2026-09-10T15:20:11.437Z",
+        "models": [
+          "gpt-5.6-luna",
+          "gpt-5.4-mini",
+          "gpt-5.6-terra",
+          "Deepseek/deepseek-flash"
+        ],
+        "outputTokens": 859116,
+        "provider": "codex",
+        "repos": [
+          "lab/tokitoki"
+        ],
+        "requests": 1546,
+        "sessionId": "01a0618a-70b1-7691-94bd-f7dcc84c8bb8",
+        "snippet": "### User \u00b7 2026-01-01 00:00:00 e2e fixture prompt ### Assistant \u00b7 2026-01-01 00:00:01",
+        "startedAt": "2026-09-02T09:54:50.658Z",
+        "title": "e2e fixture session",
+        "totalTokens": 369046058
+      },
+      {
+        "accountKey": "codex",
+        "cachePct": 49,
+        "cacheReadTokens": 43845760,
+        "cacheWriteTokens": 0,
+        "costUsd": 175.89045307199999,
+        "inputTokens": 45118897,
+        "lastRequestAt": "2026-09-10T14:54:47.862Z",
+        "models": [
+          "gpt-5.6-sol",
+          "Deepseek/deepseek-flash"
+        ],
+        "outputTokens": 209483,
+        "provider": "codex",
+        "repos": [
+          "project-1"
+        ],
+        "requests": 366,
+        "sessionId": "01a04ccf-d262-7ae0-95b8-f46e26a9eb9b",
+        "snippet": "### User \u00b7 2026-01-01 00:00:00 e2e fixture prompt ### Assistant \u00b7 2026-01-01 00:00:01",
+        "startedAt": "2026-08-29T09:20:23.145Z",
+        "title": "e2e fixture session",
+        "totalTokens": 89174140
+      },
+      {
+        "accountKey": "codex",
+        "cachePct": 48,
+        "cacheReadTokens": 3811072,
+        "cacheWriteTokens": 0,
+        "costUsd": 1.4460338400000001,
+        "inputTokens": 4072220,
+        "lastRequestAt": "2026-09-10T13:10:26.696Z",
+        "models": [
+          "gpt-5.6-terra",
+          "gpt-5.6-luna"
+        ],
+        "outputTokens": 14169,
+        "provider": "codex",
+        "repos": [
+          "project-1"
+        ],
+        "requests": 45,
+        "sessionId": "01a082ac-17c0-78d3-bd3b-80a8afd2e7eb",
+        "snippet": "### User \u00b7 2026-01-01 00:00:00 e2e fixture prompt ### Assistant \u00b7 2026-01-01 00:00:01",
+        "startedAt": "2026-09-08T20:19:36.637Z",
+        "title": "e2e fixture session",
+        "totalTokens": 7897461
+      },
+      {
+        "accountKey": "base_model_inference",
+        "cachePct": 49,
+        "cacheReadTokens": 274941312,
+        "cacheWriteTokens": 0,
+        "costUsd": 272.639067,
+        "inputTokens": 283311267,
+        "lastRequestAt": "2026-09-10T02:28:33.852Z",
+        "models": [
+          "gpt-5.6-luna"
+        ],
+        "outputTokens": 914184,
+        "provider": "codex",
+        "repos": [
+          "project-9"
+        ],
+        "requests": 2244,
+        "sessionId": "01a05ef6-274d-7960-b99f-779c8d810a24",
+        "snippet": "### User \u00b7 2026-01-01 00:00:00 e2e fixture prompt ### Assistant \u00b7 2026-01-01 00:00:01",
+        "startedAt": "2026-09-01T21:53:50.397Z",
+        "title": "e2e fixture session",
+        "totalTokens": 559166763
+      },
+      {
+        "accountKey": "codex",
+        "cachePct": 49,
+        "cacheReadTokens": 13930368,
+        "cacheWriteTokens": 0,
+        "costUsd": 12.029908240000001,
+        "inputTokens": 14608673,
+        "lastRequestAt": "2026-09-09T23:49:01.800Z",
+        "models": [
+          "gpt-5.6-terra",
+          "gpt-5.6-luna"
+        ],
+        "outputTokens": 45063,
+        "provider": "codex",
+        "repos": [
+          "project-15"
+        ],
+        "requests": 143,
+        "sessionId": "01a08732-657d-74e0-bb0d-24cda0368470",
+        "snippet": "### User \u00b7 2026-01-01 00:00:00 e2e fixture prompt ### Assistant \u00b7 2026-01-01 00:00:01",
+        "startedAt": "2026-09-09T17:23:49.369Z",
+        "title": "e2e fixture session",
+        "totalTokens": 28584104
+      },
+      {
+        "accountKey": "codex",
+        "cachePct": 47,
+        "cacheReadTokens": 1616384,
+        "cacheWriteTokens": 0,
+        "costUsd": 0.40511908,
+        "inputTokens": 1799727,
+        "lastRequestAt": "2026-09-09T23:37:06.172Z",
+        "models": [
+          "gpt-5.6-luna"
+        ],
+        "outputTokens": 10705,
+        "provider": "codex",
+        "repos": [
+          "project-12"
+        ],
+        "requests": 18,
+        "sessionId": "01a08884-2004-7b53-ab9d-3b4ae0724adc",
+        "snippet": "### User \u00b7 2026-01-01 00:00:00 e2e fixture prompt ### Assistant \u00b7 2026-01-01 00:00:01",
+        "startedAt": "2026-09-09T23:33:09.150Z",
+        "title": "e2e fixture session",
+        "totalTokens": 3426816
+      },
+      {
+        "accountKey": "default",
+        "cachePct": 0,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
+        "costUsd": 0.0054111,
+        "inputTokens": 1220,
+        "lastRequestAt": "2026-09-09T16:03:54.624Z",
+        "models": [
+          "cursor-auto"
+        ],
+        "outputTokens": 2822,
+        "provider": "cursor",
+        "repos": [
+          "(no repo)"
+        ],
+        "requests": 26,
+        "sessionId": "bec76c89-0201-4fec-bee5-8aebfd33434e",
+        "startedAt": "2026-09-09T10:39:53.501Z",
+        "totalTokens": 4042
+      },
+      {
+        "accountKey": "default",
+        "cachePct": 0,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
+        "costUsd": 0.0006979000000000001,
+        "inputTokens": 26,
+        "lastRequestAt": "2026-09-09T11:00:07.557Z",
+        "models": [
+          "cursor-auto"
+        ],
+        "outputTokens": 436,
+        "provider": "cursor",
+        "repos": [
+          "(no repo)"
+        ],
+        "requests": 6,
+        "sessionId": "6b56808e-ecd3-4688-a4ac-1f5528d6c1b9",
+        "startedAt": "2026-09-09T10:58:54.204Z",
+        "totalTokens": 462
+      },
+      {
+        "accountKey": "codex",
+        "cachePct": 0,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
+        "costUsd": 3.703248,
+        "inputTokens": 1684656,
+        "lastRequestAt": "2026-09-08T17:38:39.849Z",
+        "models": [
+          "cursor/grok-4.6"
+        ],
+        "outputTokens": 55656,
+        "provider": "codex",
+        "repos": [
+          "project-1"
+        ],
+        "requests": 21,
+        "sessionId": "01a08202-191c-7dc0-a11f-41c3943a98ad",
+        "snippet": "### User \u00b7 2026-01-01 00:00:00 e2e fixture prompt ### Assistant \u00b7 2026-01-01 00:00:01",
+        "startedAt": "2026-09-08T17:25:44.221Z",
+        "title": "e2e fixture session",
+        "totalTokens": 1740312
+      },
+      {
+        "accountKey": "codex",
+        "cachePct": 49,
+        "cacheReadTokens": 44485888,
+        "cacheWriteTokens": 0,
+        "costUsd": 79.2610232,
+        "inputTokens": 46304285,
+        "lastRequestAt": "2026-09-08T15:14:41.984Z",
+        "models": [
+          "gpt-5.6-sol",
+          "gpt-5.6-luna",
+          "gpt-5.6-terra"
+        ],
+        "outputTokens": 132909,
+        "provider": "codex",
+        "repos": [
+          "project-1"
+        ],
+        "requests": 306,
+        "sessionId": "01a04dfc-9711-7c72-8aa9-f2902dd4e7ff",
+        "snippet": "### User \u00b7 2026-01-01 00:00:00 e2e fixture prompt ### Assistant \u00b7 2026-01-01 00:00:01",
+        "startedAt": "2026-08-29T14:48:15.371Z",
+        "title": "e2e fixture session",
+        "totalTokens": 90923082
+      },
+      {
+        "accountKey": "codex",
+        "cachePct": 49,
+        "cacheReadTokens": 8891392,
+        "cacheWriteTokens": 0,
+        "costUsd": 2.04290964,
+        "inputTokens": 9131159,
+        "lastRequestAt": "2026-09-08T15:02:11.075Z",
+        "models": [
+          "gpt-5.6-luna"
+        ],
+        "outputTokens": 32375,
+        "provider": "codex",
+        "repos": [
+          "project-1"
+        ],
+        "requests": 72,
+        "sessionId": "01a08172-beac-7fa0-a923-5264702660b7",
+        "snippet": "### User \u00b7 2026-01-01 00:00:00 e2e fixture prompt ### Assistant \u00b7 2026-01-01 00:00:01",
+        "startedAt": "2026-09-08T14:36:30.171Z",
+        "title": "e2e fixture session",
+        "totalTokens": 18054926
+      },
+      {
+        "accountKey": "codex",
+        "cachePct": 47,
+        "cacheReadTokens": 1139840,
+        "cacheWriteTokens": 0,
+        "costUsd": 2.881114,
+        "inputTokens": 1260543,
+        "lastRequestAt": "2026-09-08T14:53:54.542Z",
+        "models": [
+          "gpt-5.6-sol"
+        ],
+        "outputTokens": 13206,
+        "provider": "codex",
+        "repos": [
+          "project-1"
+        ],
+        "requests": 16,
+        "sessionId": "01a0817a-d5d0-7790-8aa9-23f259e8efdc",
+        "snippet": "### User \u00b7 2026-01-01 00:00:00 e2e fixture prompt ### Assistant \u00b7 2026-01-01 00:00:01",
+        "startedAt": "2026-09-08T14:45:26.070Z",
+        "title": "e2e fixture session",
+        "totalTokens": 2413589
+      },
+      {
+        "accountKey": "codex",
+        "cachePct": 47,
+        "cacheReadTokens": 2451200,
+        "cacheWriteTokens": 0,
+        "costUsd": 2.20170524,
+        "inputTokens": 2729105,
+        "lastRequestAt": "2026-09-08T14:38:46.253Z",
+        "models": [
+          "gpt-5.6-luna"
+        ],
+        "outputTokens": 12349,
+        "provider": "codex",
+        "repos": [
+          "project-1"
+        ],
+        "requests": 29,
+        "sessionId": "01a07284-a7af-7b80-8072-7f7a620aec19",
+        "snippet": "### User \u00b7 2026-01-01 00:00:00 e2e fixture prompt ### Assistant \u00b7 2026-01-01 00:00:01",
+        "startedAt": "2026-09-05T17:02:12.684Z",
+        "title": "e2e fixture session",
+        "totalTokens": 5192654
+      },
+      {
+        "accountKey": "default",
+        "cachePct": 0,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
+        "costUsd": 0.3015731,
+        "inputTokens": 38694,
+        "lastRequestAt": "2026-09-08T14:33:38.516Z",
+        "models": [
+          "cursor-auto"
+        ],
+        "outputTokens": 173344,
+        "provider": "cursor",
+        "repos": [
+          "(no repo)"
+        ],
+        "requests": 1593,
+        "sessionId": "35ee2041-86ba-4043-a97d-234ab5a3eeda",
+        "startedAt": "2026-08-18T13:50:46.500Z",
+        "totalTokens": 212038
+      },
+      {
+        "accountKey": "codex",
+        "cachePct": 49,
+        "cacheReadTokens": 283994496,
+        "cacheWriteTokens": 0,
+        "costUsd": 265.16661406000003,
+        "inputTokens": 294582867,
+        "lastRequestAt": "2026-09-07T23:36:26.567Z",
+        "models": [
+          "gpt-5.6-luna",
+          "gpt-5.6-terra"
+        ],
+        "outputTokens": 849714,
+        "provider": "codex",
+        "repos": [
+          "project-1"
+        ],
+        "requests": 1848,
+        "sessionId": "01a03b2b-34b9-7822-a8c7-59a6d9a1e16d",
+        "snippet": "### User \u00b7 2026-01-01 00:00:00 e2e fixture prompt ### Assistant \u00b7 2026-01-01 00:00:01",
+        "startedAt": "2026-08-25T23:04:42.511Z",
+        "title": "e2e fixture session",
+        "totalTokens": 579427077
+      },
+      {
+        "accountKey": "default",
+        "cachePct": 0,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
+        "costUsd": 0.00348435,
+        "inputTokens": 175,
+        "lastRequestAt": "2026-09-07T13:10:34.446Z",
+        "models": [
+          "cursor-auto"
+        ],
+        "outputTokens": 2152,
+        "provider": "cursor",
+        "repos": [
+          "(no repo)"
+        ],
+        "requests": 17,
+        "sessionId": "d4552cc8-d6e5-451c-8f15-acd8b6fc104e",
+        "startedAt": "2026-09-07T12:43:52.930Z",
+        "totalTokens": 2327
+      },
+      {
+        "accountKey": "default",
+        "cachePct": 0,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
+        "costUsd": 0.0008783999999999999,
+        "inputTokens": 180,
+        "lastRequestAt": "2026-09-06T23:43:26.723Z",
+        "models": [
+          "cursor-auto"
+        ],
+        "outputTokens": 468,
+        "provider": "cursor",
+        "repos": [
+          "(no repo)"
+        ],
+        "requests": 5,
+        "sessionId": "e74994c3-a5c8-4592-98e7-12a6f14350b2",
+        "startedAt": "2026-09-06T23:41:45.942Z",
+        "totalTokens": 648
+      },
+      {
+        "accountKey": "default",
+        "cachePct": 0,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
+        "costUsd": 0.0009405500000000001,
+        "inputTokens": 182,
+        "lastRequestAt": "2026-09-06T23:43:12.917Z",
+        "models": [
+          "cursor-auto"
+        ],
+        "outputTokens": 507,
+        "provider": "cursor",
+        "repos": [
+          "(no repo)"
+        ],
+        "requests": 5,
+        "sessionId": "6a27f28e-a6b3-4c6a-a2b5-653dbb9bd65c",
+        "startedAt": "2026-09-06T23:41:45.638Z",
+        "totalTokens": 689
+      },
+      {
+        "accountKey": "default",
+        "cachePct": 0,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
+        "costUsd": 0.0006803,
+        "inputTokens": 184,
+        "lastRequestAt": "2026-09-06T23:42:44.810Z",
+        "models": [
+          "cursor-auto"
+        ],
+        "outputTokens": 338,
+        "provider": "cursor",
+        "repos": [
+          "(no repo)"
+        ],
+        "requests": 3,
+        "sessionId": "de7df2d0-c886-41c0-a872-ef16e0afba48",
+        "startedAt": "2026-09-06T23:41:45.827Z",
+        "totalTokens": 522
+      },
+      {
+        "accountKey": "codex",
+        "cachePct": 49,
+        "cacheReadTokens": 124614656,
+        "cacheWriteTokens": 0,
+        "costUsd": 152.2883403,
+        "inputTokens": 127996807,
+        "lastRequestAt": "2026-09-06T23:34:37.080Z",
+        "models": [
+          "gpt-5.6-luna",
+          "gpt-5.6-terra"
+        ],
+        "outputTokens": 453554,
+        "provider": "codex",
+        "repos": [
+          "project-1"
+        ],
+        "requests": 1026,
+        "sessionId": "01a07264-f0e4-7ff2-ba84-14a4d745fc34",
+        "snippet": "### User \u00b7 2026-01-01 00:00:00 e2e fixture prompt ### Assistant \u00b7 2026-01-01 00:00:01",
+        "startedAt": "2026-09-05T16:28:06.675Z",
+        "title": "e2e fixture session",
+        "totalTokens": 253065017
+      },
+      {
+        "accountKey": "codex",
+        "cachePct": 46,
+        "cacheReadTokens": 284672,
+        "cacheWriteTokens": 0,
+        "costUsd": 0.3635972,
+        "inputTokens": 328050,
+        "lastRequestAt": "2026-09-06T23:28:09.996Z",
+        "models": [
+          "gpt-5.6-luna"
+        ],
+        "outputTokens": 1180,
+        "provider": "codex",
+        "repos": [
+          "project-1"
+        ],
+        "requests": 8,
+        "sessionId": "01a0790a-9ac0-7ca2-8b87-aa04839b891e",
+        "snippet": "### User \u00b7 2026-01-01 00:00:00 e2e fixture prompt ### Assistant \u00b7 2026-01-01 00:00:01",
+        "startedAt": "2026-09-06T23:26:06.268Z",
+        "title": "e2e fixture session",
+        "totalTokens": 613902
+      },
+      {
+        "accountKey": "default",
+        "cachePct": 0,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
+        "costUsd": 0.0015344,
+        "inputTokens": 877,
+        "lastRequestAt": "2026-09-06T21:52:52.351Z",
+        "models": [
+          "cursor-auto"
+        ],
+        "outputTokens": 509,
+        "provider": "cursor",
+        "repos": [
+          "(no repo)"
+        ],
+        "requests": 5,
+        "sessionId": "d8c35a61-017c-4957-9891-11081d37931f",
+        "startedAt": "2026-09-06T21:46:28.301Z",
+        "totalTokens": 1386
+      },
+      {
+        "accountKey": "default",
+        "cachePct": 0,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
+        "costUsd": 0.0017433,
+        "inputTokens": 924,
+        "lastRequestAt": "2026-09-06T21:51:52.877Z",
+        "models": [
+          "cursor-auto"
+        ],
+        "outputTokens": 618,
+        "provider": "cursor",
+        "repos": [
+          "(no repo)"
+        ],
+        "requests": 6,
+        "sessionId": "f48b206f-465d-4e85-8418-9e2496ffea4a",
+        "startedAt": "2026-09-06T21:46:42.192Z",
+        "totalTokens": 1542
+      },
+      {
+        "accountKey": "default",
+        "cachePct": 0,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
+        "costUsd": 0.00132815,
+        "inputTokens": 793,
+        "lastRequestAt": "2026-09-06T21:51:30.661Z",
+        "models": [
+          "cursor-auto"
+        ],
+        "outputTokens": 422,
+        "provider": "cursor",
+        "repos": [
+          "(no repo)"
+        ],
+        "requests": 5,
+        "sessionId": "e4315f25-e64a-4b6a-942d-464228fd8a4a",
+        "startedAt": "2026-09-06T21:46:43.941Z",
+        "totalTokens": 1215
+      },
+      {
+        "accountKey": "default",
+        "cachePct": 0,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
+        "costUsd": 0.00113515,
+        "inputTokens": 710,
+        "lastRequestAt": "2026-09-06T21:49:25.535Z",
+        "models": [
+          "cursor-auto"
+        ],
+        "outputTokens": 343,
+        "provider": "cursor",
+        "repos": [
+          "(no repo)"
+        ],
+        "requests": 4,
+        "sessionId": "0cbaeda6-0b6c-4679-aef1-aa090a5be55d",
+        "startedAt": "2026-09-06T21:46:05.021Z",
+        "totalTokens": 1053
+      },
+      {
+        "accountKey": "default",
+        "cachePct": 0,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
+        "costUsd": 0.00133385,
+        "inputTokens": 776,
+        "lastRequestAt": "2026-09-06T21:49:02.335Z",
+        "models": [
+          "cursor-auto"
+        ],
+        "outputTokens": 435,
+        "provider": "cursor",
+        "repos": [
+          "(no repo)"
+        ],
+        "requests": 5,
+        "sessionId": "d4d6fac3-a3c7-4cd2-85c3-e8bd8c50a154",
+        "startedAt": "2026-09-06T21:46:17.222Z",
+        "totalTokens": 1211
+      },
+      {
+        "accountKey": "codex",
+        "cachePct": 48,
+        "cacheReadTokens": 24526592,
+        "cacheWriteTokens": 0,
+        "costUsd": 31.0838825,
+        "inputTokens": 26456202,
+        "lastRequestAt": "2026-09-04T21:41:53.758Z",
+        "models": [
+          "gpt-5.6-terra",
+          "gpt-5.6-luna"
+        ],
+        "outputTokens": 105262,
+        "provider": "codex",
+        "repos": [
+          "project-1"
+        ],
+        "requests": 218,
+        "sessionId": "01a06869-831c-7160-ab51-f6ffbecadf58",
+        "snippet": "### User \u00b7 2026-01-01 00:00:00 e2e fixture prompt ### Assistant \u00b7 2026-01-01 00:00:01",
+        "startedAt": "2026-09-03T17:56:43.223Z",
+        "title": "e2e fixture session",
+        "totalTokens": 51088056
+      },
+      {
+        "accountKey": "base_model_inference",
+        "cachePct": 49,
+        "cacheReadTokens": 18362112,
+        "cacheWriteTokens": 0,
+        "costUsd": 21.0223662,
+        "inputTokens": 18839673,
+        "lastRequestAt": "2026-09-04T20:41:41.134Z",
+        "models": [
+          "gpt-5.6-luna"
+        ],
+        "outputTokens": 57747,
+        "provider": "codex",
+        "repos": [
+          "project-1"
+        ],
+        "requests": 146,
+        "sessionId": "01a06df8-963e-7021-93ab-2aa46150debe",
+        "snippet": "### User \u00b7 2026-01-01 00:00:00 e2e fixture prompt ### Assistant \u00b7 2026-01-01 00:00:01",
+        "startedAt": "2026-09-04T19:50:14.004Z",
+        "title": "e2e fixture session",
+        "totalTokens": 37259532
+      },
+      {
+        "accountKey": "base_model_inference",
+        "cachePct": 49,
+        "cacheReadTokens": 39937024,
+        "cacheWriteTokens": 0,
+        "costUsd": 46.8086914,
+        "inputTokens": 41162151,
+        "lastRequestAt": "2026-09-04T20:16:30.686Z",
+        "models": [
+          "gpt-5.6-terra",
+          "gpt-5.6-luna"
+        ],
+        "outputTokens": 132563,
+        "provider": "codex",
+        "repos": [
+          "project-1"
+        ],
+        "requests": 332,
+        "sessionId": "01a067f8-1082-7113-bd13-52b6b5b10da3",
+        "snippet": "### User \u00b7 2026-01-01 00:00:00 e2e fixture prompt ### Assistant \u00b7 2026-01-01 00:00:01",
+        "startedAt": "2026-09-03T15:53:29.537Z",
+        "title": "e2e fixture session",
+        "totalTokens": 81231738
+      },
+      {
+        "accountKey": "default",
+        "cachePct": 0,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
+        "costUsd": 0.01345065,
+        "inputTokens": 906,
+        "lastRequestAt": "2026-09-04T16:59:22.242Z",
+        "models": [
+          "cursor-auto"
+        ],
+        "outputTokens": 8181,
+        "provider": "cursor",
+        "repos": [
+          "(no repo)"
+        ],
+        "requests": 66,
+        "sessionId": "e4c895dd-5c04-4618-b8de-00cc7a4f656e",
+        "startedAt": "2026-09-02T15:03:41.441Z",
+        "totalTokens": 9087
+      },
+      {
+        "accountKey": "default",
+        "cachePct": 0,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
+        "costUsd": 0.00393995,
+        "inputTokens": 215,
+        "lastRequestAt": "2026-09-04T09:28:02.187Z",
+        "models": [
+          "cursor-auto"
+        ],
+        "outputTokens": 2424,
+        "provider": "cursor",
+        "repos": [
+          "(no repo)"
+        ],
+        "requests": 20,
+        "sessionId": "3edce5d6-aba0-439c-9f52-b051bb9a2725",
+        "startedAt": "2026-09-04T08:39:05.443Z",
+        "totalTokens": 2639
+      },
+      {
+        "accountKey": "codex",
+        "cachePct": 49,
+        "cacheReadTokens": 3723008,
+        "cacheWriteTokens": 0,
+        "costUsd": 4.3821918,
+        "inputTokens": 3893449,
+        "lastRequestAt": "2026-09-03T14:39:23.499Z",
+        "models": [
+          "gpt-5.6-luna"
+        ],
+        "outputTokens": 19407,
+        "provider": "codex",
+        "repos": [
+          "project-11"
+        ],
+        "requests": 46,
+        "sessionId": "01a067ad-eec6-7f50-ae82-b6209db98562",
+        "snippet": "### User \u00b7 2026-01-01 00:00:00 e2e fixture prompt ### Assistant \u00b7 2026-01-01 00:00:01",
+        "startedAt": "2026-09-03T14:30:56.339Z",
+        "title": "e2e fixture session",
+        "totalTokens": 7635864
+      },
+      {
+        "accountKey": "codex",
+        "cachePct": 49,
+        "cacheReadTokens": 4950528,
+        "cacheWriteTokens": 0,
+        "costUsd": 5.8334258000000005,
+        "inputTokens": 5224055,
+        "lastRequestAt": "2026-09-03T14:21:42.941Z",
+        "models": [
+          "gpt-5.6-luna"
+        ],
+        "outputTokens": 19053,
+        "provider": "codex",
+        "repos": [
+          "project-11"
+        ],
+        "requests": 42,
+        "sessionId": "01a0679c-7934-7622-bfc6-34375874e688",
+        "snippet": "### User \u00b7 2026-01-01 00:00:00 e2e fixture prompt ### Assistant \u00b7 2026-01-01 00:00:01",
+        "startedAt": "2026-09-03T14:11:52.497Z",
+        "title": "e2e fixture session",
+        "totalTokens": 10193636
+      },
+      {
+        "accountKey": "codex",
+        "cachePct": 48,
+        "cacheReadTokens": 3714816,
+        "cacheWriteTokens": 0,
+        "costUsd": 4.4158126,
+        "inputTokens": 3983551,
+        "lastRequestAt": "2026-09-03T14:19:21.548Z",
+        "models": [
+          "gpt-5.6-luna"
+        ],
+        "outputTokens": 10130,
+        "provider": "codex",
+        "repos": [
+          "project-11"
+        ],
+        "requests": 33,
+        "sessionId": "01a0679c-7509-71d0-93f9-0676774d26be",
+        "snippet": "### User \u00b7 2026-01-01 00:00:00 e2e fixture prompt ### Assistant \u00b7 2026-01-01 00:00:01",
+        "startedAt": "2026-09-03T14:11:53.149Z",
+        "title": "e2e fixture session",
+        "totalTokens": 7708497
+      },
+      {
+        "accountKey": "codex",
+        "cachePct": 40,
+        "cacheReadTokens": 341760,
+        "cacheWriteTokens": 0,
+        "costUsd": 0.4257435,
+        "inputTokens": 505630,
+        "lastRequestAt": "2026-09-03T13:54:26.315Z",
+        "models": [
+          "gpt-5.4-mini"
+        ],
+        "outputTokens": 4642,
+        "provider": "codex",
+        "repos": [
+          "project-11"
+        ],
+        "requests": 9,
+        "sessionId": "01a0678b-165d-7e53-b031-4eea7f4d01e3",
+        "snippet": "### User \u00b7 2026-01-01 00:00:00 e2e fixture prompt ### Assistant \u00b7 2026-01-01 00:00:01",
+        "startedAt": "2026-09-03T13:52:50.258Z",
+        "title": "e2e fixture session",
+        "totalTokens": 852032
+      },
+      {
+        "accountKey": "codex",
+        "cachePct": 48,
+        "cacheReadTokens": 3888640,
+        "cacheWriteTokens": 0,
+        "costUsd": 4.673863,
+        "inputTokens": 4177575,
+        "lastRequestAt": "2026-09-03T10:29:23.359Z",
+        "models": [
+          "gpt-5.6-luna"
+        ],
+        "outputTokens": 17904,
+        "provider": "codex",
+        "repos": [
+          "project-11"
+        ],
+        "requests": 42,
+        "sessionId": "01a066c7-d319-7173-90a0-9299f1e691d5",
+        "snippet": "### User \u00b7 2026-01-01 00:00:00 e2e fixture prompt ### Assistant \u00b7 2026-01-01 00:00:01",
+        "startedAt": "2026-09-03T10:19:36.421Z",
+        "title": "e2e fixture session",
+        "totalTokens": 8084119
+      },
+      {
+        "accountKey": "default",
+        "cachePct": 0,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
+        "costUsd": 0.0008042,
+        "inputTokens": 38,
+        "lastRequestAt": "2026-09-03T10:21:12.530Z",
+        "models": [
+          "cursor-auto"
+        ],
+        "outputTokens": 498,
+        "provider": "cursor",
+        "repos": [
+          "(no repo)"
+        ],
+        "requests": 9,
+        "sessionId": "5f98f7e2-b4c6-47f4-ba53-d82fa2f81eaa",
+        "startedAt": "2026-09-03T10:15:32.579Z",
+        "totalTokens": 536
+      },
+      {
+        "accountKey": "codex",
+        "cachePct": 48,
+        "cacheReadTokens": 10513408,
+        "cacheWriteTokens": 0,
+        "costUsd": 12.4820678,
+        "inputTokens": 11225785,
+        "lastRequestAt": "2026-09-03T09:29:18.449Z",
+        "models": [
+          "gpt-5.6-luna"
+        ],
+        "outputTokens": 34157,
+        "provider": "codex",
+        "repos": [
+          "project-11"
+        ],
+        "requests": 96,
+        "sessionId": "01a06685-9f4c-7793-b46d-600eaf747eaa",
+        "snippet": "### User \u00b7 2026-01-01 00:00:00 e2e fixture prompt ### Assistant \u00b7 2026-01-01 00:00:01",
+        "startedAt": "2026-09-03T09:10:09.571Z",
+        "title": "e2e fixture session",
+        "totalTokens": 21773350
+      },
+      {
+        "accountKey": "default",
+        "cachePct": 0,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
+        "costUsd": 0.0026093,
+        "inputTokens": 174,
+        "lastRequestAt": "2026-09-02T12:21:11.341Z",
+        "models": [
+          "cursor-auto"
+        ],
+        "outputTokens": 1588,
+        "provider": "cursor",
+        "repos": [
+          "(no repo)"
+        ],
+        "requests": 8,
+        "sessionId": "9b8f94fa-6915-4ee4-a982-f997099a9e43",
+        "startedAt": "2026-09-02T11:59:27.068Z",
+        "totalTokens": 1762
+      },
+      {
+        "accountKey": "default",
+        "cachePct": 0,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
+        "costUsd": 0.00164985,
+        "inputTokens": 763,
+        "lastRequestAt": "2026-09-02T11:30:06.480Z",
+        "models": [
+          "cursor-auto"
+        ],
+        "outputTokens": 646,
+        "provider": "cursor",
+        "repos": [
+          "(no repo)"
+        ],
+        "requests": 8,
+        "sessionId": "32c43745-5d5d-449f-89f3-80b62cb23597",
+        "startedAt": "2026-09-02T11:19:11.797Z",
+        "totalTokens": 1409
+      },
+      {
+        "accountKey": "default",
+        "cachePct": 0,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
+        "costUsd": 0.0008263999999999999,
+        "inputTokens": 365,
+        "lastRequestAt": "2026-09-02T11:24:14.572Z",
+        "models": [
+          "cursor-auto"
+        ],
+        "outputTokens": 333,
+        "provider": "cursor",
+        "repos": [
+          "(no repo)"
+        ],
+        "requests": 6,
+        "sessionId": "d2277d1a-5c7b-405e-9c98-1f25387f8e58",
+        "startedAt": "2026-09-02T11:19:16.261Z",
+        "totalTokens": 698
+      },
+      {
+        "accountKey": "default",
+        "cachePct": 0,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
+        "costUsd": 0.0010755,
+        "inputTokens": 576,
+        "lastRequestAt": "2026-09-02T11:23:39.273Z",
+        "models": [
+          "cursor-auto"
+        ],
+        "outputTokens": 378,
+        "provider": "cursor",
+        "repos": [
+          "(no repo)"
+        ],
+        "requests": 5,
+        "sessionId": "cd299ba7-a649-4be1-9b18-893cc1417e3e",
+        "startedAt": "2026-09-02T11:19:13.258Z",
+        "totalTokens": 954
+      },
+      {
+        "accountKey": "default",
+        "cachePct": 0,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
+        "costUsd": 0.0011172,
+        "inputTokens": 667,
+        "lastRequestAt": "2026-09-02T11:22:57.511Z",
+        "models": [
+          "cursor-auto"
+        ],
+        "outputTokens": 355,
+        "provider": "cursor",
+        "repos": [
+          "(no repo)"
+        ],
+        "requests": 4,
+        "sessionId": "9d7253e4-911e-47b9-9853-63962907585c",
+        "startedAt": "2026-09-02T11:18:45.927Z",
+        "totalTokens": 1022
+      },
+      {
+        "accountKey": "default",
+        "cachePct": 0,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
+        "costUsd": 0.0011182,
+        "inputTokens": 546,
+        "lastRequestAt": "2026-09-02T11:22:11.157Z",
+        "models": [
+          "cursor-auto"
+        ],
+        "outputTokens": 422,
+        "provider": "cursor",
+        "repos": [
+          "(no repo)"
+        ],
+        "requests": 6,
+        "sessionId": "465a8893-8327-4706-a659-16801957393f",
+        "startedAt": "2026-09-02T11:19:05.037Z",
+        "totalTokens": 968
+      },
+      {
+        "accountKey": "default",
+        "cachePct": 0,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
+        "costUsd": 0.0008388499999999999,
+        "inputTokens": 345,
+        "lastRequestAt": "2026-09-02T11:20:19.524Z",
+        "models": [
+          "cursor-auto"
+        ],
+        "outputTokens": 352,
+        "provider": "cursor",
+        "repos": [
+          "(no repo)"
+        ],
+        "requests": 4,
+        "sessionId": "87e70be6-142b-4280-bdb6-b66f54058408",
+        "startedAt": "2026-09-02T11:19:16.507Z",
+        "totalTokens": 697
+      },
+      {
+        "accountKey": "default",
+        "cachePct": 0,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
+        "costUsd": 0.00110065,
+        "inputTokens": 746,
+        "lastRequestAt": "2026-09-02T11:19:51.399Z",
+        "models": [
+          "cursor-auto"
+        ],
+        "outputTokens": 301,
+        "provider": "cursor",
+        "repos": [
+          "(no repo)"
+        ],
+        "requests": 3,
+        "sessionId": "53a553a1-5a86-4fe9-a273-f4fc5ebbc36a",
+        "startedAt": "2026-09-02T11:18:38.677Z",
+        "totalTokens": 1047
+      },
+      {
+        "accountKey": "base_model_inference",
+        "cachePct": 48,
+        "cacheReadTokens": 3840000,
+        "cacheWriteTokens": 0,
+        "costUsd": 4.585631,
+        "inputTokens": 4123157,
+        "lastRequestAt": "2026-09-02T08:18:01.523Z",
+        "models": [
+          "gpt-5.6-luna"
+        ],
+        "outputTokens": 13079,
+        "provider": "codex",
+        "repos": [
+          "project-10"
+        ],
+        "requests": 40,
+        "sessionId": "01a0612a-8b29-7813-8303-b38cad2c9a0a",
+        "snippet": "### User \u00b7 2026-01-01 00:00:00 e2e fixture prompt ### Assistant \u00b7 2026-01-01 00:00:01",
+        "startedAt": "2026-09-02T08:09:41.826Z",
+        "title": "e2e fixture session",
+        "totalTokens": 7976236
+      },
+      {
+        "accountKey": "default",
+        "cachePct": 0,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
+        "costUsd": 0.14997125,
+        "inputTokens": 30662,
+        "lastRequestAt": "2026-09-01T15:59:09.890Z",
+        "models": [
+          "cursor-auto"
+        ],
+        "outputTokens": 79941,
+        "provider": "cursor",
+        "repos": [
+          "(no repo)"
+        ],
+        "requests": 744,
+        "sessionId": "05b8c9ce-36c8-4876-9fdb-685f1c0b55d9",
+        "startedAt": "2026-08-25T19:43:18.553Z",
+        "totalTokens": 110603
+      },
+      {
+        "accountKey": "codex",
+        "cachePct": 49,
+        "cacheReadTokens": 36995328,
+        "cacheWriteTokens": 0,
+        "costUsd": 43.0921388,
+        "inputTokens": 38376176,
+        "lastRequestAt": "2026-09-01T15:36:31.508Z",
+        "models": [
+          "gpt-5.6-luna"
+        ],
+        "outputTokens": 169405,
+        "provider": "codex",
+        "repos": [
+          "project-1"
+        ],
+        "requests": 311,
+        "sessionId": "01a05c82-b328-7f52-b4b9-a63bfde94932",
+        "snippet": "### User \u00b7 2026-01-01 00:00:00 e2e fixture prompt ### Assistant \u00b7 2026-01-01 00:00:01",
+        "startedAt": "2026-09-01T10:30:34.421Z",
+        "title": "e2e fixture session",
+        "totalTokens": 75540909
+      },
+      {
+        "accountKey": "codex",
+        "cachePct": 49,
+        "cacheReadTokens": 2078976,
+        "cacheWriteTokens": 0,
+        "costUsd": 12.422118,
+        "inputTokens": 2206776,
+        "lastRequestAt": "2026-09-01T15:25:03.618Z",
+        "models": [
+          "gpt-5.6-sol"
+        ],
+        "outputTokens": 11625,
+        "provider": "codex",
+        "repos": [
+          "project-1"
+        ],
+        "requests": 27,
+        "sessionId": "01a05d75-234a-7b50-bd95-f29ba875b2f5",
+        "snippet": "### User \u00b7 2026-01-01 00:00:00 e2e fixture prompt ### Assistant \u00b7 2026-01-01 00:00:01",
+        "startedAt": "2026-09-01T14:54:59.227Z",
+        "title": "e2e fixture session",
+        "totalTokens": 4297377
+      }
+    ]
+  },
+  "repoHistory": {
+    "days": [
+      "2026-08-12",
+      "2026-08-13",
+      "2026-08-14",
+      "2026-08-15",
+      "2026-08-17",
+      "2026-08-18",
+      "2026-08-19",
+      "2026-08-20",
+      "2026-08-21",
+      "2026-08-22",
+      "2026-08-24",
+      "2026-08-25",
+      "2026-08-26",
+      "2026-08-27",
+      "2026-08-28",
+      "2026-08-29",
+      "2026-08-31",
+      "2026-09-01",
+      "2026-09-02",
+      "2026-09-03",
+      "2026-09-04",
+      "2026-09-05",
+      "2026-09-06",
+      "2026-09-07",
+      "2026-09-08",
+      "2026-09-09",
+      "2026-09-10"
+    ],
+    "series": [
+      {
+        "bucket": "project-1",
+        "values": [
+          89694131,
+          159620994,
+          14064585,
+          64173166,
+          76975609,
+          40197507,
+          374577166,
+          27147640,
+          63344873,
+          56943931,
+          0,
+          88393977,
+          437274290,
+          87130009,
+          0,
+          154229718,
+          13629465,
+          167770782,
+          0,
+          88235965,
+          81343361,
+          153093199,
+          99487652,
+          4533608,
+          108131280,
+          0,
+          35208751
+        ]
+      },
+      {
+        "bucket": "project-13",
+        "values": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          793671794,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      {
+        "bucket": "project-9",
+        "values": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          2723021,
+          187540992,
+          272764138,
+          0,
+          0,
+          0,
+          0,
+          22921727,
+          0,
+          73778016
+        ]
+      },
+      {
+        "bucket": "lab/tokitoki",
+        "values": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          211387603,
+          26238436,
+          0,
+          47039978,
+          0,
+          1687674,
+          66236326,
+          0,
+          16456041
+        ]
+      },
+      {
+        "bucket": "project-2",
+        "values": [
+          311851537,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      {
+        "bucket": "project-5",
+        "values": [
+          0,
+          0,
+          94830847,
+          0,
+          0,
+          0,
+          0,
+          38902435,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      }
+    ]
+  },
+  "reposMonth": {
+    "burn": {
+      "perDay": 98.6171244994,
+      "projected": 2958.513734982
+    },
+    "groupBy": "repo",
+    "period": "month",
+    "prevTotalCost": 6652.720593589999,
+    "rows": [
+      {
+        "bucket": "(no repo)",
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
+        "costUsd": 0.8086263,
+        "inputTokens": 137617,
+        "outputTokens": 446227,
+        "requests": 4003,
+        "sessions": 84
+      },
+      {
+        "bucket": "project-1",
+        "cacheReadTokens": 1212676992,
+        "cacheWriteTokens": 0,
+        "costUsd": 1442.736289892,
+        "inputTokens": 1268154705,
+        "outputTokens": 4369962,
+        "requests": 8746,
+        "sessions": 35
+      },
+      {
+        "bucket": "project-2",
+        "cacheReadTokens": 152434816,
+        "cacheWriteTokens": 0,
+        "costUsd": 131.25969708,
+        "inputTokens": 158705519,
+        "outputTokens": 711202,
+        "requests": 947,
+        "sessions": 1
+      },
+      {
+        "bucket": "project-3",
+        "cacheReadTokens": 2195200,
+        "cacheWriteTokens": 0,
+        "costUsd": 7.264615,
+        "inputTokens": 2606880,
+        "outputTokens": 13241,
+        "requests": 35,
+        "sessions": 1
+      },
+      {
+        "bucket": "project-4",
+        "cacheReadTokens": 6513792,
+        "cacheWriteTokens": 0,
+        "costUsd": 7.63186048,
+        "inputTokens": 7243902,
+        "outputTokens": 76029,
+        "requests": 91,
+        "sessions": 3
+      },
+      {
+        "bucket": "project-5",
+        "cacheReadTokens": 65391872,
+        "cacheWriteTokens": 0,
+        "costUsd": 63.72789664,
+        "inputTokens": 68100424,
+        "outputTokens": 240986,
+        "requests": 537,
+        "sessions": 4
+      },
+      {
+        "bucket": "project-6",
+        "cacheReadTokens": 462336,
+        "cacheWriteTokens": 0,
+        "costUsd": 0.7164986,
+        "inputTokens": 635681,
+        "outputTokens": 5764,
+        "requests": 21,
+        "sessions": 3
+      },
+      {
+        "bucket": "project-7",
+        "cacheReadTokens": 3245056,
+        "cacheWriteTokens": 0,
+        "costUsd": 4.3414716,
+        "inputTokens": 3748514,
+        "outputTokens": 44742,
+        "requests": 46,
+        "sessions": 1
+      },
+      {
+        "bucket": "project-8",
+        "cacheReadTokens": 11894528,
+        "cacheWriteTokens": 0,
+        "costUsd": 13.9909368,
+        "inputTokens": 12496990,
+        "outputTokens": 50749,
+        "requests": 99,
+        "sessions": 2
+      },
+      {
+        "bucket": "project-9",
+        "cacheReadTokens": 275201920,
+        "cacheWriteTokens": 0,
+        "costUsd": 272.9780208,
+        "inputTokens": 283609316,
+        "outputTokens": 916658,
+        "requests": 2254,
+        "sessions": 2
+      },
+      {
+        "bucket": "project-10",
+        "cacheReadTokens": 3840000,
+        "cacheWriteTokens": 0,
+        "costUsd": 4.585631,
+        "inputTokens": 4123157,
+        "outputTokens": 13079,
+        "requests": 40,
+        "sessions": 1
+      },
+      {
+        "bucket": "project-11",
+        "cacheReadTokens": 27132160,
+        "cacheWriteTokens": 0,
+        "costUsd": 32.2131045,
+        "inputTokens": 29010045,
+        "outputTokens": 105293,
+        "requests": 268,
+        "sessions": 6
+      },
+      {
+        "bucket": "project-12",
+        "cacheReadTokens": 1616384,
+        "cacheWriteTokens": 0,
+        "costUsd": 0.40511908,
+        "inputTokens": 1799727,
+        "outputTokens": 10705,
+        "requests": 18,
+        "sessions": 1
+      },
+      {
+        "bucket": "project-13",
+        "cacheReadTokens": 392137216,
+        "cacheWriteTokens": 0,
+        "costUsd": 1060.58000384,
+        "inputTokens": 400705286,
+        "outputTokens": 829292,
+        "requests": 2282,
+        "sessions": 2
+      },
+      {
+        "bucket": "lab/tokitoki",
+        "cacheReadTokens": 180780288,
+        "cacheWriteTokens": 0,
+        "costUsd": 202.660029852,
+        "inputTokens": 187406654,
+        "outputTokens": 859116,
+        "requests": 1546,
+        "sessions": 1
+      },
+      {
+        "bucket": "project-15",
+        "cacheReadTokens": 13930368,
+        "cacheWriteTokens": 0,
+        "costUsd": 12.029908240000001,
+        "inputTokens": 14608673,
+        "outputTokens": 45063,
+        "requests": 143,
+        "sessions": 1
+      },
+      {
+        "bucket": "project-16",
+        "cacheReadTokens": 356608,
+        "cacheWriteTokens": 0,
+        "costUsd": 0.4617468,
+        "inputTokens": 397628,
+        "outputTokens": 4743,
+        "requests": 16,
+        "sessions": 1
+      },
+      {
+        "bucket": "project-17",
+        "cacheReadTokens": 116224,
+        "cacheWriteTokens": 0,
+        "costUsd": 0.1729124,
+        "inputTokens": 143764,
+        "outputTokens": 2921,
+        "requests": 7,
+        "sessions": 1
+      }
+    ],
+    "total": {
+      "bucket": "project-14",
+      "cacheReadTokens": 2349925760,
+      "cacheWriteTokens": 0,
+      "costUsd": 3258.564368904,
+      "inputTokens": 2443634482,
+      "outputTokens": 8745772,
+      "requests": 21099,
+      "sessions": 150
+    },
+    "window": {
+      "label": "rolling month",
+      "since": "2026-08-11T21:19:44.427Z",
+      "until": null
+    }
+  },
+  "rollingDay": {
+    "burn": {
+      "perDay": 98.6171244994,
+      "projected": 2958.513734982
+    },
+    "groupBy": "provider",
+    "period": "day",
+    "prevTotalCost": 3.1894386,
+    "rows": [
+      {
+        "bucket": "codex",
+        "cacheReadTokens": 75933056,
+        "cacheWriteTokens": 0,
+        "costUsd": 21.921266214,
+        "inputTokens": 78429577,
+        "outputTokens": 323664,
+        "requests": 745,
+        "sessions": 6
+      }
+    ],
+    "total": {
+      "bucket": "TOTAL",
+      "cacheReadTokens": 75933056,
+      "cacheWriteTokens": 0,
+      "costUsd": 21.921266214,
+      "inputTokens": 78429577,
+      "outputTokens": 323664,
+      "requests": 745,
+      "sessions": 6
+    },
+    "window": {
+      "label": "rolling day",
+      "since": "2026-09-09T21:19:44.410Z",
+      "until": null
+    }
+  },
+  "schema": 1,
+  "snapshotAt": "2026-09-10T15:20:18.752Z",
+  "spendHealth": {
+    "daysElapsed": 10,
+    "daysInMonth": 30,
+    "monthToDate": 986.1712449940001,
+    "perDay": 98.6171244994,
+    "projected": 2958.513734982,
+    "requests": 7882,
+    "state": "ok"
+  },
+  "spendPeriods": [
+    {
+      "key": "today",
+      "rows": [
+        {
+          "bucket": "codex",
+          "cacheReadTokens": 75933056,
+          "cacheWriteTokens": 0,
+          "costUsd": 21.921266214,
+          "inputTokens": 78429577,
+          "outputTokens": 323664,
+          "requests": 745,
+          "sessions": 6
+        }
+      ]
+    },
+    {
+      "key": "yesterday",
+      "rows": [
+        {
+          "bucket": "codex",
+          "cacheReadTokens": 77265024,
+          "cacheWriteTokens": 0,
+          "costUsd": 25.104595814,
+          "inputTokens": 79860439,
+          "outputTokens": 328265,
+          "requests": 770,
+          "sessions": 6
+        },
+        {
+          "bucket": "cursor",
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "costUsd": 0.006109,
+          "inputTokens": 1246,
+          "outputTokens": 3258,
+          "requests": 32,
+          "sessions": 2
+        }
+      ]
+    },
+    {
+      "key": "week",
+      "rows": [
+        {
+          "bucket": "codex",
+          "cacheReadTokens": 362311168,
+          "cacheWriteTokens": 0,
+          "costUsd": 396.163607324,
+          "inputTokens": 378177755,
+          "outputTokens": 1439610,
+          "requests": 3157,
+          "sessions": 17
+        },
+        {
+          "bucket": "cursor",
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "costUsd": 0.03880605,
+          "inputTokens": 8146,
+          "outputTokens": 20569,
+          "requests": 208,
+          "sessions": 14
+        }
+      ]
+    },
+    {
+      "key": "month",
+      "rows": [
+        {
+          "bucket": "codex",
+          "cacheReadTokens": 2349925760,
+          "cacheWriteTokens": 0,
+          "costUsd": 3257.755742604,
+          "inputTokens": 2443496865,
+          "outputTokens": 8299545,
+          "requests": 17096,
+          "sessions": 66
+        },
+        {
+          "bucket": "cursor",
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "costUsd": 0.8086263,
+          "inputTokens": 137617,
+          "outputTokens": 446227,
+          "requests": 4003,
+          "sessions": 84
+        }
+      ]
+    },
+    {
+      "key": "year",
+      "rows": [
+        {
+          "bucket": "codex",
+          "cacheReadTokens": 4203958528,
+          "cacheWriteTokens": 0,
+          "costUsd": 10505.348592544,
+          "inputTokens": 4471433748,
+          "outputTokens": 15442253,
+          "requests": 32137,
+          "sessions": 172
+        },
+        {
+          "bucket": "cursor",
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "costUsd": 2.1605637,
+          "inputTokens": 356243,
+          "outputTokens": 1198553,
+          "requests": 10422,
+          "sessions": 320
+        },
+        {
+          "bucket": "t3code",
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "costUsd": 0.053988,
+          "inputTokens": 2820,
+          "outputTokens": 6114,
+          "requests": 45,
+          "sessions": 2
+        }
+      ]
+    }
+  ],
+  "stats": {
+    "cachePct": 49,
+    "costUsd": 21.92,
+    "requests": 745,
+    "sessions": 6,
+    "tokens": 154686297
+  },
+  "statuslinePreview": {
+    "command": "tokitoki statusline",
+    "preview": "$21.92 today \u00b7 $986.17 MTD"
+  },
+  "today": {
+    "burn": {
+      "perDay": 98.6171244994,
+      "projected": 2958.513734982
+    },
+    "groupBy": "provider",
+    "period": null,
+    "rows": [
+      {
+        "bucket": "codex",
+        "cacheReadTokens": 75933056,
+        "cacheWriteTokens": 0,
+        "costUsd": 21.921266214,
+        "inputTokens": 78429577,
+        "outputTokens": 323664,
+        "requests": 745,
+        "sessions": 6
+      }
+    ],
+    "total": {
+      "bucket": "TOTAL",
+      "cacheReadTokens": 75933056,
+      "cacheWriteTokens": 0,
+      "costUsd": 21.921266214,
+      "inputTokens": 78429577,
+      "outputTokens": 323664,
+      "requests": 745,
+      "sessions": 6
+    },
+    "window": {
+      "label": "absolute range (--from/--to)",
+      "since": "2026-09-09T22:00:00.000Z",
+      "until": "2026-09-10T21:59:59.999Z"
+    }
+  },
+  "topTools": {
+    "period": {
+      "since": "2026-09-09T21:19:44.780Z",
+      "until": "2026-09-10T21:19:44.781Z"
+    },
+    "tools": [
+      {
+        "costUsd": 10.149,
+        "requests": 531,
+        "tokens": 102061228,
+        "tool": "codex/exec"
+      },
+      {
+        "costUsd": 2.331,
+        "requests": 79,
+        "tokens": 18886057,
+        "tool": "codex/web__run"
+      },
+      {
+        "costUsd": 2.2731,
+        "requests": 19,
+        "tokens": 3875796,
+        "tool": "codex/shell:rtk"
+      }
+    ]
+  },
+  "uiPreview": {
+    "burnWarningRatio": 0.8,
+    "burnWarnings": false,
+    "cards": [
+      {
+        "hidden": false,
+        "id": "limits"
+      },
+      {
+        "hidden": false,
+        "id": "usage"
+      },
+      {
+        "hidden": false,
+        "id": "spend"
+      },
+      {
+        "hidden": false,
+        "id": "harness"
+      },
+      {
+        "hidden": false,
+        "id": "activity"
+      },
+      {
+        "hidden": false,
+        "id": "anomalies"
+      },
+      {
+        "hidden": false,
+        "id": "repos"
+      },
+      {
+        "hidden": false,
+        "id": "tools"
+      }
+    ],
+    "disabledNotifications": [],
+    "menubarHidden": [],
+    "notificationsEnabled": false,
+    "pollAdaptive": false,
+    "pollAuto": false,
+    "pollIntervalMinutes": 15,
+    "previewEnabled": true,
+    "previewHidden": [],
+    "previewLines": 3,
+    "previewMode": "inline",
+    "privacyHideIdentities": false,
+    "providers": [
+      "codex",
+      "cursor",
+      "t3code"
+    ],
+    "quotaCriticalPercent": 10,
+    "quotaResetNotifications": false,
+    "sideNotchDisplayNames": {},
+    "sideNotchEnabled": false,
+    "sideNotchHidden": [],
+    "sideNotchMetric": "percent",
+    "sideNotchMode": "quota",
+    "sideNotchPlacement": "right",
+    "sideNotchSyncPreview": false,
+    "sideNotchWindow": "smart",
+    "stripExhausted": "reset",
+    "stripMetric": "percent",
+    "syncConfigured": false,
+    "tabs": [
+      "overview",
+      "quotas",
+      "tokens",
+      "reports",
+      "sources",
+      "mcp",
+      "settings"
+    ]
+  },
+  "week": {
+    "burn": {
+      "perDay": 98.6171244994,
+      "projected": 2958.513734982
+    },
+    "groupBy": "provider",
+    "period": "week",
+    "prevTotalCost": 864.01975292,
+    "rows": [
+      {
+        "bucket": "codex",
+        "cacheReadTokens": 362311168,
+        "cacheWriteTokens": 0,
+        "costUsd": 396.163607324,
+        "inputTokens": 378177755,
+        "outputTokens": 1439610,
+        "requests": 3157,
+        "sessions": 17
+      },
+      {
+        "bucket": "cursor",
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
+        "costUsd": 0.03880605,
+        "inputTokens": 8146,
+        "outputTokens": 20569,
+        "requests": 208,
+        "sessions": 14
+      }
+    ],
+    "total": {
+      "bucket": "TOTAL",
+      "cacheReadTokens": 362311168,
+      "cacheWriteTokens": 0,
+      "costUsd": 396.202413374,
+      "inputTokens": 378185901,
+      "outputTokens": 1460179,
+      "requests": 3365,
+      "sessions": 31
+    },
+    "window": {
+      "label": "rolling week",
+      "since": "2026-09-03T21:19:44.418Z",
+      "until": null
+    }
+  },
+  "window": {
+    "label": "rolling day",
+    "since": "2026-09-09T21:19:45.351Z",
+    "until": null
+  }
+}

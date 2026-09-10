@@ -1,0 +1,13 @@
+#!/bin/sh
+# Stub for the real tokitoki CLI used by the dms plugin. It serves committed
+# fixtures so the widget renders deterministic, offline, instant data with no
+# provider stores and no scanning.
+#
+# ponytail: sub-command flags (--search, drill-down, paging) are ignored and
+# always answered with the same fixture. Fine for layout/visual checks; make it
+# arg-aware if a test ever needs to assert filtered results.
+case "${1:-}" in
+  widget-payload) exec cat /opt/e2e/fixtures/payload.json ;;
+  sessions) exec cat /opt/e2e/fixtures/sessions.json ;;
+  *) exit 0 ;;
+esac
