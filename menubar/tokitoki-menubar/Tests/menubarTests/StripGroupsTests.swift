@@ -423,6 +423,16 @@ import Testing
         #expect(!model.previewGroups.contains { $0.provider == "codex" })
     }
 
+    @Test func pollingIntervalSupportsShortCadencesAndKeepsMinimum() {
+        #expect(Model.pollingIntervalPresets == [1, 2, 3, 5, 10, 15, 30, 60])
+        #expect(Model.normalizedPollingInterval(1) == 1)
+        #expect(Model.normalizedPollingInterval(2) == 2)
+        #expect(Model.normalizedPollingInterval(3) == 3)
+        #expect(Model.normalizedPollingInterval(15) == 15)
+        #expect(Model.normalizedPollingInterval(0) == 1)
+        #expect(Model.normalizedPollingInterval(-10) == 1)
+    }
+
     @Test func hoverPreviewLabelsQuotaWindows() {
         let limits = [
             account(provider: "codex", accountKey: "openai:plus", windows: [

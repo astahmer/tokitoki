@@ -566,6 +566,11 @@ final class Model: ObservableObject {
     @Published var scanStatus: String?
 
     static let notificationKinds = ["quotaCritical", "quotaReset", "burnRate", "budget"]
+    nonisolated static let pollingIntervalPresets = [1, 2, 3, 5, 10, 15, 30, 60]
+
+    nonisolated static func normalizedPollingInterval(_ minutes: Int) -> Int {
+        max(1, minutes)
+    }
 
     private var timer: Timer?
     /// Refresh responses are asynchronous; mutations bump this generation so
@@ -975,7 +980,7 @@ final class Model: ObservableObject {
     }
 
     func setPollingInterval(minutes: Int) {
-        let value = max(1, minutes)
+        let value = Self.normalizedPollingInterval(minutes)
         pollIntervalMinutes = value
         updatePollSchedule()
         let cli = invocation
@@ -1395,7 +1400,7 @@ final class Model: ObservableObject {
                     self.menubarHidden = Set(ui.menubarHidden ?? [])
                     self.cardLayout = (ui.cards ?? []).map { ($0.id, $0.hidden) }
                     self.pollAuto = ui.pollAuto ?? false
-                    self.pollIntervalMinutes = max(1, ui.pollIntervalMinutes ?? 15)
+                    self.pollIntervalMinutes = Self.normalizedPollingInterval(ui.pollIntervalMinutes ?? 15)
                     self.pollAdaptive = ui.pollAdaptive ?? false
                     self.previewHidden = Set(ui.previewHidden ?? [])
                     self.stripMetric = ui.stripMetric ?? "percent"
@@ -8259,17 +8264,47 @@ private struct HighlightedSnippet: View {
                     .font(.caption)
                     Text(model.pollScheduleDescription)
                         .font(.caption2).foregroundStyle(.secondary)
-                    Picker("Check every", selection: Binding(
-                        get: { model.pollIntervalMinutes },
-                        set: { model.setPollingInterval(minutes: $0) },
-                    )) {
-                        Text("5 minutes").tag(5)
-                        Text("15 minutes").tag(15)
-                        Text("30 minutes").tag(30)
-                        Text("60 minutes").tag(60)
+                    HStack(alignment: .firstTextBaseline, spacing: 7) {
+                        Text("Check every")
+                        Spacer(minLength: 8)
+                        TextField("Minutes", value: Binding(
+                            get: { model.pollIntervalMinutes },
+                            set: { model.setPollingInterval(minutes: $0) },
+                        ), format: .number)
+                        .multilineTextAlignment(.trailing)
+                        .frame(width: 58)
+                        .textFieldStyle(.roundedBorder)
+                        .accessibilityIdentifier("poll-interval-minutes")
+                        Text("minutes")
+                            .foregroundStyle(.secondary)
+                        Menu {
+                            ForEach(Model.pollingIntervalPresets, id: \.self) { minutes in
+                                Button {
+                                    model.setPollingInterval(minutes: minutes)
+                                } label: {
+                                    if model.pollIntervalMinutes == minutes {
+                                        Label("\(minutes) minutes", systemImage: "checkmark")
+                                    } else {
+                                        Text("\(minutes) minutes")
+                                    }
+                                }
+                            }
+                        } label: {
+                            Label("Presets", systemImage: "list.number")
+                        }
+                        .menuStyle(.borderlessButton)
+                        .controlSize(.small)
+                        .accessibilityLabel("Polling interval presets")
                     }
-                    .pickerStyle(.menu)
                     .disabled(!model.pollAuto)
+                    Label {
+                        Text("Read-only checks do not send prompts or consume model tokens. Providers may still rate-limit frequent checks.")
+                    } icon: {
+                        Image(systemName: "info.circle")
+                    }
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
                     Toggle("Adapt cadence near a reset", isOn: Binding(
                         get: { model.pollAdaptive },
                         set: { model.setPollingAdaptive($0) },
