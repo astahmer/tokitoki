@@ -6981,7 +6981,11 @@ struct ContentView: View {
         }
         .frame(minWidth: 400, idealWidth: 420, maxWidth: 520,
                minHeight: 560, idealHeight: 700, maxHeight: 860)
-        .background(.thinMaterial)
+        // Keep the popover surface opaque while it scrolls. A live material
+        // backdrop forces the whole panel through the compositor on every
+        // content offset change, which is especially noticeable with the
+        // account cards and charts mounted below.
+        .background(popoverSurfaceColor)
         .onAppear(perform: consumePendingAPIKeysRequest)
         .onChange(of: model.apiKeysRequested) { _ in consumePendingAPIKeysRequest() }
         .sheet(isPresented: $showCustomize) {
@@ -7002,6 +7006,13 @@ struct ContentView: View {
                 model.loadCustomTokenBreakdowns(from: from, to: to)
             })
         }
+    }
+
+    /// The card surface is intentionally opaque. The cards still provide the
+    /// hierarchy and translucency cues inside the popover, while the root
+    /// surface no longer has to blur the desktop behind every scroll frame.
+    private var popoverSurfaceColor: Color {
+        Color(nsColor: .windowBackgroundColor)
     }
 
     private func consumePendingAPIKeysRequest() {
@@ -7041,7 +7052,7 @@ struct ContentView: View {
             .accessibilityLabel("More views")
         }
         .padding(.horizontal, 8).padding(.vertical, 7)
-        .background(.thinMaterial)
+        .background(popoverSurfaceColor)
         .overlay(alignment: .bottom) { Divider() }
     }
 
@@ -7069,7 +7080,7 @@ struct ContentView: View {
 
     private var overviewBody: some View {
         ScrollView(.vertical) {
-            VStack(alignment: .leading, spacing: 10) {
+            LazyVStack(alignment: .leading, spacing: 10) {
                 if let e = model.errorText {
                     VStack(alignment: .leading, spacing: 6) {
                         HStack(spacing: 7) {
@@ -7104,23 +7115,21 @@ struct ContentView: View {
                     attentionSummary
                     searchBar
                     webDashboardLinks
-                    LazyVStack(alignment: .leading, spacing: 10) {
-                        ForEach(orderedVisibleCards(), id: \.self) { id in
-                            Group {
-                                if cardSurvives(id) { cardBody(id) }
-                            }
-                            .onDrag {
-                                draggingCard = id
-                                return NSItemProvider(object: id as NSString)
-                            }
-                            .onDrop(of: [UTType.plainText], delegate: PopoverCardDrop(
-                                target: id,
-                                getLayout: { effectiveLayout() },
-                                setLayout: { localLayout = $0 },
-                                dragging: $draggingCard,
-                                onCommit: { persistCardLayout($0) }
-                            ))
+                    ForEach(orderedVisibleCards(), id: \.self) { id in
+                        Group {
+                            if cardSurvives(id) { cardBody(id) }
                         }
+                        .onDrag {
+                            draggingCard = id
+                            return NSItemProvider(object: id as NSString)
+                        }
+                        .onDrop(of: [UTType.plainText], delegate: PopoverCardDrop(
+                            target: id,
+                            getLayout: { effectiveLayout() },
+                            setLayout: { localLayout = $0 },
+                            dragging: $draggingCard,
+                            onCommit: { persistCardLayout($0) }
+                        ))
                     }
                 }
             }
@@ -7167,7 +7176,7 @@ struct ContentView: View {
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
         .frame(minHeight: 44)
-        .background(.regularMaterial)
+        .background(popoverSurfaceColor)
         .overlay(alignment: .top) { Divider() }
     }
 
@@ -7224,7 +7233,7 @@ struct ContentView: View {
     private var quotasBody: some View {
         ScrollViewReader { proxy in
             ScrollView(.vertical) {
-                VStack(alignment: .leading, spacing: 10) {
+                LazyVStack(alignment: .leading, spacing: 10) {
                     freshnessRow
                     if model.isLoading && model.today == nil {
                         loadingState
@@ -7247,7 +7256,7 @@ struct ContentView: View {
 
     private var tokensBody: some View {
         ScrollView(.vertical) {
-            VStack(alignment: .leading, spacing: 10) {
+            LazyVStack(alignment: .leading, spacing: 10) {
                 freshnessRow
                 if model.isLoading && model.today == nil {
                     loadingState
@@ -7385,7 +7394,7 @@ struct ContentView: View {
 
     private var mcpBody: some View {
         ScrollView(.vertical) {
-            VStack(alignment: .leading, spacing: 10) {
+            LazyVStack(alignment: .leading, spacing: 10) {
                 freshnessRow
                 card(title: "connect tokitoki to your agent", icon: "point.3.connected.trianglepath.dotted") {
                     Text("TokiToki exposes local usage, reports, and source tools through MCP. Nothing is uploaded by this setup.")
@@ -7460,7 +7469,7 @@ struct ContentView: View {
 
     private var reportsBody: some View {
         ScrollView(.vertical) {
-            VStack(alignment: .leading, spacing: 10) {
+            LazyVStack(alignment: .leading, spacing: 10) {
                 freshnessRow
                 if model.isLoading && model.today == nil {
                     loadingState
@@ -7538,7 +7547,7 @@ struct ContentView: View {
                 sessionDetailBody(row)
             } else {
                 ScrollView(.vertical) {
-                    VStack(alignment: .leading, spacing: 10) {
+                    LazyVStack(alignment: .leading, spacing: 10) {
                         freshnessRow
                         card(title: "find conversations", icon: "text.bubble") {
                             HStack(spacing: 6) {
@@ -7619,7 +7628,7 @@ struct ContentView: View {
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 7)
-                .background(.regularMaterial)
+                .background(popoverSurfaceColor)
                 .overlay(alignment: .top) { Divider() }
             }
         }
@@ -7627,7 +7636,7 @@ struct ContentView: View {
 
     private func sessionDetailBody(_ row: PopoverSessionRow) -> some View {
         ScrollView(.vertical) {
-            VStack(alignment: .leading, spacing: 10) {
+            LazyVStack(alignment: .leading, spacing: 10) {
                 HStack(spacing: 8) {
                     Button {
                         model.clearPopoverSession()
@@ -8063,7 +8072,7 @@ private struct HighlightedSnippet: View {
 
     private var sourcesBody: some View {
         ScrollView(.vertical) {
-            VStack(alignment: .leading, spacing: 10) {
+            LazyVStack(alignment: .leading, spacing: 10) {
                 freshnessRow
                 card(title: "tracked sources", icon: "doc.text.magnifyingglass") {
                     Text("tokitoki reads local harness logs and keeps the dashboard projection in sync.")
@@ -8100,7 +8109,7 @@ private struct HighlightedSnippet: View {
 
     private var settingsBody: some View {
         ScrollView(.vertical) {
-            VStack(alignment: .leading, spacing: 10) {
+            LazyVStack(alignment: .leading, spacing: 10) {
                 freshnessRow
                 settingsToolbar
                 settingsCard(title: "configuration file", icon: "doc.badge.gearshape", keywords: "config file nix home manager settings", initiallyExpanded: true) {
