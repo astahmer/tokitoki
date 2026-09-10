@@ -95,14 +95,17 @@ export interface TokitokiConfig {
     zeroStateCards?: boolean;
   };
   /**
-   * [ui] — visibility toggles for menubar/dashboard surfaces. Entries are
+   * [ui] — visibility toggles for widget/dashboard surfaces. Entries are
    * provider ids or `provider:account` pairs; hidden ones are excluded from
-   * the menubar payload / dashboard queries respectively.
+   * the widget payload / dashboard queries respectively.
    */
   ui?: {
     hidden?: {
-      /** Hidden from the menu-bar preview rows. */
+      /** Hidden from the shell-widget preview rows. */
+      widget?: string[];
+      /** @deprecated pre-rename names for `widget`; still read, folded forward on write. */
       menubar?: string[];
+      bar?: string[];
       /** Hidden from the web dashboard. */
       dashboard?: string[];
     };
@@ -111,7 +114,7 @@ export interface TokitokiConfig {
     /**
      * UPSTREAM providers hidden from the STATUS-BAR STRIP only (openai,
      * claude, opencode, openrouter, gemini, grok, cursor) — popover cards
-     * are unaffected. Distinct from hidden.menubar, which hides accounts
+     * are unaffected. Distinct from hidden.widget, which hides accounts
      * from the popover CARDS.
      */
     previewHidden?: string[];

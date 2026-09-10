@@ -10,6 +10,9 @@ import fs from "node:fs";
  *   → oauthAccount.emailAddress
  * - codex: `$CODEX_HOME/auth.json` (default ~/.codex/auth.json) → JWT
  *   id_token payload → email
+ * - cursor: `$CURSOR_DIR/cli-config.json` (default ~/.cursor) → authInfo.email.
+ *   Cursor keeps no usage store, but its CLI config does carry the login, so
+ *   cursor-routed harnesses (T3 Code's `cursor` backend) can show a name.
  * - pi / opencode: API-key auth only — no email in any local store.
  */
 
@@ -19,6 +22,8 @@ export function accountEmailFor(providerId: string): string | null {
       return claudeEmail();
     case "codex":
       return codexEmail();
+    case "cursor":
+      return cursorEmail();
     default:
       return null;
   }
@@ -99,6 +104,19 @@ function codexEmail(): string | null {
       unknown
     >;
     const email = payload.email;
+    return typeof email === "string" && email.includes("@") ? email : null;
+  } catch {
+    return null;
+  }
+}
+
+function cursorEmail(): string | null {
+  const dir = process.env.CURSOR_DIR ?? `${process.env.HOME ?? "~"}/.cursor`;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(`${dir}/cli-config.json`, "utf8")) as {
+      authInfo?: { email?: unknown };
+    };
+    const email = parsed.authInfo?.email;
     return typeof email === "string" && email.includes("@") ? email : null;
   } catch {
     return null;

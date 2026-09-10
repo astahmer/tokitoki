@@ -283,13 +283,19 @@ export function computeLimits(
           accountKey,
           new Date(Date.now() - s.windowMinutes * 60_000).toISOString(),
         ) ?? ZERO;
+      // A provider report describes the window that was current when it was
+      // captured. Once that window's reset instant passes, the reported
+      // utilization is obsolete: the window rolled over and started empty.
+      // Keeping the old percentage is how a months-old card claims "0% left"
+      // (and fires quota alerts) long after its window reset.
+      const rolledOver = s.resetsAt > 0 && s.resetsAt * 1000 <= now.getTime();
       const w: LimitWindow = {
         kind,
         source: "embedded",
         tokens: usage.tokens,
         cost: usage.cost,
         requests: usage.requests,
-        usedPct: Math.max(0, Math.min(100, s.usedPct)),
+        usedPct: rolledOver ? 0 : Math.max(0, Math.min(100, s.usedPct)),
         amountUsd: s.amountUsd ?? undefined,
         // Command Code returns resetAt=0 when a rolling window has not
         // started yet; never render that sentinel as January 1970.

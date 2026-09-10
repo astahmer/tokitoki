@@ -21,6 +21,9 @@ PluginComponent {
     property string compositionPeriod: "day"
     property bool stateReady: false
     property bool configOpen: false
+    property string visibilityTarget: ""
+    property bool visibilityHide: true
+    property bool pendingRefresh: false
     readonly property string barSummaryMode: root.pluginSetting("barSummaryMode", "summary")
     readonly property string barTotalPeriod: root.normalizeChoice(
         root.pluginSetting("barTotalPeriod", "day"),
@@ -380,12 +383,46 @@ PluginComponent {
         return parts.join(" · ")
     }
 
+    function accountTarget(provider, accountKey) {
+        return String(provider || "") + ":" + String(accountKey || "")
+    }
+
+    // Card-level hide reads Tokitoki's own config list, so the widget, the
+    // macOS menubar app and `tokitoki ui --hide` all agree on one source.
+    // Entries are "provider" or "provider:accountKey"; the account half is a
+    // suffix match, mirroring the CLI (see uiToggles.matches).
+    function hiddenEntryMatches(entry, provider, accountKey) {
+        var text = String(entry || "")
+        var at = text.indexOf(":")
+        if (at <= 0)
+            return text === String(provider || "")
+        if (text.slice(0, at) !== String(provider || ""))
+            return false
+        return String(accountKey || "").endsWith(text.slice(at + 1))
+    }
+
+    function accountCardHidden(provider, accountKey) {
+        var ui = payload.uiPreview || ({})
+        var menubarHidden = Array.isArray(ui.menubarHidden) ? ui.menubarHidden : []
+        for (var i = 0; i < menubarHidden.length; i++) {
+            if (root.hiddenEntryMatches(menubarHidden[i], provider, accountKey))
+                return true
+        }
+        return false
+    }
+
+    function setAccountHidden(provider, accountKey, hidden) {
+        if (visibilityProcess.running)
+            return
+        visibilityTarget = root.accountTarget(provider, accountKey)
+        visibilityHide = hidden
+        visibilityProcess.running = true
+    }
+
     function providerIsVisible(provider, accountKey) {
         var ui = payload.uiPreview || ({})
         var previewHidden = Array.isArray(ui.previewHidden) ? ui.previewHidden : []
-        var menubarHidden = Array.isArray(ui.menubarHidden) ? ui.menubarHidden : []
-        var accountId = String(provider || "") + ":" + String(accountKey || "")
-        if (menubarHidden.indexOf(provider) >= 0 || menubarHidden.indexOf(accountId) >= 0)
+        if (root.accountCardHidden(provider, accountKey))
             return false
         if (previewHidden.indexOf(upstreamProvider(provider, accountKey)) >= 0)
             return false
@@ -516,7 +553,8 @@ PluginComponent {
         if (!hasLimits)
             return []
         return payload.limits.filter(function(account) {
-            return matchesAccount(account)
+            return matchesAccount(account) &&
+                !root.accountCardHidden(account.provider, account.accountKey)
         })
     }
 
@@ -623,6 +661,8 @@ PluginComponent {
         if (hasLimits) {
             for (var i = 0; i < payload.limits.length; i++) {
                 var account = payload.limits[i]
+                if (!providerIsVisible(account.provider, account.accountKey))
+                    continue
                 var windows = orderedWindows(account.windows)
                 for (var j = 0; j < windows.length; j++) {
                     var windowData = windows[j]
@@ -862,8 +902,10 @@ PluginComponent {
     }
 
     function refresh(scan) {
-        if (statusProcess.running)
+        if (statusProcess.running) {
+            pendingRefresh = true
             return
+        }
         scanNextRefresh = Boolean(scan)
         statusProcess.running = true
     }
@@ -1536,7 +1578,8 @@ PluginComponent {
                                                     }
 
                                                     Column {
-                                                        width: Math.max(0, accountHeader.width - planBadge.width - 36 - Theme.spacingM)
+                                                        width: Math.max(0, accountHeader.width - planBadge.width -
+                                                            hideButton.width - 36 - Theme.spacingM * 2)
                                                         spacing: 0
                                                         anchors.verticalCenter: parent.verticalCenter
 
@@ -1579,6 +1622,21 @@ PluginComponent {
                                                             font.pixelSize: Theme.fontSizeSmall
                                                             font.weight: Font.DemiBold
                                                         }
+                                                    }
+
+                                                    DankActionButton {
+                                                        id: hideButton
+                                                        buttonSize: 26
+                                                        iconSize: 16
+                                                        iconName: "visibility_off"
+                                                        iconColor: Theme.surfaceVariantText
+                                                        tooltipText: "Hide this account"
+                                                        anchors.verticalCenter: parent.verticalCenter
+                                                        onClicked: root.setAccountHidden(
+                                                            accountCard.account.provider,
+                                                            accountCard.account.accountKey,
+                                                            true
+                                                        )
                                                     }
                                                 }
 
@@ -2614,6 +2672,20 @@ PluginComponent {
     }
 
     Process {
+        id: visibilityProcess
+
+        command: [root.command, "ui", root.visibilityHide ? "--hide" : "--show",
+            root.visibilityTarget, "--surface", "widget"]
+
+        onExited: function(exitCode, exitStatus) {
+            if (exitCode === 0)
+                root.refresh(false)
+            else
+                root.lastError = "could not update card visibility (exit " + exitCode + ")"
+        }
+    }
+
+    Process {
         id: statusProcess
 
         command: root.scanNextRefresh
@@ -2645,6 +2717,10 @@ PluginComponent {
                     root.lastError = "tokitoki unavailable (exit " + exitCode + ")"
                 else
                     root.errorText = "tokitoki unavailable (exit " + exitCode + ")"
+            }
+            if (root.pendingRefresh) {
+                root.pendingRefresh = false
+                root.refresh(false)
             }
         }
     }

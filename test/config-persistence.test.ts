@@ -68,7 +68,7 @@ describe("menubar config persistence", () => {
         sideNotchPlacement?: string;
         sideNotchDisplayNames?: Record<string, string>;
         menubarAccountOrder?: string[];
-        hidden?: { menubar?: string[] };
+        hidden?: { widget?: string[] };
         menubarTabs?: string[];
       };
       sync?: { backend?: string };
@@ -89,7 +89,7 @@ describe("menubar config persistence", () => {
     expect(cfg.ui?.sideNotchPlacement).toBe("top-left");
     expect(cfg.ui?.sideNotchDisplayNames).toEqual({ "openai@openai:personal": "Work" });
     expect(cfg.ui?.menubarAccountOrder).toEqual(["codex@openai:plus", "pi@opencode-go"]);
-    expect(cfg.ui?.hidden?.menubar).toEqual(["codex:openai:plus"]);
+    expect(cfg.ui?.hidden?.widget).toEqual(["codex:openai:plus"]);
     expect(cfg.ui?.menubarTabs).toEqual(["tokens", "overview", "quotas", "reports", "mcp", "sources", "settings"]);
     expect(cfg.sync?.backend).toBe("dir");
     expect(cfg.poll?.adaptive).toBe(true);
@@ -122,10 +122,10 @@ describe("menubar config persistence", () => {
     expect(run(["ui", "--hide", "codex:work"], configPath).status).toBe(0);
 
     const parsed = TOML.parse(fs.readFileSync(configPath, "utf8")) as {
-      ui?: { stripMetric?: string; hidden?: { menubar?: string[] } };
+      ui?: { stripMetric?: string; hidden?: { widget?: string[] } };
     };
     expect(parsed.ui?.stripMetric).toBe("smart");
-    expect(parsed.ui?.hidden?.menubar).toEqual(["codex:work"]);
+    expect(parsed.ui?.hidden?.widget).toEqual(["codex:work"]);
     expect(fs.readFileSync(configPath, "utf8")).not.toContain("{\n");
   });
 });

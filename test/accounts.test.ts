@@ -5,6 +5,7 @@ import fs from "node:fs";
 const home = `/tmp/tokitoki-accounts-test-${Date.now()}`;
 process.env.HOME = home;
 delete process.env.CLAUDE_CONFIG_DIR;
+delete process.env.CURSOR_DIR;
 process.env.CODEX_HOME = `${home}/.codex`;
 
 fs.mkdirSync(`${home}/.codex`, { recursive: true });
@@ -25,6 +26,12 @@ const payload = Buffer.from(JSON.stringify({
 fs.writeFileSync(
   `${home}/.codex/auth.json`,
   JSON.stringify({ tokens: { id_token: `fakeheader.${payload}.fakesig` } }),
+);
+// cursor: ~/.cursor/cli-config.json → authInfo.email
+fs.mkdirSync(`${home}/.cursor`, { recursive: true });
+fs.writeFileSync(
+  `${home}/.cursor/cli-config.json`,
+  JSON.stringify({ authInfo: { email: "cursor@example.com", displayName: "Cursor User" } }),
 );
 
 const { accountEmailFor, accountIdentityFor } = await import("../src/accounts.ts");
@@ -47,6 +54,10 @@ describe("account email resolution", () => {
       email: "codex@example.com",
       accountId: "codex-account-123",
     });
+  });
+
+  test("cursor reads authInfo.email from its CLI config", () => {
+    expect(accountEmailFor("cursor")).toBe("cursor@example.com");
   });
 
   test("providers without local identity return null", () => {

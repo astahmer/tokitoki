@@ -7,6 +7,29 @@ import { UserError } from "./errors.ts";
  * ("codex:codex:plus" → matched by suffix on accountKey).
  */
 
+/**
+ * The shell WIDGET (native popover and its DMS/Quickshell ports) on one side,
+ * the dashboard page on the other. "menubar" is the old macOS-only name and
+ * "bar" briefly replaced it; both stay accepted.
+ */
+export type Surface = "widget" | "dashboard";
+
+const LEGACY_SURFACES: Record<string, Surface> = { menubar: "widget", bar: "widget" };
+
+/** Accepts the current names plus retired ones; undefined when unknown. */
+export function normalizeSurface(raw: string | undefined): Surface | undefined {
+  if (raw === undefined) return undefined;
+  const value = LEGACY_SURFACES[raw] ?? raw;
+  return value === "widget" || value === "dashboard" ? value : undefined;
+}
+
+/** Hidden targets for a surface, including the retired "menubar"/"bar" keys. */
+export function hiddenTargets(config: TokitokiConfig, surface: Surface): string[] {
+  const hidden = config.ui?.hidden;
+  if (surface === "widget") return hidden?.widget ?? hidden?.menubar ?? hidden?.bar ?? [];
+  return hidden?.dashboard ?? [];
+}
+
 export interface UiToggleTarget {
   /** Provider id. */
   provider: string;
@@ -33,12 +56,12 @@ function matches(target: UiToggleTarget, provider: string, accountKey: string): 
 /** True when the pair passes the ui filter for a surface. */
 export function isVisibleOn(
   config: TokitokiConfig,
-  surface: "menubar" | "dashboard",
+  surface: Surface,
   provider: string,
   accountKey: string,
 ): boolean {
-  if (surface === "menubar") return isCardVisibleOn(config, provider, accountKey);
-  const hidden = config.ui?.hidden?.dashboard ?? [];
+  if (surface === "widget") return isCardVisibleOn(config, provider, accountKey);
+  const hidden = hiddenTargets(config, surface);
   for (const raw of hidden) {
     if (matches(parseToggleTarget(raw), provider, accountKey)) return false;
   }
@@ -46,12 +69,12 @@ export function isVisibleOn(
 }
 
 /**
- * Popover-CARD visibility (menubar surface): entries in ui.hidden.menubar
- * hide accounts from the popover cards. The status-bar STRIP has its own
- * switch — see isPreviewVisible.
+ * Popover-CARD visibility (widget surface): entries in ui.hidden.widget hide
+ * accounts from the popover cards. The status-bar STRIP has its own switch —
+ * see isPreviewVisible.
  */
 export function isCardVisibleOn(config: TokitokiConfig, provider: string, accountKey: string): boolean {
-  const hidden = config.ui?.hidden?.menubar ?? [];
+  const hidden = hiddenTargets(config, "widget");
   for (const raw of hidden) {
     if (matches(parseToggleTarget(raw), provider, accountKey)) return false;
   }
@@ -77,20 +100,25 @@ function saveUiMutator(mutate: (cfg: TokitokiConfig) => void): void {
 
 export function setSurfaceVisibility(
   targetRaw: string,
-  surface: "menubar" | "dashboard",
+  surface: Surface,
   visible: boolean,
 ): void {
   const target = parseToggleTarget(targetRaw);
   saveUiMutator((cfg) => {
     cfg.ui ??= {};
     cfg.ui.hidden ??= {};
-    const list = new Set(cfg.ui.hidden[surface] ?? []);
+    const list = new Set(hiddenTargets(cfg, surface));
     // Removing any conflicting explicit entries keeps intent unambiguous.
     for (const existing of [...list]) {
       if (matches(parseToggleTarget(existing), target.provider, target.accountKey ?? "")) list.delete(existing);
     }
     if (!visible) list.add(targetRaw);
     cfg.ui.hidden[surface] = [...list].sort();
+    // Fold pre-rename configs forward so the keys cannot drift apart.
+    if (surface === "widget") {
+      delete cfg.ui.hidden.menubar;
+      delete cfg.ui.hidden.bar;
+    }
   });
 }
 
@@ -197,8 +225,10 @@ export function menubarCardLayout(config: TokitokiConfig): Array<{ id: string; h
   return order.map((id) => ({ id, hidden: !(byId.get(id) ?? true) }));
 }
 
-export function assertValidSurface(surface: string | undefined): asserts surface is "menubar" | "dashboard" {
-  if (surface !== "menubar" && surface !== "dashboard") {
-    throw new UserError(`invalid --surface '${surface}'`, "tokitoki ui --hide codex --surface menubar");
+export function assertValidSurface(surface: string | undefined): Surface {
+  const normalized = normalizeSurface(surface);
+  if (normalized === undefined) {
+    throw new UserError(`invalid --surface '${surface}'`, "tokitoki ui --hide codex --surface widget");
   }
+  return normalized;
 }

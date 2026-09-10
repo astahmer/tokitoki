@@ -9,7 +9,7 @@ import { scanProviderCore, type ScanResult } from "./scan.ts";
 import type { UsageEvent } from "./types.ts";
 import { DIMENSIONS, EventCache, type AggRow, type Dimension, type SeriesBucket, type SessionSummary } from "./cache.ts";
 import { renderTable, renderMiniProjects, renderMarkdownTable, resolveExtraFiles, resolveSortColumn, sinceIsoFor, sinceIsoForDays, previousWindow, monthStartIso, sortRows, formatDelta, deltaInfo, totalRow, totalTokens, planGaugeFn, renderBurnLine, burnProjection, type TableContext } from "./report.ts";
-import { accountEmailMap } from "./accounts.ts";
+import { accountEmailFor, accountEmailMap } from "./accounts.ts";
 import { computeLimits, dedupeAccountLimits, embeddedKind, groupBySharedCredential, mergeAliasLimits, type AccountLimits } from "./limits.ts";
 import { accountIdentityFor } from "./accounts.ts";
 import { opencodexAccountIdentities, opencodeCredentials, opencodexQuotas, piCredentials, pollQuotas, redactCredential } from "./poll.ts";
@@ -270,12 +270,12 @@ Rows always show every configured scope×pattern; state is ok | warn (≥80%)
     example: "tokitoki widget-payload --cached --json",
   },
   ui: {
-    usage: "tokitoki ui [--list] [--hide <provider[:account]>] [--show <provider[:account]>]\n                  [--menubar-only <provider>...] [--tabs <id,...>] [--surface menubar|dashboard]",
+    usage: "tokitoki ui [--list] [--hide <provider[:account]>] [--show <provider[:account]>]\n                  [--menubar-only <provider>...] [--tabs <id,...>] [--surface widget|dashboard]",
     flags:
       "  --list                show current visibility state\n" +
       "  --hide <target>       hide a provider or provider:account pair\n" +
       "  --show <target>       un-hide a previously hidden target\n" +
-      "  --surface <s>         which surface (default: menubar)\n" +
+      "  --surface <s>         which surface: widget or dashboard (default: widget; 'menubar' also accepted)\n" +
       "  --menubar-only <p>    restrict menubar preview to these providers (repeatable; none = all)\n" +
       "  --tabs <id,...>       order popover tabs; first four stay visible, rest go under More",
     example: "tokitoki ui --hide codex:codex:plus --surface dashboard",
@@ -378,7 +378,7 @@ Commands:
   export     dump any report as json/csv/markdown
   config     set a config value by dotted path (value parsed as JSON)
   widget-payload  versioned JSON payload for native apps and shell integrations
-  ui         show/hide providers per surface (menubar preview, dashboard)
+  ui         show/hide providers per surface (widget preview, dashboard)
   import     backfill usage CSVs from provider consoles
   reindex    force-rebuild the session search index (full-text)
   sync       push/pull events across machines (dir | git | atproto backends)
@@ -2431,7 +2431,7 @@ function runWidgetPayload(parsed: ParsedInvocation): void {
             // without token rows, so providerStats() alone would hide it.
             ...PROVIDERS.filter((provider) => provider.id === "cursor" && provider.discoverRoots().some((root) => provider.listFiles(root).length > 0)).map((provider) => provider.id),
           ])].sort(),
-          menubarHidden: config.ui?.hidden?.menubar ?? [],
+          menubarHidden: config.ui?.hidden?.widget ?? config.ui?.hidden?.menubar ?? config.ui?.hidden?.bar ?? [],
           previewHidden: config.ui?.previewHidden ?? [],
           stripMetric: config.ui?.stripMetric ?? "percent",
           stripExhausted: config.ui?.stripExhausted ?? "reset",
@@ -2486,10 +2486,19 @@ function runWidgetPayload(parsed: ParsedInvocation): void {
         const email = poolId !== undefined ? poolIdentities[poolId]?.email : undefined;
         return email !== undefined ? { ...l, email } : l;
       });
+      // Cursor has no local usage store, but its CLI config holds the login
+      // that every cursor-routed card bills against — including T3 Code's
+      // `cursor` backend. Without it those cards read as bare provider ids.
+      const cursorEmail = accountEmailFor("cursor");
+      const withHarnessEmails = cursorEmail === null ? limitsWithPoolEmails : limitsWithPoolEmails.map((l) => {
+        if (l.email !== undefined) return l;
+        const cursorRouted = l.provider === "cursor" || (l.provider === "t3code" && l.accountKey === "cursor");
+        return cursorRouted ? { ...l, email: cursorEmail } : l;
+      });
       // The pool adapter's opaque `chatgpt-<timestamp>` key can also exist
       // in old scanned logs. Once the same reset is refreshed into the
       // canonical `codex` card, hide that stale duplicate from the UI.
-      const normalizedLimits = limitsWithPoolEmails.filter((l) => {
+      const normalizedLimits = withHarnessEmails.filter((l) => {
         if (l.provider !== "codex" || !l.accountKey.startsWith("codex:")) return true;
         const poolKey = l.accountKey.slice("codex:".length);
         if (poolQuotas[poolKey] === undefined) return true;
@@ -2788,8 +2797,7 @@ function runWidgetPayload(parsed: ParsedInvocation): void {
 }
 
 function runUi(parsed: ParsedInvocation): void {
-  const surfaceRaw = flagString(parsed, "surface") ?? "menubar";
-  assertValidSurface(surfaceRaw);
+  const surface = assertValidSurface(flagString(parsed, "surface") ?? "widget");
   const hide = flagString(parsed, "hide");
   const show = flagString(parsed, "show");
   const menubarOnly = parsed.flags["menubar-only"];
@@ -2819,15 +2827,15 @@ function runUi(parsed: ParsedInvocation): void {
   if (parsed.flags.list !== undefined || (hide === undefined && show === undefined && menubarOnly === undefined)) {
     const cfg = loadConfig();
     console.log(`surface visibility (config: ${configPath()})`);
-    for (const s of ["menubar", "dashboard"] as const) {
+    for (const s of ["widget", "dashboard"] as const) {
       const hidden = cfg.ui?.hidden?.[s] ?? [];
       console.log(`  ${s}: hidden=[${hidden.join(", ")}]`);
     }
     console.log(`  menubarProviders: [${(cfg.ui?.menubarProviders ?? []).join(", ")}] (empty = all)`);
     return;
   }
-  if (hide !== undefined) setSurfaceVisibility(hide, surfaceRaw, false);
-  if (show !== undefined) setSurfaceVisibility(show, surfaceRaw, true);
+  if (hide !== undefined) setSurfaceVisibility(hide, surface, false);
+  if (show !== undefined) setSurfaceVisibility(show, surface, true);
   if (menubarOnly !== undefined) {
     const vals = Array.isArray(menubarOnly) ? menubarOnly : [String(menubarOnly)];
     if (!(vals.length === 1 && vals[0] === "all")) setMenubarProviders(vals.map(String));

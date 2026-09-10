@@ -1,4 +1,5 @@
 import QtQuick
+import Quickshell.Io
 import qs.Common
 import qs.Modules.Plugins
 import qs.Widgets
@@ -6,6 +7,119 @@ import qs.Widgets
 PluginSettings {
     id: root
     pluginId: "tokitoki"
+
+    property var accounts: []
+    property var hiddenEntries: []
+    property string visibilityTarget: ""
+    property bool visibilityHide: true
+    property bool pendingReload: false
+
+    readonly property string tokitokiCommand: {
+        const override = String(root.loadValue("executablePath", ""))
+        return override.length > 0 ? override : "tokitoki"
+    }
+
+    function accountTarget(account) {
+        return String(account.provider || "") + ":" + String(account.accountKey || "")
+    }
+
+    function accountLabel(account) {
+        if (account.email)
+            return String(account.email)
+        if (account.credential)
+            return String(account.credential)
+        return String(account.accountKey || "default")
+    }
+
+    function accountDescription(account) {
+        const parts = [String(account.provider || "provider"), String(account.accountKey || "default")]
+        if (account.planLabel)
+            parts.push(String(account.planLabel))
+        return parts.join(" · ")
+    }
+
+    function isAccountHidden(account) {
+        return root.hiddenEntries.some(entry => root.hiddenEntryMatches(entry, account))
+    }
+
+    // "provider" hides the whole provider, "provider:accountKey" one account;
+    // the account half is a suffix match, mirroring uiToggles.matches.
+    function hiddenEntryMatches(entry, account) {
+        const text = String(entry || "")
+        const at = text.indexOf(":")
+        const provider = String(account.provider || "")
+        if (at <= 0)
+            return text === provider
+        return text.slice(0, at) === provider &&
+            String(account.accountKey || "").endsWith(text.slice(at + 1))
+    }
+
+    function setAccountHidden(account, hidden) {
+        if (visibilityProcess.running)
+            return
+        visibilityTarget = root.accountTarget(account)
+        visibilityHide = hidden
+        visibilityProcess.running = true
+    }
+
+    function reload() {
+        if (accountsProcess.running) {
+            pendingReload = true
+            return
+        }
+        accountsProcess.running = true
+    }
+
+    function acceptPayload(raw) {
+        try {
+            const parsed = JSON.parse(String(raw || ""))
+            root.accounts = parsed && Array.isArray(parsed.limits) ? parsed.limits : []
+            const ui = parsed && parsed.uiPreview ? parsed.uiPreview : {}
+            root.hiddenEntries = Array.isArray(ui.menubarHidden) ? ui.menubarHidden : []
+        } catch (error) {
+            root.accounts = []
+            root.hiddenEntries = []
+        }
+    }
+
+    // The payload always carries every account and the current hide list, so
+    // this page and the widget render from the same source.
+    Process {
+        id: accountsProcess
+        command: [root.tokitokiCommand, "widget-payload", "--cached", "--json"]
+        stdout: StdioCollector {
+            onStreamFinished: root.acceptPayload(text)
+        }
+        onExited: function(exitCode, exitStatus) {
+            if (root.pendingReload) {
+                root.pendingReload = false
+                root.reload()
+            }
+        }
+    }
+
+    Process {
+        id: visibilityProcess
+        command: [root.tokitokiCommand, "ui", root.visibilityHide ? "--hide" : "--show",
+            root.visibilityTarget, "--surface", "widget"]
+        onExited: function(exitCode, exitStatus) {
+            root.reload()
+        }
+    }
+
+    Timer {
+        running: true
+        interval: 0
+        onTriggered: root.reload()
+    }
+
+    Connections {
+        target: root
+
+        function onPluginServiceChanged() {
+            root.reload()
+        }
+    }
 
     StyledText {
         width: parent.width
@@ -123,6 +237,41 @@ PluginSettings {
         description: "Comma-separated upstream provider ids, for example openai,claude,cursor."
         placeholder: "openai,claude"
         defaultValue: ""
+    }
+
+    StyledText {
+        width: parent.width
+        text: "Usage cards"
+        color: Theme.surfaceText
+        font.pixelSize: Theme.fontSizeLarge
+        font.weight: Font.DemiBold
+    }
+
+    StyledText {
+        width: parent.width
+        text: "Turn an account off to drop its card and its widget marks. The eye button on a card hides it here too."
+        color: Theme.surfaceVariantText
+        font.pixelSize: Theme.fontSizeSmall + 1
+        wrapMode: Text.WordWrap
+    }
+
+    Column {
+        width: parent.width
+        spacing: Theme.spacingXS
+
+        Repeater {
+            model: root.accounts
+
+            DankToggle {
+                required property var modelData
+
+                width: parent.width
+                text: root.accountLabel(modelData)
+                description: root.accountDescription(modelData)
+                checked: !root.isAccountHidden(modelData)
+                onToggled: isChecked => root.setAccountHidden(modelData, !isChecked)
+            }
+        }
     }
 
     StyledText {

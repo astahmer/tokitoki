@@ -211,6 +211,32 @@ describe("computeLimits", () => {
     }
   });
 
+  it("treats an embedded window that already reset as empty, not as exhausted", () => {
+    const cache = limitsCache();
+    try {
+      const now = new Date("2026-09-10T12:00:00.000Z");
+      cache.insertPolledSnapshots({
+        provider: "codex",
+        accountKey: "codex",
+        windows: [
+          // 5h session window: its reset instant is months in the past, so the
+          // captured 100% used describes a window that no longer exists.
+          { windowMinutes: 300, usedPct: 100, resetsAtEpoch: Math.round(Date.parse("2026-07-12T21:17:06.000Z") / 1000) },
+          // Still-open weekly window: the provider-reported utilization stands.
+          { windowMinutes: 10_080, usedPct: 10, resetsAtEpoch: Math.round(Date.parse("2026-09-14T10:47:05.000Z") / 1000) },
+        ],
+        capturedAtIso: "2026-08-02T22:21:23.333Z",
+        eventId: "poll:stale",
+      });
+      const limits = computeLimits(cache, {}, now, [{ provider: "codex", accountKey: "codex" }]);
+      const windows = limits[0]!.windows;
+      expect(windows.find((w) => w.kind === "day")?.usedPct).toBe(0);
+      expect(windows.find((w) => w.kind === "week")?.usedPct).toBe(10);
+    } finally {
+      cache.close();
+    }
+  });
+
   it("prefers embedded quota over derived for the same window kind", () => {
     const cache = limitsCache();
     try {
@@ -381,39 +407,48 @@ describe("ui toggles", () => {
 
   it("isVisibleOn honors hidden lists and menubarProviders allowlist", () => {
     const base = {} as Parameters<typeof isVisibleOn>[0];
+    const hiddenWidget = { ui: { hidden: { widget: ["codex:openai:plus"] } } } as never;
+    expect(isVisibleOn(hiddenWidget, "widget", "codex", "openai:plus")).toBe(false);
+    expect(isVisibleOn(hiddenWidget, "widget", "codex", "other")).toBe(true);
+    expect(isVisibleOn(hiddenWidget, "dashboard", "codex", "openai:plus")).toBe(true); // surface-scoped
+
+    // pre-rename configs still resolve on the widget surface
     const hiddenMenubar = { ui: { hidden: { menubar: ["codex:openai:plus"] } } } as never;
-    expect(isVisibleOn(hiddenMenubar, "menubar", "codex", "openai:plus")).toBe(false);
-    expect(isVisibleOn(hiddenMenubar, "menubar", "codex", "other")).toBe(true);
-    expect(isVisibleOn(hiddenMenubar, "dashboard", "codex", "openai:plus")).toBe(true); // surface-scoped
+    expect(isVisibleOn(hiddenMenubar, "widget", "codex", "openai:plus")).toBe(false);
+    const hiddenBar = { ui: { hidden: { bar: ["codex:openai:plus"] } } } as never;
+    expect(isVisibleOn(hiddenBar, "widget", "codex", "openai:plus")).toBe(false);
 
     const allowlist = { ui: { menubarProviders: ["claude-code"] } } as never;
-    expect(isVisibleOn(allowlist, "menubar", "codex", "x")).toBe(false);
-    expect(isVisibleOn(allowlist, "menubar", "claude-code", "default")).toBe(true);
-    expect(isVisibleOn(allowlist, "dashboard", "codex", "x")).toBe(true); // allowlist is menubar-only
+    expect(isVisibleOn(allowlist, "widget", "codex", "x")).toBe(false);
+    expect(isVisibleOn(allowlist, "widget", "claude-code", "default")).toBe(true);
+    expect(isVisibleOn(allowlist, "dashboard", "codex", "x")).toBe(true); // allowlist is widget-only
 
-    expect(isVisibleOn(base, "menubar", "anything", "anyone")).toBe(true);
+    expect(isVisibleOn(base, "widget", "anything", "anyone")).toBe(true);
   });
 
   it("matches accountKey by suffix only, not substring anywhere", () => {
     // Docstring contract: "codex:plus" matches by suffix on accountKey.
     // Hiding it must not also hide an unrelated account that merely
     // contains "plus" somewhere in the middle.
-    const hidden = { ui: { hidden: { menubar: ["codex:plus"] } } } as never;
-    expect(isVisibleOn(hidden, "menubar", "codex", "plus-team-extra")).toBe(true);
-    expect(isVisibleOn(hidden, "menubar", "codex", "openai:plus")).toBe(false); // real suffix match still works
+    const hidden = { ui: { hidden: { widget: ["codex:plus"] } } } as never;
+    expect(isVisibleOn(hidden, "widget", "codex", "plus-team-extra")).toBe(true);
+    expect(isVisibleOn(hidden, "widget", "codex", "openai:plus")).toBe(false); // real suffix match still works
   });
 
   it("setSurfaceVisibility writes canonical json config", () => {
     const dir = mkdtempSync(path.join(os.tmpdir(), "tk-ui-"));
     process.env.TOKITOKI_CONFIG = path.join(dir, "config.json");
     try {
-      setSurfaceVisibility("codex:openai:plus", "menubar", false);
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      require("node:fs").writeFileSync(process.env.TOKITOKI_CONFIG, JSON.stringify({ ui: { hidden: { menubar: ["stale"] } } }));
+      setSurfaceVisibility("codex:openai:plus", "widget", false);
       setSurfaceVisibility("pi", "dashboard", false);
       // re-show removes the entry entirely
-      setSurfaceVisibility("codex:openai:plus", "menubar", true);
+      setSurfaceVisibility("codex:openai:plus", "widget", true);
       // eslint-disable-next-line @typescript-eslint/no-var-requires
       const cfg = JSON.parse(require("node:fs").readFileSync(process.env.TOKITOKI_CONFIG, "utf8"));
-      expect(cfg.ui.hidden.menubar).toEqual([]);
+      expect(cfg.ui.hidden.widget).toEqual(["stale"]); // legacy entry folded forward
+      expect(cfg.ui.hidden.menubar).toBeUndefined();
       expect(cfg.ui.hidden.dashboard).toEqual(["pi"]);
     } finally {
       delete process.env.TOKITOKI_CONFIG;
