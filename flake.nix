@@ -135,10 +135,13 @@
             mkdir -p "$out/bin" "$out/dist" "$out/share/tokitoki"
             cp -R dist/. "$out/dist/"
             cp -R integrations "$out/share/tokitoki/"
-            install -Dm644 package.json "$out/package.json"
+            # Keep package metadata out of the package root so this derivation
+            # can coexist in Home Manager's buildEnv with other JS tools.
+            install -Dm644 package.json "$out/share/tokitoki/package.json"
 
             makeWrapper ${lib.getExe pkgs.bun} "$out/bin/tokitoki" \
-              --add-flags "$out/dist/cli.js"
+              --add-flags "$out/dist/cli.js" \
+              --set TOKITOKI_VERSION "${version}"
 
             runHook postInstall
           '';

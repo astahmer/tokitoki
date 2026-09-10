@@ -78,6 +78,9 @@ export { UserError } from "./errors.ts";
  * Fall back to the repo layout (dist/..), then to a literal.
  */
 function readVersion(): string {
+  const packagedVersion = process.env.TOKITOKI_VERSION;
+  if (typeof packagedVersion === "string" && packagedVersion.length > 0) return packagedVersion;
+
   try {
     const pkg = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version?: string };
     if (typeof pkg.version === "string") return pkg.version;
