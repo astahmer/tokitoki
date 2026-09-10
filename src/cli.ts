@@ -432,7 +432,7 @@ export async function main(argv: string[]): Promise<void> {
       case "tools": runTools(parsed); break;
       case "repos": runRepos(parsed); break;
       case "import": runImport(parsed); break;
-      case "sync": runSyncCommand(parsed); break;
+      case "sync": await runSyncCommand(parsed); break;
       case "share": await runShare(parsed); break;
       case "web": runWeb(parsed); break;
       case "blocks": await runBlocks(parsed); break;
@@ -1771,7 +1771,7 @@ function runShareStatus(): void {
   console.log('enable/disable: tokitoki share --enable | --disable');
 }
 
-function runSyncCommand(parsed: ParsedInvocation): void {
+async function runSyncCommand(parsed: ParsedInvocation): Promise<void> {
   const modeRaw = flagBool(parsed, "pull") ? "pull" : flagBool(parsed, "push") ? "push" : "both";
   const backendOverride = flagString(parsed, "backend");
   try {
@@ -1787,20 +1787,13 @@ function runSyncCommand(parsed: ParsedInvocation): void {
     }
     const adapter = getSyncBackend(syncCfg);
     console.log(`sync via ${adapter.label} (${modeRaw})...`);
-    runSync(adapter, modeRaw)
-      .then((result) => {
-        console.log(
-          `pushed ${result.pushed} lines · pulled ${result.pulledValid} valid / ${result.pulledInvalid} skipped`,
-        );
-      })
-      .catch(handleErrorAsync);
+    const result = await runSync(adapter, modeRaw);
+    console.log(
+      `pushed ${result.pushed} lines · pulled ${result.pulledValid} valid / ${result.pulledInvalid} skipped`,
+    );
   } catch (err) {
     handleError(err);
   }
-}
-
-function handleErrorAsync(err: unknown): void {
-  handleError(err);
 }
 
 // ---------------------------------------------------------------- blocks / statusline / mcp / menubar

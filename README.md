@@ -288,6 +288,13 @@ Each machine writes only its own file; pull reads everyone else's. Point your
 Syncthing shared folder at that path on both Macs and run `tokitoki sync` on
 each (or a launchd/cron job hourly).
 
+The same backend works with iCloud Drive when both Macs share one iCloud
+account. Use a per-user folder such as
+`~/Library/Mobile Documents/com~apple~CloudDocs/tokitoki`; Tokitoki expands the
+leading `~`, gives each machine its own JSONL file, and only transfers new
+bytes after the first push. Never place `cache.db` or its WAL files in the
+shared folder.
+
 ### git — private repo
 
 ```toml

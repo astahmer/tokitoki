@@ -17,6 +17,8 @@ export interface SyncAdapter {
   readonly label: string;
   pull(): AsyncIterable<string>;
   push(lines: string[]): Promise<void>;
+  /** Optional zero-copy path for append-only directory transports. */
+  pushFile?(file: string): Promise<number>;
   /**
    * Local folder where presence heartbeats live, when the transport is
    * filesystem-backed (null = presence not supported over this transport).

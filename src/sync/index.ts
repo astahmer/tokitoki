@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import path from "node:path";
 
 import type { TokitokiConfig } from "../config.ts";
 import { EventCache } from "../cache.ts";
@@ -22,7 +23,7 @@ export function getSyncBackend(cfg: SyncConfig, machineId = localMachineId()): S
         "add to config.toml:  [sync]\n  backend = \"dir\"\n  path = \"/sync/folder\"",
       )
       }
-      return new DirAdapter(machineId, cfg.path);
+      return new DirAdapter(machineId, cfg.path, path.join(dataDir(), "dir-sync-state.json"));
     case "git":
       if (cfg.url === undefined || cfg.url.length === 0) {
         throw new UserError(
@@ -72,9 +73,13 @@ export async function runSync(adapter: SyncAdapter, mode: "push" | "pull" | "bot
   const result: SyncResult = { pushed: 0, pulledValid: 0, pulledInvalid: 0 };
 
   if (mode === "push" || mode === "both") {
-    const lines = localLines();
-    await adapter.push(lines);
-    result.pushed = lines.length;
+    if (adapter.pushFile !== undefined) {
+      result.pushed = await adapter.pushFile(eventsFile());
+    } else {
+      const lines = localLines();
+      await adapter.push(lines);
+      result.pushed = lines.length;
+    }
     // git adapter already commits its own heartbeat inside push(); dir
     // adapter gets one written alongside the events file.
     if (adapter.id === "dir") writeHeartbeat(adapter.heartbeatDir?.() ?? "", localMachineId());

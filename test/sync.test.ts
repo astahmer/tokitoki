@@ -75,6 +75,35 @@ describe("dir adapter", () => {
     expect(await collect(adapter)).toEqual([]);
   });
 
+  test("stateful pulls only return newly appended remote lines", async () => {
+    const dir = tmpDir();
+    const mine = new DirAdapter("my-mac", dir, path.join(tmpDir(), "mine-state.json"));
+    const theirs = new DirAdapter("other-mac", dir, path.join(tmpDir(), "theirs-state.json"));
+
+    await theirs.push([event("e1"), event("e2")]);
+    expect(await collect(mine)).toHaveLength(2);
+    expect(await collect(mine)).toEqual([]);
+
+    await theirs.push([event("e1"), event("e2"), event("e3")]);
+    const newLines = await collect(mine);
+    expect(newLines).toHaveLength(1);
+    expect(lineToEvent(newLines[0]!)?.id).toBe("e3");
+  });
+
+  test("pushFile copies only the append-only tail", async () => {
+    const root = tmpDir();
+    const dir = path.join(root, "shared");
+    const source = path.join(root, "events.jsonl");
+    const state = path.join(root, "state.json");
+    const adapter = new DirAdapter("my-mac", dir, state);
+    fs.writeFileSync(source, event("e1", "my-mac") + "\n");
+
+    expect(await adapter.pushFile!(source)).toBe(1);
+    fs.writeFileSync(source, event("e1", "my-mac") + "\n" + event("e2", "my-mac") + "\n");
+    expect(await adapter.pushFile!(source)).toBe(2);
+    expect(fs.readFileSync(path.join(dir, "my-mac.jsonl"), "utf8").trim().split("\n")).toHaveLength(2);
+  });
+
   test("invalid remote lines are yielded but flagged by lineToEvent", async () => {
     const dir = tmpDir();
     fs.writeFileSync(path.join(dir, "other-mac.jsonl"), event("ok") + "\ngarbage\n\n");
