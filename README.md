@@ -1,34 +1,81 @@
 # tokitoki
 
-Unified coding-agent usage & session analytics across machines, harnesses, and
-accounts. Merges the best of `ccusage`, CodexBar, and openusage.ai.
+> Local-first usage analytics for coding agents.
 
-## Why
+Tokitoki scans local harness stores, normalizes usage into one deduplicated
+event log, and gives you the same picture in a CLI, web dashboard, native
+macOS menu bar, shell widgets, and MCP. It is designed for people who use
+multiple agents, accounts, machines, or all three.
 
-- Multiple Macs run the same/different harnesses (pi, Claude Code, Codex,
-  OpenCode...) with the same named accounts/keys — usage is fragmented and
-  double-counted per machine.
-- Existing tools each cover one slice:
-  - **ccusage** (18k⭐): CLI totals from Claude Code JSONL — primitive, single
-    source, no multi-machine merge
-  - **CodexBar**: menu-bar usage for Codex + Claude Code, supports multiple
-    accounts
-  - **openusage.ai**: nicer overall UX but no multi-account support
+<p align="center">
+  <img src="docs/screenshots/dashboard.png" alt="Tokitoki web dashboard showing usage totals, an evolution chart, and a provider breakdown" width="920" />
+</p>
 
-## Goals
+<p align="center">
+  <img src="docs/screenshots/menubar-home.png" alt="Tokitoki native menu-bar popover with quota cards" width="49%" />
+  <img src="docs/screenshots/menubar-tokens.png" alt="Tokitoki native menu-bar popover with token distribution charts" width="49%" />
+</p>
 
-1. **Multi-harness ingestion**: pi (`~/.pi`), Claude Code (`~/.claude`),
-   Codex, OpenCode session stores → normalized event model
-2. **Per-machine attribution**: every record tagged with `machine_id`;
-   totals never double-count
-3. **Dedup across machines**: stable identity =
-   `(harness, account/key, sessionId, messageId|requestId)` — same session
-   synced to two Macs counts once
-4. **Dimensions**: per API key / account (subscription vs API), per model,
-   per project/repo, per day/week/month, per machine
-5. **Views**: CLI (`tokitoki today|week|month`), TUI dashboard, optional
-   menu-bar/web UI later
-6. **Live + historical**: incremental scan with cursor files; cheap rescan
+<p align="center">
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#what-you-get">What you get</a> ·
+  <a href="#supported-harnesses">Supported harnesses</a> ·
+  <a href="#privacy-and-data">Privacy and data</a>
+</p>
+
+## What you get
+
+- **One local history** across Claude Code, Codex CLI, pi, OpenCode, Gemini
+  CLI, Grok CLI, and other indexed harnesses.
+- **Useful dimensions**: model, provider, account, project, repository,
+  machine, tool, and time window.
+- **Honest cost and quota views**: native provider costs when available,
+  pricing-based estimates where needed, and clearly labelled plan gauges.
+- **Multiple surfaces**: composable CLI reports, a local browser dashboard, a
+  macOS menu-bar app, host-neutral shell widgets, and an MCP server for agents.
+- **Multi-machine deduplication**: sync append-only event files without
+  counting the same session twice.
+- **Explicit sharing**: usage stays local unless you configure sync or opt in
+  to publishing an aggregate report.
+
+## Quick start
+
+For a packaged run with Nix:
+
+```sh
+nix run github:astahmer/tokitoki -- --version
+nix run github:astahmer/tokitoki -- scan
+```
+
+For a checkout:
+
+```sh
+git clone https://github.com/astahmer/tokitoki.git
+cd tokitoki
+bun install
+
+bun src/cli.ts scan
+bun src/cli.ts report --last week --by provider
+bun src/cli.ts web                 # local dashboard at http://localhost:7788
+```
+
+The first scan reads the provider stores already present on your machine. A
+new install with no supported harness data simply reports an empty window.
+Nothing needs to be uploaded to use the CLI or local dashboard.
+
+## Privacy and data
+
+Tokitoki is local-first: the normalized log and cache live under
+`~/.local/share/tokitoki` by default, and the browser server binds locally.
+Provider account emails are hidden unless you explicitly enable the
+`--show-email`/dashboard toggle. Sync backends, public aggregate sharing, and
+optional pricing refreshes are opt-in configuration choices.
+
+To inspect exactly which local stores were discovered:
+
+```sh
+bun src/cli.ts sources
+```
 
 ## Architecture sketch
 
@@ -40,18 +87,16 @@ accounts. Merges the best of `ccusage`, CodexBar, and openusage.ai.
 - Store format: append-only, conflict-friendly (Syncthing-safe: last-writer
   wins per line, no mutable DB as sync unit)
 
-## Open questions
+## Design principles
 
-- Which harnesses ship token/cost data natively in their stores? (Claude Code
-  yes; pi sessions carry usage? verify) — fallback: estimate from model+tokens
-- ~~Which harnesses ship token/cost data natively in their stores?~~ Verified:
-  pi yes (usage.cost), Claude Code yes (sometimes costUSD), Codex only
-  cumulative/delta token counts (cost estimated from pricing table)
-- Subscription plans (Pro/Max) have cost-less limits: track % of plan limit
-  instead of $ where applicable
-- Menu-bar app: separate shell or TUI-only first?
+- Prefer provider-reported cost and token data; make pricing-based estimates
+  visible when a harness only exposes cumulative usage.
+- Treat subscription limits as configured gauges, not invented provider truth.
+- Keep ingestion incremental and append-only so scans are cheap and sync is
+  conflict-friendly.
+- Make every surface consume the same normalized event and widget contracts.
 
-## Setup
+## Development setup
 
 The repository includes a Nix dev shell and direnv entrypoint. With
 [Nix](https://nixos.org/) and [direnv](https://direnv.net/) installed:
@@ -291,10 +336,9 @@ tokitoki web            # → http://localhost:7788  (--port to change)
 bun run web:dev         # vite dev server :5177, /api proxied to :7788
 ```
 
-React + TypeScript SPA built with Vite, styled with Tailwind CSS v4,
-primitives hand-rolled shadcn-style on **Base UI** (Switch/Tabs-class
-accessibility without Radix weight), charts via **TanStack Charts**
-(line timeseries + polar donut).
+React + TypeScript SPA built with Vite, styled with Cloudflare Kumo and
+Tailwind CSS v4, with charts via **TanStack Charts** (line timeseries + polar
+donut).
 
 Build flow:
 
@@ -502,32 +546,16 @@ and a real adapter replaces them.
 - `report` rebuilds the sqlite cache lazily when log/event counts diverge;
   very large logs may want a faster merge strategy later
 
-## Roadmap (competitive scan 2026-08 + web UX backlog)
+## Roadmap
 
-What ccusage / CodexBar / openusage.ai have that we don't yet, cheapest-first:
+The core ingestion and reporting loop is usable today. The next improvements
+are deliberately incremental:
 
-- **Web UX polish backlog** (2026-08-23 visual pass): calendar-heatmap cells
-  need a light-mode-visible color ramp (current accent/20 levels nearly
-  invisible on white); verify TanStack `formatGroup` tooltips visually
-  (implemented, not screenshot-verified); session-detail request timeline
-  could be a chart instead of a table; keyboard navigation + focus rings for
-  table/tabs; responsive layout pass for narrow viewports
-- **5-hour billing blocks** (ccusage `blocks`) — Claude-specific session-window
-  monitoring with active-block tracking; needs per-request timestamps we
-  already store, just a different bucketing
-- **Provider limit polling with reset countdowns** (CodexBar/openusage core) —
-  OAuth/cookie sessions per provider to read plan quotas + reset times; big
-  but the single biggest feature gap vs the menu-bar apps
-- **Statusline integration** (ccusage `statusline`) — compact one-liner for
-  Claude Code status bar hooks; trivial once a `tokitoki statusline` command
-  emits the right shape
-- **Compact table mode** for narrow terminals/screenshots (ccusage `--compact`)
-- **Timezone option** for day bucketing (ccusage `--timezone UTC`)
-- **Offline pricing mode + user pricing overrides** via config file
-- **More harness sources** — ccusage already parses Amp, Droid, Goose, Kimi,
-  Qwen, Copilot CLI, Gemini CLI, Grok... our provider interface makes each a
-  small adapter
-- **Config file** for defaults (ccusage.json-style) instead of env/flags only
+- richer provider quota coverage and reset-aware polling
+- a more visual request timeline in session details
+- keyboard-first and narrow-viewport polish for the dashboard
+- additional harness adapters and deeper indexed-session support
+- a Linux-native menubar target alongside the existing macOS app
 
 ## Prior art
 
