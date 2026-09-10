@@ -29,6 +29,7 @@ describe("cli help completeness", () => {
 
   it("documents the shared cached widget payload read path", () => {
     expect(commandHelpText("widget-payload")).toContain("--cached");
+    expect(commandHelpText("widget-payload")).toContain("--skip-scan");
     expect(commandHelpText("widget-payload")).toContain("--json");
   });
 

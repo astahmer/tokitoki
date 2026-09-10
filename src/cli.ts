@@ -263,9 +263,10 @@ Rows always show every configured scope×pattern; state is ok | warn (≥80%)
     example: "tokitoki config set ui.stripMetric \"tokens\"",
   },
   "widget-payload": {
-    usage: "tokitoki widget-payload [--cached] --json",
+    usage: "tokitoki widget-payload [--cached] [--skip-scan] --json",
     flags: `  versioned JSON payload consumed by native apps and shell integrations
   --cached              read the persisted payload without scanning harness stores
+  --skip-scan           refresh the payload without walking provider stores
   --json                required for this machine-readable contract`,
     example: "tokitoki widget-payload --cached --json",
   },
@@ -461,7 +462,7 @@ export async function main(argv: string[]): Promise<void> {
 
 /** Flags each command accepts — anything else is a typo we can suggest around. */
 const KNOWN_FLAGS: Record<string, string[]> = {
-  "widget-payload": ["cached", "json"],
+  "widget-payload": ["cached", "skip-scan", "json"],
   ui: ["list", "hide", "show", "surface", "menubar-only", "card-set", "account-order", "tabs"],
   scan: ["provider", "if-needed"],
   sources: [],
@@ -547,6 +548,7 @@ function flagStrings(parsed: ParsedInvocation, key: string): string[] {
 }
 
 function withCache<T>(fn: (cache: EventCache) => T): T {
+  if (activeCache !== undefined) return fn(activeCache);
   const cache = new EventCache();
   try {
     return fn(cache);
@@ -554,6 +556,11 @@ function withCache<T>(fn: (cache: EventCache) => T): T {
     cache.close();
   }
 }
+
+// Widget payload composition runs many synchronous report projections. Keep
+// one SQLite connection (and its page cache) alive for that short composition
+// instead of reopening and migrating the 400MB+ cache for every capture.
+let activeCache: EventCache | undefined;
 
 // A cached payload read is intentionally a pure SQLite projection. The
 // regular CLI keeps syncing by default; only short-lived payload consumers
@@ -2231,14 +2238,22 @@ function runWidgetPayload(parsed: ParsedInvocation): void {
       "tokitoki widget-payload --cached --json",
     );
   }
+  const payloadCache = new EventCache();
+  const previousCache = activeCache;
+  activeCache = payloadCache;
+  try {
   const readOnlyPayload = flagBool(parsed, "cached");
+  const skipScan = flagBool(parsed, "skip-scan");
   widgetPayloadReadOnly = readOnlyPayload;
   // Sequential single-process composition: the menu bar previously spawned
   // 7 CLIs at once (~1GB RSS each) and thrashed memory.
   // Ingest changed harness stores before any report is composed. This is
   // incremental (provider cursors make unchanged files cheap) and prevents
   // the popover from showing a stale/zero token period after a session ends.
-  if (!widgetPayloadReadOnly) {
+  // --skip-scan is used only after an explicit successful scan command; it keeps
+  // the live sync/report path intact while avoiding that scan's duplicate
+  // provider walk.
+  if (!widgetPayloadReadOnly && !skipScan) {
     const machineId = localMachineId();
     for (const provider of PROVIDERS) {
       scanProviderCore(provider, machineId, {
@@ -2736,7 +2751,10 @@ function runWidgetPayload(parsed: ParsedInvocation): void {
             to: flagString({ command: "report", flags: mergedFlags, rest: [] }, "to"),
             fallbackPeriod: "month",
           });
-          const rows = cache.aggregate(window.sinceIso, groupBy, undefined, window.untilIso);
+          // The Swift token cards consume requests/tokens/cost only. Use the
+          // daily rollups for these breakdowns; session counts are not
+          // derivable from day-grain data and are intentionally omitted here.
+          const rows = cache.hybridAggregate(window.sinceIso, groupBy, undefined, window.untilIso);
           return { key, rows };
         });
       const providerPeriods = periodFlags.map(([key, flags]) => {
@@ -2746,7 +2764,7 @@ function runWidgetPayload(parsed: ParsedInvocation): void {
           to: flagString({ command: "report", flags, rest: [] }, "to"),
           fallbackPeriod: "month",
         });
-        return { key, rows: cache.aggregateModelProviders(window.sinceIso, undefined, window.untilIso) };
+        return { key, rows: cache.hybridAggregateModelProviders(window.sinceIso, undefined, window.untilIso) };
       });
       console.log(JSON.stringify({
         harnessPeriods: collect("provider", {}),
@@ -2794,6 +2812,10 @@ function runWidgetPayload(parsed: ParsedInvocation): void {
     tokens: widgetPayloadTokens(row),
   }));
   console.log(JSON.stringify(parts));
+  } finally {
+    activeCache = previousCache;
+    payloadCache.close();
+  }
 }
 
 function runUi(parsed: ParsedInvocation): void {

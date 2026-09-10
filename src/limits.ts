@@ -238,6 +238,13 @@ export function computeLimits(
     return true;
   });
   const out: AccountLimits[] = [];
+  // These values are provider-scoped, but the original per-account loop
+  // reread large quota stores and auth files for every card.
+  const ownFingerprintsByProvider = new Map<string, Set<string>>();
+  const foreignFingerprintsByProvider = new Map<string, Set<string>>();
+  const emailsByProvider = new Map<string, string | null>();
+  let codexIdentityResolved = false;
+  let codexIdentity: ReturnType<typeof accountIdentityFor> = null;
 
   for (const { provider, accountKey } of list) {
     const windows: LimitWindow[] = [];
@@ -395,17 +402,35 @@ export function computeLimits(
     // local login — its embedded windows match polled quota fingerprints —
     // or when nothing contradicts it (never polled + no foreign pool data).
     const pairs = snaps.map((s) => `${Math.round(s.windowMinutes)}:${Math.round(s.resetsAt)}`);
-    const own = cache.ownLoginFingerprints(provider);
-    const foreign = foreignQuotaFingerprints(provider);
-    let email = accountEmailFor(provider) ?? undefined;
+    let own = ownFingerprintsByProvider.get(provider);
+    if (own === undefined) {
+      own = cache.ownLoginFingerprints(provider);
+      ownFingerprintsByProvider.set(provider, own);
+    }
+    let foreign = foreignFingerprintsByProvider.get(provider);
+    if (foreign === undefined) {
+      foreign = foreignQuotaFingerprints(provider);
+      foreignFingerprintsByProvider.set(provider, foreign);
+    }
+    let resolvedEmail: string | null;
+    if (emailsByProvider.has(provider)) {
+      resolvedEmail = emailsByProvider.get(provider) ?? null;
+    } else {
+      resolvedEmail = accountEmailFor(provider);
+      emailsByProvider.set(provider, resolvedEmail);
+    }
+    let email = resolvedEmail ?? undefined;
     if (provider === "codex") {
-      const localId = accountIdentityFor(provider)?.accountId;
-      const snapshotIds = cache.quotaAccountIds(provider, accountKey);
+      if (!codexIdentityResolved) {
+        codexIdentity = accountIdentityFor(provider);
+        codexIdentityResolved = true;
+      }
+      const localId = codexIdentity?.accountId;
       // Account IDs are authoritative. A card with polled identity data that
       // belongs to another login must never inherit the active JWT email.
-      if (snapshotIds.size > 0 && (localId === undefined || !snapshotIds.has(localId))) {
+      if (quotaAccountIds.size > 0 && (localId === undefined || !quotaAccountIds.has(localId))) {
         email = undefined;
-      } else if (snapshotIds.size === 0 && (!pairs.some((p) => own.has(p)) && !(own.size === 0 && !pairs.some((p) => foreign.has(p))))) {
+      } else if (quotaAccountIds.size === 0 && (!pairs.some((p) => own.has(p)) && !(own.size === 0 && !pairs.some((p) => foreign.has(p))))) {
         // Compatibility for pre-account_id snapshots; this path disappears
         // naturally after the next poll writes stable identity metadata.
         email = undefined;

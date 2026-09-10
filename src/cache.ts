@@ -72,7 +72,10 @@ export class EventCache {
     // Concurrent invocations are normal (menubar polls every 5 min, web serves
     // on demand, users run CLI in parallel): WAL + busy timeout so writers
     // queue instead of failing with SQLITE_BUSY.
-    sqliteRetry(() => this.db.exec("PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 10000;"));
+    // Report projections use GROUP BY/ORDER BY over the event archive. Keep
+    // SQLite's transient sort/group b-trees in memory for this short-lived
+    // connection so a refresh does not spill them to disk.
+    sqliteRetry(() => this.db.exec("PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 10000; PRAGMA temp_store = MEMORY;"));
     this.repoNameFor = repoNameFor ?? ((dir: string) => resolveRepo(dir).name);
     this.migrate();
     this.repoStmtInsert = this.db.prepare(
@@ -116,6 +119,8 @@ export class EventCache {
       );
       CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);
       CREATE INDEX IF NOT EXISTS idx_events_provider ON events(provider);
+      CREATE INDEX IF NOT EXISTS idx_events_provider_account_ts
+        ON events(provider, account_key, ts);
       CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id);
       CREATE TABLE IF NOT EXISTS repo_dirs (
         dir TEXT PRIMARY KEY,
@@ -207,6 +212,15 @@ export class EventCache {
     if (!quotaColsAfterLabel.some((c) => c.name === "amount_usd")) {
       this.db.exec("ALTER TABLE quota_snapshots ADD COLUMN amount_usd REAL");
     }
+    // Limits are rendered for every detected account. These targeted lookups
+    // keep per-account usage and identity attribution bounded by the account's
+    // rows instead of rescanning every provider's history.
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_quota_account_identity
+        ON quota_snapshots(provider, account_key, account_id);
+      CREATE INDEX IF NOT EXISTS idx_quota_poll_fingerprint
+        ON quota_snapshots(provider, event_id, window_minutes, resets_at);
+    `);
     try {
       ensureSessionFts(this.db);
     } catch {
@@ -607,8 +621,8 @@ export class EventCache {
   detectedAccounts(): Array<{ provider: string; accountKey: string; events: number }> {
     return this.db
       .query(
-        `SELECT provider AS provider, account_key AS accountKey, COUNT(*) AS events
-         FROM events GROUP BY provider, account_key ORDER BY events DESC`,
+        `SELECT provider AS provider, account_key AS accountKey, SUM(requests) AS events
+         FROM daily_rollups GROUP BY provider, account_key ORDER BY events DESC`,
       )
       .all() as Array<{ provider: string; accountKey: string; events: number }>;
   }
@@ -721,7 +735,8 @@ export class EventCache {
   providerStats(): Map<string, { events: number; models: Set<string>; accounts: Set<string> }> {
     const rows = this.db
       .query(
-        `SELECT provider, model, account_key, COUNT(*) AS n FROM events GROUP BY provider, model, account_key`,
+        `SELECT provider, model, account_key, SUM(requests) AS n
+         FROM daily_rollups GROUP BY provider, model, account_key`,
       )
       .all() as Array<{ provider: string; model: string; account_key: string; n: number }>;
     const out = new Map<string, { events: number; models: Set<string>; accounts: Set<string> }>();
@@ -862,6 +877,43 @@ export class EventCache {
         previous.cache_read_tokens = (previous.cache_read_tokens ?? 0) + (row.cache_read_tokens ?? 0);
         previous.cache_write_tokens = (previous.cache_write_tokens ?? 0) + (row.cache_write_tokens ?? 0);
         previous.cost_usd = (previous.cost_usd ?? 0) + (row.cost_usd ?? 0);
+      }
+    }
+    return [...grouped.values()].map(fromRawRow);
+  }
+
+  /**
+   * Aggregate inferred model providers with the same rollup/edge split as
+   * hybridAggregate(). The daily rollup keeps the original harness, account,
+   * and model columns so attribution remains identical after remapping.
+   * Session counts are intentionally zero: this method feeds token/cost
+   * breakdowns, whose consumers do not display sessions.
+   */
+  hybridAggregateModelProviders(sinceIso: string, providers?: string[], untilIso?: string): AggRow[] {
+    const grouped = new Map<string, RawAggRow>();
+    for (const part of this.hybridModelProviderParts(sinceIso, untilIso, providers)) {
+      for (const row of part) {
+        const bucket = modelProvider(row.model, row.provider, row.account_key);
+        const previous = grouped.get(bucket);
+        if (previous === undefined) {
+          grouped.set(bucket, {
+            bucket,
+            requests: row.requests,
+            sessions: 0,
+            input_tokens: row.input_tokens,
+            output_tokens: row.output_tokens,
+            cache_read_tokens: row.cache_read_tokens,
+            cache_write_tokens: row.cache_write_tokens,
+            cost_usd: row.cost_usd,
+          });
+        } else {
+          previous.requests += row.requests;
+          previous.input_tokens = (previous.input_tokens ?? 0) + (row.input_tokens ?? 0);
+          previous.output_tokens = (previous.output_tokens ?? 0) + (row.output_tokens ?? 0);
+          previous.cache_read_tokens = (previous.cache_read_tokens ?? 0) + (row.cache_read_tokens ?? 0);
+          previous.cache_write_tokens = (previous.cache_write_tokens ?? 0) + (row.cache_write_tokens ?? 0);
+          previous.cost_usd = (previous.cost_usd ?? 0) + (row.cost_usd ?? 0);
+        }
       }
     }
     return [...grouped.values()].map(fromRawRow);
@@ -1278,6 +1330,57 @@ export class EventCache {
     return parts;
   }
 
+  /** Rollup/edge rows that retain enough identity for model attribution. */
+  private hybridModelProviderParts(
+    sinceIso: string,
+    untilIso: string | undefined,
+    providers?: string[],
+  ): Array<RawModelProviderAggRow[]> {
+    const DAY = 86_400_000;
+    const startMs = Date.parse(sinceIso);
+    const endMs = untilIso !== undefined ? Date.parse(untilIso) : Date.now();
+    if (Number.isNaN(startMs) || Number.isNaN(endMs) || endMs <= startMs) return [[]];
+
+    const firstFullStart = Math.ceil(startMs / DAY) * DAY;
+    const lastFullEnd = Math.floor(endMs / DAY) * DAY;
+    const parts: Array<RawModelProviderAggRow[]> = [];
+
+    if (lastFullEnd > firstFullStart && lastFullEnd - firstFullStart >= DAY) {
+      const firstKey = new Date(firstFullStart).toISOString().slice(0, 10);
+      const endKey = new Date(lastFullEnd).toISOString().slice(0, 10);
+      const conds = ["day >= ?", "day < ?"];
+      const params: SQLQueryBindings[] = [firstKey, endKey];
+      if (providers !== undefined && providers.length > 0) {
+        conds.push(`provider IN (${providers.map(() => "?").join(",")})`);
+        params.push(...providers);
+      }
+      const rows = this.db
+        .query(
+          `SELECT provider, account_key, model,
+                  SUM(requests) AS requests,
+                  SUM(input_tokens) AS input_tokens,
+                  SUM(output_tokens) AS output_tokens,
+                  SUM(cache_read_tokens) AS cache_read_tokens,
+                  SUM(cache_write_tokens) AS cache_write_tokens,
+                  SUM(cost_usd) AS cost_usd
+           FROM daily_rollups WHERE ${conds.join(" AND ")}
+           GROUP BY provider, account_key, model`,
+        )
+        .all(...params) as RawModelProviderAggRow[];
+      parts.push(rows);
+    } else {
+      parts.push([]);
+    }
+
+    const edges: Array<[number, number]> = [];
+    if (startMs < firstFullStart) edges.push([startMs, Math.min(firstFullStart, endMs)]);
+    if (lastFullEnd < endMs) edges.push([Math.max(startMs, lastFullEnd), endMs]);
+    for (const [from, to] of edges) {
+      parts.push(this.edgeModelProviderRows(new Date(from).toISOString(), new Date(to).toISOString(), providers));
+    }
+    return parts;
+  }
+
   /** Events-backed rows over an exact ISO range; no sessions computed. */
   private edgeRows(
     sinceIso: string,
@@ -1338,6 +1441,32 @@ export class EventCache {
       )
       .all(...params) as Array<RawAggRow>;
     return rows.map((r) => fromRawRow({ ...r, sessions: 0 }));
+  }
+
+  private edgeModelProviderRows(
+    sinceIso: string,
+    untilIso: string,
+    providers?: string[],
+  ): RawModelProviderAggRow[] {
+    const conds = ["ts >= ?", "ts < ?"];
+    const params: SQLQueryBindings[] = [sinceIso, untilIso];
+    if (providers !== undefined && providers.length > 0) {
+      conds.push(`provider IN (${providers.map(() => "?").join(",")})`);
+      params.push(...providers);
+    }
+    return this.db
+      .query(
+        `SELECT provider, account_key, model,
+                COUNT(*) AS requests,
+                SUM(input_tokens) AS input_tokens,
+                SUM(output_tokens) AS output_tokens,
+                SUM(cache_read_tokens) AS cache_read_tokens,
+                SUM(cache_write_tokens) AS cache_write_tokens,
+                SUM(cost_usd) AS cost_usd
+         FROM events WHERE ${conds.join(" AND ")}
+         GROUP BY provider, account_key, model`,
+      )
+      .all(...params) as RawModelProviderAggRow[];
   }
 
   close(): void {
@@ -1546,6 +1675,18 @@ export const DIMENSIONS: Dimension[] = [
   "provider",
   "tool",
 ];
+
+interface RawModelProviderAggRow {
+  provider: string;
+  account_key: string;
+  model: string;
+  requests: number;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  cache_read_tokens: number | null;
+  cache_write_tokens: number | null;
+  cost_usd: number | null;
+}
 
 interface RawAggRow {
   bucket: string;

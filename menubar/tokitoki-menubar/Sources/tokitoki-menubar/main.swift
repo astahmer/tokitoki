@@ -578,6 +578,7 @@ final class Model: ObservableObject {
     private var payloadInFlight = false
     private var payloadRefreshPending = false
     private var payloadRefreshPendingForce = false
+    private var payloadRefreshPendingSkipScan = false
     private var refreshFailureCount = 0
     private var nextRefreshRetryAt: Date?
     private var sessionRequestGeneration = 0
@@ -1159,7 +1160,7 @@ final class Model: ObservableObject {
     }
 
     /// Refresh provider quotas and expose progress in the popover.
-    func pollNow(background: Bool = false) {
+    func pollNow(background: Bool = false, skipScan: Bool = false) {
         guard !pollInFlight else { return }
         guard !payloadInFlight else {
             pollStatus = "Data refresh in progress · quotas will refresh next"
@@ -1197,7 +1198,7 @@ final class Model: ObservableObject {
                 ? Date().addingTimeInterval(Double(self.effectivePollIntervalMinutes) * 60)
                 : nil
             if succeeded { self.pollLastResult = "Updated successfully" }
-            self.refresh()
+            self.refresh(skipScan: skipScan)
         }
     }
 
@@ -1216,15 +1217,17 @@ final class Model: ObservableObject {
         let cli = invocation
         Task { @MainActor [weak self] in
             guard let self else { return }
+            var succeeded = false
             do {
                 let args = initial ? ["scan", "--if-needed"] : ["scan"]
                 let output = try await Self.runCLI(cli, args)
                 self.scanStatus = output.contains("no scan needed") ? "Sources are up to date" : "Sources scanned"
+                succeeded = true
             } catch {
                 self.scanStatus = "Scan failed: \(error.localizedDescription)"
             }
             self.scanInFlight = false
-            self.refresh(force: refreshAfterScan)
+            self.refresh(force: refreshAfterScan, skipScan: refreshAfterScan && succeeded)
         }
     }
 
@@ -1311,7 +1314,7 @@ final class Model: ObservableObject {
     /// Invalidate payload requests already in flight before a config mutation.
     func invalidateRefreshes() { refreshGeneration += 1 }
 
-    func refresh(force: Bool = false) {
+    func refresh(force: Bool = false, skipScan: Bool = false) {
         if !force, let retryAt = nextRefreshRetryAt, retryAt > Date() {
             isLoading = false
             loadingStage = "Retry scheduled"
@@ -1323,13 +1326,11 @@ final class Model: ObservableObject {
         loadingCompleted = 0
         loadingTotal = 4
         if payloadInFlight {
-            payloadRefreshPending = true
-            payloadRefreshPendingForce = payloadRefreshPendingForce || force
+            queueRefresh(force: force, skipScan: skipScan)
             return
         }
         if pollInFlight {
-            payloadRefreshPending = true
-            payloadRefreshPendingForce = payloadRefreshPendingForce || force
+            queueRefresh(force: force, skipScan: skipScan)
             return
         }
         // A user-triggered refresh must also refresh provider quotas. The
@@ -1337,13 +1338,13 @@ final class Model: ObservableObject {
         // pressing “Refresh all” can redraw the same stale Claude snapshot.
         if force || (pollAuto && lastPollAt.map({ Date().timeIntervalSince($0) >= Double(effectivePollIntervalMinutes) * 60 }) ?? true) {
             lastPollAt = Date()
-            pollNow(background: !force)
+            pollNow(background: !force, skipScan: skipScan)
             return
         }
         let cached = !hasHydratedSnapshot
         hasHydratedSnapshot = true
-        loadingCompleted = cached ? 0 : 1
-        loadingStage = cached ? "Reading saved snapshot…" : "Scanning harness stores…"
+        loadingCompleted = cached ? 0 : (skipScan ? 3 : 1)
+        loadingStage = cached ? "Reading saved snapshot…" : (skipScan ? "Refreshing reports…" : "Scanning harness stores…")
         payloadInFlight = true
         Task { @MainActor in
             defer {
@@ -1351,15 +1352,18 @@ final class Model: ObservableObject {
                 self.isLoading = false
                 if self.payloadRefreshPending {
                     let pendingForce = self.payloadRefreshPendingForce
+                    let pendingSkipScan = self.payloadRefreshPendingSkipScan
                     self.payloadRefreshPending = false
                     self.payloadRefreshPendingForce = false
-                    self.refresh(force: pendingForce)
+                    self.payloadRefreshPendingSkipScan = false
+                    self.refresh(force: pendingForce, skipScan: pendingSkipScan)
                 }
             }
             do {
-                let args = cached
+                var args = cached
                     ? ["widget-payload", "--cached", "--json"]
                     : ["widget-payload", "--json"]
+                if skipScan && !cached { args.insert("--skip-scan", at: 1) }
                 let p = try await Self.runJSON(WidgetPayload.self, invocation, args)!
                 guard generation == self.refreshGeneration else {
                     self.dbg("discarded stale payload generation \(generation)")
@@ -1486,6 +1490,19 @@ final class Model: ObservableObject {
                 setTitleIfChanged("tokitoki ⚠️")
                 dbg("refresh failed: \(error.localizedDescription)")
             }
+        }
+    }
+
+    private func queueRefresh(force: Bool, skipScan: Bool) {
+        if payloadRefreshPending {
+            payloadRefreshPendingForce = payloadRefreshPendingForce || force
+            // Skipping is safe only when every coalesced request follows a
+            // completed scan. An ordinary refresh must restore the scan.
+            payloadRefreshPendingSkipScan = payloadRefreshPendingSkipScan && skipScan
+        } else {
+            payloadRefreshPending = true
+            payloadRefreshPendingForce = force
+            payloadRefreshPendingSkipScan = skipScan
         }
     }
 

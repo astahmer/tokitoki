@@ -457,4 +457,50 @@ describe("hybrid rollup reads", () => {
       delete process.env.TOKITOKI_DATA_DIR;
     }
   });
+
+  it("hybrid model-provider aggregation preserves exact edge attribution", () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "tk-hybrid-model-provider-"));
+    const cache = new EventCache(path.join(dir, "cache.db"));
+    try {
+      cache.insert([
+        makeEvent({
+          id: "model-provider-edge",
+          ts: "2026-08-20T10:30:00.000Z",
+          provider: "pi",
+          accountKey: "openrouter",
+          model: "anthropic/claude-sonnet-4",
+          inputTokens: 7,
+          outputTokens: 11,
+          costUsd: 0.25,
+        }),
+        makeEvent({
+          id: "model-provider-interior",
+          ts: "2026-08-21T12:00:00.000Z",
+          provider: "codex",
+          accountKey: "codex:plus",
+          model: "gpt-5",
+          inputTokens: 13,
+          outputTokens: 17,
+          costUsd: 0.5,
+        }),
+      ]);
+      const since = "2026-08-20T10:30:00.000Z";
+      const until = "2026-08-22T10:30:00.000Z";
+      const normalize = (rows: ReturnType<EventCache["aggregateModelProviders"]>) =>
+        rows
+          .map((r) => ({
+            bucket: r.bucket,
+            requests: r.requests,
+            inputTokens: r.inputTokens,
+            outputTokens: r.outputTokens,
+            costUsd: r.costUsd,
+          }))
+          .sort((a, b) => a.bucket.localeCompare(b.bucket));
+      expect(normalize(cache.hybridAggregateModelProviders(since, undefined, until))).toEqual(
+        normalize(cache.aggregateModelProviders(since, undefined, until)),
+      );
+    } finally {
+      cache.close();
+    }
+  });
 });
