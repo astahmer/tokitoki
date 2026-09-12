@@ -159,6 +159,8 @@ export interface TokitokiConfig {
     menubarAccountOrder?: string[];
     /** Popover tabs in display order; the first four stay in the header. */
     menubarTabs?: string[];
+    /** Show separate usage cards for each harness/account variant instead of collapsing shared account keys. */
+    showHarnessVariants?: boolean;
   };
 }
 

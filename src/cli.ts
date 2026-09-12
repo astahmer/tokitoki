@@ -10,7 +10,7 @@ import type { UsageEvent } from "./types.ts";
 import { DIMENSIONS, EventCache, type AggRow, type Dimension, type SeriesBucket, type SessionSummary } from "./cache.ts";
 import { renderTable, renderMiniProjects, renderMarkdownTable, resolveExtraFiles, resolveSortColumn, sinceIsoFor, sinceIsoForDays, previousWindow, monthStartIso, sortRows, formatDelta, deltaInfo, totalRow, totalTokens, planGaugeFn, renderBurnLine, burnProjection, type TableContext } from "./report.ts";
 import { accountEmailFor, accountEmailMap } from "./accounts.ts";
-import { computeLimits, dedupeAccountLimits, embeddedKind, groupBySharedCredential, mergeAliasLimits, type AccountLimits } from "./limits.ts";
+import { collapseHarnessVariants, computeLimits, dedupeAccountLimits, embeddedKind, groupBySharedCredential, mergeAliasLimits, type AccountLimits } from "./limits.ts";
 import { accountIdentityFor } from "./accounts.ts";
 import { opencodexAccountIdentities, opencodeCredentials, opencodexQuotas, piCredentials, pollQuotas, redactCredential } from "./poll.ts";
 import {
@@ -2452,6 +2452,7 @@ function runWidgetPayload(parsed: ParsedInvocation): void {
           stripExhausted: config.ui?.stripExhausted ?? "reset",
           cards: menubarCardLayout(config),
           tabs: config.ui?.menubarTabs ?? [...MENUBAR_TABS],
+          showHarnessVariants: config.ui?.showHarnessVariants === true,
           syncBackend: config.sync?.backend,
           syncConfigured: config.sync?.backend !== undefined,
           syncPath: config.sync?.path,
@@ -2549,8 +2550,11 @@ function runWidgetPayload(parsed: ParsedInvocation): void {
         return piCred !== undefined ? { ...l, credential: redactCredential(piCred) } : l;
       });
       // Accounts sharing one credential (pi + opencode on the same gateway
-      // key) are ONE real account — collapse to a single card.
-      const grouped = groupBySharedCredential(withCreds);
+      // key) are ONE real account — collapse to a single card. Harness-level
+      // variants remain available as an explicit opt-in.
+      const grouped = config.ui?.showHarnessVariants === true
+        ? withCreds
+        : groupBySharedCredential(withCreds);
       // Origin provenance for the details disclosure: where did this
       // account's quota data come from? One tiny indexed query per account.
       const withOrigin = dedupeAccountLimits(grouped.map((l) => {
@@ -2724,8 +2728,11 @@ function runWidgetPayload(parsed: ParsedInvocation): void {
         const i = savedOrder.indexOf(`${l.provider}@${l.accountKey}`);
         return i === -1 ? savedOrder.length : i;
       };
-      withOrigin.sort((a, b) => rank(a) - rank(b));
-      console.log(JSON.stringify(withOrigin));
+      const cardLimits = config.ui?.showHarnessVariants === true
+        ? withOrigin
+        : collapseHarnessVariants(withOrigin);
+      cardLimits.sort((a, b) => rank(a) - rank(b));
+      console.log(JSON.stringify(cardLimits));
     });
   });
   capture("spendPeriods", () => {
@@ -2854,6 +2861,7 @@ function runUi(parsed: ParsedInvocation): void {
       console.log(`  ${s}: hidden=[${hidden.join(", ")}]`);
     }
     console.log(`  menubarProviders: [${(cfg.ui?.menubarProviders ?? []).join(", ")}] (empty = all)`);
+    console.log(`  showHarnessVariants: ${cfg.ui?.showHarnessVariants === true} (default false)`);
     return;
   }
   if (hide !== undefined) setSurfaceVisibility(hide, surface, false);

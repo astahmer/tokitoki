@@ -37,6 +37,7 @@ export function modelProvider(model: string, harness = "", accountKey = ""): str
   const account = accountKey.toLowerCase();
   if (account.includes("openrouter")) return "openrouter";
   if (account.includes("opencode")) return "opencode";
+  if (account.includes("openai")) return "openai";
   if (account.includes("codex") || harness === "codex") return "openai";
 
   if (explicit[prefix] !== undefined) return explicit[prefix]!;

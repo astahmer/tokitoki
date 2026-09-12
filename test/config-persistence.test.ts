@@ -45,6 +45,7 @@ describe("menubar config persistence", () => {
     expect(run(["config", "set", "ui.sideNotchSyncPreview", "true"], configPath).status).toBe(0);
     expect(run(["config", "set", "ui.sideNotchPlacement", '"top-left"'], configPath).status).toBe(0);
     expect(run(["config", "set", "ui.sideNotchDisplayNames", '{"openai@openai:personal":"Work"}'], configPath).status).toBe(0);
+    expect(run(["config", "set", "ui.showHarnessVariants", "true"], configPath).status).toBe(0);
     expect(run(["config", "set", "poll.adaptive", "true"], configPath).status).toBe(0);
     expect(run(["config", "set", "notifications.enabled", "false"], configPath).status).toBe(0);
     expect(run(["config", "set", "notifications.resetAware", "true"], configPath).status).toBe(0);
@@ -70,6 +71,7 @@ describe("menubar config persistence", () => {
         menubarAccountOrder?: string[];
         hidden?: { widget?: string[] };
         menubarTabs?: string[];
+        showHarnessVariants?: boolean;
       };
       sync?: { backend?: string };
       poll?: { adaptive?: boolean };
@@ -91,6 +93,7 @@ describe("menubar config persistence", () => {
     expect(cfg.ui?.menubarAccountOrder).toEqual(["codex@openai:plus", "pi@opencode-go"]);
     expect(cfg.ui?.hidden?.widget).toEqual(["codex:openai:plus"]);
     expect(cfg.ui?.menubarTabs).toEqual(["tokens", "overview", "quotas", "reports", "mcp", "sources", "settings"]);
+    expect(cfg.ui?.showHarnessVariants).toBe(true);
     expect(cfg.sync?.backend).toBe("dir");
     expect(cfg.poll?.adaptive).toBe(true);
     expect(cfg.notifications?.enabled).toBe(false);

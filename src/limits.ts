@@ -3,6 +3,7 @@ import fs from "node:fs";
 import type { TokitokiConfig } from "./config.ts";
 import type { EventCache } from "./cache.ts";
 import { accountEmailFor, accountIdentityFor } from "./accounts.ts";
+import { modelProvider } from "./model-provider.ts";
 
 /**
  * Usage/limits engine: per provider+account windows with reset schedules.
@@ -608,6 +609,115 @@ export function groupBySharedCredential(limits: AccountLimits[]): AccountLimits[
     });
   }
   return out.sort((a, b) => totalTokens(b) - totalTokens(a));
+}
+
+/** Collapse equivalent upstream account keys while keeping raw harness rows available to reports. */
+export function collapseHarnessVariants(limits: AccountLimits[]): AccountLimits[] {
+  const groups = new Map<string, AccountLimits[]>();
+  for (const limit of limits) {
+    const provider = cardProviderFor(limit);
+    const key = `${provider}\u0000${limit.accountKey}`;
+    const group = groups.get(key);
+    if (group === undefined) groups.set(key, [limit]);
+    else group.push(limit);
+  }
+
+  const out: AccountLimits[] = [];
+  for (const group of groups.values()) {
+    const accountIds = [...new Set(group.flatMap((limit) => limit.accountId === undefined ? [] : [limit.accountId]))];
+    if (accountIds.length <= 1) {
+      out.push(mergeHarnessVariantGroup(group));
+      continue;
+    }
+
+    const byAccountId = new Map<string, AccountLimits[]>();
+    for (const limit of group) {
+      const key = limit.accountId === undefined ? `unknown:${limit.provider}` : `id:${limit.accountId}`;
+      const accountGroup = byAccountId.get(key);
+      if (accountGroup === undefined) byAccountId.set(key, [limit]);
+      else accountGroup.push(limit);
+    }
+    for (const accountGroup of byAccountId.values()) out.push(mergeHarnessVariantGroup(accountGroup));
+  }
+
+  return out.sort((a, b) => totalLimitTokens(b) - totalLimitTokens(a));
+}
+
+const UPSTREAM_ROUTED_HARNESSES = new Set(["codex", "pi", "opencode", "t3code"]);
+
+function cardProviderFor(limit: AccountLimits): string {
+  if (!UPSTREAM_ROUTED_HARNESSES.has(limit.provider)) return limit.provider;
+  const provider = modelProvider("", limit.provider, limit.accountKey);
+  return provider === "other" ? limit.provider : provider;
+}
+
+function totalLimitTokens(limit: AccountLimits): number {
+  return limit.windows.reduce((sum, window) => sum + window.tokens, 0);
+}
+
+function mergeHarnessVariantGroup(group: AccountLimits[]): AccountLimits {
+  if (group.length === 1) return group[0]!;
+
+  const upstream = cardProviderFor(group[0]!);
+  const preferredProviders = upstream === "opencode"
+    ? ["opencode", "pi", "codex", "t3code"]
+    : upstream === "openai"
+      ? ["codex", "pi", "opencode", "t3code"]
+      : [upstream, "codex", "pi", "opencode", "t3code"];
+  const providerRank = (provider: string) => {
+    const index = preferredProviders.indexOf(provider);
+    return index === -1 ? 0 : preferredProviders.length - index;
+  };
+  const sorted = [...group].sort((a, b) => {
+    const rankDifference = providerRank(b.provider) - providerRank(a.provider);
+    return rankDifference === 0 ? totalLimitTokens(b) - totalLimitTokens(a) : rankDifference;
+  });
+  const primary = sorted[0]!;
+  const byKind = new Map<string, LimitWindow>();
+  for (const limit of sorted) {
+    for (const window of limit.windows) {
+      const existing = byKind.get(window.kind);
+      if (existing === undefined) {
+        byKind.set(window.kind, { ...window });
+        continue;
+      }
+      const rank = (source: string) => (source === "embedded" || source === "polled" ? 1 : 0);
+      if (rank(window.source) > rank(existing.source)) {
+        byKind.set(window.kind, { ...window });
+      } else if (rank(window.source) === rank(existing.source) && existing.source === "derived") {
+        byKind.set(window.kind, {
+          ...existing,
+          tokens: existing.tokens + window.tokens,
+          cost: existing.cost + window.cost,
+          requests: existing.requests + window.requests,
+          resetsAt: [existing.resetsAt, window.resetsAt].sort().at(-1) ?? existing.resetsAt,
+          windowStart: [existing.windowStart, window.windowStart].sort()[0],
+          windowEnd: [existing.windowEnd, window.windowEnd].sort().at(-1),
+        });
+      }
+    }
+  }
+
+  const emails = [...new Set(group.map((limit) => limit.email).filter((email): email is string => email !== undefined && email.length > 0))];
+  const accountId = group.find((limit) => limit.accountId !== undefined)?.accountId;
+  const label = group.find((limit) => limit.label !== undefined)?.label;
+  const planLabel = group.find((limit) => limit.planLabel !== undefined)?.planLabel;
+  const credential = group.find((limit) => limit.credential !== undefined)?.credential;
+  const alsoOn = [...new Set([
+    ...group.flatMap((limit) => limit.alsoOn ?? []),
+    ...sorted.slice(1).map((limit) => limit.provider),
+  ])].filter((provider) => provider !== primary.provider);
+
+  return {
+    ...primary,
+    windows: [...byKind.values()],
+    ...(primary.accountId === undefined && accountId !== undefined ? { accountId } : {}),
+    ...(primary.label === undefined && label !== undefined ? { label } : {}),
+    ...(primary.planLabel === undefined && planLabel !== undefined ? { planLabel } : {}),
+    ...(primary.credential === undefined && credential !== undefined ? { credential } : {}),
+    alsoOn: alsoOn.length > 0 ? alsoOn : undefined,
+    email: emails.length === 1 ? emails[0] : undefined,
+  };
 }
 
 function windowMinutesOf(w: LimitWindow): number | null {

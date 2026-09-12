@@ -7,6 +7,7 @@ import { describe, expect, it } from "bun:test";
 import { EventCache } from "../src/cache.ts";
 import type { UsageEvent } from "../src/types.ts";
 import {
+  collapseHarnessVariants,
   computeLimits,
   dedupeAccountLimits,
   groupBySharedCredential,
@@ -44,6 +45,45 @@ describe("shared credential cards", () => {
     expect(result[0]?.provider).toBe("opencode");
     expect(result[0]?.alsoOn).toEqual(["pi"]);
     expect(result[0]?.windows[0]?.tokens).toBe(30);
+  });
+});
+
+describe("default harness card projection", () => {
+  it("collapses equivalent upstream account keys across harnesses", () => {
+    const window = (tokens: number) => ({ kind: "week", source: "derived" as const, tokens, cost: 0, requests: 1 });
+    const result = collapseHarnessVariants([
+      { provider: "pi", accountKey: "opencode-go-api-key-1", windows: [window(10)] },
+      { provider: "opencode", accountKey: "opencode-go-api-key-1", windows: [window(20)] },
+      { provider: "codex", accountKey: "opencode-go-api-key-1", windows: [window(30)] },
+      { provider: "codex", accountKey: "openai-acc-1", windows: [window(40)] },
+      { provider: "t3code", accountKey: "openai-acc-1", windows: [window(50)] },
+    ]);
+
+    expect(result).toHaveLength(2);
+    expect(result.find((limit) => limit.accountKey === "opencode-go-api-key-1")?.windows[0]?.tokens).toBe(60);
+    expect(result.find((limit) => limit.accountKey === "opencode-go-api-key-1")?.alsoOn).toEqual(["pi", "codex"]);
+    expect(result.find((limit) => limit.accountKey === "openai-acc-1")?.windows[0]?.tokens).toBe(90);
+    expect(result.find((limit) => limit.accountKey === "openai-acc-1")?.alsoOn).toEqual(["t3code"]);
+  });
+
+  it("does not merge distinct stable account ids", () => {
+    const windows = [{ kind: "week", source: "embedded" as const, tokens: 1, cost: 0, requests: 1 }];
+    const result = collapseHarnessVariants([
+      { provider: "codex", accountKey: "openai-acc-1", accountId: "account-a", windows },
+      { provider: "t3code", accountKey: "openai-acc-1", accountId: "account-b", windows },
+    ]);
+
+    expect(result).toHaveLength(2);
+  });
+
+  it("does not merge unrelated providers that happen to share an account key", () => {
+    const windows = [{ kind: "week", source: "derived" as const, tokens: 1, cost: 0, requests: 1 }];
+    const result = collapseHarnessVariants([
+      { provider: "claude-code", accountKey: "openai-acc-1", windows },
+      { provider: "codex", accountKey: "openai-acc-1", windows },
+    ]);
+
+    expect(result).toHaveLength(2);
   });
 });
 

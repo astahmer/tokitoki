@@ -510,11 +510,18 @@ sideNotchMode = "runway"       # quota | activity | runway
 sideNotchMetric = "smart"      # percent | tokens | smart
 sideNotchWindow = "smart"      # smart | day | week | month
 sideNotchPlacement = "right"   # any of the 12 perimeter anchors
+# showHarnessVariants = true    # optional: split cards by harness (default false)
 ```
 
 `sideNotchSyncPreview = true` mirrors the preview's enabled state, provider
 visibility, and metric when that is more convenient. The notch's mode and
 placement remain independent so the two surfaces can serve different jobs.
+
+Usage cards default to one card per inferred upstream account key, so the same
+OpenAI or OpenCode account is not repeated once for every harness that uses it.
+This only changes the menubar/widget card projection; scans, reports, and raw
+quota observations stay detailed. Set `ui.showHarnessVariants` to `true` (or
+use Preferences → Detailed harness cards) when per-harness cards are useful.
 
 ## Pricing data
 

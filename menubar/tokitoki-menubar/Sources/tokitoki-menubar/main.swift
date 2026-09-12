@@ -244,6 +244,8 @@ struct UiPreviewConfig: Codable {
     let menubarHidden: [String]?
     // Card layout (Customize sheet): ordered ids + hidden flags.
     let cards: [MenubarCardConfig]?
+    // Default card projection collapses equivalent harness variants.
+    var showHarnessVariants: Bool? = nil
     // Opt-in background quota polling (menubar runs `tokitoki poll`).
     let pollAuto: Bool?
     let pollIntervalMinutes: Int?
@@ -496,6 +498,8 @@ final class Model: ObservableObject {
     @Published var menubarHidden: Set<String> = []
     /// Popover card layout from the payload: ordered ids + hidden flags.
     @Published var cardLayout: [(id: String, hidden: Bool)] = []
+    /// Opt-in detailed cards for every harness/account variant.
+    @Published var showHarnessVariants = false
     /// Opt-in background quota polling (`tokitoki poll` every ~15 min).
     @Published var pollAuto = false
     @Published var pollIntervalMinutes = 15
@@ -1399,6 +1403,7 @@ final class Model: ObservableObject {
                     self.knownProviders = ui.providers ?? []
                     self.menubarHidden = Set(ui.menubarHidden ?? [])
                     self.cardLayout = (ui.cards ?? []).map { ($0.id, $0.hidden) }
+                    self.showHarnessVariants = ui.showHarnessVariants ?? false
                     self.pollAuto = ui.pollAuto ?? false
                     self.pollIntervalMinutes = Self.normalizedPollingInterval(ui.pollIntervalMinutes ?? 15)
                     self.pollAdaptive = ui.pollAdaptive ?? false
@@ -1789,10 +1794,16 @@ final class Model: ObservableObject {
         case "cursor": return "cursor"
         case "copilot": return "copilot"
         case "openrouter": return "openrouter"
-        case "pi", "opencode", "opencode-go":
+        case "pi", "opencode", "opencode-go", "t3code":
             let key = accountKey.lowercased()
             if key.contains("openrouter") { return "openrouter" }
             if provider == "opencode" || provider == "opencode-go" || key.contains("opencode") { return "opencode" }
+            if provider == "t3code" {
+                if key.contains("openai") || key.contains("codex") { return "openai" }
+                if key.contains("claude") { return "claude" }
+                if key.contains("gemini") { return "gemini" }
+                if key.contains("cursor") { return "cursor" }
+            }
             return nil
         case "openai", "claude", "gemini": return provider
         default: return nil
@@ -3966,6 +3977,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         login.state = isStartAtLogin ? .on : .off
         login.target = self
         preferenceSub.addItem(login)
+        let harnessCards = NSMenuItem(title: "Detailed harness cards", action: nil, keyEquivalent: "")
+        let harnessCardsSub = NSMenu()
+        harnessCardsSub.autoenablesItems = false
+        let enableHarnessCards = NSMenuItem(title: "Enabled", action: #selector(enableHarnessVariants), keyEquivalent: "")
+        enableHarnessCards.state = model?.showHarnessVariants == true ? .on : .off
+        enableHarnessCards.target = self
+        let disableHarnessCards = NSMenuItem(title: "Disabled", action: #selector(disableHarnessVariants), keyEquivalent: "")
+        disableHarnessCards.state = model?.showHarnessVariants == true ? .off : .on
+        disableHarnessCards.target = self
+        harnessCardsSub.addItem(enableHarnessCards)
+        harnessCardsSub.addItem(disableHarnessCards)
+        harnessCards.submenu = harnessCardsSub
+        preferenceSub.addItem(harnessCards)
         preferences.submenu = preferenceSub
         menu.addItem(preferences)
         menu.addItem(.separator())
@@ -4052,6 +4076,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func pollNow() { model?.pollNow() }
     @objc private func enablePolling() { runMaintenance(["poll", "--enable"], label: "enable polling", config: true); model?.pollAuto = true }
     @objc private func disablePolling() { runMaintenance(["poll", "--disable"], label: "disable polling", config: true); model?.pollAuto = false }
+    @objc private func enableHarnessVariants() { runMaintenance(["config", "set", "ui.showHarnessVariants", "true"], label: "enable harness cards", config: true); model?.showHarnessVariants = true }
+    @objc private func disableHarnessVariants() { runMaintenance(["config", "set", "ui.showHarnessVariants", "false"], label: "disable harness cards", config: true); model?.showHarnessVariants = false }
 
     @objc private func openSources() {
         openLocalDashboard(path: "/?view=sources")

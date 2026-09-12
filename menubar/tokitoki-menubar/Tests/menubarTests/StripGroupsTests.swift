@@ -57,6 +57,8 @@ import Testing
         #expect(Model.upstreamProvider(account(provider: "pi", accountKey: "openrouter", windows: [])) == "openrouter")
         #expect(Model.upstreamProvider(account(provider: "pi", accountKey: "opencode-go", windows: [])) == "opencode")
         #expect(Model.upstreamProvider(account(provider: "opencode", accountKey: "opencode-go", windows: [])) == "opencode")
+        #expect(Model.upstreamProvider(account(provider: "t3code", accountKey: "openai-acc-1", windows: [])) == "openai")
+        #expect(Model.upstreamProvider(account(provider: "t3code", accountKey: "opencode-api-key-1", windows: [])) == "opencode")
     }
 
     @Test func sideNotchModesAreCanonicalAndSessionProvidersMapToTheirUpstream() {
@@ -417,10 +419,10 @@ import Testing
             ]),
         ]
         model.rebuildStripPreview()
-        #expect(model.previewGroups.contains { $0.provider == "codex" })
+        #expect(model.previewGroups.contains { $0.provider == "openai" })
 
         model.applyVisibility(["codex:default"], visible: false)
-        #expect(!model.previewGroups.contains { $0.provider == "codex" })
+        #expect(!model.previewGroups.contains { $0.provider == "openai" })
     }
 
     @Test func pollingIntervalSupportsShortCadencesAndKeepsMinimum() {
