@@ -7,6 +7,7 @@ import { describe, expect, it } from "bun:test";
 import { EventCache } from "../src/cache.ts";
 import type { UsageEvent } from "../src/types.ts";
 import {
+  attachCodexPoolEmails,
   collapseHarnessVariants,
   computeLimits,
   dedupeAccountLimits,
@@ -144,6 +145,20 @@ function limitsCache(): EventCache {
 }
 
 describe("computeLimits", () => {
+  it("only attaches pool emails to pooled Codex account keys", () => {
+    const limits = attachCodexPoolEmails(
+      [
+        { provider: "codex", accountKey: "codex", windows: [] },
+        { provider: "codex", accountKey: "codex:work", windows: [] },
+      ],
+      { work: { accountId: "work-account", email: "work@example.com" } },
+      () => new Set(["work-account"]),
+    );
+
+    expect(limits[0]?.email).toBeUndefined();
+    expect(limits[1]?.email).toBe("work@example.com");
+  });
+
   it("never merges distinct stable Codex accounts with identical quota windows", () => {
     const reset = new Date("2026-08-31T12:00:00.000Z").toISOString();
     const base = {

@@ -68,6 +68,22 @@ export interface AccountLimits {
   bankedExpiresAt?: string;
 }
 
+export function attachCodexPoolEmails(
+  limits: AccountLimits[],
+  poolIdentities: Record<string, { accountId?: string; email?: string }>,
+  accountIdsFor: (accountKey: string) => Set<string>,
+): AccountLimits[] {
+  return limits.map((limit) => {
+    if (limit.provider !== "codex" || !limit.accountKey.startsWith("codex:")) return limit;
+    const accountIds = accountIdsFor(limit.accountKey);
+    const poolId = Object.entries(poolIdentities).find(([, identity]) =>
+      identity.accountId !== undefined && accountIds.has(identity.accountId),
+    )?.[0];
+    const email = poolId !== undefined ? poolIdentities[poolId]?.email : undefined;
+    return email !== undefined ? { ...limit, email } : limit;
+  });
+}
+
 /** Keep the payload invariant: one visible card per provider/account identity. */
 export function dedupeAccountLimits(limits: AccountLimits[]): AccountLimits[] {
   const out = new Map<string, AccountLimits>();

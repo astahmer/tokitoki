@@ -10,7 +10,7 @@ import type { UsageEvent } from "./types.ts";
 import { DIMENSIONS, EventCache, type AggRow, type Dimension, type SeriesBucket, type SessionSummary } from "./cache.ts";
 import { renderTable, renderMiniProjects, renderMarkdownTable, resolveExtraFiles, resolveSortColumn, sinceIsoFor, sinceIsoForDays, previousWindow, monthStartIso, sortRows, formatDelta, deltaInfo, totalRow, totalTokens, planGaugeFn, renderBurnLine, burnProjection, type TableContext } from "./report.ts";
 import { accountEmailFor, accountEmailMap } from "./accounts.ts";
-import { collapseHarnessVariants, computeLimits, dedupeAccountLimits, embeddedKind, groupBySharedCredential, mergeAliasLimits, type AccountLimits } from "./limits.ts";
+import { attachCodexPoolEmails, collapseHarnessVariants, computeLimits, dedupeAccountLimits, embeddedKind, groupBySharedCredential, mergeAliasLimits, type AccountLimits } from "./limits.ts";
 import { accountIdentityFor } from "./accounts.ts";
 import { opencodexAccountIdentities, opencodeCredentials, opencodexQuotas, piCredentials, pollQuotas, redactCredential } from "./poll.ts";
 import {
@@ -2493,15 +2493,11 @@ function runWidgetPayload(parsed: ParsedInvocation): void {
       const localCodexAccountId = accountIdentityFor("codex")?.accountId;
       // Attribute pooled Codex cards by the stable provider account ID. Reset
       // timestamps are quota data, not identity, and can drift independently.
-      const limitsWithPoolEmails = limits.map((l) => {
-        if (l.provider !== "codex") return l;
-        const accountIds = cache.quotaAccountIds("codex", l.accountKey);
-        const poolId = Object.entries(poolIdentities).find(([, identity]) =>
-          identity.accountId !== undefined && accountIds.has(identity.accountId),
-        )?.[0];
-        const email = poolId !== undefined ? poolIdentities[poolId]?.email : undefined;
-        return email !== undefined ? { ...l, email } : l;
-      });
+      const limitsWithPoolEmails = attachCodexPoolEmails(
+        limits,
+        poolIdentities,
+        (accountKey) => cache.quotaAccountIds("codex", accountKey),
+      );
       // Cursor has no local usage store, but its CLI config holds the login
       // that every cursor-routed card bills against — including T3 Code's
       // `cursor` backend. Without it those cards read as bare provider ids.
