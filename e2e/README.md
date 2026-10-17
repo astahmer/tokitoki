@@ -27,6 +27,7 @@ E2E_TAB=quotas ./e2e/run.sh  # one tab for a quick visual check
 E2E_OUT_DIR=/tmp/tokitoki-e2e ./e2e/run.sh
 E2E_IMAGE=tokitoki-e2e:latest ./e2e/run.sh # DMS with an already-built image
 E2E_SHELL=quickshell E2E_IMAGE=tokitoki-e2e:latest ./e2e/run.sh # standalone, no DMS
+E2E_SHELL=quickshell E2E_QUICKSHELL_MODE=embedded E2E_OUT_DIR=/tmp/tokitoki-embedded E2E_IMAGE=tokitoki-e2e:latest ./e2e/run.sh
 E2E_SHELL=quickshell E2E_TAB=tokens E2E_IMAGE=tokitoki-e2e:latest ./e2e/run.sh
 ~~~
 
@@ -41,6 +42,12 @@ patch; individual clicks and scrolls still use its normal commands.
 The DMS full run saves captures and logs under `e2e/out/autonomous/`; standalone Quickshell uses `e2e/out/quickshell/autonomous/` (both gitignored). Each run has an isolated container home and headless desktop. Set `E2E_IMAGE` to reuse a loaded Docker image without invoking Nix; omitting it preserves the pinned Nix build/load path.
 
 Standalone runs mount the complete `integrations/` tree so the host can import the shared QML UI. They invoke `qs -p /integrations-src/quickshell/tokitoki` directly, never start DMS, and assert that no DMS configuration exists.
+
+`E2E_QUICKSHELL_MODE=embedded` runs the same interactions against a separate
+host shell with an incompatible `qs.Common.Theme`. It prepares the portable
+component tree using the package's build script and symlinks it into the host
+configuration, as Home Manager does. Use a separate absolute `E2E_OUT_DIR` to
+keep its artifacts alongside the standalone run.
 
 Artifacts:
 

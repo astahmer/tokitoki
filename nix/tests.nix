@@ -1,0 +1,140 @@
+{
+  pkgs,
+  home-manager,
+  module,
+}:
+let
+  inherit (pkgs) lib;
+  dmsLock = (builtins.fromJSON (builtins.readFile ../e2e/flake.lock)).nodes.dms.locked;
+  dmsSource = builtins.fetchTree dmsLock;
+  evaluate =
+    extra:
+    home-manager.lib.homeManagerConfiguration {
+      inherit pkgs;
+      modules = [
+        module
+        {
+          home.username = "test";
+          home.homeDirectory = "/home/test";
+          home.stateVersion = "26.05";
+        }
+      ]
+      ++ extra;
+    };
+  dmsModule = {
+    imports = [
+      (
+        {
+          config,
+          lib,
+          pkgs,
+          ...
+        }:
+        import "${dmsSource}/distro/nix/home.nix" {
+          inherit config lib pkgs;
+          dmsPkgs.dms-shell = pkgs.hello;
+        }
+      )
+    ];
+    programs.dank-material-shell.enable = true;
+    programs.dank-material-shell.package = pkgs.hello;
+  };
+  cli = (evaluate [ { programs.tokitoki.enable = true; } ]).config;
+  standalone = (evaluate [ { programs.tokitoki.quickshell.enable = true; } ]).config;
+  embedded =
+    (evaluate [
+      {
+        programs.tokitoki.quickshell = {
+          enable = true;
+          mode = "embedded";
+        };
+      }
+    ]).config;
+  missingDms = builtins.tryEval (
+    (evaluate [ { programs.tokitoki.dms.enable = true; } ]).config.programs.tokitoki.enable
+  );
+  dms =
+    (evaluate [
+      dmsModule
+      {
+        programs.tokitoki.dms.enable = true;
+        programs.dank-material-shell.settings = {
+          theme = "existing-theme";
+          barConfigs = [
+            {
+              id = "main";
+              leftWidgets = [ "clock" ];
+              rightWidgets = [ "systemTray" ];
+            }
+            {
+              id = "custom";
+              centerWidgets = [
+                {
+                  id = "tokitoki";
+                  enabled = true;
+                }
+              ];
+            }
+            {
+              id = "off";
+              enabled = false;
+            }
+          ];
+        };
+      }
+    ]).config;
+  defaultDms =
+    (evaluate [
+      dmsModule
+      { programs.tokitoki.dms.enable = true; }
+    ]).config;
+  manualDms =
+    (evaluate [
+      dmsModule
+      {
+        programs.tokitoki.dms = {
+          enable = true;
+          addToBar = false;
+        };
+      }
+    ]).config;
+  service = standalone.systemd.user.services.tokitoki-quickshell;
+  bars = dms.programs.dank-material-shell.settings.barConfigs;
+  success = cfg: lib.all (entry: entry.assertion) cfg.assertions;
+in
+assert success cli;
+assert success standalone;
+assert success embedded;
+assert success dms;
+assert success defaultDms;
+assert success manualDms;
+assert !missingDms.success;
+assert cli.systemd.user.services == { };
+assert standalone.programs.tokitoki.enable;
+assert service.Unit.PartOf == [ standalone.wayland.systemd.target ];
+assert service.Install.WantedBy == [ standalone.wayland.systemd.target ];
+assert service.Service.Restart == "on-failure";
+assert lib.hasSuffix " --no-duplicate" (builtins.head service.Service.ExecStart);
+assert embedded.systemd.user.services == { };
+assert embedded.xdg.configFile ? "quickshell/Tokitoki";
+assert dms.programs.dank-material-shell.managePluginSettings;
+assert
+  dms.programs.dank-material-shell.plugins.tokitoki.settings.executablePath
+  == lib.getExe dms.programs.tokitoki.package;
+assert dms.programs.dank-material-shell.settings.theme == "existing-theme";
+assert
+  (builtins.elemAt bars 0).rightWidgets == [
+    "systemTray"
+    {
+      id = "tokitoki";
+      enabled = true;
+    }
+  ];
+assert (builtins.elemAt bars 0).leftWidgets == [ "clock" ];
+assert !(builtins.elemAt bars 1 ? rightWidgets);
+assert !(builtins.elemAt bars 2 ? rightWidgets);
+assert builtins.length defaultDms.programs.dank-material-shell.settings.barConfigs == 1;
+assert manualDms.programs.dank-material-shell.settings == { };
+pkgs.runCommand "tokitoki-home-manager-tests" { } ''
+  touch "$out"
+''

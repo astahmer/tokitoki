@@ -79,6 +79,13 @@ if [ "$E2E_SHELL" = dms ]; then
   mv "$CONFIG/plugin_settings.json.next" "$CONFIG/plugin_settings.json"
   printf '{"selectedTab":"%s"}\n' "$E2E_TAB" > "$state_file"
 else
+  if [ "${E2E_QUICKSHELL_MODE:-standalone}" = embedded ]; then
+    E2E_QUICKSHELL_DIR=/tmp/tokitoki-host
+    mkdir -p "$E2E_QUICKSHELL_DIR"
+    cp -R /opt/e2e/embedded/. "$E2E_QUICKSHELL_DIR/"
+    sh /integrations-src/quickshell/prepare-components.sh /integrations-src /tmp/tokitoki-components
+    ln -s /tmp/tokitoki-components "$E2E_QUICKSHELL_DIR/Tokitoki"
+  fi
   mkdir -p "$(dirname "$QS_CONFIG_FILE")" "$(dirname "$QS_STATE_FILE")"
   printf '{"autoRefreshEnabled":true}\n' > "$QS_CONFIG_FILE"
   printf '{"selectedTab":"%s"}\n' "$E2E_TAB" > "$QS_STATE_FILE"

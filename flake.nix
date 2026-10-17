@@ -4,10 +4,14 @@
   inputs = {
     # 26.05 is the last nixpkgs release that supports Intel macOS.
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-26.05-darwin";
+    home-manager = {
+      url = "github:nix-community/home-manager/release-26.05";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs =
-    { nixpkgs, ... }:
+    { nixpkgs, home-manager, ... }:
     let
       systems = [
         "aarch64-darwin"
@@ -135,6 +139,7 @@
             mkdir -p "$out/bin" "$out/dist" "$out/share/tokitoki"
             cp -R dist/. "$out/dist/"
             cp -R integrations "$out/share/tokitoki/"
+            sh integrations/quickshell/prepare-components.sh integrations "$out/share/tokitoki/qml/Tokitoki"
             # Keep package metadata out of the package root so this derivation
             # can coexist in Home Manager's buildEnv with other JS tools.
             install -Dm644 package.json "$out/share/tokitoki/package.json"
@@ -229,31 +234,7 @@
           '';
         };
 
-      homeManagerModule =
-        {
-          config,
-          lib,
-          pkgs,
-          ...
-        }:
-        let
-          cfg = config.programs.tokitoki;
-        in
-        {
-          options.programs.tokitoki = {
-            enable = lib.mkEnableOption "tokitoki";
-
-            package = lib.mkOption {
-              type = lib.types.package;
-              default = packages.${pkgs.stdenv.hostPlatform.system}.default;
-              description = "Tokitoki package to install.";
-            };
-          };
-
-          config = lib.mkIf cfg.enable {
-            home.packages = [ cfg.package ];
-          };
-        };
+      homeManagerModule = import ./nix/home-manager.nix { inherit packages; };
     in
     {
       packages = packages;
@@ -276,9 +257,21 @@
         }
       );
 
-      checks = forEachSystem (system: {
-        package = packages.${system}.default;
-      });
+      checks = forEachSystem (
+        system:
+        let
+          pkgs = import nixpkgs { inherit system; };
+        in
+        {
+          package = packages.${system}.default;
+        }
+        // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+          home-manager = import ./nix/tests.nix {
+            inherit pkgs home-manager;
+            module = homeManagerModule;
+          };
+        }
+      );
 
       overlays = {
         default = final: _prev: {

@@ -43,11 +43,13 @@ docker run --rm \
   --tmpfs /tmp:rw,nosuid,size=512m \
   -e "E2E_MODE=$mode" \
   -e "E2E_SHELL=$shell" \
+  -e "E2E_QUICKSHELL_MODE=${E2E_QUICKSHELL_MODE:-standalone}" \
   -e "E2E_TAB=$tab" \
   -e "E2E_OUT=/out" \
   -e "E2E_PLUGIN_DIR=/plugin-src" \
   -e "E2E_QUICKSHELL_DIR=/integrations-src/quickshell/tokitoki" \
   -v "$here/container/entrypoint.sh:/opt/e2e/entrypoint.sh:ro" \
+  -v "$here/container/embedded:/opt/e2e/embedded:ro" \
   -v "$here/container/fake-tokitoki:/opt/e2e/bin/tokitoki:ro" \
   -v "$here/../integrations/dms/tokitoki:/plugin-src:ro" \
   -v "$here/../integrations:/integrations-src:ro" \

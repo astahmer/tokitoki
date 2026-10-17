@@ -164,26 +164,27 @@ tokitoki scan
 tokitoki widget-payload --cached --json
 ```
 
-For the first DMS test, from a checkout:
+For the complete standalone Quickshell widget on Linux/Wayland, with its
+runtime and CLI included and no checkout required:
 
 ```sh
-mkdir -p ~/.config/DankMaterialShell/plugins
-ln -sfn "$PWD/integrations/dms/tokitoki" \
-  ~/.config/DankMaterialShell/plugins/tokitoki
-dms ipc call plugin-scan rescan tokitoki
+nix run github:astahmer/tokitoki#quickshell
 ```
 
-Rescan after changing which `.qml` files exist; `plugins reload tokitoki` only
-re-reads the components the plugin service already knew about.
+For Home Manager, add `inputs.tokitoki.url = "github:astahmer/tokitoki"`,
+import `inputs.tokitoki.homeManagerModules.default`, then choose one host:
 
-Then enable `Tokitoki Usage` in DMS Settings → Plugins and add it to DankBar.
-For the full standalone Quickshell widget on Linux, without DMS:
-
-```sh
-nix run .#quickshell
-# Or, with Quickshell and tokitoki already on PATH:
-qs -p "$PWD/integrations/quickshell/tokitoki"
+```nix
+programs.tokitoki.dms.enable = true; # existing DMS: plugin + DankBar placement
+# Or:
+programs.tokitoki.quickshell.enable = true; # standalone bar + session service
 ```
+
+To insert a button into an existing Quickshell bar, select
+`quickshell.mode = "embedded"` and add the provided QML component.
+See [Home Manager installation](integrations/README.md#home-manager-one-input-one-host-option)
+for complete recipes, layout migration and embedded mode. CLI-only setups
+continue to use `programs.tokitoki.enable = true`.
 
 The standalone widget shares the DMS views, including Sessions, charts, quota
 visibility and settings. Its setup and IPC commands are documented in

@@ -35,7 +35,184 @@ Adapters must not read `cache.db` or provider stores directly. Run `tokitoki
 scan` separately, or use `tokitoki widget-payload --json` for a one-shot live
 refresh. The web-based adapters need `tokitoki web` running as well.
 
-## DMS first test
+## Add to an existing setup
+
+On Linux/Wayland, choose the host you already use:
+
+- **DMS installed:** install the Tokitoki CLI and link the plugin directory,
+  then enable it in Settings → Plugins and add it to DankBar.
+- **Home Manager:** import the module and enable `programs.tokitoki.dms.enable`
+  or `programs.tokitoki.quickshell.enable` (examples below).
+- **Standalone Quickshell:** run `nix run github:astahmer/tokitoki#quickshell`.
+  This includes the CLI, Quickshell runtime and shared QML files.
+
+The standalone version creates its own top bar on each screen. For an existing
+Quickshell bar, choose the embedded mode below and insert its button component.
+
+## DMS installation
+
+### Existing DMS, without Home Manager
+
+Install `tokitoki` on the desktop session's `PATH` first; for example with
+`nix profile install github:astahmer/tokitoki`. Then keep a source checkout at
+a stable location and link just its plugin subdirectory:
+
+```sh
+mkdir -p "$HOME/.local/share"
+git clone --depth 1 https://github.com/astahmer/tokitoki.git \
+  "$HOME/.local/share/tokitoki-source"
+mkdir -p "$HOME/.config/DankMaterialShell/plugins"
+ln -s "$HOME/.local/share/tokitoki-source/integrations/dms/tokitoki" \
+  "$HOME/.config/DankMaterialShell/plugins/tokitoki"
+tokitoki scan
+dms ipc call plugin-scan rescan tokitoki
+```
+
+These are first-install commands: if the destination exists, use the existing
+installation or the development instructions below. With a custom
+`XDG_CONFIG_HOME`, replace `$HOME/.config` with that directory.
+
+Enable **Tokitoki Usage** in Settings → Plugins, then add it to your DankBar
+layout. If DMS does not discover it, use Settings → Plugins → Scan for Plugins,
+or restart DMS with `dms restart`.
+
+To update the checkout, run:
+
+```sh
+git -C "$HOME/.local/share/tokitoki-source" pull --ff-only
+dms ipc call plugin-scan rescan tokitoki
+```
+
+Update the separately installed CLI as well. DMS's
+`dms plugins install <plugin-id>` installs from configured registries; it is
+not an arbitrary GitHub URL/subdirectory installer. The manual path above
+works with Tokitoki's monorepo layout without a registry entry. See the
+[official plugin installation guide](https://danklinux.com/docs/dankmaterialshell/plugins-overview/).
+
+### Home Manager: one input, one host option
+
+Add Tokitoki to your configuration flake:
+
+```nix
+inputs.tokitoki.url = "github:astahmer/tokitoki";
+```
+
+Import its Home Manager module, with `inputs` passed through
+`extraSpecialArgs` or captured from the flake:
+
+```nix
+imports = [ inputs.tokitoki.homeManagerModules.default ];
+```
+
+For an **existing, enabled DMS Home Manager setup**, add only:
+
+```nix
+programs.tokitoki.dms.enable = true;
+```
+
+This installs the CLI, registers and enables the plugin, pins its executable
+path, and adds Tokitoki to the right side of each enabled DankBar. Existing
+Home Manager bar layouts, other widgets and DMS settings are preserved;
+Tokitoki is not added twice when it already appears in any section. With no
+declared layout, a starter bar is provided.
+
+Automatic placement makes DMS settings declarative (read-only in its GUI).
+If your existing layout/settings are managed through the GUI, first capture
+`dms ipc call settings dump` and import the desired values into your existing
+`programs.dank-material-shell.settings`. Home Manager refuses to overwrite
+unmanaged settings files; migrate or back them up using your usual Home
+Manager workflow. Existing GUI plugin preferences likewise belong under
+`programs.dank-material-shell.plugins.<id>.settings` when migrating them.
+
+To keep the DankBar layout managed in the GUI instead:
+
+```nix
+programs.tokitoki.dms = {
+  enable = true;
+  addToBar = false;
+};
+```
+
+Then add Tokitoki through the DankBar editor. To select a different section
+for automatic placement, set `programs.tokitoki.dms.barSection` to
+`"leftWidgets"`, `"centerWidgets"` or `"rightWidgets"`.
+
+For a **standalone Quickshell bar**, use this instead of the DMS option:
+
+```nix
+programs.tokitoki.quickshell.enable = true;
+```
+
+This installs the CLI/runtime and starts `tokitoki-quickshell` with the
+Wayland graphical session. The user service restarts on failure and stops
+with the session. Niri needs no Tokitoki-specific configuration when its
+systemd session integration is enabled. Other compositors must also start
+the graphical session target and import their Wayland environment.
+
+The target defaults to Home Manager's `wayland.systemd.target`; override
+`programs.tokitoki.quickshell.systemd.target` if your session uses another
+one. For compositor-managed startup instead, disable
+`programs.tokitoki.quickshell.systemd.enable` and launch
+`tokitoki-quickshell --no-duplicate` from your existing startup configuration.
+
+Run your usual Home Manager/NixOS rebuild. Restart your existing DMS session
+after the first install so it discovers the plugin. After updates that add or
+remove QML files, restart DMS or run `dms ipc call plugin-scan rescan tokitoki`.
+Update the `tokitoki` flake input and rebuild to update the CLI and widget
+together. These options configure the existing host; the DMS option requires
+its Home Manager module to be imported and DMS to be enabled already.
+
+On a fresh Tokitoki installation, run `tokitoki scan` once to index the local
+provider stores. Enable source scanning in the widget's refresh settings if
+you want subsequent widget refreshes to scan too.
+
+### Embed in an existing Quickshell bar
+
+Use the same input and module import, then select the existing configuration:
+
+```nix
+programs.tokitoki.quickshell = {
+  enable = true;
+  mode = "embedded";
+  configName = "mybar";
+};
+```
+
+For `~/.config/quickshell/mybar/shell.qml`, this installs a `Tokitoki/`
+component directory alongside your shell. Leave `configName = ""` for a
+shell at `~/.config/quickshell/shell.qml`. Embedded mode starts no separate
+bar or service. Add this import to the existing `shell.qml`:
+
+```qml
+import "Tokitoki" as Tokitoki
+```
+
+Inside your bar's existing `RowLayout` or equivalent container:
+
+```qml
+Tokitoki.TokitokiWidget {
+    screen: bar.screen // bar is your existing PanelWindow's id
+    popupY: bar.height + 4
+}
+```
+
+The button opens the full dashboard and owns its data/persistence controller.
+It has no dependency on the host's `qs.Common`, theme, plugin API or IPC target.
+For `RowLayout`, use `Layout.preferredWidth: implicitWidth` and
+`Layout.preferredHeight: implicitHeight` if your layout controls sizing.
+The popup opens at the top-left of the selected screen by default; `popupX`
+and `popupY` are screen coordinates and can be set for your bar's placement.
+
+For one shared dashboard across multiple bar instances, create one
+`Tokitoki.TokitokiController { id: usage }` under your `ShellRoot` and pass
+`controller: usage` to each button. The selected screen follows the clicked
+button. A host can call `usage.openDashboard("tokens")`,
+`usage.closeDashboard()` or `usage.toggle(screen)` in its own IPC handlers.
+See the [embedded test shell](../e2e/container/embedded/shell.qml) for a
+complete example. Packaged components live under
+`<tokitoki-store-path>/share/tokitoki/qml/Tokitoki`; keep that directory intact.
+
+### Development checkout
 
 From this repository, symlink the complete development plugin so its files stay
 editable:
@@ -90,11 +267,16 @@ For screenshots and interaction checks in an isolated Docker desktop, see
 
 ## Standalone Quickshell
 
-On Linux, start the complete widget without DMS:
+On Linux/Wayland, start the complete widget without a checkout or DMS:
 
 ```sh
-nix run .#quickshell
+nix run github:astahmer/tokitoki#quickshell
 ```
+
+From this checkout, use `nix run .#quickshell` instead. For a permanent
+installation and session startup, use the Home Manager option above.
+The installed wrapper forwards Quickshell arguments, so
+`tokitoki-quickshell ipc call tokitoki toggle` can be used in a keybinding.
 
 Or use an installed Quickshell with the repository's integration tree:
 
@@ -103,6 +285,8 @@ tokitoki scan
 qs -p "$PWD/integrations/quickshell/tokitoki"
 ```
 
+Quickshell supports selecting a separate configuration with `--path`/`-p`;
+see the [official configuration guide](https://quickshell.org/docs/v0.3.0/guide/introduction/).
 Keep `integrations/dms/tokitoki` alongside `integrations/quickshell/tokitoki`:
 the standalone host loads the shared views and provider logos from that sibling
 directory. It does not load DMS services or require DMS to be installed. The

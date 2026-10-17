@@ -1,5 +1,5 @@
 import QtQuick
-import qs.Common
+import "../../Common"
 
 Column {
     id: root
