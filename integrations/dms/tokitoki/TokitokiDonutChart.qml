@@ -26,9 +26,12 @@ Item {
             var context = getContext("2d")
             context.clearRect(0, 0, width, height)
 
+            if (!Array.isArray(root.slices))
+                return
+
             var total = 0
             for (var i = 0; i < root.slices.length; i++) {
-                var value = Number(root.slices[i].value || 0)
+                var value = root.slices[i] ? Number(root.slices[i].value || 0) : 0
                 if (isFinite(value) && value > 0) {
                     total += value
                 }
@@ -36,14 +39,9 @@ Item {
             if (total <= 0)
                 return
 
-            var weightedTotal = 0
-            for (var k = 0; k < root.slices.length; k++) {
-                var weightedValue = Number(root.slices[k].value || 0)
-                if (isFinite(weightedValue) && weightedValue > 0)
-                    weightedTotal += Math.max(weightedValue / total, 0.025)
-            }
-
             var radius = Math.min(width, height) / 2 - 3
+            if (radius <= 0)
+                return
             var inner = radius * root.innerRadiusRatio
             var centerX = width / 2
             var centerY = height / 2
@@ -52,14 +50,15 @@ Item {
 
             for (var j = 0; j < root.slices.length; j++) {
                 var slice = root.slices[j]
-                var sliceValue = Number(slice.value || 0)
+                var sliceValue = slice ? Number(slice.value || 0) : 0
                 if (!isFinite(sliceValue) || sliceValue <= 0)
                     continue
 
-                var share = Math.max(sliceValue / total, 0.025) / weightedTotal
-                var end = start + share * Math.PI * 2
-                var from = start + gap
-                var to = end - gap
+                var angle = (sliceValue / total) * Math.PI * 2
+                var end = start + angle
+                var sliceGap = Math.min(gap, angle / 4)
+                var from = start + sliceGap
+                var to = end - sliceGap
                 if (to > from) {
                     context.beginPath()
                     context.arc(centerX, centerY, radius, from, to, false)

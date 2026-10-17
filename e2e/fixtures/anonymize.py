@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Rewrite a real tokitoki JSON payload into a committable e2e fixture.
+"""Rewrite real tokitoki JSON output into a committable e2e fixture.
 
 Usage (from the repo root):
     tokitoki widget-payload --cached --json > /tmp/payload.raw
@@ -7,13 +7,12 @@ Usage (from the repo root):
     python3 e2e/fixtures/anonymize.py /tmp/payload.raw e2e/fixtures/payload.json
     python3 e2e/fixtures/anonymize.py /tmp/sessions.raw e2e/fixtures/sessions.json
 
-Strips the three things that are actually personal: account emails, the
-repository / project names that leak private work, and the session snippets
-that quote real conversations. Everything else (provider ids, model names,
-windows, dates, token counts) is deliberately kept: the fixture exists to
-exercise the widget's real rendering paths.
+Rewrites account emails, repository and project names, session IDs, titles,
+snippets, and conversation bodies. Provider IDs, model names, windows, dates,
+and token counts remain to exercise the widget's real rendering paths.
 """
 
+import hashlib
 import json
 import re
 import sys
@@ -88,6 +87,11 @@ def scrub(value, path=None, repo_map=None):
             return "e2e fixture session"
         if key == "snippet":
             return SNIPPET
+        if key == "sessionId":
+            digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:20]
+            return "e2e-" + digest
+        if key == "body" and "conversation" in path:
+            return "Synthetic e2e conversation body."
         return text
     return value
 

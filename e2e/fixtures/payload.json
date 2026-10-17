@@ -1927,8 +1927,8 @@
           "lab/tokitoki"
         ],
         "requests": 1546,
-        "sessionId": "01a0618a-70b1-7691-94bd-f7dcc84c8bb8",
-        "snippet": "### User \u00b7 2026-01-01 00:00:00 e2e fixture prompt ### Assistant \u00b7 2026-01-01 00:00:01",
+        "sessionId": "e2e-d9996912e5d8c9599bbf",
+        "snippet": "### User · 2026-01-01 00:00:00 e2e fixture prompt ### Assistant · 2026-01-01 00:00:01",
         "startedAt": "2026-09-02T09:54:50.658Z",
         "title": "e2e fixture session",
         "totalTokens": 369046058
@@ -1951,8 +1951,8 @@
           "project-1"
         ],
         "requests": 366,
-        "sessionId": "01a04ccf-d262-7ae0-95b8-f46e26a9eb9b",
-        "snippet": "### User \u00b7 2026-01-01 00:00:00 e2e fixture prompt ### Assistant \u00b7 2026-01-01 00:00:01",
+        "sessionId": "e2e-0acfb88107a8f6f5cfcf",
+        "snippet": "### User · 2026-01-01 00:00:00 e2e fixture prompt ### Assistant · 2026-01-01 00:00:01",
         "startedAt": "2026-08-29T09:20:23.145Z",
         "title": "e2e fixture session",
         "totalTokens": 89174140
@@ -1975,8 +1975,8 @@
           "project-1"
         ],
         "requests": 45,
-        "sessionId": "01a082ac-17c0-78d3-bd3b-80a8afd2e7eb",
-        "snippet": "### User \u00b7 2026-01-01 00:00:00 e2e fixture prompt ### Assistant \u00b7 2026-01-01 00:00:01",
+        "sessionId": "e2e-ad84be9864bbd80fddf0",
+        "snippet": "### User · 2026-01-01 00:00:00 e2e fixture prompt ### Assistant · 2026-01-01 00:00:01",
         "startedAt": "2026-09-08T20:19:36.637Z",
         "title": "e2e fixture session",
         "totalTokens": 7897461
@@ -1998,8 +1998,8 @@
           "project-9"
         ],
         "requests": 2244,
-        "sessionId": "01a05ef6-274d-7960-b99f-779c8d810a24",
-        "snippet": "### User \u00b7 2026-01-01 00:00:00 e2e fixture prompt ### Assistant \u00b7 2026-01-01 00:00:01",
+        "sessionId": "e2e-7c57de4736377d405e1e",
+        "snippet": "### User · 2026-01-01 00:00:00 e2e fixture prompt ### Assistant · 2026-01-01 00:00:01",
         "startedAt": "2026-09-01T21:53:50.397Z",
         "title": "e2e fixture session",
         "totalTokens": 559166763
@@ -2022,8 +2022,8 @@
           "project-15"
         ],
         "requests": 143,
-        "sessionId": "01a08732-657d-74e0-bb0d-24cda0368470",
-        "snippet": "### User \u00b7 2026-01-01 00:00:00 e2e fixture prompt ### Assistant \u00b7 2026-01-01 00:00:01",
+        "sessionId": "e2e-2c2589fe5f0236004e97",
+        "snippet": "### User · 2026-01-01 00:00:00 e2e fixture prompt ### Assistant · 2026-01-01 00:00:01",
         "startedAt": "2026-09-09T17:23:49.369Z",
         "title": "e2e fixture session",
         "totalTokens": 28584104
@@ -2045,8 +2045,8 @@
           "project-12"
         ],
         "requests": 18,
-        "sessionId": "01a08884-2004-7b53-ab9d-3b4ae0724adc",
-        "snippet": "### User \u00b7 2026-01-01 00:00:00 e2e fixture prompt ### Assistant \u00b7 2026-01-01 00:00:01",
+        "sessionId": "e2e-a8dd7ad87a8bf3fa6606",
+        "snippet": "### User · 2026-01-01 00:00:00 e2e fixture prompt ### Assistant · 2026-01-01 00:00:01",
         "startedAt": "2026-09-09T23:33:09.150Z",
         "title": "e2e fixture session",
         "totalTokens": 3426816
@@ -2068,7 +2068,7 @@
           "(no repo)"
         ],
         "requests": 26,
-        "sessionId": "bec76c89-0201-4fec-bee5-8aebfd33434e",
+        "sessionId": "e2e-5abd14535db3c169e75b",
         "startedAt": "2026-09-09T10:39:53.501Z",
         "totalTokens": 4042
       },
@@ -2089,7 +2089,7 @@
           "(no repo)"
         ],
         "requests": 6,
-        "sessionId": "6b56808e-ecd3-4688-a4ac-1f5528d6c1b9",
+        "sessionId": "e2e-e4d4ba036954e59ced10",
         "startedAt": "2026-09-09T10:58:54.204Z",
         "totalTokens": 462
       },
@@ -2110,8 +2110,8 @@
           "project-1"
         ],
         "requests": 21,
-        "sessionId": "01a08202-191c-7dc0-a11f-41c3943a98ad",
-        "snippet": "### User \u00b7 2026-01-01 00:00:00 e2e fixture prompt ### Assistant \u00b7 2026-01-01 00:00:01",
+        "sessionId": "e2e-b1a5646076f8d199ae95",
+        "snippet": "### User · 2026-01-01 00:00:00 e2e fixture prompt ### Assistant · 2026-01-01 00:00:01",
         "startedAt": "2026-09-08T17:25:44.221Z",
         "title": "e2e fixture session",
         "totalTokens": 1740312
@@ -2135,8 +2135,8 @@
           "project-1"
         ],
         "requests": 306,
-        "sessionId": "01a04dfc-9711-7c72-8aa9-f2902dd4e7ff",
-        "snippet": "### User \u00b7 2026-01-01 00:00:00 e2e fixture prompt ### Assistant \u00b7 2026-01-01 00:00:01",
+        "sessionId": "e2e-e43c8d367d3c85264ca0",
+        "snippet": "### User · 2026-01-01 00:00:00 e2e fixture prompt ### Assistant · 2026-01-01 00:00:01",
         "startedAt": "2026-08-29T14:48:15.371Z",
         "title": "e2e fixture session",
         "totalTokens": 90923082
@@ -2158,8 +2158,8 @@
           "project-1"
         ],
         "requests": 72,
-        "sessionId": "01a08172-beac-7fa0-a923-5264702660b7",
-        "snippet": "### User \u00b7 2026-01-01 00:00:00 e2e fixture prompt ### Assistant \u00b7 2026-01-01 00:00:01",
+        "sessionId": "e2e-0e4647243ebb90d560f1",
+        "snippet": "### User · 2026-01-01 00:00:00 e2e fixture prompt ### Assistant · 2026-01-01 00:00:01",
         "startedAt": "2026-09-08T14:36:30.171Z",
         "title": "e2e fixture session",
         "totalTokens": 18054926
@@ -2181,8 +2181,8 @@
           "project-1"
         ],
         "requests": 16,
-        "sessionId": "01a0817a-d5d0-7790-8aa9-23f259e8efdc",
-        "snippet": "### User \u00b7 2026-01-01 00:00:00 e2e fixture prompt ### Assistant \u00b7 2026-01-01 00:00:01",
+        "sessionId": "e2e-bfd4925ee564129c5237",
+        "snippet": "### User · 2026-01-01 00:00:00 e2e fixture prompt ### Assistant · 2026-01-01 00:00:01",
         "startedAt": "2026-09-08T14:45:26.070Z",
         "title": "e2e fixture session",
         "totalTokens": 2413589
@@ -2204,8 +2204,8 @@
           "project-1"
         ],
         "requests": 29,
-        "sessionId": "01a07284-a7af-7b80-8072-7f7a620aec19",
-        "snippet": "### User \u00b7 2026-01-01 00:00:00 e2e fixture prompt ### Assistant \u00b7 2026-01-01 00:00:01",
+        "sessionId": "e2e-874b18633c59f4871483",
+        "snippet": "### User · 2026-01-01 00:00:00 e2e fixture prompt ### Assistant · 2026-01-01 00:00:01",
         "startedAt": "2026-09-05T17:02:12.684Z",
         "title": "e2e fixture session",
         "totalTokens": 5192654
@@ -2227,7 +2227,7 @@
           "(no repo)"
         ],
         "requests": 1593,
-        "sessionId": "35ee2041-86ba-4043-a97d-234ab5a3eeda",
+        "sessionId": "e2e-3db9112333c3b1c06f47",
         "startedAt": "2026-08-18T13:50:46.500Z",
         "totalTokens": 212038
       },
@@ -2249,8 +2249,8 @@
           "project-1"
         ],
         "requests": 1848,
-        "sessionId": "01a03b2b-34b9-7822-a8c7-59a6d9a1e16d",
-        "snippet": "### User \u00b7 2026-01-01 00:00:00 e2e fixture prompt ### Assistant \u00b7 2026-01-01 00:00:01",
+        "sessionId": "e2e-f5d66aca6220fa8ac7a2",
+        "snippet": "### User · 2026-01-01 00:00:00 e2e fixture prompt ### Assistant · 2026-01-01 00:00:01",
         "startedAt": "2026-08-25T23:04:42.511Z",
         "title": "e2e fixture session",
         "totalTokens": 579427077
@@ -2272,7 +2272,7 @@
           "(no repo)"
         ],
         "requests": 17,
-        "sessionId": "d4552cc8-d6e5-451c-8f15-acd8b6fc104e",
+        "sessionId": "e2e-59bdf487d294d808689d",
         "startedAt": "2026-09-07T12:43:52.930Z",
         "totalTokens": 2327
       },
@@ -2293,7 +2293,7 @@
           "(no repo)"
         ],
         "requests": 5,
-        "sessionId": "e74994c3-a5c8-4592-98e7-12a6f14350b2",
+        "sessionId": "e2e-5e3b5d9a1f8036c59de9",
         "startedAt": "2026-09-06T23:41:45.942Z",
         "totalTokens": 648
       },
@@ -2314,7 +2314,7 @@
           "(no repo)"
         ],
         "requests": 5,
-        "sessionId": "6a27f28e-a6b3-4c6a-a2b5-653dbb9bd65c",
+        "sessionId": "e2e-5d16593d460928867c20",
         "startedAt": "2026-09-06T23:41:45.638Z",
         "totalTokens": 689
       },
@@ -2335,7 +2335,7 @@
           "(no repo)"
         ],
         "requests": 3,
-        "sessionId": "de7df2d0-c886-41c0-a872-ef16e0afba48",
+        "sessionId": "e2e-4a4822a9ab1b95cd24e8",
         "startedAt": "2026-09-06T23:41:45.827Z",
         "totalTokens": 522
       },
@@ -2357,8 +2357,8 @@
           "project-1"
         ],
         "requests": 1026,
-        "sessionId": "01a07264-f0e4-7ff2-ba84-14a4d745fc34",
-        "snippet": "### User \u00b7 2026-01-01 00:00:00 e2e fixture prompt ### Assistant \u00b7 2026-01-01 00:00:01",
+        "sessionId": "e2e-55d8aab034522a62368c",
+        "snippet": "### User · 2026-01-01 00:00:00 e2e fixture prompt ### Assistant · 2026-01-01 00:00:01",
         "startedAt": "2026-09-05T16:28:06.675Z",
         "title": "e2e fixture session",
         "totalTokens": 253065017
@@ -2380,8 +2380,8 @@
           "project-1"
         ],
         "requests": 8,
-        "sessionId": "01a0790a-9ac0-7ca2-8b87-aa04839b891e",
-        "snippet": "### User \u00b7 2026-01-01 00:00:00 e2e fixture prompt ### Assistant \u00b7 2026-01-01 00:00:01",
+        "sessionId": "e2e-7a17ba631752077ae274",
+        "snippet": "### User · 2026-01-01 00:00:00 e2e fixture prompt ### Assistant · 2026-01-01 00:00:01",
         "startedAt": "2026-09-06T23:26:06.268Z",
         "title": "e2e fixture session",
         "totalTokens": 613902
@@ -2403,7 +2403,7 @@
           "(no repo)"
         ],
         "requests": 5,
-        "sessionId": "d8c35a61-017c-4957-9891-11081d37931f",
+        "sessionId": "e2e-46179a5647ab93630b20",
         "startedAt": "2026-09-06T21:46:28.301Z",
         "totalTokens": 1386
       },
@@ -2424,7 +2424,7 @@
           "(no repo)"
         ],
         "requests": 6,
-        "sessionId": "f48b206f-465d-4e85-8418-9e2496ffea4a",
+        "sessionId": "e2e-7a0090a5ce3887c62c4b",
         "startedAt": "2026-09-06T21:46:42.192Z",
         "totalTokens": 1542
       },
@@ -2445,7 +2445,7 @@
           "(no repo)"
         ],
         "requests": 5,
-        "sessionId": "e4315f25-e64a-4b6a-942d-464228fd8a4a",
+        "sessionId": "e2e-fbac68436d1c48a130fb",
         "startedAt": "2026-09-06T21:46:43.941Z",
         "totalTokens": 1215
       },
@@ -2466,7 +2466,7 @@
           "(no repo)"
         ],
         "requests": 4,
-        "sessionId": "0cbaeda6-0b6c-4679-aef1-aa090a5be55d",
+        "sessionId": "e2e-b99a02e0ca78d2a868e6",
         "startedAt": "2026-09-06T21:46:05.021Z",
         "totalTokens": 1053
       },
@@ -2487,7 +2487,7 @@
           "(no repo)"
         ],
         "requests": 5,
-        "sessionId": "d4d6fac3-a3c7-4cd2-85c3-e8bd8c50a154",
+        "sessionId": "e2e-65a5a0f45b07fdd1f13d",
         "startedAt": "2026-09-06T21:46:17.222Z",
         "totalTokens": 1211
       },
@@ -2509,8 +2509,8 @@
           "project-1"
         ],
         "requests": 218,
-        "sessionId": "01a06869-831c-7160-ab51-f6ffbecadf58",
-        "snippet": "### User \u00b7 2026-01-01 00:00:00 e2e fixture prompt ### Assistant \u00b7 2026-01-01 00:00:01",
+        "sessionId": "e2e-55948310191dd3ac92ec",
+        "snippet": "### User · 2026-01-01 00:00:00 e2e fixture prompt ### Assistant · 2026-01-01 00:00:01",
         "startedAt": "2026-09-03T17:56:43.223Z",
         "title": "e2e fixture session",
         "totalTokens": 51088056
@@ -2532,8 +2532,8 @@
           "project-1"
         ],
         "requests": 146,
-        "sessionId": "01a06df8-963e-7021-93ab-2aa46150debe",
-        "snippet": "### User \u00b7 2026-01-01 00:00:00 e2e fixture prompt ### Assistant \u00b7 2026-01-01 00:00:01",
+        "sessionId": "e2e-6cf0ede34b532bb89b0b",
+        "snippet": "### User · 2026-01-01 00:00:00 e2e fixture prompt ### Assistant · 2026-01-01 00:00:01",
         "startedAt": "2026-09-04T19:50:14.004Z",
         "title": "e2e fixture session",
         "totalTokens": 37259532
@@ -2556,8 +2556,8 @@
           "project-1"
         ],
         "requests": 332,
-        "sessionId": "01a067f8-1082-7113-bd13-52b6b5b10da3",
-        "snippet": "### User \u00b7 2026-01-01 00:00:00 e2e fixture prompt ### Assistant \u00b7 2026-01-01 00:00:01",
+        "sessionId": "e2e-336b82026b0eb91d4669",
+        "snippet": "### User · 2026-01-01 00:00:00 e2e fixture prompt ### Assistant · 2026-01-01 00:00:01",
         "startedAt": "2026-09-03T15:53:29.537Z",
         "title": "e2e fixture session",
         "totalTokens": 81231738
@@ -2579,7 +2579,7 @@
           "(no repo)"
         ],
         "requests": 66,
-        "sessionId": "e4c895dd-5c04-4618-b8de-00cc7a4f656e",
+        "sessionId": "e2e-5ce98f30f09dd82b8a8a",
         "startedAt": "2026-09-02T15:03:41.441Z",
         "totalTokens": 9087
       },
@@ -2600,7 +2600,7 @@
           "(no repo)"
         ],
         "requests": 20,
-        "sessionId": "3edce5d6-aba0-439c-9f52-b051bb9a2725",
+        "sessionId": "e2e-7ce413f0f14b9ac563f3",
         "startedAt": "2026-09-04T08:39:05.443Z",
         "totalTokens": 2639
       },
@@ -2621,8 +2621,8 @@
           "project-11"
         ],
         "requests": 46,
-        "sessionId": "01a067ad-eec6-7f50-ae82-b6209db98562",
-        "snippet": "### User \u00b7 2026-01-01 00:00:00 e2e fixture prompt ### Assistant \u00b7 2026-01-01 00:00:01",
+        "sessionId": "e2e-e9a8fc24913d30e90959",
+        "snippet": "### User · 2026-01-01 00:00:00 e2e fixture prompt ### Assistant · 2026-01-01 00:00:01",
         "startedAt": "2026-09-03T14:30:56.339Z",
         "title": "e2e fixture session",
         "totalTokens": 7635864
@@ -2644,8 +2644,8 @@
           "project-11"
         ],
         "requests": 42,
-        "sessionId": "01a0679c-7934-7622-bfc6-34375874e688",
-        "snippet": "### User \u00b7 2026-01-01 00:00:00 e2e fixture prompt ### Assistant \u00b7 2026-01-01 00:00:01",
+        "sessionId": "e2e-a4a6c3201605e55a348d",
+        "snippet": "### User · 2026-01-01 00:00:00 e2e fixture prompt ### Assistant · 2026-01-01 00:00:01",
         "startedAt": "2026-09-03T14:11:52.497Z",
         "title": "e2e fixture session",
         "totalTokens": 10193636
@@ -2667,8 +2667,8 @@
           "project-11"
         ],
         "requests": 33,
-        "sessionId": "01a0679c-7509-71d0-93f9-0676774d26be",
-        "snippet": "### User \u00b7 2026-01-01 00:00:00 e2e fixture prompt ### Assistant \u00b7 2026-01-01 00:00:01",
+        "sessionId": "e2e-6d0a32be1dc2fbded954",
+        "snippet": "### User · 2026-01-01 00:00:00 e2e fixture prompt ### Assistant · 2026-01-01 00:00:01",
         "startedAt": "2026-09-03T14:11:53.149Z",
         "title": "e2e fixture session",
         "totalTokens": 7708497
@@ -2690,8 +2690,8 @@
           "project-11"
         ],
         "requests": 9,
-        "sessionId": "01a0678b-165d-7e53-b031-4eea7f4d01e3",
-        "snippet": "### User \u00b7 2026-01-01 00:00:00 e2e fixture prompt ### Assistant \u00b7 2026-01-01 00:00:01",
+        "sessionId": "e2e-e689b4bcd35669f47456",
+        "snippet": "### User · 2026-01-01 00:00:00 e2e fixture prompt ### Assistant · 2026-01-01 00:00:01",
         "startedAt": "2026-09-03T13:52:50.258Z",
         "title": "e2e fixture session",
         "totalTokens": 852032
@@ -2713,8 +2713,8 @@
           "project-11"
         ],
         "requests": 42,
-        "sessionId": "01a066c7-d319-7173-90a0-9299f1e691d5",
-        "snippet": "### User \u00b7 2026-01-01 00:00:00 e2e fixture prompt ### Assistant \u00b7 2026-01-01 00:00:01",
+        "sessionId": "e2e-4d08c256b9fad31911c5",
+        "snippet": "### User · 2026-01-01 00:00:00 e2e fixture prompt ### Assistant · 2026-01-01 00:00:01",
         "startedAt": "2026-09-03T10:19:36.421Z",
         "title": "e2e fixture session",
         "totalTokens": 8084119
@@ -2736,7 +2736,7 @@
           "(no repo)"
         ],
         "requests": 9,
-        "sessionId": "5f98f7e2-b4c6-47f4-ba53-d82fa2f81eaa",
+        "sessionId": "e2e-17d98725dd68b337a8c2",
         "startedAt": "2026-09-03T10:15:32.579Z",
         "totalTokens": 536
       },
@@ -2757,8 +2757,8 @@
           "project-11"
         ],
         "requests": 96,
-        "sessionId": "01a06685-9f4c-7793-b46d-600eaf747eaa",
-        "snippet": "### User \u00b7 2026-01-01 00:00:00 e2e fixture prompt ### Assistant \u00b7 2026-01-01 00:00:01",
+        "sessionId": "e2e-ef0e97529b764d5e46fe",
+        "snippet": "### User · 2026-01-01 00:00:00 e2e fixture prompt ### Assistant · 2026-01-01 00:00:01",
         "startedAt": "2026-09-03T09:10:09.571Z",
         "title": "e2e fixture session",
         "totalTokens": 21773350
@@ -2780,7 +2780,7 @@
           "(no repo)"
         ],
         "requests": 8,
-        "sessionId": "9b8f94fa-6915-4ee4-a982-f997099a9e43",
+        "sessionId": "e2e-f989c28d14ac09cc936b",
         "startedAt": "2026-09-02T11:59:27.068Z",
         "totalTokens": 1762
       },
@@ -2801,7 +2801,7 @@
           "(no repo)"
         ],
         "requests": 8,
-        "sessionId": "32c43745-5d5d-449f-89f3-80b62cb23597",
+        "sessionId": "e2e-e4e723c36aa379116af1",
         "startedAt": "2026-09-02T11:19:11.797Z",
         "totalTokens": 1409
       },
@@ -2822,7 +2822,7 @@
           "(no repo)"
         ],
         "requests": 6,
-        "sessionId": "d2277d1a-5c7b-405e-9c98-1f25387f8e58",
+        "sessionId": "e2e-4f8afcc5025c507d8e16",
         "startedAt": "2026-09-02T11:19:16.261Z",
         "totalTokens": 698
       },
@@ -2843,7 +2843,7 @@
           "(no repo)"
         ],
         "requests": 5,
-        "sessionId": "cd299ba7-a649-4be1-9b18-893cc1417e3e",
+        "sessionId": "e2e-29d757a907e0969faf3a",
         "startedAt": "2026-09-02T11:19:13.258Z",
         "totalTokens": 954
       },
@@ -2864,7 +2864,7 @@
           "(no repo)"
         ],
         "requests": 4,
-        "sessionId": "9d7253e4-911e-47b9-9853-63962907585c",
+        "sessionId": "e2e-b9bcb8db588f514816dc",
         "startedAt": "2026-09-02T11:18:45.927Z",
         "totalTokens": 1022
       },
@@ -2885,7 +2885,7 @@
           "(no repo)"
         ],
         "requests": 6,
-        "sessionId": "465a8893-8327-4706-a659-16801957393f",
+        "sessionId": "e2e-80c8eec50af8688959ba",
         "startedAt": "2026-09-02T11:19:05.037Z",
         "totalTokens": 968
       },
@@ -2906,7 +2906,7 @@
           "(no repo)"
         ],
         "requests": 4,
-        "sessionId": "87e70be6-142b-4280-bdb6-b66f54058408",
+        "sessionId": "e2e-c5b9e7b254f6063babe9",
         "startedAt": "2026-09-02T11:19:16.507Z",
         "totalTokens": 697
       },
@@ -2927,7 +2927,7 @@
           "(no repo)"
         ],
         "requests": 3,
-        "sessionId": "53a553a1-5a86-4fe9-a273-f4fc5ebbc36a",
+        "sessionId": "e2e-19a363bbf7f4ce0e376c",
         "startedAt": "2026-09-02T11:18:38.677Z",
         "totalTokens": 1047
       },
@@ -2948,8 +2948,8 @@
           "project-10"
         ],
         "requests": 40,
-        "sessionId": "01a0612a-8b29-7813-8303-b38cad2c9a0a",
-        "snippet": "### User \u00b7 2026-01-01 00:00:00 e2e fixture prompt ### Assistant \u00b7 2026-01-01 00:00:01",
+        "sessionId": "e2e-df4812535c81918f49dc",
+        "snippet": "### User · 2026-01-01 00:00:00 e2e fixture prompt ### Assistant · 2026-01-01 00:00:01",
         "startedAt": "2026-09-02T08:09:41.826Z",
         "title": "e2e fixture session",
         "totalTokens": 7976236
@@ -2971,7 +2971,7 @@
           "(no repo)"
         ],
         "requests": 744,
-        "sessionId": "05b8c9ce-36c8-4876-9fdb-685f1c0b55d9",
+        "sessionId": "e2e-723d34f025cdf31904b9",
         "startedAt": "2026-08-25T19:43:18.553Z",
         "totalTokens": 110603
       },
@@ -2992,8 +2992,8 @@
           "project-1"
         ],
         "requests": 311,
-        "sessionId": "01a05c82-b328-7f52-b4b9-a63bfde94932",
-        "snippet": "### User \u00b7 2026-01-01 00:00:00 e2e fixture prompt ### Assistant \u00b7 2026-01-01 00:00:01",
+        "sessionId": "e2e-2ab36f0936e5977740c0",
+        "snippet": "### User · 2026-01-01 00:00:00 e2e fixture prompt ### Assistant · 2026-01-01 00:00:01",
         "startedAt": "2026-09-01T10:30:34.421Z",
         "title": "e2e fixture session",
         "totalTokens": 75540909
@@ -3015,8 +3015,8 @@
           "project-1"
         ],
         "requests": 27,
-        "sessionId": "01a05d75-234a-7b50-bd95-f29ba875b2f5",
-        "snippet": "### User \u00b7 2026-01-01 00:00:00 e2e fixture prompt ### Assistant \u00b7 2026-01-01 00:00:01",
+        "sessionId": "e2e-06a512e570a032f2fe89",
+        "snippet": "### User · 2026-01-01 00:00:00 e2e fixture prompt ### Assistant · 2026-01-01 00:00:01",
         "startedAt": "2026-09-01T14:54:59.227Z",
         "title": "e2e fixture session",
         "totalTokens": 4297377
@@ -3637,7 +3637,7 @@
   },
   "statuslinePreview": {
     "command": "tokitoki statusline",
-    "preview": "$21.92 today \u00b7 $986.17 MTD"
+    "preview": "$21.92 today · $986.17 MTD"
   },
   "today": {
     "burn": {

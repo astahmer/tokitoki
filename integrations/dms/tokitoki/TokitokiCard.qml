@@ -45,6 +45,8 @@ Rectangle {
 
             StyledText {
                 text: root.title
+                width: Math.max(0, parent.width - (root.iconName.length > 0 ? Theme.iconSizeSmall + parent.spacing : 0))
+                elide: Text.ElideRight
                 color: root.highlighted ? Theme.primary : Theme.surfaceText
                 font.pixelSize: Theme.fontSizeLarge
                 font.weight: Font.DemiBold
@@ -56,7 +58,6 @@ Rectangle {
             id: contentLoader
 
             width: parent.width
-            height: item ? item.implicitHeight : 0
             sourceComponent: root.contentComponent
         }
     }

@@ -43,14 +43,20 @@ editable:
 mkdir -p ~/.config/DankMaterialShell/plugins
 ln -sfn "$PWD/integrations/dms/tokitoki" \
   ~/.config/DankMaterialShell/plugins/tokitoki
-dms ipc call plugins reload tokitoki
+dms ipc call plugin-scan rescan tokitoki
 ```
+
+Use `plugin-scan rescan <id>` (not `plugins reload <id>`) whenever a `.qml`
+file was **added or removed**: `reload` reuses the cached component list, so a
+new `TokitokiFoo.qml` reports `<Type> is not a type` and leaves the plugin
+disabled. A failed reload is undone with `dms ipc call plugins enable tokitoki`.
+This also applies when Home Manager installs a version with new QML components.
 
 Then enable `Tokitoki Usage` in DMS Settings → Plugins and add it to DankBar.
 The widget invokes `tokitoki` from `PATH`. When DMS was launched outside the
 direnv shell, restart it from the active dev shell or install the Nix package
-through Home Manager so DMS inherits the command; edit `TokitokiWidget.qml`
-only when you intentionally want a different command path.
+through Home Manager so DMS inherits the command. For a different command path,
+use the executable override in DMS Settings → Plugins → Tokitoki.
 
 If DMS is managed by `systemd --user` (the usual Home Manager setup), direnv
 cannot change its environment. Add the local flake to the Home Manager
@@ -67,8 +73,19 @@ Run your normal `home-manager switch`, then restart DMS:
 
 ```sh
 systemctl --user restart dms.service
-dms ipc call plugins reload tokitoki
+dms ipc call plugins status tokitoki
 ```
+
+The DMS widget includes Sessions (conversation search, pagination, reindexing,
+request timeline and cache estimates), provider/model breakdowns, repository
+activity and a daily token sparkline. Search filters usage cards without
+changing chart totals; private repository names are also masked in chart legends.
+The Settings tab exposes notification preferences shared with the native app;
+DMS does not deliver those desktop alerts itself. These views use the existing
+`widget-payload`, `sessions`, `reindex`, `config set` and `ui` CLI commands.
+
+For screenshots and interaction checks in an isolated Docker desktop, see
+[`e2e/README.md`](../e2e/README.md).
 
 ## Other adapters
 

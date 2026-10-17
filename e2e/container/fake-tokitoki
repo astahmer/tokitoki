@@ -1,13 +1,91 @@
 #!/bin/sh
-# Stub for the real tokitoki CLI used by the dms plugin. It serves committed
-# fixtures so the widget renders deterministic, offline, instant data with no
-# provider stores and no scanning.
-#
-# ponytail: sub-command flags (--search, drill-down, paging) are ignored and
-# always answered with the same fixture. Fine for layout/visual checks; make it
-# arg-aware if a test ever needs to assert filtered results.
-case "${1:-}" in
-  widget-payload) exec cat /opt/e2e/fixtures/payload.json ;;
-  sessions) exec cat /opt/e2e/fixtures/sessions.json ;;
-  *) exit 0 ;;
+set -eu
+
+fixture_dir="${E2E_FIXTURE_DIR:-/opt/e2e/fixtures}"
+command_log="${E2E_COMMAND_LOG:-/out/cli-invocations.jsonl}"
+date_shift="${E2E_DATE_SHIFT_SECONDS:-0}"
+subcommand="${1:-}"
+[ "$#" -gt 0 ] && shift
+
+if [ -n "$command_log" ]; then
+  mkdir -p "$(dirname "$command_log")"
+  jq -cn --args '$ARGS.positional' -- "$subcommand" "$@" >> "$command_log"
+fi
+
+rebase_dates() {
+  jq --argjson offset "$date_shift" -f /opt/e2e/rebase-dates.jq
+}
+
+case "$subcommand" in
+  widget-payload)
+    exec jq --argjson offset "$date_shift" -f /opt/e2e/rebase-dates.jq "$fixture_dir/payload.json"
+    ;;
+  sessions)
+    search=""
+    page=1
+    top=25
+    session_id=""
+    provider=""
+    events_limit=40
+    events_offset=0
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --search) search="${2:-}"; shift 2 ;;
+        --page) page="${2:-1}"; shift 2 ;;
+        --top) top="${2:-25}"; shift 2 ;;
+        --session) session_id="${2:-}"; shift 2 ;;
+        --provider) provider="${2:-}"; shift 2 ;;
+        --events-limit) events_limit="${2:-40}"; shift 2 ;;
+        --events-offset) events_offset="${2:-0}"; shift 2 ;;
+        *) shift ;;
+      esac
+    done
+
+    if [ -n "$session_id" ]; then
+      jq --arg sessionId "$session_id" \
+        --arg provider "${provider:-codex}" \
+        --argjson offset "$events_offset" \
+        --argjson limit "$events_limit" \
+        '.sessionId = $sessionId
+         | .provider = $provider
+         | .eventsTotal as $total
+         | .events = [.events[$offset:($offset + $limit)][]]
+         | .eventsOffset = $offset
+         | .eventsHasMore = ($offset + (.events | length) < $total)' \
+        "$fixture_dir/session-detail.json" | rebase_dates
+      exit 0
+    fi
+
+    if [ -n "$search" ]; then
+      jq --arg query "$search" --argjson page "$page" --argjson top "$top" '
+        ([ $query | ascii_downcase | split(" ")[] | select(length > 0) ]) as $terms
+        | [ .rows[]
+            | ([.title // "", .snippet // "", .provider // "", .accountKey // ""]
+               | join(" ") | ascii_downcase) as $text
+            | select(all($terms[]; . as $term | $text | contains($term))) ] as $matches
+        | .query = $query
+        | .page = $page
+        | .hasMore = (($page * $top) < ($matches | length))
+        | .rows = [$matches[((($page - 1) * $top)):($page * $top)][]
+            | .snippet |= gsub("(?i)(?<hit>" + $query + ")"; "[[\(.hit)]]")
+            | .lastRequestAt = .startedAt
+            | .models = (.models // [])]
+        | del(.top)
+      ' "$fixture_dir/sessions.json" | rebase_dates
+      exit 0
+    fi
+
+    if [ "$page" -gt 1 ]; then
+      jq --argjson page "$page" --argjson top "$top" '
+        .page = $page
+        | .top = $top
+        | if $page == 2 then . else (.rows = [] | .hasMore = false) end
+      ' "$fixture_dir/sessions-page-2.json" | rebase_dates
+    else
+      jq --argjson top "$top" '.page = 1 | .top = $top' "$fixture_dir/sessions.json" | rebase_dates
+    fi
+    ;;
+  *)
+    exit 0
+    ;;
 esac

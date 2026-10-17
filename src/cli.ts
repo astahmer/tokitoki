@@ -2200,7 +2200,8 @@ function inv(command: string, flags: Record<string, FlagValue | string[]> = {}):
 
 /** Local calendar date key (YYYY-MM-DD) offset by whole days. */
 function localDateKey(offsetDays = 0): string {
-  const d = new Date(Date.now() - offsetDays * 86_400_000);
+  const d = new Date(Date.now());
+  d.setDate(d.getDate() - offsetDays);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
@@ -2733,12 +2734,11 @@ function runWidgetPayload(parsed: ParsedInvocation): void {
   });
   capture("spendPeriods", () => {
     const config = loadConfig();
-    const yFrom = new Date(Date.now() - 86_400_000);
-    const yKey = `${yFrom.getFullYear()}-${String(yFrom.getMonth() + 1).padStart(2, "0")}-${String(yFrom.getDate()).padStart(2, "0")}`;
+    const yKey = localDateKey(1);
     const todayKey = localDateKey(0);
     const periodFlags: Array<[string, Record<string, FlagValue>]> = [
       ["today", { from: todayKey, to: todayKey }],
-      ["yesterday", { from: yKey, to: todayKey }],
+      ["yesterday", { from: yKey, to: yKey }],
       ["week", { last: "week" }],
       ["month", { last: "month" }],
       ["year", { last: "year" }],

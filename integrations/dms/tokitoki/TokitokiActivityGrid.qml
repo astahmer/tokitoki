@@ -34,10 +34,10 @@ Item {
         if (!cell)
             return 0
         if (root.payload && root.payload.metric === "cost")
-            return safeNumber(cell.costUsd)
+            return Math.max(0, safeNumber(cell.costUsd))
         if (root.payload && root.payload.metric === "requests")
-            return safeNumber(cell.requests)
-        return safeNumber(cell.tokens)
+            return Math.max(0, safeNumber(cell.requests))
+        return Math.max(0, safeNumber(cell.tokens))
     }
 
     function rebuild() {
@@ -52,8 +52,8 @@ Item {
         var maxValue = 0
         for (var i = 0; i < source.cells.length; i++) {
             var cell = source.cells[i]
-            byDay[cell.day] = cell
-            maxValue = Math.max(maxValue, metricValue(cell))
+            if (cell && cell.day !== undefined)
+                byDay[String(cell.day)] = cell
         }
 
         var today = new Date()
@@ -71,9 +71,11 @@ Item {
                 date.setDate(start.getDate() + column * 7 + row)
                 var present = date <= today
                 var dayCell = present ? byDay[dateKey(date)] : null
+                var value = metricValue(dayCell)
+                maxValue = Math.max(maxValue, value)
                 week.push({
                     present: present,
-                    value: metricValue(dayCell)
+                    value: value
                 })
             }
             nextColumns.push(week)
@@ -102,7 +104,7 @@ Item {
 
             width: parent.width
             height: 58
-            spacing: 2
+            spacing: Math.min(2, Math.max(0, (grid.width - 53) / 52))
 
             Repeater {
                 model: root.columns
@@ -114,7 +116,10 @@ Item {
                         model: modelData
 
                         delegate: Rectangle {
-                            width: Math.max(4, (grid.width - 52 * grid.spacing) / 53)
+                            width: root.columns.length > 0
+                                ? Math.max(0, (grid.width - Math.max(0, root.columns.length - 1) * grid.spacing) /
+                                    root.columns.length)
+                                : 0
                             height: width
                             radius: 1.5
                             color: root.cellColor(modelData)
@@ -129,6 +134,7 @@ Item {
             spacing: Theme.spacingXXS
 
             StyledText {
+                id: lessLabel
                 text: "Less"
                 color: Theme.surfaceVariantText
                 font.pixelSize: Theme.fontSizeMedium
@@ -147,19 +153,23 @@ Item {
             }
 
             StyledText {
+                id: moreLabel
                 text: "More"
                 color: Theme.surfaceVariantText
                 font.pixelSize: Theme.fontSizeMedium
             }
 
-            Item { width: Math.max(0, parent.width - implicitWidth) }
-
             StyledText {
+                id: periodLabel
+                width: Math.max(0, parent.width - lessLabel.width - moreLabel.width - 5 * 7 -
+                    parent.spacing * 7)
                 text: root.payload && root.payload.metric
                     ? "Last year · " + root.displayLabel(root.payload.metric)
                     : ""
                 color: Theme.surfaceVariantText
                 font.pixelSize: Theme.fontSizeMedium
+                horizontalAlignment: Text.AlignRight
+                elide: Text.ElideRight
             }
         }
     }

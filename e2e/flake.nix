@@ -27,8 +27,15 @@
         system:
         let
           pkgs = import inputs.nixpkgs { inherit system; };
-          tokitoki = inputs.tokitoki.packages.${system}.default;
           dmsShell = inputs.dms.packages.${system}.dms-shell;
+          # Qt needs a stable seat capability, not devices that disappear after each click.
+          persistentWlrctl = pkgs.wlrctl.overrideAttrs (previous: {
+            postPatch = (previous.postPatch or "") + ''
+              substituteInPlace pointer.c --replace-fail \
+                'state->running = false;' \
+                'if (getenv("WLRCTL_HOLD")) { return; } state->running = false;'
+            '';
+          });
 
           runtime = pkgs.buildEnv {
             name = "tokitoki-e2e-runtime";
@@ -45,6 +52,7 @@
               pkgs.jq
               pkgs.libGL
               pkgs.mesa
+              pkgs.nodejs
               pkgs.noto-fonts
               pkgs.noto-fonts-color-emoji
               pkgs.procps
@@ -55,8 +63,9 @@
               pkgs.sway
               pkgs.wayland-utils
               pkgs.wl-clipboard
+              persistentWlrctl
+              pkgs.wtype
               dmsShell
-              tokitoki
             ];
           };
         in
@@ -101,8 +110,8 @@
                 <include ignore_missing="yes">/etc/fonts/conf.d</include>
               </fontconfig>
               FONTCONF
-              # Plugin under test = the built package's own integrations dir.
-              ln -s ${tokitoki}/share/tokitoki/integrations/dms/tokitoki opt/e2e/plugin
+              # run.sh overlays this source fallback with the working tree.
+              ln -s ${inputs.tokitoki}/integrations/dms/tokitoki opt/e2e/plugin
               # quickshell refuses to run as root, so the harness drops to a
               # regular uid (1000 keeps it aligned with the CI/dev user). The
               # home lives in /tmp: chown is unreliable inside the image

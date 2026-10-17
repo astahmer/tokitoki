@@ -85,7 +85,7 @@ function inkRatio(png, region) {
 
 const [file, ...rest] = process.argv.slice(2);
 if (!file) {
-  console.error("usage: node e2e/assert.mjs <png> [--min-ink R] [--region 'X,Y WxH']");
+  console.error("usage: node e2e/assert.mjs <png> [--size WxH] [--min-ink R] [--region 'X,Y WxH']");
   process.exit(2);
 }
 const arg = (name, fallback) => {
@@ -96,6 +96,7 @@ const arg = (name, fallback) => {
 // 0.02; the popout frames are an order of magnitude above that.
 const minInk = Number(arg("--min-ink", "0.01"));
 const regionArg = arg("--region", null);
+const sizeArg = arg("--size", null);
 const png = decodePng(file);
 const region = regionArg
   ? [
@@ -103,6 +104,19 @@ const region = regionArg
       regionArg.split(/\s+/)[1].split("x").map(Number),
     ]
   : [0, 0, [png.w, png.h]];
+if (sizeArg) {
+  const [expectedWidth, expectedHeight] = sizeArg.split("x").map(Number);
+  if (png.w !== expectedWidth || png.h !== expectedHeight) {
+    console.error(`FAIL ${file}: expected ${expectedWidth}x${expectedHeight}, got ${png.w}x${png.h}`);
+    process.exit(1);
+  }
+}
+const [regionX, regionY] = region;
+const [regionWidth, regionHeight] = region[2];
+if (regionX < 0 || regionY < 0 || regionX + regionWidth > png.w || regionY + regionHeight > png.h) {
+  console.error(`FAIL ${file}: region is outside ${png.w}x${png.h}`);
+  process.exit(1);
+}
 const ink = inkRatio(png, region);
 
 if (png.w < 100 || png.h < 10) {

@@ -1,4 +1,5 @@
 import QtQuick
+import QtQuick.Layouts
 import Quickshell
 import Quickshell.Io
 import "."
@@ -10,7 +11,7 @@ PluginComponent {
     id: root
 
     property var payload: ({})
-    property string errorText: "waiting for tokitoki"
+    property string errorText: "Waiting for Tokitoki"
     property string lastError: ""
     property bool scanNextRefresh: false
     property string searchText: ""
@@ -24,6 +25,7 @@ PluginComponent {
     property string visibilityTarget: ""
     property bool visibilityHide: true
     property bool pendingRefresh: false
+    property bool pendingScan: false
     readonly property string barSummaryMode: root.pluginSetting("barSummaryMode", "summary")
     readonly property string barTotalPeriod: root.normalizeChoice(
         root.pluginSetting("barTotalPeriod", "day"),
@@ -32,10 +34,10 @@ PluginComponent {
     )
     readonly property string providerVisibility: root.pluginSetting("providerVisibility", "all")
     readonly property string selectedProviders: root.pluginSetting("selectedProviders", "")
-    readonly property var tabOptions: ["overview", "quotas", "tokens", "reports", "sources", "mcp", "settings"]
+    readonly property var tabOptions: ["overview", "quotas", "tokens", "reports", "sessions", "sources", "mcp", "settings"]
     readonly property var periodOptions: ["today", "yesterday", "week", "month", "year"]
     readonly property var historyPeriodOptions: ["day", "week", "month", "year"]
-    readonly property var openingTabOptions: ["overview", "quotas", "tokens"]
+    readonly property var openingTabOptions: root.tabOptions
     readonly property string openingTab: normalizeChoice(
         root.pluginSetting("openingTab", "overview"),
         root.openingTabOptions,
@@ -67,12 +69,155 @@ PluginComponent {
     readonly property string command: commandOverride.length > 0 ? commandOverride : "tokitoki"
     readonly property var distributionSlices: root.buildSlices(root.selectedPeriod, root.selectedMetric)
     readonly property var tokenMixSlices: root.buildTokenMixSlices(root.compositionPeriod)
+    readonly property var providerSlices: root.buildPeriodSlices(root.payload.providerPeriods, root.selectedPeriod, root.selectedMetric)
+    readonly property var modelSlices: root.buildPeriodSlices(root.payload.modelPeriods, root.selectedPeriod, root.selectedMetric)
     readonly property var attentionItems: root.buildAttentionItems()
     readonly property var statusStripGroups: root.barSummaryMode === "icon" ||
         root.barSummaryMode === "total"
         ? [] : root.buildStatusStripGroups()
 
     layerNamespacePlugin: "tokitoki"
+
+    // Shared donut + legend for the by-provider / by-model cards.
+    component BreakdownPie: Row {
+        id: pie
+
+        property var slices: []
+        property string centerLabel: ""
+        property string centerUnit: ""
+
+        width: parent ? parent.width : 0
+        height: Math.max(122, breakdownLegend.implicitHeight)
+        spacing: Theme.spacingM
+
+        TokitokiDonutChart {
+            width: 116
+            height: 116
+            slices: pie.slices
+            centerLabel: pie.centerLabel
+            centerUnit: pie.centerUnit
+        }
+
+        Column {
+            id: breakdownLegend
+            width: Math.max(0, pie.width - 116 - pie.spacing)
+            spacing: Theme.spacingXXS
+            anchors.verticalCenter: parent.verticalCenter
+
+            Repeater {
+                model: root.legendSlices(pie.slices)
+
+                delegate: Row {
+                    width: parent.width
+                    spacing: Theme.spacingXXS
+
+                    Rectangle {
+                        width: 7
+                        height: 7
+                        radius: 3.5
+                        color: modelData.color
+                        anchors.verticalCenter: parent.verticalCenter
+                    }
+
+                    StyledText {
+                        text: modelData.name
+                        width: Math.max(0, parent.width - sliceValue.width - 7 - parent.spacing * 2)
+                        color: Theme.surfaceText
+                        font.pixelSize: Theme.fontSizeMedium
+                        elide: Text.ElideRight
+                    }
+
+                    StyledText {
+                        id: sliceValue
+                        text: root.selectedMetric === "cost"
+                            ? root.formatMoney(modelData.value)
+                            : root.compactNumber(modelData.value)
+                        color: Theme.surfaceVariantText
+                        font.pixelSize: Theme.fontSizeMedium
+                        isMonospace: true
+                    }
+                }
+            }
+        }
+    }
+
+    component ReportControls: Flow {
+        width: parent ? parent.width : 0
+        spacing: Theme.spacingS
+        Row {
+            spacing: Theme.spacingXXS
+            Repeater {
+                model: root.periodOptions
+                delegate: Rectangle {
+                    width: periodText.implicitWidth + Theme.spacingS * 2
+                    activeFocusOnTab: true
+                    Accessible.role: Accessible.Button
+                    Accessible.name: periodText.text
+                    Keys.onSpacePressed: root.selectedPeriod = modelData
+                    Keys.onReturnPressed: root.selectedPeriod = modelData
+                    height: 26
+                    radius: 13
+                    color: root.selectedPeriod === modelData
+                        ? Theme.primaryContainer : Theme.withAlpha(Theme.surfaceText, 0.06)
+                    StyledText {
+                        id: periodText
+                        anchors.centerIn: parent
+                        text: root.periodLabel(modelData)
+                        color: root.selectedPeriod === modelData ? Theme.primary : Theme.surfaceVariantText
+                        font.pixelSize: Theme.fontSizeSmall + 1
+                        font.weight: root.selectedPeriod === modelData ? Font.DemiBold : Font.Normal
+                    }
+                    MouseArea {
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: root.selectedPeriod = modelData
+                    }
+                }
+            }
+        }
+        Row {
+            spacing: Theme.spacingS
+            Rectangle {
+                width: 1
+                height: 18
+                color: Theme.primary
+                anchors.verticalCenter: parent.verticalCenter
+            }
+            Row {
+                spacing: Theme.spacingXXS
+                Repeater {
+                    model: ["cost", "tokens"]
+                    delegate: Rectangle {
+                        width: metricText.implicitWidth + Theme.spacingS * 2
+                        activeFocusOnTab: true
+                        Accessible.role: Accessible.Button
+                        Accessible.name: metricText.text
+                        Keys.onSpacePressed: root.selectedMetric = modelData
+                        Keys.onReturnPressed: root.selectedMetric = modelData
+                        height: 26
+                        radius: 13
+                        color: root.selectedMetric === modelData
+                            ? Theme.primaryContainer : Theme.withAlpha(Theme.surfaceText, 0.06)
+                        StyledText {
+                            id: metricText
+                            anchors.centerIn: parent
+                            text: root.metricLabel(modelData)
+                            color: root.selectedMetric === modelData ? Theme.primary : Theme.surfaceVariantText
+                            font.pixelSize: Theme.fontSizeSmall + 1
+                            font.weight: root.selectedMetric === modelData ? Font.DemiBold : Font.Normal
+                        }
+                        MouseArea {
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: root.selectedMetric = modelData
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     function safeNumber(value) {
         var number = Number(value)
@@ -228,13 +373,7 @@ PluginComponent {
         var report = reportFor(period)
         if (!report || !Array.isArray(report.rows))
             return []
-        var query = searchText.trim().toLowerCase()
         var rows = report.rows.slice()
-        if (query.length > 0 && !privacyHideRepoSessionNames) {
-            rows = rows.filter(function(row) {
-                return String(row.bucket || "").toLowerCase().indexOf(query) >= 0
-            })
-        }
         return rows.sort(function(a, b) {
             var metricA = safeNumber(selectedMetric === "cost" ? a.costUsd : totalTokens(a))
             var metricB = safeNumber(selectedMetric === "cost" ? b.costUsd : totalTokens(b))
@@ -247,17 +386,29 @@ PluginComponent {
     function rowsFromReport(report) {
         if (!report || !Array.isArray(report.rows))
             return []
-        var query = searchText.trim().toLowerCase()
         var rows = report.rows.slice()
-        if (query.length > 0 && !privacyHideRepoSessionNames) {
-            rows = rows.filter(function(row) {
-                return String(row.bucket || "").toLowerCase().indexOf(query) >= 0
-            })
-        }
         return rows.sort(function(a, b) {
+            if (root.searchIsActive() && !root.privacyHideRepoSessionNames) {
+                var aMatches = root.searchMatches(a.bucket)
+                var bMatches = root.searchMatches(b.bucket)
+                if (aMatches !== bMatches)
+                    return aMatches ? -1 : 1
+            }
             return safeNumber(b.costUsd) - safeNumber(a.costUsd) ||
                 totalTokens(b) - totalTokens(a)
         })
+    }
+
+    function legendSlices(slices) {
+        var rows = slices.slice()
+        if (searchIsActive()) {
+            rows.sort(function(a, b) {
+                var aMatches = searchMatches(a.name)
+                var bMatches = searchMatches(b.name)
+                return aMatches === bMatches ? 0 : aMatches ? -1 : 1
+            })
+        }
+        return rows.slice(0, 6)
     }
 
     function paletteColor(name, index) {
@@ -297,6 +448,62 @@ PluginComponent {
         return values.sort(function(a, b) {
             return b.value - a.value
         })
+    }
+
+    function buildPeriodSlices(list, period, metric) {
+        var rows = []
+        var periods = Array.isArray(list) ? list : []
+        for (var i = 0; i < periods.length; i++) {
+            if (periods[i] && periods[i].key === period) {
+                rows = Array.isArray(periods[i].rows) ? periods[i].rows : []
+                break
+            }
+        }
+        var values = []
+        for (var j = 0; j < rows.length; j++) {
+            var value = metric === "cost" ? safeNumber(rows[j].costUsd) : totalTokens(rows[j])
+            if (value > 0) {
+                values.push({
+                    name: displayLabel(rows[j].bucket || "unknown"),
+                    value: value,
+                    color: paletteColor(rows[j].bucket, j)
+                })
+            }
+        }
+        return values.sort(function(a, b) {
+            return b.value - a.value
+        })
+    }
+
+    function slicesTotal(slices) {
+        return slices.reduce(function(sum, item) {
+            return sum + item.value
+        }, 0)
+    }
+
+    function privateRepoHistory() {
+        var history = payload.repoHistory
+        if (!privacyHideRepoSessionNames || !history || !Array.isArray(history.series))
+            return history
+        return {
+            days: history.days,
+            series: history.series.map(function(series, index) {
+                return { bucket: "Private repository " + (index + 1), values: series.values }
+            })
+        }
+    }
+
+    function tokenPulseTotal() {
+        var report = reportFor(selectedPeriod)
+        if (!report || !report.total)
+            return null
+        return {
+            tokens: totalTokens(report.total),
+            costUsd: safeNumber(report.total.costUsd),
+            requests: safeNumber(report.total.requests),
+            sessions: selectedPeriod === "today" || selectedPeriod === "week"
+                ? safeNumber(report.total.sessions) : null
+        }
     }
 
     function tokenMixReport(period) {
@@ -378,7 +585,7 @@ PluginComponent {
         var parts = []
         if (quota.length > 0)
             parts.push(quota)
-        parts.push(compactNumber(stats.tokens))
+        parts.push(compactNumber(today ? totalTokens(today) : stats.tokens))
         parts.push(formatMoney(stats.costUsd))
         return parts.join(" · ")
     }
@@ -466,6 +673,7 @@ PluginComponent {
         case "quotas": return "Quotas"
         case "tokens": return "Tokens"
         case "reports": return "Reports"
+        case "sessions": return "Sessions"
         case "sources": return "Sources"
         case "mcp": return "MCP"
         case "settings": return "Settings"
@@ -521,6 +729,8 @@ PluginComponent {
             return "Private account"
         if (account.email)
             return account.email
+        if (account.label)
+            return account.label
         if (account.credential)
             return providerName(account.provider) + " " + account.credential
         return providerName(account.provider)
@@ -543,6 +753,7 @@ PluginComponent {
             account.provider,
             privacyHideIdentities ? "" : account.accountKey,
             privacyHideIdentities ? "" : account.email,
+            privacyHideIdentities ? "" : account.label,
             privacyHideIdentities ? "" : account.credential
         ].some(function(value) {
             return String(value || "").toLowerCase().indexOf(query) >= 0
@@ -553,21 +764,72 @@ PluginComponent {
         if (!hasLimits)
             return []
         return payload.limits.filter(function(account) {
-            return matchesAccount(account) &&
-                !root.accountCardHidden(account.provider, account.accountKey)
+            return matchesAccount(account) && !root.accountCardHidden(account.provider, account.accountKey)
         })
+    }
+
+    function searchQueryText() {
+        return searchText.trim().toLowerCase()
+    }
+
+    function searchIsActive() {
+        return searchQueryText().length > 0
+    }
+
+    function searchMatches(value) {
+        return String(value || "").toLowerCase().indexOf(searchQueryText()) >= 0
+    }
+
+    function searchMatchesInRows(rows, key) {
+        if (!Array.isArray(rows))
+            return false
+        return rows.some(function(row) {
+            return searchMatches(row ? row[key] : "")
+        })
+    }
+
+    function cardSurvives(id) {
+        if (!searchIsActive())
+            return true
+        var query = searchQueryText()
+        if (id === "limits")
+            return filteredLimits().some(matchesAccount)
+        if (id === "harness")
+            return searchMatchesInRows(payload.today ? payload.today.rows : [], "bucket")
+        if (id === "repos")
+            return !privacyHideRepoSessionNames &&
+                searchMatchesInRows(payload.reposMonth ? payload.reposMonth.rows : [], "bucket")
+        if (id === "usage")
+            return query === "cost" || query === "tokens" ||
+                searchMatchesInRows(root.rowsForPeriod(root.selectedPeriod), "bucket")
+        if (id === "tools")
+            return Boolean(payload.topTools && searchMatchesInRows(payload.topTools.tools, "tool"))
+        if (id === "provider" || id === "model")
+            return query === "cost" || query === "tokens" ||
+                searchMatchesInRows(id === "provider" ? providerSlices : modelSlices, "name")
+        if (id === "repoHistory")
+            return !privacyHideRepoSessionNames && payload.repoHistory &&
+                searchMatchesInRows(payload.repoHistory.series, "bucket")
+        if (id === "recentSessions")
+            return !privacyHideRepoSessionNames && payload.recentSessions &&
+                searchMatchesInRows(payload.recentSessions.rows, "title")
+        if (id === "integration")
+            return searchMatches("DMS integration settings executable configuration")
+        if (id === "notifications")
+            return searchMatches("notifications alerts quota spend burn budget settings")
+        if (id === "pulse" || id === "composition" || id === "history")
+            return query === "tokens" || query === "cost" || searchMatches(id)
+        return false
     }
 
     function orderedWindows(windows) {
         if (!windows || windows.length === undefined)
             return []
-        var order = { day: 0, week: 1, month: 2 }
         var ordered = []
         for (var i = 0; i < windows.length; i++)
             ordered.push(windows[i])
         return ordered.sort(function(a, b) {
-            return (order[a.kind] === undefined ? 9 : order[a.kind]) -
-                (order[b.kind] === undefined ? 9 : order[b.kind])
+            return windowRank(a.kind) - windowRank(b.kind)
         })
     }
 
@@ -783,23 +1045,25 @@ PluginComponent {
     function windowRank(kind) {
         var text = String(kind || "").toLowerCase()
         if (text === "day" || text === "session" || text === "5h")
-            return 0
+            return text === "day" ? 1440 : 300
         if (text === "week" || text === "weekly" || text === "7d")
-            return 1
+            return 10080
         if (text === "month" || text === "monthly" || text === "30d")
-            return 2
+            return 43200
 
-        var match = text.match(/^(\\d+(?:\\.\\d+)?)\\s*(min|h|d|w|mo)$/)
+        var match = text.match(/^(\d+(?:\.\d+)?)\s*(min|h|d|w|mo)$/)
         if (!match)
-            return 50
+            return Infinity
         var value = Number(match[1])
+        if (value <= 0)
+            return Infinity
         switch (match[2]) {
         case "min": return value
         case "h": return value * 60
         case "d": return value * 1440
         case "w": return value * 10080
         case "mo": return value * 43200
-        default: return 50
+        default: return Infinity
         }
     }
 
@@ -820,15 +1084,21 @@ PluginComponent {
     }
 
     function buildStatusStripGroups() {
-        if (!hasLimits)
+        if (!hasPayload)
             return []
 
-        var ui = payload.uiPreview || ({})
         var groups = []
 
-        for (var i = 0; i < payload.limits.length; i++) {
-            var account = payload.limits[i]
-            var provider = upstreamProvider(account.provider, account.accountKey)
+        var accounts = hasLimits ? payload.limits.slice() : []
+        var usageRows = payload.today && Array.isArray(payload.today.rows) ? payload.today.rows : []
+        for (var usageIndex = 0; usageIndex < usageRows.length; usageIndex++) {
+            var harness = String(usageRows[usageIndex].bucket || "")
+            if (!accounts.some(function(account) { return account.provider === harness }))
+                accounts.push({ provider: harness, accountKey: "", windows: [] })
+        }
+        for (var i = 0; i < accounts.length; i++) {
+            var account = accounts[i]
+            var provider = upstreamProvider(account.provider, account.accountKey) || String(account.provider || "")
             if (provider.length === 0 || !providerIsVisible(account.provider, account.accountKey))
                 continue
 
@@ -888,6 +1158,7 @@ PluginComponent {
             }
 
             var usage = todayUsageForProvider(summaryGroup.provider)
+            summaryGroup.hasData = usage.found || summaryGroup.windows.length > 0
             var parts = []
             if (quotaText.length > 0)
                 parts.push(quotaText)
@@ -897,13 +1168,14 @@ PluginComponent {
         }
 
         return groups.filter(function(groupData) {
-            return groupData.lines.length > 0
+            return groupData.hasData && groupData.lines.length > 0
         })
     }
 
     function refresh(scan) {
         if (statusProcess.running) {
             pendingRefresh = true
+            pendingScan = pendingScan || Boolean(scan)
             return
         }
         scanNextRefresh = Boolean(scan)
@@ -922,6 +1194,8 @@ PluginComponent {
             var next = JSON.parse(raw)
             if (next.schema !== 1 || next.app !== "tokitoki")
                 throw new Error("unsupported widget payload")
+            if ((next.recentSessions === null || next.recentSessions === undefined) && hasPayload)
+                next.recentSessions = payload.recentSessions
             payload = next
             errorText = ""
             lastError = ""
@@ -936,6 +1210,10 @@ PluginComponent {
     Component.onCompleted: Qt.callLater(root.restoreSelections)
 
     onSelectedTabChanged: saveState("selectedTab", selectedTab)
+    onOpeningTabChanged: {
+        if (stateReady)
+            selectedTab = openingTab
+    }
     onSelectedPeriodChanged: saveState("selectedPeriod", selectedPeriod)
     onSelectedMetricChanged: saveState("selectedMetric", selectedMetric)
     onHistoryPeriodChanged: saveState("historyPeriod", historyPeriod)
@@ -998,7 +1276,7 @@ PluginComponent {
                         StyledText {
                             text: groupData.lines.join(" · ")
                             color: Theme.widgetTextColor
-                            font.pixelSize: root.barTextSize(
+                            font.pixelSize: Theme.barTextSize(
                                 root.barThickness,
                                 root.barConfig?.fontScale,
                                 root.barConfig?.maximizeWidgetText
@@ -1083,7 +1361,6 @@ PluginComponent {
                         y: Theme.spacingS
                         width: viewport.width - Theme.spacingM * 2
                         spacing: Theme.spacingM
-                        height: childrenRect.height
 
                         Rectangle {
                             width: parent.width
@@ -1117,7 +1394,7 @@ PluginComponent {
 
                                     StyledText {
                                         text: root.errorText
-                                        width: Math.max(0, parent.width - retryButton.width - Theme.spacingM)
+                                        width: Math.max(0, parent.width - retryButton.width - Theme.iconSizeSmall - parent.spacing * 2)
                                         color: Theme.error
                                         font.pixelSize: Theme.fontSizeMedium
                                         font.weight: Font.DemiBold
@@ -1196,8 +1473,9 @@ PluginComponent {
 
                                 TextInput {
                                     id: searchInput
+                                    Accessible.name: root.tabIs("sessions") ? "Search conversations" : "Search usage cards"
 
-                                    width: Math.max(0, parent.width - clearSearch.width - Theme.iconSizeSmall - Theme.spacingM)
+                                    width: Math.max(0, parent.width - (clearSearch.visible ? clearSearch.width + parent.spacing : 0) - Theme.iconSizeSmall - parent.spacing)
                                     height: parent.height
                                     text: root.searchText
                                     color: Theme.surfaceText
@@ -1214,7 +1492,7 @@ PluginComponent {
 
                                     Text {
                                         anchors.verticalCenter: parent.verticalCenter
-                                        text: "Search harness, account, repo…"
+                                        text: root.tabIs("sessions") ? "Search conversations…" : "Search harness, account, repo…"
                                         color: Theme.surfaceVariantText
                                         font.pixelSize: Theme.fontSizeMedium
                                         visible: searchInput.text.length === 0
@@ -1249,21 +1527,20 @@ PluginComponent {
                             }
                         }
 
-                        Item {
+                        Flow {
                             width: parent.width
-                            height: 32
-                            clip: true
-
-                            Row {
-                                anchors.left: parent.left
-                                anchors.top: parent.top
-                                spacing: Theme.spacingXXS
+                            spacing: Theme.spacingXXS
 
                                 Repeater {
                                     model: root.tabOptions
 
                                     delegate: Rectangle {
                                         width: tabText.implicitWidth + Theme.spacingS * 2
+                                        activeFocusOnTab: true
+                                        Accessible.role: Accessible.Button
+                                        Accessible.name: tabText.text
+                                        Keys.onSpacePressed: root.selectedTab = modelData
+                                        Keys.onReturnPressed: root.selectedTab = modelData
                                         height: 30
                                         radius: 15
                                         color: root.tabIs(modelData)
@@ -1290,13 +1567,28 @@ PluginComponent {
                                         }
                                     }
                                 }
+                        }
+
+                        TokitokiCard {
+                            title: "Sessions"
+                            iconName: "forum"
+                            visible: root.tabIs("sessions")
+                            contentComponent: Component {
+                                TokitokiSessionsView {
+                                    width: parent ? parent.width : 0
+                                    command: root.command
+                                    query: root.searchText
+                                    privacyHideNames: root.privacyHideRepoSessionNames
+                                    privacyHideIdentities: root.privacyHideIdentities
+                                    active: root.tabIs("sessions") && !root.configOpen
+                                }
                             }
                         }
 
                         TokitokiCard {
                             title: "DMS integration"
                             iconName: "settings"
-                            visible: root.tabIs("settings")
+                            visible: root.tabIs("settings") && root.cardSurvives("integration")
                             contentComponent: Component {
                                 Column {
                                     width: parent ? parent.width : 0
@@ -1338,9 +1630,25 @@ PluginComponent {
                         }
 
                         TokitokiCard {
+                            title: "Notifications & spend guard"
+                            iconName: "notifications"
+                            visible: root.tabIs("settings") && root.cardSurvives("notifications")
+                            contentComponent: Component {
+                                TokitokiNotifications {
+                                    width: parent ? parent.width : 0
+                                    command: root.command
+                                    settings: root.payload.notifications || ({})
+                                    spendHealth: root.payload.spendHealth || null
+                                    enabled: root.hasPayload
+                                    onRefreshRequested: root.refresh(false)
+                                }
+                            }
+                        }
+
+                        TokitokiCard {
                             title: "Activity today"
                             iconName: "analytics"
-                            visible: root.tabIs("overview")
+                            visible: root.tabIs("overview") && root.hasPayload && root.cardSurvives("spend")
                             highlighted: true
                             contentComponent: Component {
                                 Item {
@@ -1401,16 +1709,15 @@ PluginComponent {
                                             width: parent.width * 0.52
                                             spacing: Theme.spacingXS
 
-                                            Row {
+                                            RowLayout {
                                                 width: parent.width
                                                 spacing: Theme.spacingXS
                                                 StyledText {
                                                     text: "This week"
+                                                    Layout.fillWidth: true
+                                                    elide: Text.ElideRight
                                                     color: Theme.surfaceVariantText
                                                     font.pixelSize: Theme.fontSizeSmall + 1
-                                                }
-                                                Item {
-                                                    width: Math.max(0, parent.width - weekValue.width - parent.spacing * 2)
                                                 }
                                                 StyledText {
                                                     id: weekValue
@@ -1424,16 +1731,15 @@ PluginComponent {
                                                 }
                                             }
 
-                                            Row {
+                                            RowLayout {
                                                 width: parent.width
                                                 spacing: Theme.spacingXS
                                                 StyledText {
                                                     text: "Month to date"
+                                                    Layout.fillWidth: true
+                                                    elide: Text.ElideRight
                                                     color: Theme.surfaceVariantText
                                                     font.pixelSize: Theme.fontSizeSmall + 1
-                                                }
-                                                Item {
-                                                    width: Math.max(0, parent.width - monthValue.width - parent.spacing * 2)
                                                 }
                                                 StyledText {
                                                     id: monthValue
@@ -1447,16 +1753,15 @@ PluginComponent {
                                                 }
                                             }
 
-                                            Row {
+                                            RowLayout {
                                                 width: parent.width
                                                 spacing: Theme.spacingXS
                                                 StyledText {
                                                     text: "Burn · projected"
+                                                    Layout.fillWidth: true
+                                                    elide: Text.ElideRight
                                                     color: Theme.surfaceVariantText
                                                     font.pixelSize: Theme.fontSizeSmall + 1
-                                                }
-                                                Item {
-                                                    width: Math.max(0, parent.width - burnValue.width - parent.spacing * 2)
                                                 }
                                                 StyledText {
                                                     id: burnValue
@@ -1479,7 +1784,8 @@ PluginComponent {
                         TokitokiCard {
                             title: "Needs attention"
                             iconName: "warning"
-                            visible: root.tabIs("overview") && root.attentionItems.length > 0
+                            visible: root.tabIs("overview") && root.attentionItems.length > 0 &&
+                                root.cardSurvives("spend")
                             contentComponent: Component {
                                 Column {
                                     width: parent ? parent.width : 0
@@ -1491,7 +1797,7 @@ PluginComponent {
                                         delegate: TokitokiListRow {
                                             alternate: index % 2 === 1
 
-                                            Row {
+                                            RowLayout {
                                                 anchors.fill: parent
                                                 spacing: Theme.spacingXS
 
@@ -1499,26 +1805,28 @@ PluginComponent {
                                                     name: "error"
                                                     size: Theme.iconSizeSmall
                                                     color: Theme.warning
-                                                    anchors.verticalCenter: parent.verticalCenter
+                                                    Layout.alignment: Qt.AlignVCenter
                                                 }
 
                                                 StyledText {
                                                     text: modelData.title
-                                                    width: Math.max(0, parent.width - detail.width - Theme.spacingM)
+                                                    Layout.fillWidth: true
                                                     color: Theme.surfaceText
                                                     font.pixelSize: Theme.fontSizeMedium
                                                     elide: Text.ElideRight
-                                                    anchors.verticalCenter: parent.verticalCenter
+                                                    Layout.alignment: Qt.AlignVCenter
                                                 }
 
                                                 StyledText {
                                                     id: detail
                                                     text: modelData.detail
+                                                    Layout.maximumWidth: parent.width * 0.68
+                                                    elide: Text.ElideRight
                                                     color: Theme.warning
                                                     font.pixelSize: Theme.fontSizeSmall - 1
                                                     isMonospace: true
                                                     horizontalAlignment: Text.AlignRight
-                                                    anchors.verticalCenter: parent.verticalCenter
+                                                    Layout.alignment: Qt.AlignVCenter
                                                 }
                                             }
                                         }
@@ -1527,10 +1835,21 @@ PluginComponent {
                             }
                         }
 
+                        StyledText {
+                            width: parent.width
+                            visible: root.tabIs("quotas") && root.hasPayload && root.filteredLimits().length === 0
+                            text: root.searchIsActive() ? "No matching quota accounts."
+                                : "No visible quota accounts. Scan sources or manage account visibility in the settings menu."
+                            color: Theme.surfaceVariantText
+                            font.pixelSize: Theme.fontSizeMedium
+                            wrapMode: Text.WordWrap
+                        }
+
                         TokitokiCard {
                             title: "Usage limits"
                             iconName: "speed"
-                            visible: root.tabIs("quotas") && root.filteredLimits().length > 0
+                            visible: root.tabIs("quotas") && root.filteredLimits().length > 0 &&
+                                root.cardSurvives("limits")
                             contentComponent: Component {
                                 Column {
                                     width: parent ? parent.width : 0
@@ -1561,7 +1880,7 @@ PluginComponent {
                                                 anchors.margins: Theme.spacingS
                                                 spacing: Theme.spacingS
 
-                                                Row {
+                                                RowLayout {
                                                     id: accountHeader
 
                                                     width: parent.width
@@ -1574,14 +1893,13 @@ PluginComponent {
                                                         showBackground: true
                                                         fallbackIcon: "account_circle"
                                                         fallbackColor: Theme.primary
-                                                        anchors.verticalCenter: parent.verticalCenter
+                                                        Layout.alignment: Qt.AlignVCenter
                                                     }
 
                                                     Column {
-                                                        width: Math.max(0, accountHeader.width - planBadge.width -
-                                                            hideButton.width - 36 - Theme.spacingM * 2)
+                                                        Layout.fillWidth: true
                                                         spacing: 0
-                                                        anchors.verticalCenter: parent.verticalCenter
+                                                        Layout.alignment: Qt.AlignVCenter
 
                                                         StyledText {
                                                             width: parent.width
@@ -1610,7 +1928,7 @@ PluginComponent {
                                                         radius: 11
                                                         color: Theme.withAlpha(Theme.surfaceText, 0.08)
                                                         visible: accountCard.account.planLabel
-                                                        anchors.verticalCenter: parent.verticalCenter
+                                                        Layout.alignment: Qt.AlignVCenter
 
                                                         StyledText {
                                                             id: planText
@@ -1631,7 +1949,8 @@ PluginComponent {
                                                         iconName: "visibility_off"
                                                         iconColor: Theme.surfaceVariantText
                                                         tooltipText: "Hide this account"
-                                                        anchors.verticalCenter: parent.verticalCenter
+                                                        enabled: !visibilityProcess.running
+                                                        Layout.alignment: Qt.AlignVCenter
                                                         onClicked: root.setAccountHidden(
                                                             accountCard.account.provider,
                                                             accountCard.account.accountKey,
@@ -1643,7 +1962,6 @@ PluginComponent {
                                                 Column {
                                                     id: quotaRows
                                                     width: parent.width
-                                                    height: childrenRect.height
                                                     spacing: 0
 
                                                     Repeater {
@@ -1661,32 +1979,31 @@ PluginComponent {
                                                                 anchors.fill: parent
                                                                 spacing: Theme.spacingXXS
 
-                                                                Row {
+                                                                RowLayout {
                                                                     width: parent.width
                                                                     spacing: Theme.spacingXS
 
                                                                     StyledText {
                                                                         text: root.windowName(windowData.kind)
+                                                                        Layout.fillWidth: true
                                                                         color: Theme.surfaceVariantText
                                                                         font.pixelSize: Theme.fontSizeSmall + 1
                                                                         font.weight: Font.Medium
-                                                                        anchors.verticalCenter: parent.verticalCenter
-                                                                    }
-
-                                                                    Item {
-                                                                        width: Math.max(0, parent.width - valueText.width - parent.spacing)
+                                                                        Layout.alignment: Qt.AlignVCenter
                                                                     }
 
                                                                     StyledText {
                                                                         id: valueText
                                                                         text: root.limitValueLabel(windowData)
+                                                                        Layout.maximumWidth: parent.width * 0.8
+                                                                        elide: Text.ElideRight
                                                                         color: root.hasUsedPercent(windowData)
                                                                             ? root.limitColor(windowData)
                                                                             : Theme.surfaceVariantText
                                                                         font.pixelSize: Theme.fontSizeSmall + 1
                                                                         font.weight: Font.DemiBold
                                                                         isMonospace: true
-                                                                        anchors.verticalCenter: parent.verticalCenter
+                                                                        Layout.alignment: Qt.AlignVCenter
                                                                     }
                                                                 }
 
@@ -1738,165 +2055,19 @@ PluginComponent {
                             title: "Usage distribution"
                             iconName: "pie_chart"
                             visible: (root.tabIs("overview") || root.tabIs("tokens")) &&
-                                root.distributionSlices.length > 0
+                                root.hasPayload && root.cardSurvives("usage")
                             contentComponent: Component {
                                 Column {
                                     width: parent ? parent.width : 0
                                     spacing: Theme.spacingS
 
-                                    Row {
-                                        width: parent.width
-                                        spacing: Theme.spacingXXS
-
-                                        Repeater {
-                                            model: root.periodOptions
-
-                                            delegate: Rectangle {
-                                                width: periodText.implicitWidth + Theme.spacingS * 2
-                                                height: 26
-                                                radius: 13
-                                                color: root.selectedPeriod === modelData
-                                                    ? Theme.primaryContainer
-                                                    : Theme.withAlpha(Theme.surfaceText, 0.06)
-
-                                                StyledText {
-                                                    id: periodText
-                                                    anchors.centerIn: parent
-                                                    text: root.periodLabel(modelData)
-                                                    color: root.selectedPeriod === modelData
-                                                        ? Theme.primary
-                                                        : Theme.surfaceVariantText
-                                                    font.pixelSize: Theme.fontSizeSmall + 1
-                                                    font.weight: root.selectedPeriod === modelData
-                                                        ? Font.DemiBold : Font.Normal
-                                                }
-
-                                                MouseArea {
-                                                    anchors.fill: parent
-                                                    hoverEnabled: true
-                                                    cursorShape: Qt.PointingHandCursor
-                                                    onClicked: root.selectedPeriod = modelData
-                                                }
-                                            }
-                                        }
-
-                                        Item {
-                                            width: Theme.spacingS
-                                            height: 1
-                                        }
-
-                                        Rectangle {
-                                            id: metricSeparator
-                                            width: 2
-                                            height: 20
-                                            radius: 1
-                                            color: Theme.primary
-                                            opacity: 0.8
-                                            anchors.verticalCenter: parent.verticalCenter
-                                        }
-
-                                        Item {
-                                            width: Theme.spacingS
-                                            height: 1
-                                        }
-
-                                        Row {
-                                            id: metricGroup
-                                            spacing: Theme.spacingXXS
-
-                                            Repeater {
-                                                model: ["cost", "tokens"]
-
-                                                delegate: Rectangle {
-                                                    width: metricText.implicitWidth + Theme.spacingS * 2
-                                                    height: 26
-                                                    radius: 13
-                                                    color: root.selectedMetric === modelData
-                                                        ? Theme.primaryContainer
-                                                        : Theme.withAlpha(Theme.surfaceText, 0.06)
-
-                                                    StyledText {
-                                                        id: metricText
-                                                        anchors.centerIn: parent
-                                                        text: root.metricLabel(modelData)
-                                                        color: root.selectedMetric === modelData
-                                                            ? Theme.primary
-                                                            : Theme.surfaceVariantText
-                                                        font.pixelSize: Theme.fontSizeSmall + 1
-                                                        font.weight: root.selectedMetric === modelData
-                                                            ? Font.DemiBold : Font.Normal
-                                                    }
-
-                                                    MouseArea {
-                                                        anchors.fill: parent
-                                                        hoverEnabled: true
-                                                        cursorShape: Qt.PointingHandCursor
-                                                        onClicked: root.selectedMetric = modelData
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-
-                                    Row {
-                                        width: parent.width
-                                        height: 122
-                                        spacing: Theme.spacingM
-
-                                        TokitokiDonutChart {
-                                            width: 116
-                                            height: 116
-                                            slices: root.distributionSlices
-                                            centerLabel: root.selectedMetric === "cost"
-                                                ? root.formatMoney(root.metricTotal(
-                                                    root.selectedPeriod, root.selectedMetric
-                                                ))
-                                                : root.compactNumber(root.metricTotal(
-                                                    root.selectedPeriod, root.selectedMetric
-                                                ))
-                                            centerUnit: root.metricLabel(root.selectedMetric)
-                                        }
-
-                                        Column {
-                                            width: Math.max(0, parent.width - 116 - parent.spacing)
-                                            spacing: Theme.spacingXXS
-                                            anchors.verticalCenter: parent.verticalCenter
-
-                                            Repeater {
-                                                model: root.distributionSlices.slice(0, 6)
-
-                                                delegate: Row {
-                                                    width: parent.width
-                                                    spacing: Theme.spacingXXS
-
-                                                    Rectangle {
-                                                        width: 7
-                                                        height: 7
-                                                        radius: 3.5
-                                                        color: modelData.color
-                                                        anchors.verticalCenter: parent.verticalCenter
-                                                    }
-
-                                                    StyledText {
-                                                        text: modelData.name
-                                                        width: Math.max(0, parent.width - value.width - 11)
-                                                        color: Theme.surfaceText
-                                                        font.pixelSize: Theme.fontSizeMedium
-                                                        elide: Text.ElideRight
-                                                    }
-
-                                                    StyledText {
-                                                        id: value
-                                                        text: root.selectedMetric === "cost"
-                                                            ? root.formatMoney(modelData.value)
-                                                            : root.compactNumber(modelData.value)
-                                                        color: Theme.surfaceVariantText
-                                                        font.pixelSize: Theme.fontSizeMedium
-                                                        isMonospace: true
-                                                    }
-                                                }
-                                            }
-                                        }
+                                    ReportControls { }
+                                    BreakdownPie {
+                                        slices: root.distributionSlices
+                                        centerLabel: root.selectedMetric === "cost"
+                                            ? root.formatMoney(root.metricTotal(root.selectedPeriod, root.selectedMetric))
+                                            : root.compactNumber(root.metricTotal(root.selectedPeriod, root.selectedMetric))
+                                        centerUnit: root.metricLabel(root.selectedMetric)
                                     }
                                 }
                             }
@@ -1905,7 +2076,7 @@ PluginComponent {
                         TokitokiCard {
                             title: "Token composition · " + root.compositionRangeLabel(root.compositionPeriod)
                             iconName: "data_usage"
-                            visible: root.tabIs("tokens") && (root.hasTokenMixReport("day") ||
+                            visible: root.tabIs("tokens") && root.cardSurvives("composition") && (root.hasTokenMixReport("day") ||
                                 root.hasTokenMixReport("week") || root.hasTokenMixReport("month") ||
                                 root.hasTokenMixReport("year"))
                             contentComponent: Component {
@@ -1989,7 +2160,7 @@ PluginComponent {
 
                                                         StyledText {
                                                             text: modelData.name
-                                                            width: Math.max(0, parent.width - value.width - 11)
+                                                            width: Math.max(0, parent.width - value.width - 7 - parent.spacing * 2)
                                                             color: Theme.surfaceText
                                                             font.pixelSize: Theme.fontSizeMedium
                                                             elide: Text.ElideRight
@@ -2014,7 +2185,7 @@ PluginComponent {
                         TokitokiCard {
                             title: "Usage history · " + root.historyRangeLabel(root.historyPeriod)
                             iconName: "analytics"
-                            visible: root.tabIs("tokens") && root.hasHistoryData
+                            visible: root.tabIs("tokens") && root.hasHistoryData && root.cardSurvives("history")
                             contentComponent: Component {
                                 Column {
                                     width: parent ? parent.width : 0
@@ -2068,9 +2239,117 @@ PluginComponent {
                         }
 
                         TokitokiCard {
+                            title: "Token pulse"
+                            iconName: "monitor_heart"
+                            visible: (root.tabIs("overview") || root.tabIs("tokens")) &&
+                                root.tokenPulseTotal() !== null && root.cardSurvives("pulse")
+                            contentComponent: Component {
+                                Column {
+                                    width: parent ? parent.width : 0
+                                    spacing: Theme.spacingS
+                                    RowLayout {
+                                        width: parent.width
+                                        Column {
+                                            Layout.fillWidth: true
+                                            StyledText {
+                                                text: root.compactNumber(root.tokenPulseTotal() ? root.tokenPulseTotal().tokens : 0)
+                                                color: Theme.surfaceText
+                                                font.pixelSize: Theme.fontSizeXLarge
+                                                font.weight: Font.DemiBold
+                                            }
+                                            StyledText {
+                                                text: "Tokens · " + root.periodLabel(root.selectedPeriod)
+                                                color: Theme.surfaceVariantText
+                                                font.pixelSize: Theme.fontSizeSmall + 1
+                                            }
+                                        }
+                                        Column {
+                                            StyledText {
+                                                text: root.compactNumber(root.tokenPulseTotal() ? root.tokenPulseTotal().requests : 0) + " requests"
+                                                color: Theme.surfaceVariantText
+                                                font.pixelSize: Theme.fontSizeSmall + 1
+                                            }
+                                            StyledText {
+                                                text: root.compactNumber(root.tokenPulseTotal() ? root.tokenPulseTotal().sessions : 0) + " sessions"
+                                                visible: root.tokenPulseTotal() !== null && root.tokenPulseTotal().sessions !== null
+                                                color: Theme.surfaceVariantText
+                                                font.pixelSize: Theme.fontSizeSmall + 1
+                                            }
+                                            StyledText {
+                                                text: root.formatMoney(root.tokenPulseTotal() ? root.tokenPulseTotal().costUsd : 0)
+                                                color: Theme.surfaceText
+                                                font.pixelSize: Theme.fontSizeMedium
+                                                isMonospace: true
+                                            }
+                                        }
+                                    }
+                                    ReportControls { }
+                                    TokitokiSparkline {
+                                        width: parent.width
+                                        history: root.payload.history
+                                    }
+                                    StyledText {
+                                        width: parent.width
+                                        text: "Daily tokens · last 30 days"
+                                        color: Theme.surfaceVariantText
+                                        font.pixelSize: Theme.fontSizeSmall + 1
+                                    }
+                                }
+                            }
+                        }
+
+                        TokitokiCard {
+                            title: "By provider · " + root.metricLabel(root.selectedMetric)
+                            iconName: "hub"
+                            visible: (root.tabIs("overview") || root.tabIs("tokens")) &&
+                                root.providerSlices.length > 0 && root.cardSurvives("provider")
+                            contentComponent: Component {
+                                BreakdownPie {
+                                    slices: root.providerSlices
+                                    centerLabel: root.selectedMetric === "cost"
+                                        ? root.formatMoney(root.slicesTotal(root.providerSlices))
+                                        : root.compactNumber(root.slicesTotal(root.providerSlices))
+                                    centerUnit: root.metricLabel(root.selectedMetric)
+                                }
+                            }
+                        }
+
+                        TokitokiCard {
+                            title: "By model · " + root.metricLabel(root.selectedMetric)
+                            iconName: "deployed_code"
+                            visible: (root.tabIs("overview") || root.tabIs("tokens")) &&
+                                root.modelSlices.length > 0 && root.cardSurvives("model")
+                            contentComponent: Component {
+                                BreakdownPie {
+                                    slices: root.modelSlices
+                                    centerLabel: root.selectedMetric === "cost"
+                                        ? root.formatMoney(root.slicesTotal(root.modelSlices))
+                                        : root.compactNumber(root.slicesTotal(root.modelSlices))
+                                    centerUnit: root.metricLabel(root.selectedMetric)
+                                }
+                            }
+                        }
+
+                        TokitokiCard {
+                            title: "Repo activity · 30 days"
+                            iconName: "bar_chart"
+                            visible: (root.tabIs("reports") || root.tabIs("overview")) && root.hasPayload &&
+                                root.payload.repoHistory &&
+                                Array.isArray(root.payload.repoHistory.days) &&
+                                root.payload.repoHistory.days.length > 0 && root.cardSurvives("repoHistory")
+                            contentComponent: Component {
+                                TokitokiHistoryChart {
+                                    width: parent ? parent.width : 0
+                                    history: root.privateRepoHistory()
+                                    period: "month"
+                                }
+                            }
+                        }
+
+                        TokitokiCard {
                             title: "Activity · last year"
                             iconName: "calendar_month"
-                            visible: root.tabIs("reports") && root.hasActivityGrid
+                            visible: root.tabIs("reports") && root.hasActivityGrid && root.cardSurvives("activity")
                             contentComponent: Component {
                                 TokitokiActivityGrid {
                                     width: parent ? parent.width : 0
@@ -2083,7 +2362,8 @@ PluginComponent {
                             title: "Today by harness"
                             iconName: "apps"
                             visible: (root.tabIs("overview") || root.tabIs("sources")) &&
-                                root.rowsForPeriod("today").length > 0
+                                root.rowsForPeriod("today").length > 0 &&
+                                root.cardSurvives("harness")
                             contentComponent: Component {
                                 Column {
                                     width: parent ? parent.width : 0
@@ -2095,7 +2375,7 @@ PluginComponent {
                                         delegate: TokitokiListRow {
                                             alternate: index % 2 === 1
 
-                                            Row {
+                                            RowLayout {
                                                 anchors.fill: parent
                                                 spacing: Theme.spacingXS
 
@@ -2104,16 +2384,16 @@ PluginComponent {
                                                     size: Theme.iconSizeSmall
                                                     fallbackIcon: root.harnessIcon(modelData.bucket)
                                                     fallbackColor: root.paletteColor(modelData.bucket)
-                                                    anchors.verticalCenter: parent.verticalCenter
+                                                    Layout.alignment: Qt.AlignVCenter
                                                 }
 
                                                 StyledText {
                                                     text: root.providerName(modelData.bucket)
-                                                    width: Math.max(0, parent.width - requests.width - cost.width - Theme.spacingM * 2)
+                                                    Layout.fillWidth: true
                                                     color: Theme.surfaceText
                                                     font.pixelSize: Theme.fontSizeMedium
                                                     elide: Text.ElideRight
-                                                    anchors.verticalCenter: parent.verticalCenter
+                                                    Layout.alignment: Qt.AlignVCenter
                                                 }
 
                                                 StyledText {
@@ -2122,7 +2402,7 @@ PluginComponent {
                                                     color: Theme.surfaceVariantText
                                                     font.pixelSize: Theme.fontSizeSmall + 1
                                                     isMonospace: true
-                                                    anchors.verticalCenter: parent.verticalCenter
+                                                    Layout.alignment: Qt.AlignVCenter
                                                 }
 
                                                 StyledText {
@@ -2132,7 +2412,7 @@ PluginComponent {
                                                         ? Theme.surfaceText : Theme.surfaceVariantText
                                                     font.pixelSize: Theme.fontSizeMedium
                                                     isMonospace: true
-                                                    anchors.verticalCenter: parent.verticalCenter
+                                                    Layout.alignment: Qt.AlignVCenter
                                                 }
                                             }
                                         }
@@ -2146,7 +2426,8 @@ PluginComponent {
                             iconName: "folder"
                             visible: (root.tabIs("overview") || root.tabIs("reports") ||
                                 root.tabIs("sources")) && root.hasPayload &&
-                                root.rowsFromReport(root.payload.reposMonth).length > 0
+                                root.rowsFromReport(root.payload.reposMonth).length > 0 &&
+                                root.cardSurvives("repos")
                             contentComponent: Component {
                                 Column {
                                     width: parent ? parent.width : 0
@@ -2158,7 +2439,7 @@ PluginComponent {
                                         delegate: TokitokiListRow {
                                             alternate: index % 2 === 1
 
-                                            Row {
+                                            RowLayout {
                                                 anchors.fill: parent
                                                 spacing: Theme.spacingXS
 
@@ -2166,11 +2447,11 @@ PluginComponent {
                                                     text: root.privacyHideRepoSessionNames
                                                         ? "Private repository"
                                                         : String(modelData.bucket || "").split("/").pop()
-                                                    width: Math.max(0, parent.width - usage.width)
+                                                    Layout.fillWidth: true
                                                     color: Theme.surfaceText
                                                     font.pixelSize: Theme.fontSizeMedium
                                                     elide: Text.ElideRight
-                                                    anchors.verticalCenter: parent.verticalCenter
+                                                    Layout.alignment: Qt.AlignVCenter
                                                 }
 
                                                 StyledText {
@@ -2182,7 +2463,7 @@ PluginComponent {
                                                     color: Theme.surfaceVariantText
                                                     font.pixelSize: Theme.fontSizeSmall + 1
                                                     isMonospace: true
-                                                    anchors.verticalCenter: parent.verticalCenter
+                                                    Layout.alignment: Qt.AlignVCenter
                                                 }
                                             }
                                         }
@@ -2197,7 +2478,8 @@ PluginComponent {
                             visible: (root.tabIs("overview") || root.tabIs("sources") ||
                                 root.tabIs("mcp")) && root.hasPayload && root.payload.topTools &&
                                 Array.isArray(root.payload.topTools.tools) &&
-                                root.payload.topTools.tools.length > 0
+                                root.payload.topTools.tools.length > 0 &&
+                                root.cardSurvives("tools")
                             contentComponent: Component {
                                 Column {
                                     width: parent ? parent.width : 0
@@ -2211,17 +2493,17 @@ PluginComponent {
                                         delegate: TokitokiListRow {
                                             alternate: index % 2 === 1
 
-                                            Row {
+                                            RowLayout {
                                                 anchors.fill: parent
                                                 spacing: Theme.spacingXS
 
                                                 StyledText {
                                                     text: modelData.tool
-                                                    width: Math.max(0, parent.width - toolValue.width)
+                                                    Layout.fillWidth: true
                                                     color: Theme.surfaceText
                                                     font.pixelSize: Theme.fontSizeMedium
                                                     elide: Text.ElideRight
-                                                    anchors.verticalCenter: parent.verticalCenter
+                                                    Layout.alignment: Qt.AlignVCenter
                                                 }
 
                                                 StyledText {
@@ -2232,7 +2514,7 @@ PluginComponent {
                                                     color: Theme.surfaceVariantText
                                                     font.pixelSize: Theme.fontSizeSmall + 1
                                                     isMonospace: true
-                                                    anchors.verticalCenter: parent.verticalCenter
+                                                    Layout.alignment: Qt.AlignVCenter
                                                 }
                                             }
                                         }
@@ -2246,7 +2528,7 @@ PluginComponent {
                             iconName: "speed"
                             visible: root.tabIs("reports") && root.hasPayload &&
                                 Array.isArray(root.payload.budgets) &&
-                                root.payload.budgets.length > 0
+                                root.payload.budgets.length > 0 && root.cardSurvives("budgets")
                             contentComponent: Component {
                                 Column {
                                     width: parent ? parent.width : 0
@@ -2258,7 +2540,7 @@ PluginComponent {
                                         delegate: TokitokiListRow {
                                             alternate: index % 2 === 1
 
-                                            Row {
+                                            RowLayout {
                                                 anchors.fill: parent
                                                 spacing: Theme.spacingXS
 
@@ -2266,16 +2548,16 @@ PluginComponent {
                                                     name: modelData.state === "exceeded" ? "error" : "speed"
                                                     size: Theme.iconSizeSmall
                                                     color: root.stateColor(modelData.state)
-                                                    anchors.verticalCenter: parent.verticalCenter
+                                                    Layout.alignment: Qt.AlignVCenter
                                                 }
 
                                                 StyledText {
                                                     text: modelData.label
-                                                    width: Math.max(0, parent.width - budgetValue.width - Theme.spacingM)
+                                                    Layout.fillWidth: true
                                                     color: Theme.surfaceText
                                                     font.pixelSize: Theme.fontSizeMedium
                                                     elide: Text.ElideRight
-                                                    anchors.verticalCenter: parent.verticalCenter
+                                                    Layout.alignment: Qt.AlignVCenter
                                                 }
 
                                                 StyledText {
@@ -2285,7 +2567,7 @@ PluginComponent {
                                                     color: root.stateColor(modelData.state)
                                                     font.pixelSize: Theme.fontSizeSmall + 1
                                                     isMonospace: true
-                                                    anchors.verticalCenter: parent.verticalCenter
+                                                    Layout.alignment: Qt.AlignVCenter
                                                 }
                                             }
                                         }
@@ -2300,7 +2582,8 @@ PluginComponent {
                             visible: (root.tabIs("overview") || root.tabIs("reports")) &&
                                 root.hasPayload && root.payload.anomalies &&
                                 Array.isArray(root.payload.anomalies.anomalies) &&
-                                root.payload.anomalies.anomalies.length > 0
+                                root.payload.anomalies.anomalies.length > 0 &&
+                                root.cardSurvives("anomalies")
                             contentComponent: Component {
                                 Column {
                                     width: parent ? parent.width : 0
@@ -2313,7 +2596,7 @@ PluginComponent {
                                             alternate: index % 2 === 1
                                             rowHeight: 32
 
-                                            Row {
+                                            RowLayout {
                                                 anchors.fill: parent
                                                 spacing: Theme.spacingXS
 
@@ -2321,17 +2604,17 @@ PluginComponent {
                                                     name: "warning"
                                                     size: Theme.iconSizeSmall
                                                     color: Theme.warning
-                                                    anchors.verticalCenter: parent.verticalCenter
+                                                    Layout.alignment: Qt.AlignVCenter
                                                 }
 
                                                 StyledText {
                                                     text: modelData.day + " · " + root.compactNumber(modelData.value) + " " +
                                                         root.displayLabel(modelData.metric)
-                                                    width: Math.max(0, parent.width - ratio.width - parent.spacing)
+                                                    Layout.fillWidth: true
                                                     color: Theme.surfaceText
                                                     font.pixelSize: Theme.fontSizeMedium
                                                     elide: Text.ElideRight
-                                                    anchors.verticalCenter: parent.verticalCenter
+                                                    Layout.alignment: Qt.AlignVCenter
                                                 }
 
                                                 StyledText {
@@ -2343,7 +2626,7 @@ PluginComponent {
                                                     isMonospace: true
                                                     horizontalAlignment: Text.AlignRight
                                                     elide: Text.ElideRight
-                                                    anchors.verticalCenter: parent.verticalCenter
+                                                    Layout.alignment: Qt.AlignVCenter
                                                 }
                                             }
                                         }
@@ -2356,7 +2639,7 @@ PluginComponent {
                             title: "Statusline preview"
                             iconName: "terminal"
                             visible: root.tabIs("reports") && root.hasPayload &&
-                                root.payload.statuslinePreview
+                                root.payload.statuslinePreview && root.cardSurvives("statusline")
                             contentComponent: Component {
                                 Column {
                                     width: parent ? parent.width : 0
@@ -2387,7 +2670,7 @@ PluginComponent {
                             iconName: "schedule"
                             visible: root.tabIs("reports") && root.hasPayload && root.payload.blocks &&
                                 Array.isArray(root.payload.blocks.rows) &&
-                                root.payload.blocks.rows.length > 0
+                                root.payload.blocks.rows.length > 0 && root.cardSurvives("blocks")
                             contentComponent: Component {
                                 Column {
                                     width: parent ? parent.width : 0
@@ -2400,7 +2683,7 @@ PluginComponent {
                                             alternate: index % 2 === 1
                                             rowHeight: 44
 
-                                            Row {
+                                            RowLayout {
                                                 anchors.fill: parent
                                                 spacing: Theme.spacingXS
 
@@ -2409,13 +2692,13 @@ PluginComponent {
                                                     height: 7
                                                     radius: 3.5
                                                     color: modelData.isActive ? Theme.success : Theme.surfaceVariantText
-                                                    anchors.verticalCenter: parent.verticalCenter
+                                                    Layout.alignment: Qt.AlignVCenter
                                                 }
 
                                                 Column {
-                                                    width: Math.max(0, parent.width - blockValue.width - Theme.spacingM)
+                                                    Layout.fillWidth: true
                                                     spacing: 0
-                                                    anchors.verticalCenter: parent.verticalCenter
+                                                    Layout.alignment: Qt.AlignVCenter
 
                                                 StyledText {
                                                     text: root.privacyHideIdentities
@@ -2443,7 +2726,7 @@ PluginComponent {
                                                     color: modelData.isActive ? Theme.success : Theme.surfaceVariantText
                                                     font.pixelSize: Theme.fontSizeSmall + 1
                                                     isMonospace: true
-                                                    anchors.verticalCenter: parent.verticalCenter
+                                                    Layout.alignment: Qt.AlignVCenter
                                                 }
                                             }
                                         }
@@ -2456,6 +2739,7 @@ PluginComponent {
                             title: "Other machines"
                             iconName: "lan"
                             visible: root.tabIs("reports") && root.hasPayload &&
+                                root.cardSurvives("activity") &&
                                 Array.isArray(root.payload.presence) &&
                                 root.payload.presence.some(function(machine) {
                                     return (Date.now() - root.safeNumber(machine.ts) * 1000) < 600000
@@ -2510,7 +2794,7 @@ PluginComponent {
                             iconName: "chat_bubble"
                             visible: root.tabIs("sources") && root.hasPayload && root.payload.recentSessions &&
                                 Array.isArray(root.payload.recentSessions.rows) &&
-                                root.payload.recentSessions.rows.length > 0
+                                root.payload.recentSessions.rows.length > 0 && root.cardSurvives("recentSessions")
                             contentComponent: Component {
                                 Column {
                                     width: parent ? parent.width : 0
@@ -2529,7 +2813,7 @@ PluginComponent {
                                                 anchors.fill: parent
                                                 spacing: 1
 
-                                                Row {
+                                                RowLayout {
                                                     width: parent.width
                                                     spacing: Theme.spacingXS
 
@@ -2537,7 +2821,7 @@ PluginComponent {
                                                     text: root.privacyHideRepoSessionNames
                                                         ? "Private session"
                                                         : modelData.title || "(no title)"
-                                                    width: Math.max(0, parent.width - sessionValue.width)
+                                                    Layout.fillWidth: true
                                                     color: Theme.surfaceText
                                                     font.pixelSize: Theme.fontSizeMedium
                                                     font.weight: Font.Medium
@@ -2582,6 +2866,8 @@ PluginComponent {
 
                     Loader {
                         id: settingsLoader
+                        property bool opened: false
+                        active: root.configOpen || opened
 
                         x: Theme.spacingM
                         y: Theme.spacingS
@@ -2590,8 +2876,8 @@ PluginComponent {
                         source: Qt.resolvedUrl("TokitokiSettings.qml")
 
                         onLoaded: {
+                            opened = true
                             if (item) {
-                                item.width = settingsLoader.width
                                 item.pluginService = root.pluginService
                             }
                         }
@@ -2627,7 +2913,7 @@ PluginComponent {
                     border.width: 1
                     border.color: Theme.outlineLight
 
-                    Row {
+                    RowLayout {
                         anchors.fill: parent
                         anchors.leftMargin: Theme.spacingM
                         anchors.rightMargin: Theme.spacingM
@@ -2642,11 +2928,11 @@ PluginComponent {
                             buttonHeight: 34
                             horizontalPadding: Theme.spacingM
                             enabled: !root.isBusy
-                            anchors.verticalCenter: parent.verticalCenter
+                            Layout.alignment: Qt.AlignVCenter
                             onClicked: root.refresh(true)
                         }
 
-                        Item { width: Math.max(0, parent.width - refreshButton.width - openButton.width - parent.spacing * 2) }
+                        Item { Layout.fillWidth: true }
 
                         DankButton {
                             id: openButton
@@ -2654,7 +2940,7 @@ PluginComponent {
                             iconName: "open_in_new"
                             buttonHeight: 34
                             horizontalPadding: Theme.spacingS
-                            anchors.verticalCenter: parent.verticalCenter
+                            Layout.alignment: Qt.AlignVCenter
                             onClicked: root.openDashboard()
                         }
                     }
@@ -2720,7 +3006,9 @@ PluginComponent {
             }
             if (root.pendingRefresh) {
                 root.pendingRefresh = false
-                root.refresh(false)
+                var scan = root.pendingScan
+                root.pendingScan = false
+                root.refresh(scan)
             }
         }
     }

@@ -245,6 +245,16 @@ export function searchSessions(db: Database, opts: SessionSearchOptions): Sessio
     opts.providers !== undefined && opts.providers.length > 0
       ? `AND provider IN (${opts.providers.map(() => "?").join(",")})`
       : "";
+  const windowFilters: string[] = [];
+  const windowParams: string[] = [];
+  if (opts.sinceIso !== undefined) {
+    windowFilters.push("AND (COALESCE(started_at, '') = '' OR started_at >= ?)");
+    windowParams.push(opts.sinceIso);
+  }
+  if (opts.untilIso !== undefined) {
+    windowFilters.push("AND (COALESCE(started_at, '') = '' OR started_at <= ?)");
+    windowParams.push(opts.untilIso);
+  }
 
   const t0 = performance.now();
   // MATCH + rank first; snippet() cannot run inside a grouped query, so hits
@@ -257,7 +267,7 @@ export function searchSessions(db: Database, opts: SessionSearchOptions): Sessio
       `
       SELECT rowid, session_id AS sessionId, provider
       FROM (
-        SELECT rowid, session_id, provider, rank,
+        SELECT rowid, session_id, provider, started_at, rank,
                ROW_NUMBER() OVER (
                  PARTITION BY provider, session_id
                  ORDER BY length(body) DESC, COALESCE(started_at, '') DESC, rowid DESC
@@ -265,12 +275,12 @@ export function searchSessions(db: Database, opts: SessionSearchOptions): Sessio
         FROM sessions_fts
         WHERE sessions_fts MATCH ? ${providerFilter}
       )
-      WHERE session_rank = 1
+      WHERE session_rank = 1 ${windowFilters.join(" ")}
       ORDER BY rank
       LIMIT ? OFFSET ?
       `,
     )
-    .all(match, ...((opts.providers?.length ?? 0) > 0 ? opts.providers! : []), limit + 1, offset) as Array<{
+    .all(match, ...((opts.providers?.length ?? 0) > 0 ? opts.providers! : []), ...windowParams, limit + 1, offset) as Array<{
     rowid: number;
     sessionId: string;
     provider: string;
@@ -331,9 +341,6 @@ export function searchSessions(db: Database, opts: SessionSearchOptions): Sessio
       || (rawTitle.trim().startsWith("-") && meta.body.toLowerCase().includes("here is a list of plugins"))
       ? sessionTitle(meta.body)
       : sessionTitle(rawTitle);
-    // Window filters apply to the session start (post-MATCH, cheap).
-    if (opts.sinceIso !== undefined && startedAt !== "" && startedAt < opts.sinceIso) continue;
-    if (opts.untilIso !== undefined && startedAt !== "" && startedAt > opts.untilIso) continue;
     rows.push({
       provider: hit.provider,
       sessionId: hit.sessionId,

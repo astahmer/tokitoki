@@ -7,6 +7,7 @@ import { Database } from "bun:sqlite";
 
 import {
   escapeFtsQuery,
+  ensureSessionFts,
   rebuildSessionIndex,
   searchSessions,
   sessionConversation,
@@ -216,6 +217,29 @@ describe("session index", () => {
     } finally {
       db.close();
       fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("applies the date window before pagination and hasMore", () => {
+    const db = new Database(":memory:");
+    try {
+      ensureSessionFts(db);
+      const insert = db.prepare("INSERT INTO sessions_fts (session_id, provider, started_at, title, body) VALUES (?, ?, ?, ?, ?)");
+      insert.run("old", "codex", "2026-08-01T00:00:00Z", "needle", "needle");
+      insert.run("recent", "codex", "2026-10-01T00:00:00Z", "Recent", "needle with a longer conversation body");
+      insert.run("future", "codex", "2026-12-01T00:00:00Z", "needle", "needle");
+      insert.run("undated", "codex", null, "Undated", "needle with another longer conversation body");
+      const options = { query: "needle", providers: ["codex"], sinceIso: "2026-09-01T00:00:00Z", untilIso: "2026-11-01T00:00:00Z", limit: 1 };
+      const first = searchSessions(db, options);
+      const second = searchSessions(db, { ...options, offset: 1 });
+      expect(first.rows).toHaveLength(1);
+      expect(first.hasMore).toBe(true);
+      expect(second.rows).toHaveLength(1);
+      expect(second.hasMore).toBe(false);
+      expect([...first.rows, ...second.rows].map((row) => row.sessionId).sort()).toEqual(["recent", "undated"]);
+      expect(searchSessions(db, { ...options, offset: 2 }).rows).toEqual([]);
+    } finally {
+      db.close();
     }
   });
 

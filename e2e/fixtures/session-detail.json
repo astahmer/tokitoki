@@ -1,0 +1,56 @@
+{
+  "provider": "codex",
+  "sessionId": "e2e-session-001",
+  "conversation": {
+    "title": "E2E search needle",
+    "body": "User: Open the e2e search fixture.\nAssistant: This synthetic conversation verifies the session detail panel."
+  },
+  "cacheDuration": {
+    "estimatedSeconds": 300,
+    "confidence": "medium",
+    "samples": 3,
+    "busts": 1,
+    "lastBustAt": "2026-09-10T12:00:00.000Z"
+  },
+  "events": [
+    {
+      "n": 1,
+      "ts": "2026-09-10T12:00:00.000Z",
+      "model": "gpt-6-luna",
+      "inputTokens": 1200,
+      "outputTokens": 400,
+      "cacheReadTokens": 0,
+      "cacheWriteTokens": 0,
+      "costUsd": 0.08,
+      "description": "Synthetic e2e request one",
+      "runningTokens": 1600
+    },
+    {
+      "n": 2,
+      "ts": "2026-09-10T12:05:00.000Z",
+      "model": "gpt-6-luna",
+      "inputTokens": 800,
+      "outputTokens": 600,
+      "cacheReadTokens": 500,
+      "cacheWriteTokens": 0,
+      "costUsd": 0.04,
+      "description": "Synthetic e2e request two",
+      "runningTokens": 3500
+    },
+    {
+      "n": 3,
+      "ts": "2026-09-10T12:10:00.000Z",
+      "model": "gpt-6-luna",
+      "inputTokens": 900,
+      "outputTokens": 500,
+      "cacheReadTokens": 400,
+      "cacheWriteTokens": 0,
+      "costUsd": 0.05,
+      "description": "Synthetic e2e request three",
+      "runningTokens": 5300
+    }
+  ],
+  "eventsTotal": 3,
+  "eventsOffset": 0,
+  "eventsHasMore": false
+}

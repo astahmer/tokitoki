@@ -13,6 +13,11 @@ PluginSettings {
     property string visibilityTarget: ""
     property bool visibilityHide: true
     property bool pendingReload: false
+    property var pendingVisibilityChanges: []
+    property string pendingPayload: ""
+    property string loadError: ""
+    property string visibilityError: ""
+    readonly property bool hideIdentities: Boolean(root.loadValue("privacyHideIdentities", false))
 
     readonly property string tokitokiCommand: {
         const override = String(root.loadValue("executablePath", ""))
@@ -24,14 +29,20 @@ PluginSettings {
     }
 
     function accountLabel(account) {
+        if (root.hideIdentities)
+            return "Private account"
         if (account.email)
             return String(account.email)
+        if (account.label)
+            return String(account.label)
         if (account.credential)
             return String(account.credential)
         return String(account.accountKey || "default")
     }
 
     function accountDescription(account) {
+        if (root.hideIdentities)
+            return String(account.provider || "provider") + " · identities hidden"
         const parts = [String(account.provider || "provider"), String(account.accountKey || "default")]
         if (account.planLabel)
             parts.push(String(account.planLabel))
@@ -55,11 +66,42 @@ PluginSettings {
     }
 
     function setAccountHidden(account, hidden) {
-        if (visibilityProcess.running)
+        root.visibilityError = ""
+        const change = { target: root.accountTarget(account), hide: Boolean(hidden) }
+        if (visibilityProcess.running) {
+            const changes = root.pendingVisibilityChanges.slice()
+            let queuedIndex = -1
+            for (let i = 0; i < changes.length; i++) {
+                if (changes[i].target === change.target) {
+                    queuedIndex = i
+                    break
+                }
+            }
+            if (queuedIndex >= 0)
+                changes[queuedIndex] = change
+            else
+                changes.push(change)
+            root.pendingVisibilityChanges = changes
             return
-        visibilityTarget = root.accountTarget(account)
-        visibilityHide = hidden
+        }
+        root.startVisibilityChange(change)
+    }
+
+    function startVisibilityChange(change) {
+        root.visibilityTarget = change.target
+        root.visibilityHide = change.hide
         visibilityProcess.running = true
+    }
+
+    function runNextVisibilityChange() {
+        const changes = root.pendingVisibilityChanges.slice()
+        if (changes.length === 0) {
+            root.reload()
+            return
+        }
+        const change = changes.shift()
+        root.pendingVisibilityChanges = changes
+        root.startVisibilityChange(change)
     }
 
     function reload() {
@@ -67,18 +109,23 @@ PluginSettings {
             pendingReload = true
             return
         }
+        root.pendingPayload = ""
         accountsProcess.running = true
     }
 
     function acceptPayload(raw) {
         try {
             const parsed = JSON.parse(String(raw || ""))
-            root.accounts = parsed && Array.isArray(parsed.limits) ? parsed.limits : []
-            const ui = parsed && parsed.uiPreview ? parsed.uiPreview : {}
-            root.hiddenEntries = Array.isArray(ui.menubarHidden) ? ui.menubarHidden : []
+            if (!parsed || parsed.app !== "tokitoki" || parsed.schema !== 1 || !Array.isArray(parsed.limits))
+                throw new Error("Unsupported widget payload")
+            if (!parsed || !Array.isArray(parsed.limits) || !parsed.uiPreview ||
+                    !Array.isArray(parsed.uiPreview.menubarHidden))
+                throw new Error("payload is missing account visibility data")
+            root.accounts = parsed.limits
+            root.hiddenEntries = parsed.uiPreview.menubarHidden
+            root.loadError = ""
         } catch (error) {
-            root.accounts = []
-            root.hiddenEntries = []
+            root.loadError = "Could not read Tokitoki account settings: " + String(error)
         }
     }
 
@@ -88,9 +135,14 @@ PluginSettings {
         id: accountsProcess
         command: [root.tokitokiCommand, "widget-payload", "--cached", "--json"]
         stdout: StdioCollector {
-            onStreamFinished: root.acceptPayload(text)
+            onStreamFinished: root.pendingPayload = text
         }
         onExited: function(exitCode, exitStatus) {
+            if (exitCode === 0)
+                root.acceptPayload(root.pendingPayload)
+            else
+                root.loadError = "Could not load Tokitoki account settings (exit code " + exitCode + ")."
+            root.pendingPayload = ""
             if (root.pendingReload) {
                 root.pendingReload = false
                 root.reload()
@@ -103,7 +155,9 @@ PluginSettings {
         command: [root.tokitokiCommand, "ui", root.visibilityHide ? "--hide" : "--show",
             root.visibilityTarget, "--surface", "widget"]
         onExited: function(exitCode, exitStatus) {
-            root.reload()
+            if (exitCode !== 0)
+                root.visibilityError = "Could not save account visibility (exit code " + exitCode + ")."
+            root.runNextVisibilityChange()
         }
     }
 
@@ -133,6 +187,15 @@ PluginSettings {
         width: parent.width
         text: "These settings affect the DMS widget only. Tokitoki data and provider configuration remain in Tokitoki's own config."
         color: Theme.surfaceVariantText
+        font.pixelSize: Theme.fontSizeSmall + 1
+        wrapMode: Text.WordWrap
+    }
+
+    StyledText {
+        visible: root.loadError.length > 0
+        width: parent.width
+        text: root.loadError
+        color: Theme.error
         font.pixelSize: Theme.fontSizeSmall + 1
         wrapMode: Text.WordWrap
     }
@@ -183,11 +246,16 @@ PluginSettings {
     SelectionSetting {
         settingKey: "openingTab"
         label: "Default tab"
-        description: "The tab shown when the widget opens."
+        description: "The initial tab; later tab selections are remembered."
         options: [
             { label: "Overview", value: "overview" },
             { label: "Quotas", value: "quotas" },
-            { label: "Tokens", value: "tokens" }
+            { label: "Tokens", value: "tokens" },
+            { label: "Reports", value: "reports" },
+            { label: "Sessions", value: "sessions" },
+            { label: "Sources", value: "sources" },
+            { label: "MCP", value: "mcp" },
+            { label: "Settings", value: "settings" }
         ]
         defaultValue: "overview"
     }
@@ -272,6 +340,15 @@ PluginSettings {
                 onToggled: isChecked => root.setAccountHidden(modelData, !isChecked)
             }
         }
+    }
+
+    StyledText {
+        visible: root.visibilityError.length > 0
+        width: parent.width
+        text: root.visibilityError
+        color: Theme.error
+        font.pixelSize: Theme.fontSizeSmall + 1
+        wrapMode: Text.WordWrap
     }
 
     StyledText {

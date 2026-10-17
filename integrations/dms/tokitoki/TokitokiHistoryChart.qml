@@ -10,7 +10,7 @@ Item {
     property string period: "month"
     property var columns: []
 
-    implicitHeight: 154
+    implicitHeight: Math.max(154, chartColumn.implicitHeight)
 
     function safeNumber(value) {
         var number = Number(value)
@@ -52,11 +52,18 @@ Item {
     }
 
     function sourceForPeriod() {
-        if (root.period === "year" && root.extendedHistory &&
-                Array.isArray(root.extendedHistory.days) &&
-                Array.isArray(root.extendedHistory.series))
-            return root.extendedHistory
+        if (root.period === "year") {
+            if (root.extendedHistory && Array.isArray(root.extendedHistory.days) &&
+                    Array.isArray(root.extendedHistory.series))
+                return root.extendedHistory
+            return null
+        }
         return root.history
+    }
+
+    function seriesForPeriod() {
+        var source = root.sourceForPeriod()
+        return source && Array.isArray(source.series) ? source.series : []
     }
 
     function buildColumns() {
@@ -77,9 +84,12 @@ Item {
         endDate.setHours(0, 0, 0, 0)
         var firstDate = new Date(endDate)
         firstDate.setDate(firstDate.getDate() - daysToShow + 1)
+        if (root.period === "year")
+            firstDate.setDate(firstDate.getDate() - ((firstDate.getDay() + 6) % 7))
 
         var dayKeys = []
-        for (var dayIndex = 0; dayIndex < daysToShow; dayIndex++) {
+        var dayCount = root.period === "year" ? 53 * 7 : daysToShow
+        for (var dayIndex = 0; dayIndex < dayCount; dayIndex++) {
             var date = new Date(firstDate)
             date.setDate(firstDate.getDate() + dayIndex)
             dayKeys.push(dateKey(date))
@@ -97,6 +107,7 @@ Item {
 
         var rawColumns = []
         var maximum = 0
+        var lastVisibleDay = dateKey(endDate)
         for (var bucketStart = 0; bucketStart < dayKeys.length; bucketStart += bucketDays) {
             var columnValues = []
             var columnTotal = 0
@@ -104,13 +115,19 @@ Item {
                 var columnValue = 0
                 for (var bucketOffset = 0; bucketOffset < bucketDays &&
                         bucketStart + bucketOffset < dayKeys.length; bucketOffset++) {
-                    columnValue += safeNumber(seriesMaps[columnSeriesIndex][dayKeys[bucketStart + bucketOffset]])
+                    var day = dayKeys[bucketStart + bucketOffset]
+                    if (root.period !== "year" || day <= lastVisibleDay)
+                        columnValue += safeNumber(seriesMaps[columnSeriesIndex][day])
                 }
                 columnValues.push(columnValue)
                 columnTotal += columnValue
             }
             maximum = Math.max(maximum, columnTotal)
-            rawColumns.push({ day: dayKeys[bucketStart], values: columnValues })
+            var endDayIndex = Math.min(bucketStart + bucketDays - 1, dayKeys.length - 1)
+            var endDay = dayKeys[endDayIndex]
+            if (endDay > lastVisibleDay)
+                endDay = lastVisibleDay
+            rawColumns.push({ day: dayKeys[bucketStart], endDay: endDay, values: columnValues })
         }
 
         return rawColumns.map(function(column) {
@@ -127,6 +144,7 @@ Item {
             }
             return {
                 day: column.day,
+                endDay: column.endDay,
                 segments: segments
             }
         })
@@ -142,6 +160,7 @@ Item {
     Component.onCompleted: rebuild()
 
     Column {
+        id: chartColumn
         anchors.fill: parent
         spacing: Theme.spacingXS
 
@@ -199,11 +218,16 @@ Item {
                 isMonospace: true
             }
 
-            Item { width: Math.max(0, parent.width - firstLabel.width - lastLabel.width) }
+            Item {
+                width: Math.max(0, parent.width - firstLabel.width - lastLabel.width)
+                height: 1
+            }
 
             StyledText {
                 id: lastLabel
-                text: root.columns.length > 0 ? root.columns[root.columns.length - 1].day : ""
+                text: root.columns.length > 0
+                    ? root.columns[root.columns.length - 1].endDay
+                    : ""
                 color: Theme.surfaceVariantText
                 font.pixelSize: Theme.fontSizeMedium
                 isMonospace: true
@@ -211,14 +235,12 @@ Item {
             }
         }
 
-        Row {
+        Flow {
             width: parent.width
             spacing: Theme.spacingM
 
             Repeater {
-                model: root.history && Array.isArray(root.history.series)
-                    ? root.history.series.slice(0, 4)
-                    : []
+                model: root.seriesForPeriod().slice(0, 6)
 
                 delegate: Row {
                     spacing: Theme.spacingXXS

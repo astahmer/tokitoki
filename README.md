@@ -170,8 +170,11 @@ For the first DMS test, from a checkout:
 mkdir -p ~/.config/DankMaterialShell/plugins
 ln -sfn "$PWD/integrations/dms/tokitoki" \
   ~/.config/DankMaterialShell/plugins/tokitoki
-dms ipc call plugins reload tokitoki
+dms ipc call plugin-scan rescan tokitoki
 ```
+
+Rescan after changing which `.qml` files exist; `plugins reload tokitoki` only
+re-reads the components the plugin service already knew about.
 
 Then enable `Tokitoki Usage` in DMS Settings → Plugins and add it to DankBar.
 The remaining experimental adapters and their host-specific installation notes
