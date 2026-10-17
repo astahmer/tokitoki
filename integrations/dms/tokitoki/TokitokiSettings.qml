@@ -8,6 +8,7 @@ PluginSettings {
     id: root
     pluginId: "tokitoki"
 
+    property string shellName: "DMS"
     property var accounts: []
     property var hiddenEntries: []
     property string visibilityTarget: ""
@@ -185,7 +186,7 @@ PluginSettings {
 
     StyledText {
         width: parent.width
-        text: "These settings affect the DMS widget only. Tokitoki data and provider configuration remain in Tokitoki's own config."
+        text: "These settings affect the " + root.shellName + " widget only. Tokitoki data and provider configuration remain in Tokitoki's own config."
         color: Theme.surfaceVariantText
         font.pixelSize: Theme.fontSizeSmall + 1
         wrapMode: Text.WordWrap
@@ -362,7 +363,7 @@ PluginSettings {
     ToggleSetting {
         settingKey: "privacyHideIdentities"
         label: "Mask account identities"
-        description: "Hide account emails, keys, and credentials in the DMS widget."
+        description: "Hide account emails, keys, and credentials in the " + root.shellName + " widget."
         defaultValue: false
     }
 

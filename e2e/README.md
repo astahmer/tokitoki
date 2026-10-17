@@ -1,6 +1,6 @@
 # e2e: headless UI verification harness
 
-Give an AI agent a **visual feedback loop for the DMS widget** without a
+Give an AI agent a **visual feedback loop for the DMS widget and standalone Quickshell host** without a
 desktop: build one Docker image, boot it, drive the native QML UI, and assert on
 screenshots and CLI calls. Runs on Linux with Docker, no GPU or host Node install
 required.
@@ -25,7 +25,9 @@ independent of provider stores.
 ./e2e/run.sh                 # all 8 tabs and the search/session/settings flow
 E2E_TAB=quotas ./e2e/run.sh  # one tab for a quick visual check
 E2E_OUT_DIR=/tmp/tokitoki-e2e ./e2e/run.sh
-E2E_IMAGE=tokitoki-e2e:latest ./e2e/run.sh # reuse an already-built image
+E2E_IMAGE=tokitoki-e2e:latest ./e2e/run.sh # DMS with an already-built image
+E2E_SHELL=quickshell E2E_IMAGE=tokitoki-e2e:latest ./e2e/run.sh # standalone, no DMS
+E2E_SHELL=quickshell E2E_TAB=tokens E2E_IMAGE=tokitoki-e2e:latest ./e2e/run.sh
 ~~~
 
 Setting `E2E_TAB` selects the one-tab mode. `E2E_MODE=all` runs the full
@@ -36,24 +38,34 @@ The image keeps a virtual pointer alive throughout the run so Qt sees stable
 seat capabilities. The pinned `wlrctl` package has a small harness-only keepalive
 patch; individual clicks and scrolls still use its normal commands.
 
-The full run saves captures and logs under `e2e/out/autonomous/` (gitignored):
+The DMS full run saves captures and logs under `e2e/out/autonomous/`; standalone Quickshell uses `e2e/out/quickshell/autonomous/` (both gitignored). Each run has an isolated container home and headless desktop. Set `E2E_IMAGE` to reuse a loaded Docker image without invoking Nix; omitting it preserves the pinned Nix build/load path.
+
+Standalone runs mount the complete `integrations/` tree so the host can import the shared QML UI. They invoke `qs -p /integrations-src/quickshell/tokitoki` directly, never start DMS, and assert that no DMS configuration exists.
+
+Artifacts:
 
 | file | content |
 | --- | --- |
 | `bar.png` | top strip with the widget's status |
 | `tab-<tab>.png` | full frame after selecting each tab in the UI |
-| `tokens-lower.png` | Tokens after scrolling to Pulse, provider, and model cards |
+| `tokens-lower.png` / `tokens-models.png` | Tokens after scrolling through Pulse, provider, and model cards |
 | `reports-lower.png` | Reports after scrolling to repository and activity cards |
 | `sessions-search.png` | session list after entering the fixture search term |
 | `sessions-detail.png` / `sessions-back.png` | detail view and return to the list |
 | `sessions-pagination.png` / `sessions-page-2.png` / `sessions-page-1-return.png` | next and previous page flow |
 | `settings-tab.png` / `settings-config.png` | Settings tab and its settings menu |
 | `settings-notifications.png` | lower notification settings after enabling notifications |
-| `index.json` / `cli-invocations.jsonl` | visited tabs, interactions, and fixture CLI arguments |
-| `dms.log` / `dms.out` / `sway.log` | runtime logs, including QML error checks |
+| `index.json` / `interactions.jsonl` / `cli-invocations.jsonl` | shell, observed tabs, completed interactions, and fixture CLI arguments |
+| `state-interactions.jsonl` / `quickshell-ipc.jsonl` | tab readback and native host IPC evidence |
+| `config-*-restart.json` / `state-*-restart.json` / `status-after-restart.json` / `restart.json` | standalone config/state persistence across distinct processes |
+| `widget-config-before.png` / `after-restart.png` | standalone widget settings and restored Tokens view |
+| `short-screen.png` / `status-short-screen.json` | popup transferred by pointer to a second, 960×540 logical output, with bounds checked |
+| `dms.log` / `dms.out` / `quickshell.log` / `quickshell-before-restart.log` / `sway.log` | runtime logs, including QML error checks |
 | `previews/*.png` | native captures of the bar/popover region for sharing in chat |
 
 Tabs: overview, quotas, tokens, reports, sessions, sources, mcp, settings.
+
+Standalone runs also create a second short output, click its bar to transfer an open popup, check that its fixed footer remains within the output, and exercise same-bar toggle, Escape and outside-click dismissal.
 
 ## How it works
 
@@ -69,7 +81,7 @@ Tabs: overview, quotas, tokens, reports, sessions, sources, mcp, settings.
 The plugin under test is the working-tree `integrations/dms/tokitoki`,
 bind-mounted into the image. The initial tab comes from the plugin state
 file; the full run then selects each tab through the visible UI and checks the
-saved tab state after each click.
+saved tab state after each click. Standalone runs read the selected tab through the public `tokitoki status` IPC method. They also exercise `open`, `close`, and `toggle`, change `autoRefreshEnabled` through the visible widget settings, check the JSON write, restart Quickshell, and verify that the host loads both the setting and selected tab. Config lives at `$XDG_CONFIG_HOME/tokitoki/quickshell.json`; state lives at `$XDG_STATE_HOME/tokitoki/quickshell-state.json`. Fatal standalone QML errors fail immediately with a diagnostic capture.
 
 ## Fixtures
 

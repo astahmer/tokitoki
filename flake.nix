@@ -171,6 +171,19 @@
           inherit tokitoki;
           default = tokitoki;
         }
+        // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+          tokitoki-quickshell = pkgs.writeShellApplication {
+            name = "tokitoki-quickshell";
+            runtimeInputs = [
+              tokitoki
+              pkgs.quickshell
+              pkgs.coreutils
+            ];
+            text = ''
+              exec qs -p ${tokitoki}/share/tokitoki/integrations/quickshell/tokitoki "$@"
+            '';
+          };
+        }
       );
 
       devShellFor =
@@ -245,13 +258,23 @@
     {
       packages = packages;
 
-      apps = forEachSystem (system: {
-        default = {
-          type = "app";
-          program = "${packages.${system}.default}/bin/tokitoki";
-          meta.description = "Tokitoki coding-agent usage analytics";
-        };
-      });
+      apps = forEachSystem (
+        system:
+        {
+          default = {
+            type = "app";
+            program = "${packages.${system}.default}/bin/tokitoki";
+            meta.description = "Tokitoki coding-agent usage analytics";
+          };
+        }
+        // nixpkgs.lib.optionalAttrs (nixpkgs.lib.hasSuffix "-linux" system) {
+          quickshell = {
+            type = "app";
+            program = "${packages.${system}.tokitoki-quickshell}/bin/tokitoki-quickshell";
+            meta.description = "Standalone Tokitoki Quickshell bar and usage widget";
+          };
+        }
+      );
 
       checks = forEachSystem (system: {
         package = packages.${system}.default;

@@ -9,6 +9,7 @@ Item {
     id: root
 
     property string command: "tokitoki"
+    property string shellName: "DMS"
     property var settings: ({})
     property var spendHealth: null
     property var notificationSettings: ({
@@ -263,7 +264,7 @@ Item {
 
         StyledText {
             width: parent.width
-            text: "Preferences are stored in Tokitoki config and shared with the menubar app. The DMS widget does not send desktop notifications."
+            text: "Preferences are stored in Tokitoki config and shared with the menubar app. The " + root.shellName + " widget does not send desktop notifications."
             color: Theme.surfaceVariantText
             font.pixelSize: Theme.fontSizeSmall + 1
             wrapMode: Text.WordWrap

@@ -10,6 +10,8 @@ import qs.Widgets
 PluginComponent {
     id: root
 
+    property string shellName: "DMS"
+    property string settingsLocation: "DMS Settings → Plugins"
     property var payload: ({})
     property string errorText: "Waiting for Tokitoki"
     property string lastError: ""
@@ -814,7 +816,7 @@ PluginComponent {
             return !privacyHideRepoSessionNames && payload.recentSessions &&
                 searchMatchesInRows(payload.recentSessions.rows, "title")
         if (id === "integration")
-            return searchMatches("DMS integration settings executable configuration")
+            return searchMatches(root.shellName + " integration settings executable configuration")
         if (id === "notifications")
             return searchMatches("notifications alerts quota spend burn budget settings")
         if (id === "pulse" || id === "composition" || id === "history")
@@ -1187,7 +1189,7 @@ PluginComponent {
             if (hasPayload)
                 lastError = "tokitoki returned an empty widget payload"
             else
-                errorText = "tokitoki unavailable (check the DMS PATH)"
+                errorText = "tokitoki unavailable (check the " + root.shellName + " PATH)"
             return
         }
         try {
@@ -1481,6 +1483,7 @@ PluginComponent {
                                     color: Theme.surfaceText
                                     selectionColor: Theme.primary
                                     selectedTextColor: Theme.primaryText
+                                    font.family: Theme.fontFamily
                                     font.pixelSize: Theme.fontSizeMedium
                                     verticalAlignment: TextInput.AlignVCenter
                                     selectByMouse: true
@@ -1494,6 +1497,7 @@ PluginComponent {
                                         anchors.verticalCenter: parent.verticalCenter
                                         text: root.tabIs("sessions") ? "Search conversations…" : "Search harness, account, repo…"
                                         color: Theme.surfaceVariantText
+                                        font.family: searchInput.font.family
                                         font.pixelSize: Theme.fontSizeMedium
                                         visible: searchInput.text.length === 0
                                     }
@@ -1586,7 +1590,7 @@ PluginComponent {
                         }
 
                         TokitokiCard {
-                            title: "DMS integration"
+                            title: root.shellName + " integration"
                             iconName: "settings"
                             visible: root.tabIs("settings") && root.cardSurvives("integration")
                             contentComponent: Component {
@@ -1596,7 +1600,7 @@ PluginComponent {
 
                                     StyledText {
                                         width: parent.width
-                                        text: "Display settings live in DMS Settings → Plugins. Tokitoki data, budgets, and provider configuration remain in Tokitoki's own config."
+                                        text: "Display settings live in " + root.settingsLocation + ". Tokitoki data, budgets, and provider configuration remain in Tokitoki's own config."
                                         color: Theme.surfaceText
                                         font.pixelSize: Theme.fontSizeMedium
                                         wrapMode: Text.WordWrap
@@ -1620,7 +1624,7 @@ PluginComponent {
 
                                     StyledText {
                                         width: parent.width
-                                        text: "Leave empty to use the default `tokitoki`; set a full path here in the DMS plugin settings for development."
+                                        text: "Leave empty to use the default `tokitoki`; set a full path in the widget settings for development."
                                         color: Theme.surfaceVariantText
                                         font.pixelSize: Theme.fontSizeSmall + 1
                                         wrapMode: Text.WordWrap
@@ -1637,6 +1641,7 @@ PluginComponent {
                                 TokitokiNotifications {
                                     width: parent ? parent.width : 0
                                     command: root.command
+                                    shellName: root.shellName
                                     settings: root.payload.notifications || ({})
                                     spendHealth: root.payload.spendHealth || null
                                     enabled: root.hasPayload
@@ -1927,7 +1932,7 @@ PluginComponent {
                                                         height: accountCard.account.planLabel ? 22 : 0
                                                         radius: 11
                                                         color: Theme.withAlpha(Theme.surfaceText, 0.08)
-                                                        visible: accountCard.account.planLabel
+                                                        visible: Boolean(accountCard.account.planLabel)
                                                         Layout.alignment: Qt.AlignVCenter
 
                                                         StyledText {
@@ -2639,7 +2644,7 @@ PluginComponent {
                             title: "Statusline preview"
                             iconName: "terminal"
                             visible: root.tabIs("reports") && root.hasPayload &&
-                                root.payload.statuslinePreview && root.cardSurvives("statusline")
+                                Boolean(root.payload.statuslinePreview) && root.cardSurvives("statusline")
                             contentComponent: Component {
                                 Column {
                                     width: parent ? parent.width : 0
@@ -2647,7 +2652,8 @@ PluginComponent {
 
                                     StyledText {
                                         width: parent.width
-                                        text: root.payload.statuslinePreview.preview
+                                        text: root.payload.statuslinePreview
+                                            ? String(root.payload.statuslinePreview.preview || "") : ""
                                         color: Theme.surfaceText
                                         font.pixelSize: Theme.fontSizeMedium
                                         isMonospace: true
@@ -2656,7 +2662,8 @@ PluginComponent {
 
                                     StyledText {
                                         width: parent.width
-                                        text: root.payload.statuslinePreview.command
+                                        text: root.payload.statuslinePreview
+                                            ? String(root.payload.statuslinePreview.command || "") : ""
                                         color: Theme.surfaceVariantText
                                         font.pixelSize: Theme.fontSizeSmall + 1
                                         isMonospace: true
@@ -2878,6 +2885,7 @@ PluginComponent {
                         onLoaded: {
                             opened = true
                             if (item) {
+                                item.shellName = root.shellName
                                 item.pluginService = root.pluginService
                             }
                         }

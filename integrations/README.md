@@ -1,8 +1,9 @@
 # Tokitoki shell adapters
 
-These are intentionally small proof-of-concept integrations. They all consume
-the same versioned payload as the native apps and keep shell-specific
-rendering at the edge.
+The DMS and standalone Quickshell widgets share their full views. The other
+adapters are smaller experimental integrations. They consume the same
+versioned payload as the native apps and keep shell-specific rendering at the
+edge.
 
 ## Shared contract
 
@@ -87,14 +88,60 @@ DMS does not deliver those desktop alerts itself. These views use the existing
 For screenshots and interaction checks in an isolated Docker desktop, see
 [`e2e/README.md`](../e2e/README.md).
 
+## Standalone Quickshell
+
+On Linux, start the complete widget without DMS:
+
+```sh
+nix run .#quickshell
+```
+
+Or use an installed Quickshell with the repository's integration tree:
+
+```sh
+tokitoki scan
+qs -p "$PWD/integrations/quickshell/tokitoki"
+```
+
+Keep `integrations/dms/tokitoki` alongside `integrations/quickshell/tokitoki`:
+the standalone host loads the shared views and provider logos from that sibling
+directory. It does not load DMS services or require DMS to be installed. The
+Tokitoki Nix package installs the complete integration tree.
+
+Click the bar item to open the widget. The header menu opens display, refresh,
+privacy and account visibility settings. Notification preferences use the same
+Tokitoki config as the native app; the widget does not deliver desktop alerts.
+
+The `tokitoki` IPC target also opens a specific tab:
+
+```sh
+qs -p "$PWD/integrations/quickshell/tokitoki" ipc call tokitoki open tokens
+qs -p "$PWD/integrations/quickshell/tokitoki" ipc call tokitoki toggle
+qs -p "$PWD/integrations/quickshell/tokitoki" ipc call tokitoki close
+qs -p "$PWD/integrations/quickshell/tokitoki" ipc call tokitoki status
+```
+
+Standalone display preferences are stored in
+`$XDG_CONFIG_HOME/tokitoki/quickshell.json` (default
+`~/.config/tokitoki/quickshell.json`), and navigation state in
+`$XDG_STATE_HOME/tokitoki/quickshell-state.json` (default
+`~/.local/state/tokitoki/quickshell-state.json`). These do not change DMS plugin
+preferences.
+
+Run its isolated screenshot/interaction scenario with:
+
+```sh
+E2E_SHELL=quickshell ./e2e/run.sh
+```
+
 ## Other adapters
 
 | Directory | Host | Status |
 |---|---|---|
-| `dms/tokitoki` | DankMaterialShell 1.5 | QML plugin |
+| `dms/tokitoki` | DankMaterialShell | Full QML widget |
 | `noctalia-v5/tokitoki` | Current Noctalia | Luau widget |
 | `noctalia-v4/tokitoki` | Legacy Noctalia v4 | QML bar widget |
-| `quickshell/tokitoki` | Standalone Quickshell | QML panel |
+| `quickshell/tokitoki` | Standalone Quickshell | Full shared widget, no DMS runtime |
 | `kde-plasma/tokitoki/package` | KDE Plasma 6 | Plasmoid |
 | `waybar` | Waybar | `custom/*` JSON module |
 | `gnome/tokitoki@local` | GNOME Shell 45+ | GJS extension |

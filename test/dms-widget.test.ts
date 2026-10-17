@@ -11,6 +11,7 @@ const makeWidget = () => {
     payload: { schema: 1, app: "tokitoki" },
     hasPayload: true,
     hasLimits: false,
+    shellName: "DMS",
     searchText: "",
     selectedPeriod: "today",
     selectedMetric: "tokens",
@@ -31,6 +32,15 @@ const makeWidget = () => {
 afterEach(() => setSystemTime());
 
 describe("DMS widget uses the existing payload without distorting totals", () => {
+  it("uses the shell host name when searching integration settings", () => {
+    const ui = makeWidget();
+    ui.shellName = "Quickshell";
+    ui.searchText = "quickshell";
+    expect(ui.cardSurvives("integration")).toBe(true);
+    ui.searchText = "dms";
+    expect(ui.cardSurvives("integration")).toBe(false);
+  });
+
   it("search filters whole cards while preserving chart rows and totals", () => {
     const ui = makeWidget();
     ui.payload.today = { rows: [

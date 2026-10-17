@@ -177,6 +177,20 @@ Rescan after changing which `.qml` files exist; `plugins reload tokitoki` only
 re-reads the components the plugin service already knew about.
 
 Then enable `Tokitoki Usage` in DMS Settings → Plugins and add it to DankBar.
+For the full standalone Quickshell widget on Linux, without DMS:
+
+```sh
+nix run .#quickshell
+# Or, with Quickshell and tokitoki already on PATH:
+qs -p "$PWD/integrations/quickshell/tokitoki"
+```
+
+The standalone widget shares the DMS views, including Sessions, charts, quota
+visibility and settings. Its setup and IPC commands are documented in
+[`integrations/README.md`](integrations/README.md#standalone-quickshell).
+Docker screenshot and interaction tests for both shells live in
+[`e2e/README.md`](e2e/README.md).
+
 The remaining experimental adapters and their host-specific installation notes
 are documented in [`integrations/README.md`](integrations/README.md). The
 adapter source is intentionally kept separate from the host-neutral contract,
