@@ -616,7 +616,7 @@ final class Model: ObservableObject {
     @Published var scanInFlight = false
     @Published var scanStatus: String?
 
-    static let notificationKinds = ["quotaCritical", "quotaReset", "burnRate", "budget"]
+    static let notificationKinds = ["quotaCritical", "quotaReset", "quotaPace", "burnRate", "budget"]
     nonisolated static let pollingIntervalPresets = [1, 2, 3, 5, 10, 15, 30, 60]
 
     nonisolated static func normalizedPollingInterval(_ minutes: Int) -> Int {
@@ -1109,6 +1109,7 @@ final class Model: ObservableObject {
         switch kind {
         case "quotaCritical": return "Critical quota"
         case "quotaReset": return "Quota reset"
+        case "quotaPace": return "Runs out before reset"
         case "burnRate": return "Burn-rate"
         case "budget": return "Budget"
         default: return kind
@@ -1620,9 +1621,6 @@ final class Model: ObservableObject {
         lastLevels = current
     }
 
-    /// Compare persisted quota observations so a restart can still detect a
-    /// reset after an exhausted window. Reset timestamps are part of the
-    /// notification identity, which prevents repeated alerts in one window.
     /// Active status-page incident for the account's vendor, if any.
     func incident(for limit: AccountLimits) -> VendorIncident? {
         let vendor = limit.vendor ?? providerRegistry[limit.provider]?.vendor ?? limit.provider
@@ -1630,6 +1628,9 @@ final class Model: ObservableObject {
         return incident
     }
 
+    /// Compare persisted quota observations so a restart can still detect a
+    /// reset after an exhausted window. Reset timestamps are part of the
+    /// notification identity, which prevents repeated alerts in one window.
     private func applyQuotaNotifications(_ limits: [AccountLimits]) {
         var changed = false
         for account in limits {
@@ -1654,6 +1655,17 @@ final class Model: ObservableObject {
                         title: "tokitoki quota critical",
                         body: "\(name): \(Int(remaining.rounded()))% left · resets in \(reset)",
                         reason: "The reported \(windowDisplayName(window, provider: account.provider).lowercased()) quota reached your configured critical threshold of \(quotaCriticalPercent)% remaining.",
+                    )
+                }
+                if notificationsEnabled && remaining > Double(quotaCriticalPercent),
+                   window.source == "embedded", let pace = window.pace, pace.status == "over",
+                   let runsOut = pace.runsOutAt.flatMap(parseISO) {
+                    notifyOnce(
+                        kind: "quotaPace",
+                        key: "quota-pace|\(identity)|\(window.resetsAt ?? "unknown")",
+                        title: "tokitoki quota running out",
+                        body: "\(name): \(Int(remaining.rounded()))% left · runs out ~\(runsOut.formatted(date: .omitted, time: .shortened)), resets in \(reset)",
+                        reason: "At the current burn rate this window is exhausted before it resets.",
                     )
                 }
                 if notificationsEnabled && resetAwareNotifications && (resetChanged || recovered) {
@@ -8301,7 +8313,7 @@ private struct HighlightedSnippet: View {
                     ))
                     .font(.caption)
                     .disabled(!model.notificationsEnabled)
-                    ForEach([("quotaCritical", "Critical quota"), ("quotaReset", "Quota reset / recovery"), ("burnRate", "Burn-rate"), ("budget", "Budget threshold")], id: \.0) { kind, label in
+                    ForEach([("quotaCritical", "Critical quota"), ("quotaReset", "Quota reset / recovery"), ("quotaPace", "Runs out before reset"), ("burnRate", "Burn-rate"), ("budget", "Budget threshold")], id: \.0) { kind, label in
                         Toggle(label, isOn: Binding(
                             get: { !model.disabledNotifications.contains(kind) },
                             set: { model.setNotificationKindEnabled(kind, enabled: $0) },

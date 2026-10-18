@@ -30,6 +30,7 @@ Item {
     readonly property var categories: [
         { id: "quotaCritical", label: "Critical quota", description: "When a provider reports very little quota remaining." },
         { id: "quotaReset", label: "Quota reset / recovery", description: "When exhausted or critical quota becomes available again." },
+        { id: "quotaPace", label: "Runs out before reset", description: "When the current burn rate exhausts a quota window before it resets." },
         { id: "burnRate", label: "Burn-rate", description: "When projected monthly spend reaches the configured warning ratio." },
         { id: "budget", label: "Budget threshold", description: "When spend crosses a configured budget threshold." }
     ]

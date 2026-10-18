@@ -6,7 +6,7 @@ if ! command -v jq >/dev/null 2>&1; then
   exit 0
 fi
 
-if ! payload="$(tokitoki widget-payload --cached --json 2>/dev/null)"; then
+if ! payload="$(tokitoki widget-payload --cached --notify --json 2>/dev/null)"; then
   printf '%s\n' '{"text":"tokitoki ?","tooltip":"tokitoki widget payload failed","class":"error"}'
   exit 0
 fi

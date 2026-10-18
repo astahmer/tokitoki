@@ -3201,8 +3201,8 @@ PluginComponent {
         id: statusProcess
 
         command: root.scanNextRefresh
-            ? [root.command, "widget-payload", "--json"]
-            : [root.command, "widget-payload", "--cached", "--json"]
+            ? [root.command, "widget-payload", "--notify", "--json"]
+            : [root.command, "widget-payload", "--cached", "--notify", "--json"]
         running: true
 
         stdout: StdioCollector {

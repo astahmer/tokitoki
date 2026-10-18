@@ -31,6 +31,7 @@ import {
   type TimeWindow,
 } from "../period.ts";
 import { collectSources } from "../sources.ts";
+import { readNotifyState } from "../notify.ts";
 import { collectMachines } from "../presence.ts";
 import { searchSessions, sessionConversation, sessionPreview, updateSessionIndex } from "../sessionIndex.ts";
 import { detectAnomalies, type AnomalyMetric } from "../anomalies.ts";
@@ -608,14 +609,20 @@ export function apiNotificationHistory(): NotificationHistoryPayload {
   const base = xdg !== undefined && xdg.length > 0
     ? path.join(xdg, "tokitoki")
     : path.join(os.homedir(), ".local", "share", "tokitoki");
+  let menubar: NotificationHistoryPayload["records"] = [];
   try {
     const parsed = JSON.parse(fs.readFileSync(path.join(base, "menubar-state.json"), "utf8")) as {
       history?: Array<{ id: string; at: string; title: string; body: string; reason: string }>;
     };
-    return { records: Array.isArray(parsed.history) ? parsed.history.slice(0, 50) : [] };
+    menubar = Array.isArray(parsed.history) ? parsed.history : [];
   } catch {
-    return { records: [] };
+    menubar = [];
   }
+  // Linux shells deliver alerts through `tokitoki notify`, which keeps its own journal.
+  const records = [...menubar, ...readNotifyState().history]
+    .sort((left, right) => right.at.localeCompare(left.at))
+    .slice(0, 50);
+  return { records };
 }
 
 // ---------------------------------------------------------------- sources

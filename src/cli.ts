@@ -49,6 +49,7 @@ import { repoEfficiency } from "./report.ts";
 import { bar, formatCost, humanCount, sparkline, formatInt, cachePct } from "./format.ts";
 import { configPath, loadConfig, writeConfig } from "./config.ts";
 import { computeSpendHealth } from "./spend-health.ts";
+import { dispatchNotifications, type NotifyResult } from "./notify.ts";
 import {
   buildSharePayload,
   describePayload,
@@ -152,6 +153,17 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
   --json                    required (the human view lives in the menubar/web)
   --show-email              include account emails (hidden by default)`,
     example: "tokitoki limits --json | jq '.accounts[] | {vendor, plan, windows}'",
+  },
+  notify: {
+    usage: "tokitoki notify [--dry-run] [--json]",
+    flags: `  send desktop alerts (notify-send) for critical quotas, quota resets,
+  windows that run out before their reset, budgets and burn rate. Honors
+  [notifications] (enabled, resetAware, quotaCriticalPercent, disabled…);
+  each alert fires once per window/period. Shell widgets run it through
+  'widget-payload --notify'.
+  --dry-run                 print what would be sent without sending or recording
+  --json                    machine-readable result`,
+    example: "tokitoki notify --dry-run",
   },
   serve: {
     usage: "tokitoki serve [--port <n>] [--host <addr>]",
@@ -289,10 +301,11 @@ Rows always show every configured scope×pattern; state is ok | warn (≥80%)
     example: "tokitoki config set ui.stripMetric \"tokens\"",
   },
   "widget-payload": {
-    usage: "tokitoki widget-payload [--cached] [--skip-scan] --json",
+    usage: "tokitoki widget-payload [--cached] [--skip-scan] [--notify] --json",
     flags: `  versioned JSON payload consumed by native apps and shell integrations
   --cached              read the persisted payload without scanning harness stores
   --skip-scan           refresh the payload without walking provider stores
+  --notify              also send pending desktop alerts ([notifications] must be enabled)
   --json                required for this machine-readable contract`,
     example: "tokitoki widget-payload --cached --json",
   },
@@ -392,6 +405,7 @@ Commands:
   report     aggregate a rolling window (--last day|week|month|year|24h, default week)
   limits     provider quota windows per vendor/account as versioned JSON
   serve      read-only loopback HTTP API (/v1/limits, /v1/usage, /v1/status)
+  notify     desktop alerts for quotas, budgets and burn rate (notify-send)
   today      shortcut for report --last day (+ top projects MTD)
   week       shortcut for report --last week
   month      shortcut for report --last month
@@ -461,6 +475,7 @@ export async function main(argv: string[]): Promise<void> {
       case "widget-payload": await refreshWidgetStatusIncidents(parsed); runWidgetPayload(parsed); break;
       case "limits": runLimits(parsed); break;
       case "serve": runServe(parsed); break;
+      case "notify": runNotify(parsed); break;
       case "ui": runUi(parsed); break;
       case "presence": runPresence(parsed); break;
       case "tools": runTools(parsed); break;
@@ -492,7 +507,8 @@ export async function main(argv: string[]): Promise<void> {
 
 /** Flags each command accepts — anything else is a typo we can suggest around. */
 const KNOWN_FLAGS: Record<string, string[]> = {
-  "widget-payload": ["cached", "skip-scan", "json"],
+  "widget-payload": ["cached", "skip-scan", "notify", "json"],
+  notify: ["dry-run", "json"],
   ui: ["list", "hide", "show", "surface", "menubar-only", "card-set", "account-order", "tabs"],
   limits: ["json", "show-email", "show-emails"],
   serve: ["port", "host"],
@@ -2054,6 +2070,41 @@ function runLimits(parsed: ParsedInvocation): void {
   console.log(JSON.stringify(readLimitsDocument({ showEmail: flagBool(parsed, "show-email") || flagBool(parsed, "show-emails") }), null, 2));
 }
 
+const sendPendingNotifications = (input: { cache: EventCache; dryRun?: boolean }): NotifyResult => {
+  const config = loadConfig();
+  if (config.notifications?.enabled !== true) return { sent: [], undelivered: 0, skipped: "disabled" };
+  syncCache(input.cache, resolveExtraFiles(config));
+  return dispatchNotifications({
+    limits: buildAccountLimits({ cache: input.cache, config }),
+    budgets: gaugesForMenubar(computeBudgetStatus(input.cache, config.budgets)),
+    spendHealth: computeSpendHealth(input.cache.hybridUsage(monthStartIso()), new Date(), config.budgets?.monthly, config.notifications?.burnWarningRatio ?? 0.8),
+    settings: config.notifications,
+    ...(input.dryRun === true ? { dryRun: true } : {}),
+  });
+};
+
+function runNotify(parsed: ParsedInvocation): void {
+  const result = withCache((cache) => sendPendingNotifications({ cache, dryRun: flagBool(parsed, "dry-run") }));
+  if (flagBool(parsed, "json")) {
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+  if (result.skipped === "disabled") {
+    console.log("notifications are disabled — enable with: tokitoki config set notifications.enabled true");
+    return;
+  }
+  if (result.skipped === "locked") {
+    console.log("another tokitoki notify run is in progress");
+    return;
+  }
+  if (result.sent.length === 0) {
+    console.log("nothing to notify");
+    return;
+  }
+  for (const notification of result.sent) console.log(`${notification.title} — ${notification.body}`);
+  if (result.undelivered > 0) console.error(`warning: ${result.undelivered} alert(s) could not be shown (is notify-send installed?)`);
+}
+
 function runServe(parsed: ParsedInvocation): void {
   const portRaw = flagString(parsed, "port") ?? String(DEFAULT_SERVE_PORT);
   const port = Number(portRaw);
@@ -2653,6 +2704,14 @@ function runWidgetPayload(parsed: ParsedInvocation): void {
   parts.providerRegistry = PROVIDER_REGISTRY;
   parts.statusIncidents = cachedStatusIncidents({ cache: payloadCache, vendors: vendorTagged.vendors });
   console.log(JSON.stringify(parts));
+  if (flagBool(parsed, "notify")) {
+    // Alerts are best-effort: the payload was already written for the widget.
+    try {
+      sendPendingNotifications({ cache: payloadCache });
+    } catch (err) {
+      console.error(`notify: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
   } finally {
     activeCache = previousCache;
     payloadCache.close();

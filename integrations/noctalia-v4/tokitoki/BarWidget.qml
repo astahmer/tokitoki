@@ -94,7 +94,7 @@ Item {
 
     Process {
         id: statusProcess
-        command: ["tokitoki", "widget-payload", "--cached", "--json"]
+        command: ["tokitoki", "widget-payload", "--cached", "--notify", "--json"]
         running: true
 
         stdout: StdioCollector {

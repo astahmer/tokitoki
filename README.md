@@ -698,6 +698,28 @@ resetAware = true
 quotaCriticalPercent = 10
 burnWarnings = true
 burnWarningRatio = 0.8
+# disabled = ["quotaPace"]     # opt out per category
+```
+
+Categories: `quotaCritical`, `quotaReset`, `quotaPace` (the current burn
+rate exhausts a window before it resets, CodexBar-style), `burnRate` and
+`budget`.
+
+### Desktop alerts on Linux (`tokitoki notify`)
+
+The same `[notifications]` settings drive desktop alerts on Linux. The DMS,
+Quickshell, Noctalia and Waybar integrations call
+`tokitoki widget-payload --notify` on every refresh, so enabling
+notifications in the widget settings is enough; alerts go through
+`notify-send` (libnotify). Each alert fires once per window reset or
+calendar period, stale scanned quotas never alert, and several bars on
+several monitors share one lock so nothing fires twice. History lives in
+`<data-dir>/notify-state.json` and shows up in the web dashboard next to
+menubar alerts.
+
+```sh
+tokitoki notify --dry-run    # what would fire now, without sending or recording
+tokitoki notify              # send pending alerts (e.g. from a cron/systemd timer)
 ```
 
 The side-notch is configured independently from the menubar preview:
