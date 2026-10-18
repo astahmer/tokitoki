@@ -55,6 +55,28 @@
         "type": "github"
       }
     },
+    "home-manager": {
+      "inputs": {
+        "nixpkgs": [
+          "tokitoki",
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1792274446,
+        "narHash": "sha256-AM1HmBeDnB2B3dSiXuCYeu7Me+lHNpz/P39lVxGJBuQ=",
+        "owner": "nix-community",
+        "repo": "home-manager",
+        "rev": "ab3823b4b24c0c3ca984c1f3ee577fd6d667424c",
+        "type": "github"
+      },
+      "original": {
+        "owner": "nix-community",
+        "ref": "release-26.05",
+        "repo": "home-manager",
+        "type": "github"
+      }
+    },
     "nixpkgs": {
       "locked": {
         "lastModified": 1789012029,
@@ -96,6 +118,7 @@
     },
     "tokitoki": {
       "inputs": {
+        "home-manager": "home-manager",
         "nixpkgs": "nixpkgs_2"
       },
       "locked": {
