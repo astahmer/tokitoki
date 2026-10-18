@@ -241,17 +241,28 @@ function normalize(value: unknown): TokitokiConfig {
   return cfg;
 }
 
-const aliasCache = new Map<string, ReadonlyMap<string, string>>();
+const ALIAS_RECHECK_MS = 5_000;
+const aliasCache = new Map<string, { aliases: ReadonlyMap<string, string>; mtimeMs: number; checkedAt: number }>();
 
-/** [accountAliases] lowercased, read once per config file per process (hot path in rollups). */
+/**
+ * [accountAliases] lowercased. Hot path in rollups, so the config file is
+ * re-stat'ed at most every few seconds; long-lived `serve`/`web`/`mcp`
+ * processes still pick up edits.
+ */
 export const accountAliases = (): ReadonlyMap<string, string> => {
   const key = configPath();
+  const now = Date.now();
   const cached = aliasCache.get(key);
-  if (cached !== undefined) return cached;
+  if (cached !== undefined && now - cached.checkedAt < ALIAS_RECHECK_MS) return cached.aliases;
+  const mtimeMs = fs.statSync(key, { throwIfNoEntry: false })?.mtimeMs ?? 0;
+  if (cached !== undefined && cached.mtimeMs === mtimeMs) {
+    cached.checkedAt = now;
+    return cached.aliases;
+  }
   const aliases = new Map(
     Object.entries(loadConfig().accountAliases ?? {}).map(([name, provider]) => [name.toLowerCase(), provider.toLowerCase()]),
   );
-  aliasCache.set(key, aliases);
+  aliasCache.set(key, { aliases, mtimeMs, checkedAt: now });
   return aliases;
 };
 

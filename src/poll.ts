@@ -481,12 +481,16 @@ async function pollOpencodeGo(key: string, fetcher: typeof fetch): Promise<{ win
  * An explicit opts.claudeCredentialsPath (fixture/tests) disables the
  * Keychain fallback so behavior stays deterministic.
  */
-interface ClaudeCredentials {
-  accessToken?: string;
-  refreshToken?: string;
-  subscriptionType?: string;
-  rateLimitTier?: string;
-}
+const ClaudeCredentialsFileSchema = z.object({
+  claudeAiOauth: z.looseObject({
+    accessToken: z.string().min(1),
+    refreshToken: z.string().optional(),
+    subscriptionType: z.string().optional(),
+    rateLimitTier: z.string().optional(),
+  }),
+});
+
+type ClaudeCredentials = z.infer<typeof ClaudeCredentialsFileSchema>["claudeAiOauth"];
 
 export function loadClaudeCredentials(opts: PollOptions): ClaudeCredentials | null {
   const explicit = opts.claudeCredentialsPath !== undefined;
@@ -507,10 +511,8 @@ export function loadClaudeCredentials(opts: PollOptions): ClaudeCredentials | nu
     }
   }
   try {
-    const parsed = JSON.parse(raw) as { claudeAiOauth?: ClaudeCredentials };
-    const oauth = parsed.claudeAiOauth;
-    if (oauth === undefined || typeof oauth.accessToken !== "string" || oauth.accessToken.length === 0) return null;
-    return oauth;
+    const parsed = ClaudeCredentialsFileSchema.safeParse(JSON.parse(raw));
+    return parsed.success ? parsed.data.claudeAiOauth : null;
   } catch {
     return null;
   }
