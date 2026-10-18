@@ -1,6 +1,10 @@
 import { monthStartIso, sinceIsoFor } from "./report.ts";
 import type { EventCache } from "./cache.ts";
 import type { BlockRow } from "./blocks.ts";
+import { providerInfo } from "./provider-registry.ts";
+import { vendorForProvider } from "./model-provider.ts";
+import { cachedStatusIncidents, refreshStatusIncidents, type IncidentIndicator } from "./status-incidents.ts";
+import { knownAccountVendors } from "./widget-providers.ts";
 
 /**
  * Claude Code statusline hook integration: reads the hook's stdin JSON,
@@ -31,11 +35,33 @@ export function parseStatuslineStdin(raw: string): StatuslineInput {
   }
 }
 
+const INDICATOR_WORDS: Record<IncidentIndicator, string> = {
+  none: "ok",
+  minor: "degraded",
+  major: "partial outage",
+  critical: "outage",
+};
+
+const truncate = (text: string, max: number): string => (text.length > max ? `${text.slice(0, max - 1).trimEnd()}…` : text);
+
+/** One short segment for the worst degraded vendor among this machine's accounts. */
+export const incidentSegment = (incidents: Record<string, { indicator: IncidentIndicator; description: string }>): string | undefined => {
+  const rank: Record<IncidentIndicator, number> = { none: 0, minor: 1, major: 2, critical: 3 };
+  const worst = Object.entries(incidents)
+    .filter(([, incident]) => incident.indicator !== "none")
+    .sort(([, a], [, b]) => rank[b.indicator] - rank[a.indicator])[0];
+  if (worst === undefined) return undefined;
+  const [vendor, incident] = worst;
+  const head = `${providerInfo(vendor).shortName} ${INDICATOR_WORDS[incident.indicator]}`;
+  return incident.description.length > 0 ? `${head}: ${truncate(incident.description, 32)}` : head;
+};
+
 /** Render the single statusline. Never throws; empty string when no data. */
 export async function renderStatusline(
   input: StatuslineInput,
   cache: EventCache,
   now: number = Date.now(),
+  options: { refreshIncidents?: boolean; fetcher?: typeof fetch } = {},
 ): Promise<string> {
   const segments: string[] = [];
 
@@ -98,6 +124,18 @@ export async function renderStatusline(
     }
     segments.push(`block ${usedPct}% (${remainingMin}m left)`);
   }
+
+  // The hook runs constantly: refresh only the session vendor's page (TTL
+  // cached), but report any account vendor already known to be degraded.
+  const vendors = knownAccountVendors(cache);
+  if (options.refreshIncidents === true) {
+    const sessionVendor = vendorForProvider({ provider: owner?.provider ?? "claude-code", accountKey: owner?.account_key ?? "" });
+    await refreshStatusIncidents({ cache, vendors: [sessionVendor], now, ...(options.fetcher !== undefined ? { fetcher: options.fetcher } : {}) })
+      .catch(() => undefined);
+    vendors.push(sessionVendor);
+  }
+  const incident = incidentSegment(cachedStatusIncidents({ cache, vendors, now }));
+  if (incident !== undefined) segments.push(incident);
 
   return segments.join(" · ");
 }

@@ -1173,11 +1173,90 @@
   },
   "limits": [
     {
+      "provider": "claude-code",
+      "accountKey": "default",
+      "accountId": "acc-e2e-claude",
+      "email": "dev@example.com",
+      "extraUsage": {
+        "enabled": true,
+        "limitUsd": 50,
+        "usedPercent": 25,
+        "usedUsd": 12.5
+      },
+      "freshness": "fresh",
+      "observedAt": "2026-09-10T15:18:00.000Z",
+      "origin": "polled",
+      "plan": "Max 5x",
+      "planLabel": "Max 5x",
+      "windows": [
+        {
+          "cost": 0,
+          "id": "session",
+          "kind": "day",
+          "label": "Session",
+          "pace": {
+            "deltaPercent": 22,
+            "expectedPercent": 58,
+            "runsOutAt": "2026-09-10T16:40:00.000Z",
+            "status": "over"
+          },
+          "requests": 0,
+          "resetsAt": "2026-09-10T17:30:00.000Z",
+          "scope": "session",
+          "source": "embedded",
+          "tokens": 0,
+          "usedPct": 80,
+          "usedPercent": 80,
+          "windowMinutes": 300
+        },
+        {
+          "cost": 0,
+          "id": "weekly",
+          "kind": "week",
+          "label": "Weekly",
+          "pace": {
+            "deltaPercent": -4,
+            "expectedPercent": 46,
+            "status": "on"
+          },
+          "requests": 0,
+          "resetsAt": "2026-09-14T09:00:00.000Z",
+          "scope": "weekly",
+          "source": "embedded",
+          "tokens": 0,
+          "usedPct": 42,
+          "usedPercent": 42,
+          "windowMinutes": 10080
+        },
+        {
+          "cost": 0,
+          "id": "weekly:opus",
+          "kind": "Opus weekly",
+          "label": "Opus weekly",
+          "model": "opus",
+          "pace": {
+            "deltaPercent": -34,
+            "expectedPercent": 46,
+            "status": "under"
+          },
+          "requests": 0,
+          "resetsAt": "2026-09-14T09:00:00.000Z",
+          "scope": "model",
+          "source": "embedded",
+          "tokens": 0,
+          "usedPct": 12,
+          "usedPercent": 12,
+          "windowMinutes": 10080
+        }
+      ],
+      "vendor": "anthropic"
+    },
+    {
+      "provider": "codex",
       "accountKey": "codex",
       "freshness": "fresh",
       "observedAt": "2026-09-10T13:10:26.696Z",
       "origin": "scan",
-      "provider": "codex",
       "windows": [
         {
           "cost": 0,
@@ -1215,15 +1294,16 @@
           "tokens": 0,
           "usedPct": 0
         }
-      ]
+      ],
+      "vendor": "openai"
     },
     {
+      "provider": "codex",
       "accountKey": "base_model_inference",
       "email": "dev@example.com",
       "freshness": "fresh",
       "observedAt": "2026-09-04T20:41:41.134Z",
       "origin": "scan",
-      "provider": "codex",
       "windows": [
         {
           "cost": 0,
@@ -1254,13 +1334,14 @@
           "windowEnd": "2026-09-30T22:00:00.000Z",
           "windowStart": "2026-08-31T22:00:00.000Z"
         }
-      ]
+      ],
+      "vendor": "openai"
     },
     {
+      "provider": "cursor",
       "accountKey": "default",
       "freshness": "unknown",
       "origin": "scan",
-      "provider": "cursor",
       "windows": [
         {
           "cost": 0.10832125000000001,
@@ -1272,13 +1353,14 @@
           "windowEnd": "2026-09-30T22:00:00.000Z",
           "windowStart": "2026-08-31T22:00:00.000Z"
         }
-      ]
+      ],
+      "vendor": "cursor"
     },
     {
+      "provider": "t3code",
       "accountKey": "cursor",
       "freshness": "unknown",
       "origin": "scan",
-      "provider": "t3code",
       "windows": [
         {
           "cost": 0,
@@ -1310,16 +1392,17 @@
           "windowEnd": "2026-09-30T22:00:00.000Z",
           "windowStart": "2026-08-31T22:00:00.000Z"
         }
-      ]
+      ],
+      "vendor": "cursor"
     },
     {
+      "provider": "codex",
       "accountKey": "codex-lb:plus",
       "email": "dev@example.com",
       "freshness": "fresh",
       "observedAt": "2026-08-02T22:21:23.333Z",
       "origin": "scan",
       "planLabel": "Plus",
-      "provider": "codex",
       "windows": [
         {
           "cost": 0,
@@ -1349,16 +1432,17 @@
           "windowEnd": "2026-09-30T22:00:00.000Z",
           "windowStart": "2026-08-31T22:00:00.000Z"
         }
-      ]
+      ],
+      "vendor": "openai"
     },
     {
+      "provider": "codex",
       "accountKey": "openai:plus",
       "email": "dev@example.com",
       "freshness": "fresh",
       "observedAt": "2026-07-25T21:23:38.601Z",
       "origin": "scan",
       "planLabel": "Plus",
-      "provider": "codex",
       "windows": [
         {
           "cost": 0,
@@ -1388,7 +1472,8 @@
           "windowEnd": "2026-09-30T22:00:00.000Z",
           "windowStart": "2026-08-31T22:00:00.000Z"
         }
-      ]
+      ],
+      "vendor": "openai"
     }
   ],
   "modelPeriods": [
@@ -3640,12 +3725,6 @@
     "preview": "$21.92 today · $986.17 MTD"
   },
   "today": {
-    "burn": {
-      "perDay": 98.6171244994,
-      "projected": 2958.513734982
-    },
-    "groupBy": "provider",
-    "period": null,
     "rows": [
       {
         "bucket": "codex",
@@ -3655,9 +3734,16 @@
         "inputTokens": 78429577,
         "outputTokens": 323664,
         "requests": 745,
-        "sessions": 6
+        "sessions": 6,
+        "vendor": "openai"
       }
     ],
+    "burn": {
+      "perDay": 98.6171244994,
+      "projected": 2958.513734982
+    },
+    "groupBy": "provider",
+    "period": null,
     "total": {
       "bucket": "TOTAL",
       "cacheReadTokens": 75933056,
@@ -3826,5 +3912,268 @@
     "label": "rolling day",
     "since": "2026-09-09T21:19:45.351Z",
     "until": null
+  },
+  "providerRegistry": {
+    "anthropic": {
+      "displayName": "Anthropic",
+      "shortName": "Claude",
+      "vendor": "anthropic",
+      "aliases": [
+        "claude"
+      ],
+      "icon": "psychology",
+      "logo": "claude-code",
+      "statusPage": {
+        "kind": "statuspage",
+        "url": "https://status.claude.com"
+      }
+    },
+    "openai": {
+      "displayName": "OpenAI",
+      "shortName": "OpenAI",
+      "vendor": "openai",
+      "icon": "smart_toy",
+      "logo": "codex",
+      "statusPage": {
+        "kind": "statuspage",
+        "url": "https://status.openai.com"
+      }
+    },
+    "google": {
+      "displayName": "Google",
+      "shortName": "Gemini",
+      "vendor": "google",
+      "aliases": [
+        "gemini"
+      ],
+      "icon": "auto_awesome",
+      "logo": "gemini-cli",
+      "statusPage": {
+        "kind": "google-workspace",
+        "productId": "npdyhgECDJ6tB66MxXyo",
+        "url": "https://www.google.com/appsstatus/dashboard/products/npdyhgECDJ6tB66MxXyo/history"
+      }
+    },
+    "github": {
+      "displayName": "GitHub",
+      "shortName": "Copilot",
+      "vendor": "github",
+      "aliases": [
+        "copilot"
+      ],
+      "icon": "assistant",
+      "logo": "copilot",
+      "statusPage": {
+        "kind": "statuspage",
+        "url": "https://www.githubstatus.com"
+      }
+    },
+    "cursor": {
+      "displayName": "Cursor",
+      "shortName": "Cursor",
+      "vendor": "cursor",
+      "icon": "mouse",
+      "logo": "cursor",
+      "statusPage": {
+        "kind": "statuspage",
+        "url": "https://status.cursor.com"
+      }
+    },
+    "openrouter": {
+      "displayName": "OpenRouter",
+      "shortName": "OpenRouter",
+      "vendor": "openrouter",
+      "icon": "alt_route",
+      "logo": "openrouter"
+    },
+    "opencode": {
+      "displayName": "OpenCode",
+      "shortName": "OpenCode",
+      "vendor": "opencode",
+      "icon": "code",
+      "logo": "opencode"
+    },
+    "xai": {
+      "displayName": "xAI",
+      "shortName": "Grok",
+      "vendor": "xai",
+      "aliases": [
+        "grok"
+      ],
+      "icon": "bolt",
+      "logo": "grok"
+    },
+    "deepseek": {
+      "displayName": "DeepSeek",
+      "shortName": "DeepSeek",
+      "vendor": "deepseek",
+      "icon": "water",
+      "logo": "deepseek"
+    },
+    "moonshot": {
+      "displayName": "Moonshot AI",
+      "shortName": "Kimi",
+      "vendor": "moonshot",
+      "aliases": [
+        "kimi"
+      ],
+      "icon": "dark_mode",
+      "logo": "kimi"
+    },
+    "zhipu": {
+      "displayName": "Z.ai",
+      "shortName": "Z.ai",
+      "vendor": "zhipu",
+      "aliases": [
+        "zai"
+      ],
+      "icon": "hub"
+    },
+    "minimax": {
+      "displayName": "MiniMax",
+      "shortName": "MiniMax",
+      "vendor": "minimax",
+      "icon": "hub"
+    },
+    "mistral": {
+      "displayName": "Mistral",
+      "shortName": "Mistral",
+      "vendor": "mistral",
+      "icon": "air"
+    },
+    "alibaba": {
+      "displayName": "Alibaba Qwen",
+      "shortName": "Qwen",
+      "vendor": "alibaba",
+      "icon": "hub"
+    },
+    "meta": {
+      "displayName": "Meta",
+      "shortName": "Llama",
+      "vendor": "meta",
+      "icon": "hub"
+    },
+    "commandcode": {
+      "displayName": "Command Code",
+      "shortName": "Command Code",
+      "vendor": "commandcode",
+      "icon": "code"
+    },
+    "claude-code": {
+      "displayName": "Claude Code",
+      "shortName": "Claude",
+      "vendor": "anthropic",
+      "icon": "psychology",
+      "logo": "claude-code"
+    },
+    "codex": {
+      "displayName": "Codex",
+      "shortName": "Codex",
+      "vendor": "openai",
+      "icon": "smart_toy",
+      "logo": "codex"
+    },
+    "opencodex": {
+      "displayName": "opencodex",
+      "shortName": "Codex",
+      "vendor": "openai",
+      "icon": "smart_toy",
+      "logo": "codex"
+    },
+    "gemini-cli": {
+      "displayName": "Gemini CLI",
+      "shortName": "Gemini",
+      "vendor": "google",
+      "icon": "auto_awesome",
+      "logo": "gemini-cli"
+    },
+    "antigravity-cli": {
+      "displayName": "Antigravity",
+      "shortName": "Antigravity",
+      "vendor": "google",
+      "icon": "rocket_launch",
+      "logo": "gemini-cli"
+    },
+    "copilot": {
+      "displayName": "GitHub Copilot",
+      "shortName": "Copilot",
+      "vendor": "github",
+      "icon": "assistant",
+      "logo": "copilot"
+    },
+    "grok": {
+      "displayName": "Grok",
+      "shortName": "Grok",
+      "vendor": "xai",
+      "icon": "bolt",
+      "logo": "grok"
+    },
+    "opencode-go": {
+      "displayName": "OpenCode Go",
+      "shortName": "OpenCode",
+      "vendor": "opencode",
+      "icon": "code",
+      "logo": "opencode"
+    },
+    "pi": {
+      "displayName": "Pi",
+      "shortName": "Pi",
+      "icon": "terminal"
+    },
+    "t3code": {
+      "displayName": "T3 Code",
+      "shortName": "T3",
+      "icon": "terminal"
+    },
+    "aider": {
+      "displayName": "Aider",
+      "shortName": "Aider",
+      "icon": "terminal"
+    },
+    "goose": {
+      "displayName": "Goose",
+      "shortName": "Goose",
+      "icon": "terminal"
+    },
+    "amp": {
+      "displayName": "Amp",
+      "shortName": "Amp",
+      "icon": "terminal"
+    },
+    "zed": {
+      "displayName": "Zed",
+      "shortName": "Zed",
+      "icon": "terminal"
+    },
+    "zai": {
+      "displayName": "Z.ai",
+      "shortName": "Z.ai",
+      "vendor": "zhipu",
+      "icon": "hub"
+    },
+    "kimi": {
+      "displayName": "Kimi Code",
+      "shortName": "Kimi",
+      "vendor": "moonshot",
+      "icon": "dark_mode",
+      "logo": "kimi"
+    }
+  },
+  "statusIncidents": {
+    "anthropic": {
+      "indicator": "major",
+      "description": "Elevated errors on Claude Opus",
+      "url": "https://status.claude.com"
+    },
+    "cursor": {
+      "indicator": "none",
+      "description": "All Systems Operational",
+      "url": "https://status.cursor.com"
+    },
+    "openai": {
+      "indicator": "none",
+      "description": "All Systems Operational",
+      "url": "https://status.openai.com"
+    }
   }
 }

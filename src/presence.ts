@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 
 import type { TokitokiConfig } from "./config.ts";
+import { localMachineId } from "./machine.ts";
 
 /**
  * Multi-machine presence. Each machine drops `<machineId>.hb` (JSON:
@@ -18,6 +19,8 @@ export interface MachinePresence {
   ts: number;
   /** active <10min · recent <1h · stale otherwise */
   state: "active" | "recent" | "stale";
+  /** True for the machine running this process. */
+  local?: boolean;
 }
 
 const HB_SUFFIX = ".hb";
@@ -94,7 +97,11 @@ export function presenceDirs(cfg: TokitokiConfig): string[] {
 }
 
 /** Machines seen across all sync locations, deduped by id, newest first. */
-export function collectMachines(cfg: TokitokiConfig, now: Date = new Date()): MachinePresence[] {
+export function collectMachines(
+  cfg: TokitokiConfig,
+  now: Date = new Date(),
+  currentMachineId: string = localMachineId(),
+): MachinePresence[] {
   const byId = new Map<string, MachinePresence>();
   for (const dir of presenceDirs(cfg)) {
     for (const p of readPresence(dir, now)) {
@@ -102,5 +109,7 @@ export function collectMachines(cfg: TokitokiConfig, now: Date = new Date()): Ma
       if (known === undefined || p.ts > known.ts) byId.set(p.machineId, p);
     }
   }
-  return [...byId.values()].sort((a, b) => b.ts - a.ts);
+  return [...byId.values()]
+    .map((machine) => (machine.machineId === currentMachineId ? { ...machine, local: true } : machine))
+    .sort((a, b) => b.ts - a.ts);
 }

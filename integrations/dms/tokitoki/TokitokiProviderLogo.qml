@@ -6,28 +6,25 @@ Item {
     id: root
 
     property string provider: ""
+    // payload.providerRegistry: id -> { logo, icon, ... }
+    property var registry: ({})
     property int size: Theme.iconSizeSmall
     property bool showBackground: false
     property string fallbackIcon: "account_circle"
     property color fallbackColor: Theme.primary
     property color backgroundColor: Theme.withAlpha(Theme.primaryContainer, 0.9)
 
-    readonly property url logoSource: {
-        switch (provider) {
-        case "codex":
-        case "openai": return Qt.resolvedUrl("assets/provider-logos/codex.svg")
-        case "claude-code":
-        case "claude": return Qt.resolvedUrl("assets/provider-logos/claude-code.svg")
-        case "cursor": return Qt.resolvedUrl("assets/provider-logos/cursor.svg")
-        case "gemini-cli":
-        case "gemini": return Qt.resolvedUrl("assets/provider-logos/gemini-cli.svg")
-        case "copilot": return Qt.resolvedUrl("assets/provider-logos/copilot.svg")
-        case "grok": return Qt.resolvedUrl("assets/provider-logos/grok.svg")
-        case "opencode":
-        case "opencode-go": return Qt.resolvedUrl("assets/provider-logos/opencode.svg")
-        default: return ""
-        }
+    // Unknown ids try an asset named after the raw id; a missing file falls
+    // through to the icon below.
+    readonly property string logoKey: {
+        var entry = registry && provider.length > 0 ? registry[provider] : null
+        if (entry)
+            return entry.logo || ""
+        return provider
     }
+    readonly property url logoSource: logoKey.length > 0
+        ? Qt.resolvedUrl("assets/provider-logos/" + logoKey + ".svg")
+        : ""
 
     width: showBackground ? 28 : size
     height: showBackground ? 28 : size

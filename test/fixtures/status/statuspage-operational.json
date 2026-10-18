@@ -1,0 +1,6 @@
+{
+  "page": { "id": "01JMDK9XYNY6RXSED6SDWW50WY", "name": "OpenAI", "url": "https://status.openai.com/", "updated_at": "2026-10-16T20:01:40Z" },
+  "status": { "description": "All Systems Operational", "indicator": "none" },
+  "components": [],
+  "incidents": []
+}

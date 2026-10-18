@@ -7,15 +7,15 @@ import { DonutShare } from "./DonutShare";
 import { EmptyState, Pill, SkeletonBlock } from "../ui";
 
 const DIMENSIONS: Array<{ key: BreakdownDimension; label: string }> = [
+  { key: "vendor", label: "vendor" },
   { key: "harness", label: "harness" },
-  { key: "provider", label: "provider" },
   { key: "model", label: "model" },
 ];
 
 /** Shared breakdown surface. The dashboard-wide range, including custom
  * from/to dates, is passed directly so every slice uses the same window. */
 export function SpendDistribution({ win, providers = [] }: { win: WindowSelection; providers?: string[] }) {
-  const [by, setBy] = useState<BreakdownDimension>("provider");
+  const [by, setBy] = useState<BreakdownDimension>("vendor");
   const [metric, setMetric] = useState<"cost" | "tokens">("cost");
   const [selected, setSelected] = useState<string>();
   const breakdown = useAsyncStaleWhileRevalidate(

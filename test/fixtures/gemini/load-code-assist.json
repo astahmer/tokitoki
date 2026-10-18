@@ -1,0 +1,6 @@
+{
+  "currentTier": { "id": "standard-tier", "name": "Gemini Code Assist Standard" },
+  "paidTier": { "name": "Gemini Code Assist Standard" },
+  "cloudaicompanionProject": { "id": "proj-quota-123", "name": "projects/proj-quota-123" },
+  "allowedTiers": [{ "id": "standard-tier", "isDefault": true }]
+}

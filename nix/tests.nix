@@ -98,6 +98,16 @@ let
         };
       }
     ]).config;
+  served =
+    (evaluate [
+      {
+        programs.tokitoki.serve = {
+          enable = true;
+          port = 7000;
+        };
+      }
+    ]).config;
+  serveService = served.systemd.user.services.tokitoki-serve;
   service = standalone.systemd.user.services.tokitoki-quickshell;
   bars = dms.programs.dank-material-shell.settings.barConfigs;
   success = cfg: lib.all (entry: entry.assertion) cfg.assertions;
@@ -108,6 +118,12 @@ assert success embedded;
 assert success dms;
 assert success defaultDms;
 assert success manualDms;
+assert success served;
+assert served.programs.tokitoki.enable;
+assert lib.hasSuffix " serve --port 7000 --host 127.0.0.1" (builtins.head serveService.Service.ExecStart);
+assert serveService.Install.WantedBy == [ "default.target" ];
+assert !(served.systemd.user.services ? tokitoki-quickshell);
+assert !(standalone.systemd.user.services ? tokitoki-serve);
 assert !missingDms.success;
 assert cli.systemd.user.services == { };
 assert standalone.programs.tokitoki.enable;

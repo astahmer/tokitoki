@@ -4,10 +4,14 @@ import { createContext, runInContext } from "node:vm";
 
 const widget = readFileSync(new URL("../integrations/dms/tokitoki/TokitokiWidget.qml", import.meta.url), "utf8");
 const sparkline = readFileSync(new URL("../integrations/dms/tokitoki/TokitokiSparkline.qml", import.meta.url), "utf8");
+const dayClock = readFileSync(new URL("../integrations/dms/tokitoki/TokitokiDayClock.qml", import.meta.url), "utf8");
+const activityGrid = readFileSync(new URL("../integrations/dms/tokitoki/TokitokiActivityGrid.qml", import.meta.url), "utf8");
 const notifications = readFileSync(new URL("../integrations/dms/tokitoki/TokitokiNotifications.qml", import.meta.url), "utf8");
 const functions = (source: string) => [...source.matchAll(/^    function [\s\S]*?^    }/gm)].map((match) => match[0]).join("\n");
 const makeWidget = () => {
   const context = createContext({
+    // The vm realm has its own Date; share ours so setSystemTime pins "now".
+    Date,
     payload: { schema: 1, app: "tokitoki" },
     hasPayload: true,
     hasLimits: false,
@@ -104,6 +108,31 @@ describe("DMS widget uses the existing payload without distorting totals", () =>
     expect(ui.buildStatusStripGroups()[0].lines[0]).toBe("5h: 100% · 120 · $2.00");
   });
 
+  it("renders provider-neutral windows with labels, pace, and run-out time", () => {
+    setSystemTime(new Date(2026, 9, 18, 12, 30));
+    const ui = makeWidget();
+    const session = {
+      kind: "day", label: "Session", scope: "session", windowMinutes: 300, usedPct: 80,
+      pace: { expectedPercent: 50, deltaPercent: 30, status: "over", runsOutAt: new Date(2026, 9, 18, 13, 7).toISOString() },
+    };
+    const opus = { kind: "Opus weekly", label: "Opus weekly", scope: "model", model: "opus", windowMinutes: 10080, usedPct: 10 };
+    const weekly = { kind: "week", label: "Weekly", scope: "weekly", windowMinutes: 10080, usedPct: 30, pace: { expectedPercent: 40, status: "on" } };
+    const ordered = ui.orderedWindows([opus, { kind: "month" }, weekly, session]);
+    expect(ordered.map((window: { kind: string }) => window.kind)).toEqual(["day", "week", "Opus weekly", "month"]);
+    expect(ui.windowTitle(session)).toBe("Session");
+    expect(ui.windowTitle({ kind: "week" })).toBe("Weekly");
+    expect(ui.paceLabel(session)).toBe("Runs out ~13:07");
+    expect(ui.paceLabel(weekly)).toBe("On pace");
+    expect(ui.paceLabel({ kind: "week" })).toBe("");
+    expect(ui.paceMarkerFraction(weekly)).toBeCloseTo(0.6);
+    expect(ui.paceMarkerFraction(opus)).toBe(-1);
+    expect(ui.extraUsageLabel({ enabled: true, usedUsd: 12.5, limitUsd: 50 })).toBe("Extra usage $12.50 / $50.00");
+    expect(ui.extraUsageLabel({ enabled: false })).toBe("");
+    ui.hasLimits = true;
+    ui.payload.limits = [{ provider: "claude-code", accountKey: "default", windows: [opus, weekly, session] }];
+    expect(ui.buildStatusStripGroups()[0].lines[0]).toBe("Session: 20% · 0 · $0.00");
+  });
+
   it("includes usage-only harnesses in the bar and uses real token fields in fallback", () => {
     const ui = makeWidget();
     ui.payload.today = { rows: [{ bucket: "cursor", inputTokens: 120, costUsd: 2 }], total: { inputTokens: 120, costUsd: 2 } };
@@ -154,6 +183,51 @@ it("sparkline sums providers by local calendar day and fills missing days", () =
   const samples = context.buildSamples();
   expect(samples).toHaveLength(30);
   expect(samples.slice(-3)).toEqual([22, 0, 8]);
+  expect(context.buildSamples("2026-10-17")).toEqual(samples);
+});
+
+it("sparkline and day clock roll the 30-day window over at local midnight", () => {
+  setSystemTime(new Date(2026, 9, 17, 23, 59, 30));
+  const clock = createContext({ Date, Math, String });
+  runInContext(functions(dayClock), clock);
+  const beforeKey = clock.localDayKey(new Date());
+  expect(beforeKey).toBe("2026-10-17");
+  expect(clock.nextCheckInterval(new Date())).toBe(31_000);
+  expect(clock.nextCheckInterval(new Date(2026, 9, 17, 12))).toBe(600_000);
+
+  const context = createContext({ Date, history: { days: ["2026-10-17", "2026-10-18"], series: [{ values: [4, 9] }] } });
+  runInContext(functions(sparkline), context);
+  expect(context.buildSamples(beforeKey).slice(-2)).toEqual([0, 4]);
+
+  setSystemTime(new Date(2026, 9, 18, 0, 0, 1));
+  const afterKey = clock.localDayKey(new Date());
+  expect(afterKey).toBe("2026-10-18");
+  expect(context.buildSamples(afterKey).slice(-2)).toEqual([4, 9]);
+});
+
+it("activity grid cells fit both the available width and height", () => {
+  const context = createContext({ Math });
+  runInContext(functions(activityGrid), context);
+  for (const width of [300, 420, 640, 900, 1280]) {
+    const layout = { width, height: 58, columns: 53, rows: 7, columnSpacing: Math.min(2, Math.max(0, (width - 53) / 52)), rowSpacing: 2 };
+    const cell = context.cellSize(layout);
+    expect(layout.rows * cell + (layout.rows - 1) * layout.rowSpacing).toBeLessThanOrEqual(layout.height);
+    expect(layout.columns * cell + (layout.columns - 1) * layout.columnSpacing).toBeLessThanOrEqual(width);
+    expect(cell).toBeGreaterThan(0);
+  }
+  expect(context.cellSize({ width: 300, height: 58, columns: 0, rows: 7, columnSpacing: 2, rowSpacing: 2 })).toBe(0);
+});
+
+it("other machines card excludes the local machine and stale heartbeats", () => {
+  const ui = makeWidget();
+  const now: number = runInContext("Date.now()", ui);
+  const machines = ui.otherActiveMachines([
+    { machineId: "this-host", host: "this-host", ts: now, local: true },
+    { machineId: "desktop", host: "desktop", ts: now - 60_000 },
+    { machineId: "old", host: "old", ts: now - 3_600_000 },
+  ]);
+  expect(machines.map((machine: { machineId: string }) => machine.machineId)).toEqual(["desktop"]);
+  expect(ui.otherActiveMachines(undefined)).toEqual([]);
 });
 
 it("notification writes are serialized and stale payloads do not discard pending edits", () => {

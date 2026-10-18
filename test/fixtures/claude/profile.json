@@ -1,0 +1,17 @@
+{
+  "account": {
+    "uuid": "acc-0f3c9b4e",
+    "full_name": "Dev Example",
+    "display_name": "dev",
+    "email_address": "dev@example.com",
+    "has_claude_max": true,
+    "has_claude_pro": false
+  },
+  "organization": {
+    "uuid": "org-7a1d",
+    "name": "dev@example.com's Organization",
+    "organization_type": "claude_max",
+    "billing_type": "stripe_subscription",
+    "rate_limit_tier": "default_claude_max_20x"
+  }
+}

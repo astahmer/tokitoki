@@ -11,6 +11,7 @@ import {
   opencodexAccountIdentities,
   pollQuotas,
   redactCredential,
+  type PollOptions,
 } from "../src/poll.ts";
 
 const ID_TOKEN = (() => {
@@ -64,17 +65,21 @@ const USAGE_BODY = {
 };
 
 /** All optional store paths pointing at nonexistent files — hermetic by default. */
-function hermeticPaths(): Record<string, string> {
+function hermeticPaths(): PollOptions {
   const dir = mkdtempSync(path.join(os.tmpdir(), "tk-poll-hermetic-"));
   const miss = (name: string) => path.join(dir, name);
   return {
     claudeCredentialsPath: miss("claude.json"),
+    claudeAccountPath: miss("claude-account.json"),
     copilotAuthPath: miss("copilot-apps.json"),
     cursorAuthPath: miss("cursor-auth.json"),
     cursorStateVscdbPath: miss("cursor-state.vscdb"),
     opencodexCachePath: miss("opencodex-cache.json"),
     opencodexAccountsPath: miss("opencodex-accounts.json"),
     commandcodeAuthPath: miss("commandcode-auth.json"),
+    geminiCredsPath: miss("gemini-oauth-creds.json"),
+    kimiHome: miss("kimi-code"),
+    env: {},
   };
 }
 

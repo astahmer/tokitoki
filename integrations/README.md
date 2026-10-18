@@ -27,6 +27,29 @@ The payload is versioned with `schema: 1` and contains:
 - `providers`: the largest provider slices;
 - `budgets`: configured budget gauges, when present.
 
+`widget-payload` adds a few fields that the DMS and Quickshell views use:
+
+- `providerRegistry`: provider, harness, and vendor ids mapped to
+  `{displayName, shortName, vendor, icon, logo, statusPage, aliases}`.
+  Adapters look up names and logos here and fall back to the raw id.
+- `vendor` on every `limits` entry and every `today.rows` bucket, so adapters
+  group cards by vendor instead of parsing account keys.
+- `statusIncidents`: `{vendor: {indicator, description, url}}` for vendors
+  you have an account with that publish a status page. These are Anthropic,
+  OpenAI, Cursor, and GitHub (Statuspage), plus Gemini (Google's Workspace
+  incidents feed). `indicator` is `none`, `minor`, `major`, or `critical`.
+  Live payloads refresh it at most every 5 minutes; `--cached` reads only the
+  stored copy. A failed fetch keeps the last answer, and that answer is
+  dropped after an hour. The DMS quota card shows a badge for degraded
+  vendors, and the bar pill shows a warning icon. Turn the checks off with
+  `statusIncidents.enabled = false`.
+- `balance` on prepaid accounts (DeepSeek, OpenRouter credits):
+  `{currency, remaining, total?, used?, granted?, paid?, available?}`.
+
+Provider logos under `dms/tokitoki/assets/provider-logos/` for DeepSeek,
+Kimi, and OpenRouter come from [Simple Icons](https://simpleicons.org)
+(CC0-1.0).
+
 The Nix package installs these adapter files under
 `<tokitoki-store-path>/share/tokitoki/integrations`; a Home Manager setup can
 point its shell configuration at that store path instead of a checkout.
@@ -327,7 +350,7 @@ E2E_SHELL=quickshell ./e2e/run.sh
 | `noctalia-v4/tokitoki` | Legacy Noctalia v4 | QML bar widget |
 | `quickshell/tokitoki` | Standalone Quickshell | Full shared widget, no DMS runtime |
 | `kde-plasma/tokitoki/package` | KDE Plasma 6 | Plasmoid |
-| `waybar` | Waybar | `custom/*` JSON module |
+| `waybar` | Waybar | `custom/*` JSON module; vendor incidents add a ⚠, tooltip lines, and an `incident` CSS class |
 | `gnome/tokitoki@local` | GNOME Shell 45+ | GJS extension |
 | `cosmic/tokitoki-applet` | COSMIC | Rust/libcosmic applet scaffold |
 

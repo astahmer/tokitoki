@@ -1,0 +1,11 @@
+{
+  "page": { "id": "tymt9n04zgry", "name": "Claude", "url": "https://status.claude.com", "time_zone": "Etc/UTC", "updated_at": "2026-10-18T16:44:38.950Z" },
+  "components": [{ "id": "rwppv331jlwc", "name": "claude.ai", "status": "degraded_performance" }],
+  "incidents": [
+    { "id": "a1", "name": "Scheduled maintenance follow-up", "status": "resolved", "impact": "critical", "shortlink": "https://stspg.io/old" },
+    { "id": "a2", "name": "Elevated errors on Claude Opus", "status": "investigating", "impact": "major", "shortlink": "https://stspg.io/abc123" },
+    { "id": "a3", "name": "Slow console loads", "status": "monitoring", "impact": "minor", "shortlink": "https://stspg.io/def456" }
+  ],
+  "scheduled_maintenances": [],
+  "status": { "indicator": "minor", "description": "Partially Degraded Service" }
+}

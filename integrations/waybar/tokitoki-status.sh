@@ -18,20 +18,25 @@ printf '%s\n' "$payload" | jq -c '
     elif . >= 1000 then ((. / 1000 * 10 | round) / 10 | tostring) + "k"
     else (floor | tostring)
     end;
-  {
-    text: ("$" + ((.stats.costUsd // 0) | cost) + " · " + ((.stats.tokens // 0) | compact)),
+  . as $root
+  | ([(.statusIncidents // {}) | to_entries[] | select(.value.indicator != "none")]) as $incidents
+  | {
+    text: ("$" + ((.stats.costUsd // 0) | cost) + " · " + ((.stats.tokens // 0) | compact) + (if ($incidents | length) > 0 then " ⚠" else "" end)),
     tooltip: (
       "Tokitoki " + (.window.label // "today") +
       "\n" + ((.stats.tokens // 0) | compact) + " tokens" +
       "\n" + ((.stats.requests // 0) | tostring) + " requests" +
       " · " + ((.stats.sessions // 0) | tostring) + " sessions" +
-      "\n" + ((.stats.cachePct // 0) | tostring) + "% cache"
+      "\n" + ((.stats.cachePct // 0) | tostring) + "% cache" +
+      ($incidents | map("\n" + ($root.providerRegistry[.key].displayName // .key) + " " + .value.indicator + ": " + .value.description) | join(""))
     ),
     class: (
-      if any(.budgets[]?; .state == "exceeded") then "exceeded"
-      elif any(.budgets[]?; .state == "warn") then "warn"
-      else "ok"
-      end
+      [
+        if any(.budgets[]?; .state == "exceeded") then "exceeded"
+        elif any(.budgets[]?; .state == "warn") then "warn"
+        else "ok"
+        end
+      ] + (if ($incidents | length) > 0 then ["incident"] else [] end)
     ),
     percentage: ((.stats.cachePct // 0) | floor)
   }

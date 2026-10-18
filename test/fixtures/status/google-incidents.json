@@ -1,0 +1,35 @@
+[
+  {
+    "id": "fJ4691Pe2g9KsTbP8g5F",
+    "begin": "2026-09-11T13:00:00+00:00",
+    "end": "2026-09-11T20:22:00+00:00",
+    "external_desc": "**Summary:**\nMitigated intermittent elevated error rates with Gemini 3.1 Pro models.",
+    "most_recent_update": { "when": "2026-09-11T20:45:19+00:00", "status": "AVAILABLE", "text": "**Summary:**\nMitigated." },
+    "status_impact": "SERVICE_INFORMATION",
+    "severity": "low",
+    "service_name": "Gemini",
+    "affected_products": [{ "title": "Gemini", "id": "npdyhgECDJ6tB66MxXyo" }],
+    "uri": "incidents/fJ4691Pe2g9KsTbP8g5F"
+  },
+  {
+    "id": "Gx1",
+    "begin": "2026-10-18T14:00:00+00:00",
+    "end": null,
+    "external_desc": "**Summary:**\nInvestigating Gmail delivery delays.",
+    "most_recent_update": { "status": "SERVICE_OUTAGE", "text": "**Summary:**\nGmail delivery delays." },
+    "status_impact": "SERVICE_OUTAGE",
+    "severity": "high",
+    "affected_products": [{ "title": "Gmail", "id": "NNnDkY9CGDnAEKRUoYUR" }],
+    "uri": "incidents/Gx1"
+  },
+  {
+    "id": "Gm2",
+    "begin": "2026-10-18T15:00:00+00:00",
+    "external_desc": "**Summary:**\nElevated error rates for [Gemini API](https://ai.google.dev) requests.\n**Description:**\nWe are investigating.",
+    "most_recent_update": { "status": "SERVICE_DISRUPTION", "text": "**Summary:**\n- Elevated error rates for [Gemini API](https://ai.google.dev) requests." },
+    "status_impact": "SERVICE_DISRUPTION",
+    "severity": "medium",
+    "affected_products": [{ "title": "Gemini", "id": "npdyhgECDJ6tB66MxXyo" }],
+    "uri": "incidents/Gm2"
+  }
+]

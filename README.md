@@ -243,7 +243,8 @@ tokitoki report --last week --no-delta                   # Δ on by default
 # ASCII visuals + evolution over time
 tokitoki chart --last month                 # daily token bars
  tokitoki chart --last week --spark          # compact sparkline
-tokitoki chart --last month --by provider --spark   # one sparkline per provider
+tokitoki chart --last month --by harness --spark    # one sparkline per harness
+tokitoki report --last week --by vendor             # anthropic / openai / google …
 tokitoki pie --by model                     # share-of-tokens legend with cost bars
 
 tokitoki budgets                            # [budgets] gauge state (day/week/month caps)
@@ -267,8 +268,33 @@ vs the equally-sized previous window (`▲` green / `▼` red on TTYs;
 `burn: $X.XX/day → projected $Y by month end` (request-based when all costs
 are $0). `today` also lists the top-3 projects month-to-date.
 
-Dimensions: `model | project | account | machine | provider`.
+Dimensions: `model | vendor | harness | project | repo | account | machine | tool`.
 Periods: `day` = local calendar day; `week`/`month` = rolling 7/30 days.
+
+### Harness vs vendor
+
+Two different axes answer "where did this usage go?":
+
+- **harness** — the tool that recorded the event: `claude-code`, `codex`,
+  `pi`, `opencode`, `t3code`, `cursor`, … This is the `provider` field on
+  every stored event. `--by provider` keeps working as a legacy alias of
+  `--by harness` (and `/api/*`, MCP `dimension` accept both); JSON output
+  now reports `"groupBy": "harness"`.
+- **vendor** — the upstream model maker the tokens were billed against:
+  `anthropic`, `openai`, `google`, `xai`, `moonshot`, `cursor`, `github`, …
+  An explicit model prefix wins first: `anthropic/…`, or a gateway prefix
+  such as `opencode-go/deepseek-v4.1-flash` (→ deepseek, even under codex).
+  Otherwise direct harnesses map straight to their vendor (claude-code →
+  anthropic, codex → openai, gemini-cli → google). Routed harnesses (pi,
+  opencode, t3code, commandcode, …) use the model's vendor, looking through
+  gateway prefixes (`openrouter/anthropic/claude-sonnet-4` → anthropic);
+  unknown models fall back to the routing account (`openrouter`, `opencode`),
+  your `accountAliases`, then `other`. Harness and quota-source vendors come
+  from one registry (`src/provider-registry.ts`), which also feeds display
+  names, icons, and status pages to every surface.
+
+Vendor is derived at query time from (harness, account, model), so stored
+events and their dedupe ids never change and no migration runs.
 
 Multi-machine merge: sync `~/.local/share/tokitoki/events.jsonl` between Macs
 (e.g. Syncthing) and list the other machines' files in
@@ -279,11 +305,15 @@ Multi-machine merge: sync `~/.local/share/tokitoki/events.jsonl` between Macs
   "extraEventFiles": ["~/syncthing/tokitoki-other-mac/events.jsonl"],
   "providers": { "pi": { "paths": ["/custom/pi/sessions"] } },
   "plans": {
-    "codex-work": { "kind": "subscription", "monthlyRequestCap": 30000 },
+    "work-gateway": { "kind": "subscription", "monthlyRequestCap": 30000 },
     "opencode-*": { "kind": "subscription", "monthlyCostCap": 200 }
-  }
+  },
+  "accountAliases": { "work-gateway": "openai" }
 }
 ```
+
+`accountAliases` maps custom account keys or model prefixes (`work-gateway/gpt-5`)
+to an upstream provider when tokitoki cannot infer it from the name.
 
 Events dedupe on a stable id `(provider, accountKey, sessionId, entryId)` —
 the same session synced to two machines counts once.
@@ -345,12 +375,63 @@ Pulled lines land in `~/.local/share/tokitoki/remote-events.jsonl` — never in
 your local log — and merge into every report through the normal dedupe path,
 so re-pulling identical lines is always a no-op.
 
+### Provider quotas (`tokitoki poll`)
+
+`tokitoki poll` reuses local logins to read the quota windows providers report
+themselves. A provider is polled only when its credentials are present. If
+they are missing, the provider is skipped without an error. tokitoki never
+stores secrets of its own; refreshed OAuth tokens are written back only to
+the CLI's own credential file.
+
+#### Supported providers / quotas
+
+| Provider (card id) | Vendor | Quota source | What you get | Credential used |
+| --- | --- | --- | --- | --- |
+| Claude (`claude-code`) | anthropic | `api.anthropic.com/api/oauth/usage` (+ `/profile`) | 5h session, weekly, weekly Opus/Sonnet, extra usage, plan | Claude Code OAuth: `~/.claude/.credentials.json` or macOS Keychain |
+| Codex / ChatGPT (`codex`) | openai | `chatgpt.com/backend-api/wham/usage` (+ reset credits) | 5h + weekly windows, banked resets, plan | `~/.codex/auth.json`; opencodex pool `~/.opencodex/codex-accounts.json` |
+| Gemini (`gemini-cli`) | google | `cloudcode-pa.googleapis.com/v1internal:loadCodeAssist` + `:retrieveUserQuota` | daily Pro / Flash / Flash Lite model buckets, plan | Gemini CLI OAuth: `~/.gemini/oauth_creds.json`. Expired tokens are refreshed with the client id from the installed Gemini CLI, or `GEMINI_OAUTH_CLIENT_ID`/`_SECRET` |
+| GitHub Copilot (`copilot`) | github | `api.github.com/copilot_internal/user` | monthly premium-request meter | `~/.config/github-copilot/{apps,hosts}.json` or `gh` Keychain entry |
+| Cursor (`cursor`) | cursor | `api2.cursor.sh` `GetCurrentPeriodUsage` | Cursor / other models, on-demand spend | `~/.cursor/cli-auth.json` or the Cursor IDE `state.vscdb` login |
+| z.ai / GLM (`zai`) | zhipu | `api.z.ai/api/monitor/usage/quota/limit` (`open.bigmodel.cn` with `poll.zaiRegion = "bigmodel-cn"`) | Coding Plan token/credit windows, MCP quota, plan | `Z_AI_API_KEY` / `ZAI_API_KEY` (BigModel: `BIGMODEL_API_KEY`, `ZHIPU_API_KEY`, `GLM_API_KEY`) or `poll.extraKeys` with `provider = "zai"` |
+| Kimi Code (`kimi`) | moonshot | `api.kimi.com/coding/v1/usages` | 5h, weekly, monthly pools, membership plan | `KIMI_CODE_API_KEY`, `poll.extraKeys` with `provider = "kimi"`, or the Kimi CLI token in `~/.kimi-code/credentials/kimi-code.json` or `~/.kimi/credentials/kimi-code.json` (read only, never refreshed) |
+| DeepSeek (`deepseek`) | deepseek | `api.deepseek.com/user/balance` | prepaid balance (paid / granted) | `DEEPSEEK_API_KEY` / `DEEPSEEK_KEY` or `poll.extraKeys` with `provider = "deepseek"` |
+| OpenRouter (`pi@openrouter`, extra keys) | openrouter | `openrouter.ai/api/v1/key` + `/api/v1/credits` | key spend-limit window, credit balance | pi auth store `~/.pi/agent/auth.json` or `poll.extraKeys` |
+| OpenCode Go (`opencode`) | opencode | `opencode.ai/zen/go/v1/usage` | rolling 5h, weekly, monthly | pi or opencode auth store, or `poll.extraKeys` |
+| Command Code (`commandcode`) | commandcode | `api.commandcode.ai` billing API | 5h, weekly, monthly credits | `~/.commandcode/auth.json` |
+
+Vendor status pages are checked too, with results cached for 5 minutes in
+the cache meta table. The sources are Statuspage summaries for Anthropic,
+OpenAI, Cursor, and GitHub, and Google's Workspace incidents feed for Gemini.
+`widget-payload` exposes them as `statusIncidents`. The statusline adds a
+short segment such as `Claude partial outage: …` while a vendor is degraded.
+Disable the checks with `statusIncidents.enabled = false`.
+
+In `widget-payload`, each provider-reported window carries provider-neutral
+fields next to the legacy `kind`:
+
+| field | meaning |
+| --- | --- |
+| `id` / `label` | id unique per account (`session`, `weekly`, `weekly:opus`; a repeat gets `:2`) and display name |
+| `scope` | `session` \| `daily` \| `weekly` \| `monthly` \| `model` \| `other` (provider did not report a duration; `windowMinutes` is then omitted) |
+| `usedPercent` / `resetsAt` / `windowMinutes` | provider usage and reset |
+| `pace` | `expectedPercent` at an even burn, `status` (`under`/`on`/`over`), and `runsOutAt` when the current rate exhausts the window before it resets |
+
+Account entries add `plan`, `vendor`, `balance` for prepaid accounts, and, for Claude, `extraUsage`. Legacy `kind`
+values are unchanged ("day" still names the 5h session window), so existing
+clients keep working.
+
+Polling backs off: after an HTTP 429 a provider is held for at least five
+minutes (or the server's `Retry-After`), and Claude is never polled more than
+once every 300 seconds. Held providers answer from their last stored
+snapshot.
+
 ### Plan gauges (honest approximation)
 
 Rows whose accountKey matches a `plans` pattern (exact or trailing `*`) show
 a month-to-date usage gauge instead of a cost cell — most useful with
-`--by account`. Providers don't expose subscription quotas, so caps are
-user-configured estimates; the gauge is only as honest as the cap you set.
+`--by account`. Use them for accounts without provider-reported quotas (API
+keys, gateways): caps are user-configured estimates, and the gauge is only as
+honest as the cap you set.
 
 - Tests + runner are Bun-native (`bun test`, imports from `bun:test`); sqlite is `bun:sqlite`
 ## Web dashboard
@@ -377,8 +458,12 @@ src/web/api.ts ◀── same aggregation as the CLI (EventCache) ── /api/* 
   `/api/*` JSON endpoints; if `dist/web/` is missing it returns a helpful
   "run bun run web:build" message. No duplicated SQL: API responses come
   from the exact CLI aggregation in src/web/api.ts.
-- Parity with the CLI: period + group-by tabs (incl. repo), provider filter
-  chips, multi-account tabs, click-to-sort table (%share, %cache, Δ vs
+- **limits** tab: vendor → account → plan cards with per-window bars, a
+  pace marker (even-burn position), reset countdown, runs-out ETA, extra
+  usage, and freshness — sourced from `/api/limits` (same builder as
+  `limits --json`).
+- Parity with the CLI: period + group-by tabs (incl. vendor, harness, repo),
+  harness filter chips, multi-account tabs, click-to-sort table (%share, %cache, Δ vs
   previous window, plan gauges), evolution chart, donut share, and a
   GitHub-style calendar heatmap (`/api/grid`, metric switchable; the same
   grid exists on the CLI as `tokitoki grid`).
@@ -397,14 +482,109 @@ src/web/api.ts ◀── same aggregation as the CLI (EventCache) ── /api/* 
 - [Menu-bar app](menubar/tokitoki-menubar/) — native SwiftUI MenuBarExtra
   (macOS 13+), `swift build`, refreshes every 5 min from the compiled CLI
 
+## Limits JSON (`tokitoki limits --json`)
+
+Every account's quota windows as one stable, versioned document — the same
+data the menubar and web **limits** tab render, grouped vendor → account →
+plan → windows. Account emails are omitted unless you pass `--show-email`
+(`?showEmail=1` over HTTP, `showEmail: true` in MCP):
+
+```jsonc
+{
+  "version": 1,                       // bumped only on breaking changes
+  "generatedAt": "2026-10-18T12:00:00.000Z",
+  "accounts": [{
+    "id": "claude-code@default",      // harness@accountKey, stable
+    "vendor": "anthropic",
+    "vendorName": "Anthropic",        // registry display name
+    "harness": "claude-code",
+    "alsoOn": [],                     // other harnesses sharing this login/key
+    "accountKey": "default",
+    "email": "me@example.com",        // optional: label, email, plan, credential (redacted)
+    "plan": "Max 20x",
+    "freshness": "fresh",             // fresh | stale | unknown (provider-reported data)
+    "observedAt": "2026-10-18T11:58:00.000Z",
+    "extraUsage": { "enabled": true, "usedUsd": 12, "limitUsd": 50 },
+    // prepaid accounts (DeepSeek, OpenRouter) add "balance": { "currency": "USD", "remaining": 12.5, … }
+    "windows": [{
+      "id": "session",                // session | weekly | weekly:opus | monthly:<bucket> | day/week/month (derived)
+      "label": "Session",
+      "scope": "session",             // session | daily | weekly | monthly | model | other
+      "source": "provider",           // provider-reported quota, or "derived" from local events
+      "usedPercent": 42,              // null when there is no denominator
+      "windowMinutes": 300,
+      "resetsAt": "2026-10-18T14:00:00.000Z",
+      "pace": { "expectedPercent": 60, "deltaPercent": -18, "status": "under", "runsOutAt": "…" },
+      "tokens": 1234567, "costUsd": 4.2, "requests": 37
+    }]
+  }]
+}
+```
+
+The command is read-only (it never scans or polls); run `tokitoki poll` to
+refresh provider-reported windows. Optional fields are omitted, never `null`,
+except `usedPercent`.
+
+## Local HTTP API (`tokitoki serve`)
+
+```sh
+tokitoki serve                      # http://127.0.0.1:6736 (loopback only)
+tokitoki serve --port 7000
+tokitoki serve --host 0.0.0.0       # explicit opt-in to listen beyond loopback
+```
+
+Read-only (GET/HEAD), JSON, versioned (`"version": 1` in every body):
+
+| Endpoint | Returns |
+|---|---|
+| `GET /v1/status` | health: `{version, ok, app, appVersion, generatedAt, events}` |
+| `GET /v1/limits[?showEmail=1]` | the `limits --json` document (emails hidden by default) |
+| `GET /v1/usage?period=today\|week\|month&by=vendor\|harness\|model` | `{version, period, by, window, total, rows:[{key, requests, sessions, …tokens, tokens, costUsd}]}` (defaults: `today`, `vendor`; `by=provider` = harness) |
+
+Invalid query params return `400` with zod details. The server sends no CORS
+headers, and while bound to loopback it rejects requests whose `Host` is not
+loopback (DNS-rebinding guard). `today` is the local calendar day;
+`week`/`month` are rolling 7/30 days like `report`.
+
+```sh
+curl -s localhost:6736/v1/limits | jq '.accounts[] | {vendor, plan, w: [.windows[] | {label, usedPercent, resetsAt}]}'
+curl -s 'localhost:6736/v1/usage?period=week&by=vendor' | jq '.rows[] | "\(.key) $\(.costUsd)"'
+```
+
+Waybar custom module (session window of the first Anthropic account, today's
+spend in the tooltip):
+
+```jsonc
+"custom/tokitoki": {
+  "exec": "curl -sf localhost:6736/v1/limits | jq -c '[.accounts[] | select(.vendor == \"anthropic\")][0].windows[0] as $w | {text: \"✦ \\($w.usedPercent // 0 | floor)%\", tooltip: \"\\($w.label // \"no quota\") resets \\($w.resetsAt // \"?\")\", percentage: ($w.usedPercent // 0 | floor)}'",
+  "return-type": "json",
+  "interval": 60,
+  "on-click": "xdg-open http://localhost:7788/?view=limits"
+}
+```
+
+With Home Manager, run it as a user service:
+
+```nix
+programs.tokitoki.serve = {
+  enable = true;   # systemd user unit `tokitoki-serve`
+  port = 6736;     # host defaults to 127.0.0.1
+};
+```
+
+`tokitoki web` exposes the same document at `/api/limits` and `/v1/limits`.
+
 ## MCP server
 
 `tokitoki mcp` (stdio, local-only — no port, no daemon) exposes the CLI's
 reporting surface as MCP tools: `usage_report`, `usage_totals`,
 `sessions_top`, `session_detail`, `tool_spend`, `repo_efficiency`,
-`budgets_status`, `quota_snapshot`, `anomalies`, `sources`, `scan_now`,
-`export_report`. Window flags map 1:1 to CLI semantics (`last`: day|week|month
-or durations like `24h`). Register it in your client:
+`budgets_status`, `quota_snapshot`, `get_limits`, `anomalies`, `sources`,
+`scan_now`, `export_report`. Window flags map 1:1 to CLI semantics (`last`:
+day|week|month or durations like `24h`); `dimension` accepts `vendor` and
+`harness` (`provider` is the legacy alias). `get_limits` returns the
+`limits --json` document, optionally filtered by `vendor`. Register it in
+your client:
 
 ```jsonc
 // claude / codex / generic mcp config
@@ -543,8 +723,8 @@ use Preferences → Detailed harness cards) when per-harness cards are useful.
 
 ## Pricing data
 
-Model prices auto-sync from LiteLLM's community pricing JSON into
-`<data-dir>/pricing.json` (7-day TTL, 1h retry throttle when offline). The
+Model prices auto-sync from [Models.dev](https://models.dev), falling back to
+LiteLLM's community pricing JSON, into `<data-dir>/pricing.json` (7-day TTL, 1h retry throttle when offline). The
 embedded snapshot is the offline fallback. Unknown models estimate as $0 with
 a one-time stderr note.
 
@@ -560,6 +740,7 @@ a one-time stderr note.
 | Antigravity CLI | `antigravity-cli` | ◐ provenance only | `~/.gemini/antigravity-cli/conversations/*.db` | protobuf blobs; no usage exposed |
 | Cursor | `cursor` | ◐ indexed only | `state.vscdb` + `ai-tracking/ai-code-tracking.db` | transcripts/summaries searchable; **no token counts in any inspected store** (199k activity-hash rows verified) |
 | Grok CLI | `grok` | ✅ working | `$GROK_HOME/sessions/**/*.jsonl` | tolerant codex-family parser (`last_token_usage` deltas preferred, flat `usage` spellings accepted) |
+| Command Code | `commandcode` | ✅ working | `~/.commandcode/sessions/*.jsonl` | pi-like JSONL; usage on the entry, model on `model_change` |
 | Gemini CLI | `gemini-cli` | ✅ working | `~/.gemini/tmp/<hash>/chats/session-*.json` | per-message `tokens` objects when stats are recorded; sessions without them stay search-only |
 | Aider | `aider` | 📐 skeleton | `.aider.chat.history.jsonl` per repo | needs per-repo discovery |
 | Goose | `goose` | 📐 skeleton | `~/.config/goose/sessions` JSONL | — |

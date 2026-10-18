@@ -1,9 +1,20 @@
 import fs from "node:fs";
 
 import type { TokitokiConfig } from "./config.ts";
-import type { EventCache } from "./cache.ts";
+import type { EventCache, QuotaSnapshotRow } from "./cache.ts";
 import { accountEmailFor, accountIdentityFor } from "./accounts.ts";
 import { modelProvider } from "./model-provider.ts";
+import { balanceAccounts } from "./quota/shared.ts";
+import {
+  computePace,
+  describeQuotaWindow,
+  type AccountBalance,
+  type AccountExtraUsage,
+  type QuotaWindowFields,
+} from "./quota-windows.ts";
+
+// Scanned snapshots only refresh when the harness is used, so old ones no longer reflect the live quota.
+const SCANNED_SNAPSHOT_FRESH_MS = 6 * 60 * 60_000;
 
 /**
  * Usage/limits engine: per provider+account windows with reset schedules.
@@ -23,7 +34,12 @@ import { modelProvider } from "./model-provider.ts";
 
 export type WindowKind = "day" | "week" | "month";
 
-export interface LimitWindow {
+/**
+ * Provider-reported windows also carry the provider-neutral QuotaWindowFields
+ * (id/label/scope/model/usedPercent/windowMinutes/pace). `kind` is the legacy
+ * key kept for existing clients: it still says "day" for 5h session windows.
+ */
+export interface LimitWindow extends Partial<QuotaWindowFields> {
   /** "day" | "week" | "month", or "<N>min" for embedded custom windows. */
   kind: WindowKind | string;
   source: "embedded" | "derived";
@@ -50,8 +66,14 @@ export interface AccountLimits {
   accountId?: string;
   /** Best-effort logged-in email for disambiguating multiple accounts. */
   email?: string;
-  /** Plan badge when derivable (account suffix after ':' or config match). */
+  /** Plan badge when derivable (provider-reported plan or account suffix after ':'). */
   planLabel?: string;
+  /** Provider-reported plan name (e.g. "Max 20x", "Plus"). */
+  plan?: string;
+  /** Pay-as-you-go usage beyond the plan's included quota (Claude extra usage). */
+  extraUsage?: AccountExtraUsage;
+  /** Prepaid credit balance reported by the provider (DeepSeek, OpenRouter). */
+  balance?: AccountBalance;
   windows: LimitWindow[];
   /** Redacted API-key / credential hint for key-based accounts (opencode…). */
   credential?: string;
@@ -84,6 +106,61 @@ export function attachCodexPoolEmails(
   });
 }
 
+type ExtraKey = NonNullable<NonNullable<TokitokiConfig["poll"]>["extraKeys"]>[number];
+type GatewayExtraKey = ExtraKey & { provider: "opencode-go" | "openrouter" };
+type ProviderPollKeys = Partial<Record<"zai" | "kimi" | "deepseek", string>>;
+
+/** Multi-account gateway keys (opencode-go/openrouter); zai/kimi/deepseek keys belong to a single default account. */
+export const gatewayExtraKeys = (config: TokitokiConfig): GatewayExtraKey[] =>
+  (config.poll?.extraKeys ?? []).flatMap((key) => {
+    const provider = key.provider ?? "opencode-go";
+    return provider === "opencode-go" || provider === "openrouter" ? [{ ...key, provider }] : [];
+  });
+
+/** First configured key per single-account key provider, for pollQuotas' providerKeys. */
+export const providerPollKeys = (config: TokitokiConfig): ProviderPollKeys => {
+  const keys: ProviderPollKeys = {};
+  for (const key of config.poll?.extraKeys ?? []) {
+    if (key.key.length === 0) continue;
+    if (key.provider === "zai" || key.provider === "kimi" || key.provider === "deepseek") keys[key.provider] ??= key.key;
+  }
+  return keys;
+};
+
+/** Attach the polled balance stored for this card's provider/account, when the card lacks one. */
+const withAccountBalance = (input: { limit: AccountLimits; cache: EventCache }): AccountLimits => {
+  if (input.limit.balance !== undefined) return input.limit;
+  const balance = input.cache.quotaAccountMeta(input.limit.provider, input.limit.accountKey)?.balance;
+  return balance !== undefined ? { ...input.limit, balance } : input.limit;
+};
+
+/**
+ * Balance-only accounts (DeepSeek, OpenRouter keys without a limit) have no
+ * snapshot rows, so the polled-card discovery never sees them. Attach their
+ * balance to an existing card or add a card from the stored account meta.
+ */
+export const appendBalanceOnlyAccounts = (input: { limits: AccountLimits[]; cache: EventCache; now?: Date }): AccountLimits[] => {
+  const limits = input.limits.map((limit) => withAccountBalance({ limit, cache: input.cache }));
+  const known = new Set(limits.map((limit) => `${limit.provider}@${limit.accountKey}`));
+  for (const account of balanceAccounts(input.cache)) {
+    if (known.has(`${account.provider}@${account.accountKey}`)) continue;
+    const meta = input.cache.quotaAccountMeta(account.provider, account.accountKey);
+    if (meta?.balance === undefined) continue;
+    const now = input.now ?? new Date();
+    limits.push({
+      provider: account.provider,
+      accountKey: account.accountKey,
+      ...(meta.email !== undefined ? { email: meta.email } : {}),
+      ...(meta.plan !== undefined ? { plan: meta.plan, planLabel: meta.plan } : {}),
+      balance: meta.balance,
+      origin: "polled",
+      windows: input.cache.latestQuotaSnapshots(account.provider, account.accountKey).map((snapshot) => embeddedLimitWindow({ snapshot, now })),
+    });
+    known.add(`${account.provider}@${account.accountKey}`);
+  }
+  return limits;
+};
+
 /** Keep the payload invariant: one visible card per provider/account identity. */
 export function dedupeAccountLimits(limits: AccountLimits[]): AccountLimits[] {
   const out = new Map<string, AccountLimits>();
@@ -108,6 +185,9 @@ export function dedupeAccountLimits(limits: AccountLimits[]): AccountLimits[] {
       label: incoming.label ?? existing.label,
       email: incoming.email ?? existing.email,
       planLabel: incoming.planLabel ?? existing.planLabel,
+      plan: incoming.plan ?? existing.plan,
+      extraUsage: incoming.extraUsage ?? existing.extraUsage,
+      balance: incoming.balance ?? existing.balance,
       credential: incoming.credential ?? existing.credential,
       origin: incoming.origin ?? existing.origin,
       windows: [...windows.values()],
@@ -143,6 +223,53 @@ function iso(d: Date): string {
   return d.toISOString();
 }
 
+/** One provider-reported snapshot as a card window: legacy kind plus generic fields and pace. */
+export const embeddedLimitWindow = (input: {
+  snapshot: QuotaSnapshotRow;
+  usage?: { tokens: number; cost: number; requests: number };
+  now: Date;
+}): LimitWindow => {
+  const snapshot = input.snapshot;
+  // A provider report describes the window that was current when it was
+  // captured. Once that window's reset instant passes, the reported
+  // utilization is obsolete: the window rolled over and started empty.
+  const rolledOver = snapshot.resetsAt > 0 && snapshot.resetsAt * 1000 <= input.now.getTime();
+  const usedPct = rolledOver ? 0 : Math.max(0, Math.min(100, snapshot.usedPct));
+  // Command Code returns resetAt=0 when a rolling window has not started
+  // yet; never render that sentinel as January 1970.
+  const resetsAt = snapshot.resetsAt > 0 ? new Date(snapshot.resetsAt * 1000).toISOString() : undefined;
+  const fields = describeQuotaWindow({
+    windowMinutes: snapshot.windowMinutes,
+    usedPercent: usedPct,
+    ...(snapshot.label.length > 0 ? { label: snapshot.label } : {}),
+    ...(snapshot.model !== null && snapshot.model.length > 0 ? { model: snapshot.model } : {}),
+  });
+  const amountUsd = snapshot.amountUsd ?? undefined;
+  const pace = amountUsd === undefined
+    ? computePace({ usedPercent: usedPct, resetsAt, windowMinutes: snapshot.windowMinutes, now: input.now })
+    : undefined;
+  return {
+    // A label distinguishes same-duration windows on one account (Cursor's
+    // "Cursor Models" vs "Other Models") — prefer it over the duration kind.
+    kind: snapshot.label.length > 0 ? snapshot.label : embeddedKind(snapshot.windowMinutes),
+    source: "embedded",
+    tokens: input.usage?.tokens ?? 0,
+    cost: input.usage?.cost ?? 0,
+    requests: input.usage?.requests ?? 0,
+    usedPct,
+    amountUsd,
+    resetsAt,
+    ...fields,
+    ...(pace !== undefined ? { pace } : {}),
+  };
+};
+
+/** Plan badge from a codex-style account suffix ("codex:plus" → "Plus"). */
+const planFromAccountKey = (accountKey: string): string | undefined => {
+  const colon = accountKey.lastIndexOf(":");
+  return colon > 0 ? accountKey.slice(colon + 1).charAt(0).toUpperCase() + accountKey.slice(colon + 2) : undefined;
+};
+
 interface UsageRow {
   tokens: number;
   cost: number;
@@ -151,10 +278,12 @@ interface UsageRow {
 
 const ZERO: UsageRow = { tokens: 0, cost: 0, requests: 0 };
 
-/** Map an embedded window length to a friendly kind. */
+/**
+ * Legacy kind for an embedded window length. 300min (the 5h session) shares
+ * "day" with the calendar day because existing clients key their "Session /
+ * day" row on it; scope/label on the window carry the accurate name.
+ */
 export function embeddedKind(windowMinutes: number): string {
-  // 300min = the 5h session window; 1440 = calendar day. Both display as
-  // "Session"/sort first via the existing kind tables.
   if (windowMinutes === 300 || windowMinutes === 1440) return "day";
   if (windowMinutes === 10080) return "week";
   if (windowMinutes === 43200) return "month";
@@ -282,7 +411,9 @@ export function computeLimits(
     const freshness = snaps.length === 0
       ? "unknown" as const
       : polledObservedAt === undefined
-        ? "fresh" as const
+        ? observedAt !== undefined && now.getTime() - observedAt <= SCANNED_SNAPSHOT_FRESH_MS
+          ? "fresh" as const
+          : "stale" as const
         : now.getTime() - polledObservedAt <= Math.max(10, (config.poll?.intervalMinutes ?? 15) * 2) * 60_000
           ? "fresh" as const
           : "stale" as const;
@@ -294,11 +425,6 @@ export function computeLimits(
     // redundant derived "month" estimate row below.
     const embeddedCalendarKinds = new Set<WindowKind>();
     for (const s of snaps) {
-      // A label distinguishes same-duration windows on one account (e.g.
-      // Cursor's "Cursor Models" vs "Other Models" quota buckets) — prefer
-      // it over the duration-derived kind, which would otherwise collide.
-      const kind = s.label.length > 0 ? s.label : embeddedKind(s.windowMinutes);
-      embeddedKinds.add(kind);
       const roughKind = roughCalendarKind(s.windowMinutes);
       if (roughKind !== undefined) embeddedCalendarKinds.add(roughKind);
       const usage =
@@ -307,24 +433,8 @@ export function computeLimits(
           accountKey,
           new Date(Date.now() - s.windowMinutes * 60_000).toISOString(),
         ) ?? ZERO;
-      // A provider report describes the window that was current when it was
-      // captured. Once that window's reset instant passes, the reported
-      // utilization is obsolete: the window rolled over and started empty.
-      // Keeping the old percentage is how a months-old card claims "0% left"
-      // (and fires quota alerts) long after its window reset.
-      const rolledOver = s.resetsAt > 0 && s.resetsAt * 1000 <= now.getTime();
-      const w: LimitWindow = {
-        kind,
-        source: "embedded",
-        tokens: usage.tokens,
-        cost: usage.cost,
-        requests: usage.requests,
-        usedPct: rolledOver ? 0 : Math.max(0, Math.min(100, s.usedPct)),
-        amountUsd: s.amountUsd ?? undefined,
-        // Command Code returns resetAt=0 when a rolling window has not
-        // started yet; never render that sentinel as January 1970.
-        resetsAt: s.resetsAt > 0 ? new Date(s.resetsAt * 1000).toISOString() : undefined,
-      };
+      const w = embeddedLimitWindow({ snapshot: s, usage, now });
+      embeddedKinds.add(w.kind);
       windows.push(w);
       if (s.creditsJson !== null) {
         try {
@@ -405,10 +515,8 @@ export function computeLimits(
       });
     }
 
-    // Plan badge from codex-style account suffix ("codex:plus" → "Plus")
-    const colon = accountKey.lastIndexOf(":");
-    const planLabel =
-      colon > 0 ? accountKey.slice(colon + 1).charAt(0).toUpperCase() + accountKey.slice(colon + 2) : undefined;
+    const accountMeta = cache.quotaAccountMeta(provider, accountKey);
+    const plan = accountMeta?.plan ?? planFromAccountKey(accountKey);
 
     const order: Record<string, number> = { day: 0, week: 1, month: 2 };
     windows.sort((a, b) => (order[a.kind] ?? 99) - (order[b.kind] ?? 99));
@@ -436,7 +544,7 @@ export function computeLimits(
       resolvedEmail = accountEmailFor(provider);
       emailsByProvider.set(provider, resolvedEmail);
     }
-    let email = resolvedEmail ?? undefined;
+    let email = resolvedEmail ?? accountMeta?.email;
     if (provider === "codex") {
       if (!codexIdentityResolved) {
         codexIdentity = accountIdentityFor(provider);
@@ -461,7 +569,10 @@ export function computeLimits(
       accountKey,
       ...(accountId !== undefined ? { accountId } : {}),
       email,
-      planLabel,
+      planLabel: plan,
+      ...(plan !== undefined ? { plan } : {}),
+      ...(accountMeta?.extraUsage !== undefined ? { extraUsage: accountMeta.extraUsage } : {}),
+      ...(accountMeta?.balance !== undefined ? { balance: accountMeta.balance } : {}),
       windows,
       bankedResets,
       bankedExpiresAt,
@@ -718,6 +829,9 @@ function mergeHarnessVariantGroup(group: AccountLimits[]): AccountLimits {
   const accountId = group.find((limit) => limit.accountId !== undefined)?.accountId;
   const label = group.find((limit) => limit.label !== undefined)?.label;
   const planLabel = group.find((limit) => limit.planLabel !== undefined)?.planLabel;
+  const plan = group.find((limit) => limit.plan !== undefined)?.plan;
+  const extraUsage = group.find((limit) => limit.extraUsage !== undefined)?.extraUsage;
+  const balance = group.find((limit) => limit.balance !== undefined)?.balance;
   const credential = group.find((limit) => limit.credential !== undefined)?.credential;
   const alsoOn = [...new Set([
     ...group.flatMap((limit) => limit.alsoOn ?? []),
@@ -730,6 +844,9 @@ function mergeHarnessVariantGroup(group: AccountLimits[]): AccountLimits {
     ...(primary.accountId === undefined && accountId !== undefined ? { accountId } : {}),
     ...(primary.label === undefined && label !== undefined ? { label } : {}),
     ...(primary.planLabel === undefined && planLabel !== undefined ? { planLabel } : {}),
+    ...(primary.plan === undefined && plan !== undefined ? { plan } : {}),
+    ...(primary.extraUsage === undefined && extraUsage !== undefined ? { extraUsage } : {}),
+    ...(primary.balance === undefined && balance !== undefined ? { balance } : {}),
     ...(primary.credential === undefined && credential !== undefined ? { credential } : {}),
     alsoOn: alsoOn.length > 0 ? alsoOn : undefined,
     email: emails.length === 1 ? emails[0] : undefined,

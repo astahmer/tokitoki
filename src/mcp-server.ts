@@ -12,7 +12,8 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 
-import { DIMENSIONS, EventCache, type AggRow, type Dimension } from "./cache.ts";
+import { DIMENSION_NAMES, EventCache, dimensionLabel, parseDimension, type AggRow } from "./cache.ts";
+import { readLimitsDocument } from "./limits-document.ts";
 import { searchSessions } from "./sessionIndex.ts";
 import { loadConfig } from "./config.ts";
 import { UserError } from "./errors.ts";
@@ -35,6 +36,14 @@ const WINDOW_SHAPE = {
 
 type WindowArgs = { last?: string; from?: string; to?: string };
 
+const DIMENSION_INPUT = z
+  .enum(["provider", ...DIMENSION_NAMES])
+  .optional()
+  .describe("grouping dimension (default harness): vendor = anthropic/openai/google…, harness = claude-code/codex/pi… (provider is a legacy alias of harness)");
+
+/** Resolves `harness`/`provider`/… to the cache dimension; defaults to harness. */
+const reportDimension = (input: string | undefined) => parseDimension(input ?? "harness") ?? "provider";
+
 function windowFrom(args: WindowArgs, fallbackPeriod: "day" | "week" | "month" | "year" = "week"): TimeWindow {
   return resolveTimeWindow({ last: args.last, from: args.from, to: args.to, fallbackPeriod });
 }
@@ -52,7 +61,7 @@ function errorResult(e: unknown): ToolResult & { isError: true } {
 /** Compact report payload shape shared by usage_report / export_report(json). */
 interface ReportPayload {
   window: { since: string; until: string | null; label: string };
-  dimension: Dimension;
+  dimension: string;
   totals: AggRow;
   rows: AggRow[];
 }
@@ -87,7 +96,7 @@ export class TokitokiMcpServer {
 
   private reportRows(
     w: TimeWindow,
-    dimension: Dimension,
+    dimension: ReturnType<typeof reportDimension>,
     provider?: string,
   ): { totals: AggRow; rows: AggRow[] } {
     const providers = provider !== undefined && provider.length > 0 ? [provider] : undefined;
@@ -128,25 +137,48 @@ export class TokitokiMcpServer {
       {
         title: "Usage report",
         description:
-          "Token/cost aggregation grouped by a dimension over a window. Dimensions: model, project, repo, account, machine, provider, tool.",
+          `Token/cost aggregation grouped by a dimension over a window. Dimensions: ${DIMENSION_NAMES.join(", ")}.`,
         inputSchema: {
           ...WINDOW_SHAPE,
-          dimension: z.enum(DIMENSIONS).optional().describe("grouping dimension (default provider)"),
-          provider: z.string().optional().describe("filter to one harness provider id"),
+          dimension: DIMENSION_INPUT,
+          provider: z.string().optional().describe("filter to one harness id"),
         },
       },
-      (args: WindowArgs & { dimension?: Dimension; provider?: string }) => {
+      (args: WindowArgs & { dimension?: string; provider?: string }) => {
         try {
           const w = windowFrom(args);
-          const dimension = args.dimension ?? "provider";
+          const dimension = reportDimension(args.dimension);
           const { totals, rows } = this.reportRows(w, dimension, args.provider);
           const payload: ReportPayload = {
             window: { since: w.sinceIso, until: w.untilIso ?? null, label: w.label },
-            dimension,
+            dimension: dimensionLabel(dimension),
             totals,
             rows,
           };
           return text(payload);
+        } catch (e) {
+          return errorResult(e);
+        }
+      },
+    );
+
+    this.server.registerTool(
+      "get_limits",
+      {
+        title: "Quota limits",
+        description:
+          "Provider quota windows per vendor → account → plan (same versioned document as `tokitoki limits --json` and GET /v1/limits): used %, reset time, pace, runs-out ETA, extra usage. Read-only; data is as fresh as the last `tokitoki poll`.",
+        inputSchema: {
+          vendor: z.string().optional().describe("only accounts of this vendor (anthropic, openai, google, …)"),
+          showEmail: z.boolean().optional().describe("include account emails (hidden by default)"),
+        },
+      },
+      (args: { vendor?: string; showEmail?: boolean }) => {
+        try {
+          const document = readLimitsDocument({ cache: this.getCache(), showEmail: args.showEmail });
+          const vendor = args.vendor?.trim().toLowerCase();
+          if (vendor === undefined || vendor.length === 0) return text(document);
+          return text({ ...document, accounts: document.accounts.filter((account) => account.vendor === vendor) });
         } catch (e) {
           return errorResult(e);
         }
@@ -449,22 +481,22 @@ export class TokitokiMcpServer {
         inputSchema: {
           ...WINDOW_SHAPE,
           format: z.enum(["json", "csv", "markdown"]).optional().describe("default json"),
-          dimension: z.enum(DIMENSIONS).optional(),
+          dimension: DIMENSION_INPUT,
           provider: z.string().optional(),
         },
       },
-      (args: WindowArgs & { format?: "json" | "csv" | "markdown"; dimension?: Dimension; provider?: string }) => {
+      (args: WindowArgs & { format?: "json" | "csv" | "markdown"; dimension?: string; provider?: string }) => {
         try {
           const w = windowFrom(args);
           const format = args.format ?? "json";
-          const dimension = args.dimension ?? "provider";
+          const dimension = reportDimension(args.dimension);
           const { rows } = this.reportRows(w, dimension, args.provider);
           const label = `${w.sinceIso} → ${w.untilIso ?? "now"} (${w.label})`;
           if (format === "markdown") return text(renderMarkdown(rows, label));
           if (format === "csv") return text(toCsv(rows));
           const payload: ReportPayload = {
             window: { since: w.sinceIso, until: w.untilIso ?? null, label: w.label },
-            dimension,
+            dimension: dimensionLabel(dimension),
             totals: this.reportRows(w, dimension, args.provider).totals,
             rows,
           };

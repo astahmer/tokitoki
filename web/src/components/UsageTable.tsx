@@ -171,15 +171,15 @@ export function UsageTable({
           <Table.Cell className="text-right">
             {data.total.requests.toLocaleString("en-US")}
           </Table.Cell>
-          <Table.Cell className="hidden text-right">
+          <Table.Cell className="hidden text-right lg:table-cell">
             {data.total.sessions.toLocaleString("en-US")}
           </Table.Cell>
-          <Table.Cell className="hidden text-right">
+          <Table.Cell className="hidden text-right lg:table-cell">
             {humanCount(data.total.requests > 0 ? totalTokens(data.total) / data.total.requests : 0)}
           </Table.Cell>
-          <Table.Cell className="hidden text-right">{humanCount(data.total.inputTokens)}</Table.Cell>
-          <Table.Cell className="hidden text-right">{humanCount(data.total.outputTokens)}</Table.Cell>
-          <Table.Cell className="hidden text-right">
+          <Table.Cell className="hidden text-right xl:table-cell">{humanCount(data.total.inputTokens)}</Table.Cell>
+          <Table.Cell className="hidden text-right xl:table-cell">{humanCount(data.total.outputTokens)}</Table.Cell>
+          <Table.Cell className="hidden text-right xl:table-cell">
             {humanCount(data.total.cacheReadTokens)}
           </Table.Cell>
           <Table.Cell className="text-right">

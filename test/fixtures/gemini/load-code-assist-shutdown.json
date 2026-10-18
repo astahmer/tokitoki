@@ -1,0 +1,10 @@
+{
+  "allowedTiers": [{ "id": "free-tier", "isDefault": true }],
+  "ineligibleTiers": [
+    {
+      "reasonCode": "UNSUPPORTED_CLIENT",
+      "reasonMessage": "This client is no longer supported for your account.",
+      "tierId": "free-tier"
+    }
+  ]
+}

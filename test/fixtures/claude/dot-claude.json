@@ -1,0 +1,9 @@
+{
+  "numStartups": 12,
+  "oauthAccount": {
+    "accountUuid": "acc-local-1",
+    "emailAddress": "local@example.com",
+    "organizationUuid": "org-local",
+    "organizationName": "Local Org"
+  }
+}

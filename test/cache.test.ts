@@ -3,7 +3,7 @@ import { appendFileSync, mkdtempSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { EventCache } from "../src/cache.ts";
+import { DIMENSION_NAMES, EventCache, dimensionLabel, parseDimension } from "../src/cache.ts";
 import { readEventsFile } from "../src/store.ts";
 import type { UsageEvent } from "../src/types.ts";
 
@@ -502,5 +502,73 @@ describe("hybrid rollup reads", () => {
     } finally {
       cache.close();
     }
+  });
+});
+
+describe("vendor dimension", () => {
+  const seedVendorEvents = (cache: EventCache): void => {
+    cache.insert([
+      makeEvent({ id: "claude-code:a:s1:1", provider: "claude-code", accountKey: "default", model: "claude-opus-4", sessionId: "s1", costUsd: 1 }),
+      makeEvent({ id: "codex:p:s2:1", provider: "codex", accountKey: "codex:plus", model: "gpt-5", sessionId: "s2", costUsd: 2 }),
+      makeEvent({ id: "pi:o:s3:1", provider: "pi", accountKey: "openrouter", model: "openrouter/anthropic/claude-sonnet-4", sessionId: "s3", costUsd: 4 }),
+      makeEvent({ id: "pi:o:s3:2", ts: "2026-08-21T12:00:00.000Z", provider: "pi", accountKey: "openrouter", model: "openrouter/anthropic/claude-sonnet-4", sessionId: "s3", costUsd: 4 }),
+      makeEvent({ id: "opencode:g:s4:1", provider: "opencode", accountKey: "opencode-go", model: "gemini-2.5-pro", sessionId: "s4", costUsd: 8 }),
+      makeEvent({ id: "pi:g:s5:1", provider: "pi", accountKey: "opencode-go", model: "ox-alpha-free", sessionId: "s5", costUsd: 16 }),
+    ]);
+  };
+
+  it("derives the upstream vendor per event without touching stored ids", () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "tk-vendor-"));
+    const cache = new EventCache(path.join(dir, "cache.db"));
+    try {
+      seedVendorEvents(cache);
+      const rows = cache.aggregate("2026-08-01T00:00:00.000Z", "vendor");
+      const byVendor = Object.fromEntries(rows.map((r) => [r.bucket, r]));
+      expect(Object.keys(byVendor).sort()).toEqual(["anthropic", "google", "openai", "opencode"]);
+      expect(byVendor["anthropic"]!.costUsd).toBeCloseTo(9);
+      expect(byVendor["anthropic"]!.requests).toBe(3);
+      // Distinct sessions are counted once across harnesses inside a vendor.
+      expect(byVendor["anthropic"]!.sessions).toBe(2);
+      expect(byVendor["opencode"]!.costUsd).toBeCloseTo(16);
+      const ids = (cache.database.query("SELECT id FROM events ORDER BY id").all() as Array<{ id: string }>).map((r) => r.id);
+      expect(ids).toContain("pi:o:s3:1");
+      expect(ids).toHaveLength(6);
+    } finally {
+      cache.close();
+    }
+  });
+
+  it("agrees between events, rollups, hybrid and series reads", () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "tk-vendor-hybrid-"));
+    const cache = new EventCache(path.join(dir, "cache.db"));
+    try {
+      seedVendorEvents(cache);
+      const since = "2026-08-20T10:30:00.000Z";
+      const until = "2026-08-24T10:30:00.000Z";
+      const costs = (rows: Array<{ bucket: string; costUsd: number }>) =>
+        Object.fromEntries(rows.map((r) => [r.bucket, Math.round(r.costUsd * 100) / 100]));
+      const exact = costs(cache.aggregate(since, "vendor", undefined, until));
+      expect(costs(cache.hybridAggregate(since, "vendor", undefined, until))).toEqual(exact);
+      expect(costs(cache.rollupAggregate("2026-08-01T00:00:00.000Z", undefined, "vendor"))).toEqual(
+        costs(cache.aggregate("2026-08-01T00:00:00.000Z", "vendor")),
+      );
+      const series = cache.seriesDaily("2026-08-01T00:00:00.000Z", "vendor", 10, "cost");
+      expect(series.map((s) => s.bucket).sort()).toEqual(["anthropic", "google", "openai", "opencode"]);
+      // A second read reuses the classified triples; new triples are picked up.
+      cache.insert([makeEvent({ id: "grok:d:s6:1", provider: "grok", accountKey: "default", model: "grok-4", sessionId: "s6" })]);
+      expect(cache.aggregate("2026-08-01T00:00:00.000Z", "vendor").map((r) => r.bucket)).toContain("xai");
+    } finally {
+      cache.close();
+    }
+  });
+
+  it("accepts harness as the preferred name of the provider dimension", () => {
+    expect(parseDimension("harness")).toBe("provider");
+    expect(parseDimension("provider")).toBe("provider");
+    expect(parseDimension("Vendor")).toBe("vendor");
+    expect(parseDimension("bogus")).toBeUndefined();
+    expect(dimensionLabel("provider")).toBe("harness");
+    expect(DIMENSION_NAMES).toContain("harness");
+    expect(DIMENSION_NAMES).not.toContain("provider");
   });
 });

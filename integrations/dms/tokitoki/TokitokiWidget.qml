@@ -28,6 +28,7 @@ PluginComponent {
     property bool visibilityHide: true
     property bool pendingRefresh: false
     property bool pendingScan: false
+    property bool statusExited: false
     readonly property string barSummaryMode: root.pluginSetting("barSummaryMode", "summary")
     readonly property string barTotalPeriod: root.normalizeChoice(
         root.pluginSetting("barTotalPeriod", "day"),
@@ -49,13 +50,13 @@ PluginComponent {
     readonly property bool hasPayload: payload && payload.schema === 1 && payload.app === "tokitoki"
     readonly property bool isBusy: statusProcess.running
     readonly property bool hasLimits: hasPayload && Array.isArray(payload.limits) && payload.limits.length > 0
-    readonly property bool hasHistory: hasPayload && payload.history &&
-        Array.isArray(payload.history.days) && payload.history.days.length > 0
-    readonly property bool hasHistoryYear: hasPayload && payload.historyYear &&
-        Array.isArray(payload.historyYear.days) && payload.historyYear.days.length > 0
+    readonly property bool hasHistory: Boolean(hasPayload && payload.history &&
+        Array.isArray(payload.history.days) && payload.history.days.length > 0)
+    readonly property bool hasHistoryYear: Boolean(hasPayload && payload.historyYear &&
+        Array.isArray(payload.historyYear.days) && payload.historyYear.days.length > 0)
     readonly property bool hasHistoryData: hasHistory || hasHistoryYear
-    readonly property bool hasActivityGrid: hasPayload && payload.activityGrid &&
-        Array.isArray(payload.activityGrid.cells)
+    readonly property bool hasActivityGrid: Boolean(hasPayload && payload.activityGrid &&
+        Array.isArray(payload.activityGrid.cells))
     readonly property bool privacyHideIdentities: root.pluginSetting("privacyHideIdentities", false)
     readonly property bool privacyHideRepoSessionNames: root.pluginSetting("privacyHideRepoSessionNames", false)
     readonly property bool autoRefreshEnabled: Boolean(root.pluginSetting("autoRefreshEnabled", true))
@@ -299,12 +300,13 @@ PluginComponent {
         })
     }
 
-    function providerIsSelected(provider, accountKey) {
+    function providerIsSelected(provider, vendor) {
         var list = selectedProviderList()
         var localProvider = String(provider || "").toLowerCase()
-        var upstream = String(root.upstreamProvider(provider, accountKey) || "").toLowerCase()
         return list.length === 0 || list.indexOf(localProvider) >= 0 ||
-            (upstream.length > 0 && list.indexOf(upstream) >= 0)
+            root.vendorKeys(root.vendorFor(provider, vendor)).some(function(key) {
+                return list.indexOf(key) >= 0
+            })
     }
 
     function totalTokens(row) {
@@ -544,6 +546,11 @@ PluginComponent {
         }, 0)
     }
 
+    function reportTotal(period) {
+        var report = reportFor(period)
+        return report && report.total ? report.total : null
+    }
+
     function metricTotal(period, metric) {
         var report = reportFor(period)
         if (!report)
@@ -569,7 +576,7 @@ PluginComponent {
         if (hasLimits) {
             for (var i = 0; i < payload.limits.length; i++) {
                 var account = payload.limits[i]
-                if (!providerIsVisible(account.provider, account.accountKey))
+                if (!providerIsVisible(account.provider, account.accountKey, account.vendor))
                     continue
                 var windows = Array.isArray(account.windows) ? account.windows : []
                 for (var j = 0; j < windows.length; j++) {
@@ -628,14 +635,14 @@ PluginComponent {
         visibilityProcess.running = true
     }
 
-    function providerIsVisible(provider, accountKey) {
+    function providerIsVisible(provider, accountKey, vendor) {
         var ui = payload.uiPreview || ({})
         var previewHidden = Array.isArray(ui.previewHidden) ? ui.previewHidden : []
         if (root.accountCardHidden(provider, accountKey))
             return false
-        if (previewHidden.indexOf(upstreamProvider(provider, accountKey)) >= 0)
+        if (vendorKeys(vendorFor(provider, vendor)).some(function(key) { return previewHidden.indexOf(key) >= 0 }))
             return false
-        return root.providerVisibility !== "selected" || providerIsSelected(provider, accountKey)
+        return root.providerVisibility !== "selected" || providerIsSelected(provider, vendor)
     }
 
     function periodLabel(period) {
@@ -696,35 +703,64 @@ PluginComponent {
         stateReady = true
     }
 
+    function providerEntry(provider) {
+        var registry = payload && payload.providerRegistry ? payload.providerRegistry : null
+        var key = String(provider || "")
+        return registry && key.length > 0 && registry[key] ? registry[key] : null
+    }
+
     function providerName(provider) {
-        switch (provider) {
-        case "claude-code": return "Claude Code"
-        case "codex": return "Codex"
-        case "copilot": return "GitHub Copilot"
-        case "openrouter": return "OpenRouter"
-        case "opencode":
-        case "opencode-go": return "OpenCode"
-        case "gemini-cli": return "Gemini CLI"
-        case "cursor": return "Cursor"
-        case "commandcode": return "Command Code"
-        case "pi": return "Pi"
-        default: return provider || "Unknown provider"
-        }
+        var entry = providerEntry(provider)
+        return entry && entry.displayName ? entry.displayName : (provider || "Unknown provider")
     }
 
     function harnessIcon(provider) {
-        switch (provider) {
-        case "codex": return "smart_toy"
-        case "cursor": return "mouse"
-        case "claude-code": return "psychology"
-        case "copilot": return "assistant"
-        case "opencode":
-        case "opencode-go":
-        case "commandcode": return "code"
-        case "gemini-cli": return "auto_awesome"
-        default: return "terminal"
-        }
+        var entry = providerEntry(provider)
+        return entry && entry.icon ? entry.icon : "terminal"
     }
+
+    // Payload vendor first (computed from account identity), then the
+    // registry's static vendor; "" when the CLI predates vendor tagging.
+    function vendorFor(provider, vendor) {
+        if (vendor)
+            return String(vendor)
+        var entry = providerEntry(provider)
+        return entry && entry.vendor ? String(entry.vendor) : ""
+    }
+
+    // Vendor id plus legacy upstream aliases (claude, gemini, ...) still
+    // used by saved previewHidden / selectedProviders settings.
+    function vendorKeys(vendor) {
+        if (!vendor)
+            return []
+        var entry = providerEntry(vendor)
+        var aliases = entry && Array.isArray(entry.aliases) ? entry.aliases : []
+        return [String(vendor).toLowerCase()].concat(aliases.map(function(alias) {
+            return String(alias).toLowerCase()
+        }))
+    }
+
+    function vendorIncident(vendor) {
+        var incidents = payload && payload.statusIncidents ? payload.statusIncidents : null
+        var incident = incidents && vendor ? incidents[vendor] : null
+        return incident && incident.indicator && incident.indicator !== "none" ? incident : null
+    }
+
+    function degradedVendors() {
+        var incidents = payload && payload.statusIncidents ? payload.statusIncidents : ({})
+        var rank = { minor: 1, major: 2, critical: 3 }
+        return Object.keys(incidents).filter(function(vendor) {
+            return vendorIncident(vendor) !== null
+        }).sort(function(a, b) {
+            return (rank[incidents[b].indicator] || 0) - (rank[incidents[a].indicator] || 0)
+        })
+    }
+
+    function incidentColor(incident) {
+        return incident && (incident.indicator === "major" || incident.indicator === "critical")
+            ? Theme.error : Theme.warning
+    }
+
 
     function accountPrimaryLabel(account) {
         if (privacyHideIdentities)
@@ -795,7 +831,7 @@ PluginComponent {
             return true
         var query = searchQueryText()
         if (id === "limits")
-            return filteredLimits().some(matchesAccount)
+            return filteredLimits().length > 0
         if (id === "harness")
             return searchMatchesInRows(payload.today ? payload.today.rows : [], "bucket")
         if (id === "repos")
@@ -810,10 +846,10 @@ PluginComponent {
             return query === "cost" || query === "tokens" ||
                 searchMatchesInRows(id === "provider" ? providerSlices : modelSlices, "name")
         if (id === "repoHistory")
-            return !privacyHideRepoSessionNames && payload.repoHistory &&
+            return !privacyHideRepoSessionNames && Boolean(payload.repoHistory) &&
                 searchMatchesInRows(payload.repoHistory.series, "bucket")
         if (id === "recentSessions")
-            return !privacyHideRepoSessionNames && payload.recentSessions &&
+            return !privacyHideRepoSessionNames && Boolean(payload.recentSessions) &&
                 searchMatchesInRows(payload.recentSessions.rows, "title")
         if (id === "integration")
             return searchMatches(root.shellName + " integration settings executable configuration")
@@ -831,8 +867,91 @@ PluginComponent {
         for (var i = 0; i < windows.length; i++)
             ordered.push(windows[i])
         return ordered.sort(function(a, b) {
-            return windowRank(a.kind) - windowRank(b.kind)
+            var rankA = windowOrderMinutes(a)
+            var rankB = windowOrderMinutes(b)
+            if (rankA !== rankB)
+                return rankA < rankB ? -1 : 1
+            return (a.model ? 1 : 0) - (b.model ? 1 : 0)
         })
+    }
+
+    function windowOrderMinutes(windowData) {
+        var minutes = Number(windowData && windowData.windowMinutes)
+        if (isFinite(minutes) && minutes > 0)
+            return minutes
+        return windowRank(windowData && windowData.kind)
+    }
+
+    function windowTitle(windowData) {
+        if (windowData && windowData.label)
+            return String(windowData.label)
+        return windowName(windowData && windowData.kind)
+    }
+
+    function clockLabel(value) {
+        var target = new Date(String(value || ""))
+        if (!isFinite(target.getTime()))
+            return ""
+        var hours = target.getHours()
+        var minutes = target.getMinutes()
+        var time = (hours < 10 ? "0" : "") + hours + ":" + (minutes < 10 ? "0" : "") + minutes
+        if (target.toDateString() === new Date().toDateString())
+            return time
+        return ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][target.getDay()] + " " + time
+    }
+
+    function paceLabel(windowData) {
+        var pace = windowData && windowData.pace
+        if (!pace)
+            return ""
+        if (pace.status === "over" && pace.runsOutAt && clockLabel(pace.runsOutAt).length > 0)
+            return "Runs out ~" + clockLabel(pace.runsOutAt)
+        if (pace.status === "over")
+            return "Over pace"
+        if (pace.status === "under")
+            return "Under pace"
+        return "On pace"
+    }
+
+    function paceMarkerFraction(windowData) {
+        var pace = windowData && windowData.pace
+        if (!pace || !isFinite(Number(pace.expectedPercent)))
+            return -1
+        return Math.max(0, Math.min(1, 1 - Number(pace.expectedPercent) / 100))
+    }
+
+    function extraUsageLabel(extraUsage) {
+        if (!extraUsage || !extraUsage.enabled)
+            return ""
+        if (extraUsage.usedUsd === undefined || extraUsage.usedUsd === null)
+            return "Extra usage enabled"
+        var text = "Extra usage " + formatMoney(extraUsage.usedUsd)
+        if (extraUsage.limitUsd !== undefined && extraUsage.limitUsd !== null)
+            text += " / " + formatMoney(extraUsage.limitUsd)
+        return text
+    }
+
+    function balanceAmount(value, currency) {
+        var code = String(currency || "USD").toUpperCase()
+        return code === "USD" ? formatMoney(value) : safeNumber(value).toFixed(2) + " " + code
+    }
+
+    function balanceLabel(balance) {
+        if (!balance || balance.remaining === undefined || balance.remaining === null)
+            return ""
+        var text = "Balance " + balanceAmount(balance.remaining, balance.currency)
+        if (balance.total !== undefined && balance.total !== null)
+            text += " / " + balanceAmount(balance.total, balance.currency)
+        var parts = []
+        if (balance.paid !== undefined && balance.paid !== null)
+            parts.push("paid " + balanceAmount(balance.paid, balance.currency))
+        if (balance.granted !== undefined && balance.granted !== null)
+            parts.push("granted " + balanceAmount(balance.granted, balance.currency))
+        if (parts.length > 0)
+            text += " (" + parts.join(", ") + ")"
+        if (balance.available === false)
+            text += " · unavailable for API calls"
+        return text
     }
 
     function tokenScale(kind) {
@@ -913,19 +1032,27 @@ PluginComponent {
         var seconds = Math.max(0, (target - Date.now()) / 1000)
         if (seconds <= 30)
             return "Available now"
-        if (seconds < 3600)
-            return "Resets in " + Math.max(1, Math.round(seconds / 60)) + "m"
-        if (seconds < 86400)
-            return "Resets in " + Math.floor(seconds / 3600) + "h " + Math.round((seconds % 3600) / 60) + "m"
-        return "Resets in " + Math.floor(seconds / 86400) + "d " + Math.round((seconds % 86400) / 3600) + "h"
+        var minutes = Math.max(1, Math.round(seconds / 60))
+        if (minutes < 60)
+            return "Resets in " + minutes + "m"
+        if (minutes < 1440)
+            return "Resets in " + Math.floor(minutes / 60) + "h " + minutes % 60 + "m"
+        var hours = Math.round(minutes / 60)
+        return "Resets in " + Math.floor(hours / 24) + "d " + hours % 24 + "h"
     }
 
     function buildAttentionItems() {
-        var items = []
+        var items = degradedVendors().map(function(vendor) {
+            var incident = vendorIncident(vendor)
+            return {
+                title: providerShortName(vendor) + " status: " + incident.indicator,
+                detail: incident.description || "See the provider status page"
+            }
+        })
         if (hasLimits) {
             for (var i = 0; i < payload.limits.length; i++) {
                 var account = payload.limits[i]
-                if (!providerIsVisible(account.provider, account.accountKey))
+                if (!providerIsVisible(account.provider, account.accountKey, account.vendor))
                     continue
                 var windows = orderedWindows(account.windows)
                 for (var j = 0; j < windows.length; j++) {
@@ -933,7 +1060,7 @@ PluginComponent {
                     if (hasUsedPercent(windowData) && remainingPercent(windowData) <= 10) {
                         items.push({
                             title: accountPrimaryLabel(account),
-                            detail: windowName(windowData.kind) + " · " +
+                            detail: windowTitle(windowData) + " · " +
                                 Math.round(remainingPercent(windowData)) + "% left" +
                                 (resetLabel(windowData.resetsAt).length > 0 ? " · " + resetLabel(windowData.resetsAt) : "")
                         })
@@ -952,6 +1079,15 @@ PluginComponent {
             })
         }
         return items.slice(0, 3)
+    }
+
+    function otherActiveMachines(presence) {
+        if (!Array.isArray(presence))
+            return []
+        var now = Date.now()
+        return presence.filter(function(machine) {
+            return machine && machine.local !== true && (now - safeNumber(machine.ts)) < 600000
+        })
     }
 
     function relativeAge(value) {
@@ -994,45 +1130,9 @@ PluginComponent {
             safeNumber(stats.cachePct) + "% cache"
     }
 
-    function upstreamProvider(provider, accountKey) {
-        switch (provider) {
-        case "codex": return "openai"
-        case "claude-code": return "claude"
-        case "gemini-cli": return "gemini"
-        case "grok": return "grok"
-        case "cursor": return "cursor"
-        case "copilot": return "copilot"
-        case "openrouter": return "openrouter"
-        case "openai":
-        case "claude":
-        case "gemini": return provider
-        case "pi":
-        case "opencode":
-        case "opencode-go": {
-            var key = String(accountKey || "").toLowerCase()
-            if (key.indexOf("openrouter") >= 0)
-                return "openrouter"
-            if (provider === "opencode" || provider === "opencode-go" ||
-                    key.indexOf("opencode") >= 0)
-                return "opencode"
-            return ""
-        }
-        default: return ""
-        }
-    }
-
-    function barProviderLabel(provider) {
-        switch (provider) {
-        case "openai": return "OpenAI"
-        case "claude": return "Claude"
-        case "gemini": return "Gemini"
-        case "grok": return "Grok"
-        case "cursor": return "Cursor"
-        case "copilot": return "Copilot"
-        case "openrouter": return "OpenRouter"
-        case "opencode": return "OpenCode"
-        default: return displayLabel(provider)
-        }
+    function providerShortName(provider) {
+        var entry = providerEntry(provider)
+        return entry && entry.shortName ? entry.shortName : displayLabel(provider)
     }
 
     function barWindowLabel(kind) {
@@ -1074,9 +1174,9 @@ PluginComponent {
         var report = payload.today || ({})
         var rows = Array.isArray(report.rows) ? report.rows : []
         for (var i = 0; i < rows.length; i++) {
-            var bucket = String(rows[i].bucket || "").toLowerCase()
-            var rowProvider = upstreamProvider(bucket, "")
-            if (rowProvider !== provider && bucket !== provider)
+            var bucket = String(rows[i].bucket || "")
+            var rowVendor = vendorFor(bucket, rows[i].vendor)
+            if (rowVendor !== provider && bucket !== provider)
                 continue
             result.tokens += totalTokens(rows[i])
             result.cost += safeNumber(rows[i].costUsd)
@@ -1096,12 +1196,12 @@ PluginComponent {
         for (var usageIndex = 0; usageIndex < usageRows.length; usageIndex++) {
             var harness = String(usageRows[usageIndex].bucket || "")
             if (!accounts.some(function(account) { return account.provider === harness }))
-                accounts.push({ provider: harness, accountKey: "", windows: [] })
+                accounts.push({ provider: harness, accountKey: "", vendor: usageRows[usageIndex].vendor, windows: [] })
         }
         for (var i = 0; i < accounts.length; i++) {
             var account = accounts[i]
-            var provider = upstreamProvider(account.provider, account.accountKey) || String(account.provider || "")
-            if (provider.length === 0 || !providerIsVisible(account.provider, account.accountKey))
+            var provider = vendorFor(account.provider, account.vendor) || String(account.provider || "")
+            if (provider.length === 0 || !providerIsVisible(account.provider, account.accountKey, account.vendor))
                 continue
 
             var group = null
@@ -1114,7 +1214,7 @@ PluginComponent {
             if (!group) {
                 group = {
                     provider: provider,
-                    label: barProviderLabel(provider),
+                    label: providerShortName(provider),
                     windows: []
                 }
                 groups.push(group)
@@ -1125,14 +1225,14 @@ PluginComponent {
                 var windowData = windows[j]
                 if (windowData.amountUsd !== null && windowData.amountUsd !== undefined) {
                     group.windows.push({
-                        kind: String(windowData.kind || ""),
-                        rank: windowRank(windowData.kind),
+                        kind: String(windowData.label || windowData.kind || ""),
+                        rank: windowOrderMinutes(windowData),
                         amount: formatMoney(windowData.amountUsd)
                     })
                 } else if (hasUsedPercent(windowData)) {
                     group.windows.push({
-                        kind: String(windowData.kind || ""),
-                        rank: windowRank(windowData.kind),
+                        kind: String(windowData.label || windowData.kind || ""),
+                        rank: windowOrderMinutes(windowData),
                         remaining: Math.round(remainingPercent(windowData))
                     })
                 }
@@ -1181,7 +1281,19 @@ PluginComponent {
             return
         }
         scanNextRefresh = Boolean(scan)
+        statusExited = false
         statusProcess.running = true
+    }
+
+    function statusStartFailed() {
+        var message = "could not start " + root.command + " (check the " + root.shellName + " PATH or executable setting)"
+        scanNextRefresh = false
+        pendingRefresh = false
+        pendingScan = false
+        if (hasPayload)
+            lastError = message
+        else
+            errorText = message
     }
 
     function accept(raw) {
@@ -1226,6 +1338,14 @@ PluginComponent {
             spacing: Theme.spacingS
 
             DankIcon {
+                name: "warning"
+                size: root.iconSize
+                color: root.incidentColor(root.vendorIncident(root.degradedVendors()[0]))
+                anchors.verticalCenter: parent.verticalCenter
+                visible: root.degradedVendors().length > 0
+            }
+
+            DankIcon {
                 name: "monitoring"
                 size: root.iconSize
                 color: Theme.widgetIconColor
@@ -1265,6 +1385,7 @@ PluginComponent {
 
                     TokitokiProviderLogo {
                         provider: groupData.provider
+                        registry: root.payload.providerRegistry || ({})
                         size: root.iconSize
                         fallbackIcon: "monitoring"
                         fallbackColor: Theme.widgetIconColor
@@ -1295,6 +1416,14 @@ PluginComponent {
     verticalBarPill: Component {
         Column {
             spacing: Theme.spacingXXS
+
+            DankIcon {
+                name: "warning"
+                size: root.iconSize
+                color: root.incidentColor(root.vendorIncident(root.degradedVendors()[0]))
+                anchors.horizontalCenter: parent.horizontalCenter
+                visible: root.degradedVendors().length > 0
+            }
 
             DankIcon {
                 name: "monitoring"
@@ -1692,8 +1821,7 @@ PluginComponent {
                                                 }
 
                                                 StyledText {
-                                                    text: root.formatMoney(root.reportFor("today") &&
-                                                        root.reportFor("today").total.costUsd)
+                                                    text: root.formatMoney(root.metricTotal("today", "cost"))
                                                     color: Theme.surfaceText
                                                     font.pixelSize: Theme.fontSizeXLarge + 8
                                                     font.weight: Font.Bold
@@ -1701,8 +1829,8 @@ PluginComponent {
                                                 }
 
                                                 StyledText {
-                                                    text: root.reportFor("today")
-                                                        ? root.compactNumber(root.reportFor("today").total.requests) + " requests"
+                                                    text: root.reportTotal("today")
+                                                        ? root.compactNumber(root.reportTotal("today").requests) + " requests"
                                                         : "loading…"
                                                     color: Theme.surfaceVariantText
                                                     font.pixelSize: Theme.fontSizeMedium
@@ -1726,8 +1854,8 @@ PluginComponent {
                                                 }
                                                 StyledText {
                                                     id: weekValue
-                                                    text: root.reportFor("week")
-                                                        ? root.formatMoney(root.reportFor("week").total.costUsd)
+                                                    text: root.reportTotal("week")
+                                                        ? root.formatMoney(root.reportTotal("week").costUsd)
                                                         : "—"
                                                     color: Theme.surfaceText
                                                     font.pixelSize: Theme.fontSizeMedium
@@ -1894,9 +2022,10 @@ PluginComponent {
 
                                                     TokitokiProviderLogo {
                                                         provider: accountCard.account.provider
+                                                        registry: root.payload.providerRegistry || ({})
                                                         size: Theme.iconSizeLarge
                                                         showBackground: true
-                                                        fallbackIcon: "account_circle"
+                                                        fallbackIcon: root.providerEntry(accountCard.account.provider) ? root.harnessIcon(accountCard.account.provider) : "account_circle"
                                                         fallbackColor: Theme.primary
                                                         Layout.alignment: Qt.AlignVCenter
                                                     }
@@ -1925,22 +2054,60 @@ PluginComponent {
                                                     }
 
                                                     Rectangle {
+                                                        id: incidentBadge
+                                                        property var incident: root.vendorIncident(root.vendorFor(accountCard.account.provider, accountCard.account.vendor))
+                                                        width: incident ? incidentRow.implicitWidth + Theme.spacingS * 2 : 0
+                                                        height: incident ? 22 : 0
+                                                        radius: 11
+                                                        color: Theme.withAlpha(root.incidentColor(incident), 0.16)
+                                                        visible: incident !== null
+                                                        Layout.alignment: Qt.AlignVCenter
+
+                                                        Row {
+                                                            id: incidentRow
+                                                            anchors.centerIn: parent
+                                                            spacing: Theme.spacingXXS
+
+                                                            DankIcon {
+                                                                name: "warning"
+                                                                size: 14
+                                                                color: root.incidentColor(incidentBadge.incident)
+                                                                anchors.verticalCenter: parent.verticalCenter
+                                                            }
+
+                                                            StyledText {
+                                                                text: incidentBadge.incident ? String(incidentBadge.incident.indicator).toUpperCase() : ""
+                                                                color: root.incidentColor(incidentBadge.incident)
+                                                                font.pixelSize: Theme.fontSizeSmall
+                                                                font.weight: Font.DemiBold
+                                                                anchors.verticalCenter: parent.verticalCenter
+                                                            }
+                                                        }
+
+                                                        MouseArea {
+                                                            anchors.fill: parent
+                                                            cursorShape: Qt.PointingHandCursor
+                                                            enabled: incidentBadge.incident !== null && Boolean(incidentBadge.incident.url)
+                                                            onClicked: Qt.openUrlExternally(incidentBadge.incident.url)
+                                                        }
+                                                    }
+
+                                                    Rectangle {
                                                         id: planBadge
-                                                        width: accountCard.account.planLabel
+                                                        property string plan: accountCard.account.planLabel || accountCard.account.plan || ""
+                                                        width: plan.length > 0
                                                             ? planText.implicitWidth + Theme.spacingS * 2
                                                             : 0
-                                                        height: accountCard.account.planLabel ? 22 : 0
+                                                        height: plan.length > 0 ? 22 : 0
                                                         radius: 11
                                                         color: Theme.withAlpha(Theme.surfaceText, 0.08)
-                                                        visible: Boolean(accountCard.account.planLabel)
+                                                        visible: plan.length > 0
                                                         Layout.alignment: Qt.AlignVCenter
 
                                                         StyledText {
                                                             id: planText
                                                             anchors.centerIn: parent
-                                                            text: accountCard.account.planLabel
-                                                                ? String(accountCard.account.planLabel).toUpperCase()
-                                                                : ""
+                                                            text: planBadge.plan.toUpperCase()
                                                             color: Theme.surfaceVariantText
                                                             font.pixelSize: Theme.fontSizeSmall
                                                             font.weight: Font.DemiBold
@@ -1989,7 +2156,7 @@ PluginComponent {
                                                                     spacing: Theme.spacingXS
 
                                                                     StyledText {
-                                                                        text: root.windowName(windowData.kind)
+                                                                        text: root.windowTitle(windowData)
                                                                         Layout.fillWidth: true
                                                                         color: Theme.surfaceVariantText
                                                                         font.pixelSize: Theme.fontSizeSmall + 1
@@ -2025,19 +2192,64 @@ PluginComponent {
                                                                         radius: parent.radius
                                                                         color: root.limitColor(windowData)
                                                                     }
+
+                                                                    Rectangle {
+                                                                        property real fraction: root.paceMarkerFraction(windowData)
+                                                                        visible: fraction >= 0
+                                                                        x: Math.max(0, limitTrack.width * fraction - width / 2)
+                                                                        y: -2
+                                                                        width: 2
+                                                                        height: parent.height + 4
+                                                                        radius: 1
+                                                                        color: Theme.surfaceText
+                                                                        opacity: 0.7
+                                                                    }
                                                                 }
 
-                                                                StyledText {
+                                                                RowLayout {
                                                                     width: parent.width
-                                                                    text: root.resetLabel(windowData.resetsAt)
-                                                                    color: Theme.surfaceVariantText
-                                                                    font.pixelSize: Theme.fontSizeSmall
-                                                                    horizontalAlignment: Text.AlignRight
-                                                                    visible: text.length > 0
+                                                                    spacing: Theme.spacingXS
+                                                                    visible: paceText.text.length > 0 || resetText.text.length > 0
+
+                                                                    StyledText {
+                                                                        id: paceText
+                                                                        text: root.paceLabel(windowData)
+                                                                        color: windowData.pace && windowData.pace.status === "over"
+                                                                            ? Theme.warning
+                                                                            : Theme.surfaceVariantText
+                                                                        font.pixelSize: Theme.fontSizeSmall
+                                                                        Layout.fillWidth: true
+                                                                        elide: Text.ElideRight
+                                                                    }
+
+                                                                    StyledText {
+                                                                        id: resetText
+                                                                        text: root.resetLabel(windowData.resetsAt)
+                                                                        color: Theme.surfaceVariantText
+                                                                        font.pixelSize: Theme.fontSizeSmall
+                                                                        horizontalAlignment: Text.AlignRight
+                                                                    }
                                                                 }
                                                             }
                                                         }
                                                     }
+                                                }
+
+                                                StyledText {
+                                                    text: root.extraUsageLabel(accountCard.account.extraUsage)
+                                                    color: Theme.surfaceVariantText
+                                                    font.pixelSize: Theme.fontSizeSmall + 1
+                                                    visible: text.length > 0
+                                                }
+
+                                                StyledText {
+                                                    width: parent.width
+                                                    text: root.balanceLabel(accountCard.account.balance)
+                                                    color: accountCard.account.balance && accountCard.account.balance.available === false
+                                                        ? Theme.warning : Theme.surfaceVariantText
+                                                    font.pixelSize: Theme.fontSizeSmall + 1
+                                                    elide: Text.ElideRight
+                                                    visible: text.length > 0
                                                 }
 
                                                 StyledText {
@@ -2099,6 +2311,11 @@ PluginComponent {
 
                                             delegate: Rectangle {
                                                 width: compositionPeriodText.implicitWidth + Theme.spacingS * 2
+                                                activeFocusOnTab: true
+                                                Accessible.role: Accessible.Button
+                                                Accessible.name: compositionPeriodText.text
+                                                Keys.onSpacePressed: root.compositionPeriod = modelData
+                                                Keys.onReturnPressed: root.compositionPeriod = modelData
                                                 height: 26
                                                 radius: 13
                                                 color: root.compositionPeriod === modelData
@@ -2205,6 +2422,11 @@ PluginComponent {
 
                                             delegate: Rectangle {
                                                 width: historyPeriodText.implicitWidth + Theme.spacingS * 2
+                                                activeFocusOnTab: true
+                                                Accessible.role: Accessible.Button
+                                                Accessible.name: historyPeriodText.text
+                                                Keys.onSpacePressed: root.historyPeriod = modelData
+                                                Keys.onReturnPressed: root.historyPeriod = modelData
                                                 height: 26
                                                 radius: 13
                                                 color: root.historyPeriod === modelData
@@ -2339,7 +2561,7 @@ PluginComponent {
                             title: "Repo activity · 30 days"
                             iconName: "bar_chart"
                             visible: (root.tabIs("reports") || root.tabIs("overview")) && root.hasPayload &&
-                                root.payload.repoHistory &&
+                                Boolean(root.payload.repoHistory) &&
                                 Array.isArray(root.payload.repoHistory.days) &&
                                 root.payload.repoHistory.days.length > 0 && root.cardSurvives("repoHistory")
                             contentComponent: Component {
@@ -2386,6 +2608,7 @@ PluginComponent {
 
                                                 TokitokiProviderLogo {
                                                     provider: modelData.bucket
+                                                    registry: root.payload.providerRegistry || ({})
                                                     size: Theme.iconSizeSmall
                                                     fallbackIcon: root.harnessIcon(modelData.bucket)
                                                     fallbackColor: root.paletteColor(modelData.bucket)
@@ -2481,7 +2704,7 @@ PluginComponent {
                             title: "Top tools today"
                             iconName: "build"
                             visible: (root.tabIs("overview") || root.tabIs("sources") ||
-                                root.tabIs("mcp")) && root.hasPayload && root.payload.topTools &&
+                                root.tabIs("mcp")) && root.hasPayload && Boolean(root.payload.topTools) &&
                                 Array.isArray(root.payload.topTools.tools) &&
                                 root.payload.topTools.tools.length > 0 &&
                                 root.cardSurvives("tools")
@@ -2585,7 +2808,7 @@ PluginComponent {
                             title: "Anomalies"
                             iconName: "warning"
                             visible: (root.tabIs("overview") || root.tabIs("reports")) &&
-                                root.hasPayload && root.payload.anomalies &&
+                                root.hasPayload && Boolean(root.payload.anomalies) &&
                                 Array.isArray(root.payload.anomalies.anomalies) &&
                                 root.payload.anomalies.anomalies.length > 0 &&
                                 root.cardSurvives("anomalies")
@@ -2675,7 +2898,7 @@ PluginComponent {
                         TokitokiCard {
                             title: "Billing blocks · active timeline"
                             iconName: "schedule"
-                            visible: root.tabIs("reports") && root.hasPayload && root.payload.blocks &&
+                            visible: root.tabIs("reports") && root.hasPayload && Boolean(root.payload.blocks) &&
                                 Array.isArray(root.payload.blocks.rows) &&
                                 root.payload.blocks.rows.length > 0 && root.cardSurvives("blocks")
                             contentComponent: Component {
@@ -2747,22 +2970,17 @@ PluginComponent {
                             iconName: "lan"
                             visible: root.tabIs("reports") && root.hasPayload &&
                                 root.cardSurvives("activity") &&
-                                Array.isArray(root.payload.presence) &&
-                                root.payload.presence.some(function(machine) {
-                                    return (Date.now() - root.safeNumber(machine.ts) * 1000) < 600000
-                                })
+                                root.otherActiveMachines(root.payload.presence).length > 0
                             contentComponent: Component {
                                 Column {
                                     width: parent ? parent.width : 0
                                     spacing: Theme.spacingXS
 
                                     Repeater {
-                                        model: root.payload.presence || []
+                                        model: root.otherActiveMachines(root.payload.presence)
 
                                         delegate: TokitokiListRow {
                                             alternate: index % 2 === 1
-                                            visible: (Date.now() - root.safeNumber(modelData.ts) * 1000) < 600000
-                                            height: visible ? rowHeight : 0
 
                                             Row {
                                                 anchors.fill: parent
@@ -2784,7 +3002,7 @@ PluginComponent {
                                                 }
 
                                                 StyledText {
-                                                    text: "Active · " + root.relativeAge(new Date(root.safeNumber(modelData.ts) * 1000).toISOString())
+                                                    text: "Active · " + root.relativeAge(new Date(root.safeNumber(modelData.ts)).toISOString())
                                                     color: Theme.success
                                                     font.pixelSize: Theme.fontSizeSmall + 1
                                                     anchors.verticalCenter: parent.verticalCenter
@@ -2799,7 +3017,7 @@ PluginComponent {
                         TokitokiCard {
                             title: "Recent sessions"
                             iconName: "chat_bubble"
-                            visible: root.tabIs("sources") && root.hasPayload && root.payload.recentSessions &&
+                            visible: root.tabIs("sources") && root.hasPayload && Boolean(root.payload.recentSessions) &&
                                 Array.isArray(root.payload.recentSessions.rows) &&
                                 root.payload.recentSessions.rows.length > 0 && root.cardSurvives("recentSessions")
                             contentComponent: Component {
@@ -3005,8 +3223,9 @@ PluginComponent {
         }
 
         onExited: function(exitCode, exitStatus) {
+            root.statusExited = true
             root.scanNextRefresh = false
-            if (exitCode !== 0) {
+            if (exitCode !== 0 && errorOutput.text.trim().length === 0) {
                 if (root.hasPayload)
                     root.lastError = "tokitoki unavailable (exit " + exitCode + ")"
                 else
@@ -3018,6 +3237,11 @@ PluginComponent {
                 root.pendingScan = false
                 root.refresh(scan)
             }
+        }
+
+        onRunningChanged: {
+            if (!running && !root.statusExited)
+                root.statusStartFailed()
         }
     }
 

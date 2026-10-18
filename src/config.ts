@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 
 import TOML from "@iarna/toml";
+import { z } from "zod";
 
 import type { SyncConfig } from "./sync/types.ts";
 import type { BudgetsConfig } from "./budgets.ts";
@@ -32,8 +33,8 @@ export interface ProviderConfig {
 }
 
 /**
- * User-configured plan quota estimate. Providers don't expose subscription
- * caps, so these are honest user-set approximations used only for gauges.
+ * User-configured plan quota estimate for accounts without provider-reported
+ * quotas (API keys, gateways); an honest approximation used only for gauges.
  */
 export interface PlanConfig {
   kind?: "subscription";
@@ -52,6 +53,11 @@ export interface TokitokiConfig {
   sync?: SyncConfig;
   providers?: Record<string, ProviderConfig>;
   /**
+   * Upstream provider for custom account or model-prefix names that cannot be
+   * inferred, e.g. { "work-gateway": "openai" } for "work-gateway/gpt-5" models.
+   */
+  accountAliases?: Record<string, string>;
+  /**
    * Plan quota estimates keyed by accountKey pattern (exact match, or
    * trailing `*` for prefix match). Matched rows render a usage gauge
    * instead of a cost cell. Most useful with `--by account`.
@@ -63,6 +69,8 @@ export interface TokitokiConfig {
   notifications?: NotificationsConfig;
   /** [privacy] — local-only display redaction for screenshots/shared screens. */
   privacy?: PrivacyConfig;
+  /** [statusIncidents] — vendor status-page checks (5 min cache); on by default. */
+  statusIncidents?: { enabled?: boolean };
   /**
    * [poll] — provider quota polling (`tokitoki poll`). Reuses locally stored
    * OAuth credentials to fetch real rate-limit windows. The menubar scheduler
@@ -85,9 +93,12 @@ export interface TokitokiConfig {
       id: string;
       /** Optional display label; defaults to the id. */
       label?: string;
-      provider?: "opencode-go" | "openrouter";
+      /** zai/kimi/deepseek keys feed that provider's single "default" account (first key wins). */
+      provider?: "opencode-go" | "openrouter" | "zai" | "kimi" | "deepseek";
       key: string;
     }>;
+    /** z.ai API host: "global" (api.z.ai, default) or "bigmodel-cn" (open.bigmodel.cn). */
+    zaiRegion?: "global" | "bigmodel-cn";
   };
   /** Escape-hatch flags for features not yet stable enough to document. */
   experimental?: {
@@ -218,13 +229,31 @@ function normalize(value: unknown): TokitokiConfig {
   if (!Array.isArray(cfg.extraEventFiles)) delete cfg.extraEventFiles;
   if (cfg.providers !== undefined && typeof cfg.providers !== "object") delete cfg.providers;
   if (cfg.plans !== undefined && typeof cfg.plans !== "object") delete cfg.plans;
+  if (cfg.accountAliases !== undefined && !z.record(z.string(), z.string()).safeParse(cfg.accountAliases).success) {
+    delete cfg.accountAliases;
+  }
   if (cfg.sync !== undefined && typeof cfg.sync !== "object") delete cfg.sync;
   if (cfg.budgets !== undefined && typeof cfg.budgets !== "object") delete cfg.budgets;
   if (cfg.notifications !== undefined && typeof cfg.notifications !== "object") delete cfg.notifications;
   if (cfg.privacy !== undefined && typeof cfg.privacy !== "object") delete cfg.privacy;
+  if (cfg.statusIncidents !== undefined && typeof cfg.statusIncidents !== "object") delete cfg.statusIncidents;
   if (cfg.poll !== undefined && typeof cfg.poll !== "object") delete cfg.poll;
   return cfg;
 }
+
+const aliasCache = new Map<string, ReadonlyMap<string, string>>();
+
+/** [accountAliases] lowercased, read once per config file per process (hot path in rollups). */
+export const accountAliases = (): ReadonlyMap<string, string> => {
+  const key = configPath();
+  const cached = aliasCache.get(key);
+  if (cached !== undefined) return cached;
+  const aliases = new Map(
+    Object.entries(loadConfig().accountAliases ?? {}).map(([name, provider]) => [name.toLowerCase(), provider.toLowerCase()]),
+  );
+  aliasCache.set(key, aliases);
+  return aliases;
+};
 
 export function providerConfig(id: string): ProviderConfig | undefined {
   return loadConfig().providers?.[id];

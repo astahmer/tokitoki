@@ -3,6 +3,7 @@ import path from "node:path";
 
 import { apiAnomalies, apiBreakdown, apiBudgets, apiExport, apiGrid, apiNotificationHistory, apiSessionDetail, apiSessionSearch, apiSessions, apiSources, apiSummary, apiTable, apiTimeseries, apiWidgetStatus, type WindowParams } from "./api.ts";
 import { atprotoConfig, buildSharePayload, describePayload, publishShare, readShareState, writeShareState } from "../share.ts";
+import { readLimitsDocument } from "../limits-document.ts";
 
 export interface WebServerOptions {
   port?: number;
@@ -195,6 +196,9 @@ export function startWebServer(options: WebServerOptions = {}): Bun.Server<undef
         const top = Number(url.searchParams.get("top") ?? "25");
         return json(apiSessions(win(), providers, account === "" ? undefined : account, top, period));
       }
+      case "/api/limits":
+      case "/v1/limits":
+        return json(readLimitsDocument({ showEmail: url.searchParams.get("showEmail") === "1" }));
       case "/api/budgets":
         return json(apiBudgets());
       case "/api/notifications":

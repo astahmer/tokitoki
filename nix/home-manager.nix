@@ -93,6 +93,19 @@ in
         description = "DankBar section receiving the widget when it is absent from the bar.";
       };
     };
+    serve = {
+      enable = lib.mkEnableOption "the read-only Tokitoki HTTP API (`tokitoki serve`) as a user service";
+      port = lib.mkOption {
+        type = lib.types.port;
+        default = 6736;
+        description = "Port for /v1/limits, /v1/usage and /v1/status.";
+      };
+      host = lib.mkOption {
+        type = lib.types.str;
+        default = "127.0.0.1";
+        description = "Bind address. Anything other than loopback exposes your usage data to the network.";
+      };
+    };
     quickshell = {
       enable = lib.mkEnableOption "the Tokitoki Quickshell widget";
       package = lib.mkOption {
@@ -146,7 +159,9 @@ in
   };
 
   config = lib.mkMerge [
-    { programs.tokitoki.enable = lib.mkDefault (cfg.dms.enable || cfg.quickshell.enable); }
+    {
+      programs.tokitoki.enable = lib.mkDefault (cfg.dms.enable || cfg.quickshell.enable || cfg.serve.enable);
+    }
     (lib.mkIf cfg.enable {
       home.packages = [ cfg.package ] ++ lib.optional (linux && cfg.quickshell.enable) launcher;
       assertions = [
@@ -186,6 +201,15 @@ in
             };
             Install.WantedBy = [ cfg.quickshell.systemd.target ];
           };
+      systemd.user.services.tokitoki-serve = lib.mkIf (linux && cfg.serve.enable) {
+        Unit.Description = "Tokitoki read-only usage API";
+        Service = {
+          ExecStart = "${lib.getExe cfg.package} serve --port ${toString cfg.serve.port} --host ${cfg.serve.host}";
+          Restart = "on-failure";
+          RestartSec = 5;
+        };
+        Install.WantedBy = [ "default.target" ];
+      };
     })
     (lib.optionalAttrs hasDms {
       programs.dank-material-shell = lib.mkIf (cfg.enable && cfg.dms.enable) {

@@ -1,0 +1,15 @@
+{
+  "code": 200,
+  "msg": "Operation successful",
+  "success": true,
+  "data": {
+    "planName": "GLM Coding Pro",
+    "limits": [
+      { "type": "TOKENS_LIMIT", "unit": 3, "number": 5, "percentage": 20, "usage": 1000, "currentValue": 250, "remaining": 750, "nextResetTime": 1792310400000 },
+      { "type": "TOKENS_LIMIT", "unit": 6, "number": 1, "percentage": 40, "nextResetTime": 1792828800000 },
+      { "type": "TIME_LIMIT", "unit": 5, "number": 1, "percentage": 10, "usage": 100, "currentValue": 10, "remaining": 90, "nextResetTime": 1794614400000,
+        "usageDetails": [{ "modelCode": "search-prime", "usage": 10 }] },
+      { "type": "FUTURE_LIMIT", "unit": 1, "number": 1, "percentage": 5 }
+    ]
+  }
+}

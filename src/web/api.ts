@@ -1,4 +1,4 @@
-import { EventCache, type AggRow } from "../cache.ts";
+import { DIMENSION_NAMES, EventCache, parseDimension, type AggRow, type Dimension } from "../cache.ts";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -148,7 +148,7 @@ export function apiWidgetStatus(wp: WindowParams = {}): WidgetStatusPayload {
   });
 }
 
-const SERIES_DIMS = ["provider", "model", "account", "machine"] as const;
+const SERIES_DIMS = ["provider", "vendor", "model", "account", "machine"] as const;
 
 export interface TimeseriesPayload {
   by: string;
@@ -161,8 +161,9 @@ export function apiTimeseries(
   by: string,
   wp: WindowParams & { days?: number; metric?: "tokens" | "cost" } = {},
 ): TimeseriesPayload {
-  if (!SERIES_DIMS.includes(by as (typeof SERIES_DIMS)[number])) {
-    throw new Error(`invalid --by for timeseries: ${by} (valid: ${SERIES_DIMS.join(", ")})`);
+  const seriesBy = SERIES_DIMS.find((dimension) => dimension === parseDimension(by));
+  if (seriesBy === undefined) {
+    throw new Error(`invalid --by for timeseries: ${by} (valid: harness, ${SERIES_DIMS.slice(1).join(", ")})`);
   }
   const metric = wp.metric === "cost" ? "cost" : "tokens";
   let w: TimeWindow;
@@ -173,12 +174,7 @@ export function apiTimeseries(
     w = { sinceIso: new Date(Date.now() - clampedDays * 24 * 3600_000).toISOString(), label: `last ${clampedDays}d` };
   }
   return withCache((cache) => {
-    const buckets = cache.seriesDaily(
-      w.sinceIso,
-      by as Exclude<(typeof SERIES_DIMS)[number], never>,
-      5,
-      metric,
-    );
+    const buckets = cache.seriesDaily(w.sinceIso, seriesBy, 5, metric);
     // Union of all bucket days so every series shares one x-axis.
     const daySet = new Set<string>();
     for (const s of buckets) for (const d of s.days) daySet.add(d);
@@ -198,7 +194,9 @@ export function apiTimeseries(
   });
 }
 
-export type BreakdownDimension = "harness" | "provider" | "model";
+/** `provider` is the routing service (openrouter, opencode, …); `vendor` the upstream model maker. */
+const BREAKDOWN_DIMENSIONS = ["harness", "vendor", "provider", "model"] as const;
+export type BreakdownDimension = (typeof BREAKDOWN_DIMENSIONS)[number];
 
 export interface BreakdownPayload {
   by: BreakdownDimension;
@@ -208,22 +206,25 @@ export interface BreakdownPayload {
 
 /** Token/cost slices for the interactive dashboard and popover-inspired UI. */
 export function apiBreakdown(by: string, wp: WindowParams, providers: string[] = []): BreakdownPayload {
-  if (!["harness", "provider", "model"].includes(by)) {
-    throw new Error(`invalid breakdown: ${by} (valid: harness, provider, model)`);
+  const breakdown = BREAKDOWN_DIMENSIONS.find((dimension) => dimension === by);
+  if (breakdown === undefined) {
+    throw new Error(`invalid breakdown: ${by} (valid: ${BREAKDOWN_DIMENSIONS.join(", ")})`);
   }
   const w = resolveTimeWindow({ ...wp, fallbackPeriod: "month" });
   const filter = providers.length > 0 ? providers : undefined;
   return withCache((cache) => {
-    const rows = by === "harness"
-      ? cache.aggregate(w.sinceIso, "provider", filter, w.untilIso)
-      : by === "model"
-        ? cache.aggregate(w.sinceIso, "model", filter, w.untilIso)
-        : cache.aggregateModelProviders(w.sinceIso, filter, w.untilIso);
-    return { by: by as BreakdownDimension, window: toApiWindow(w), rows: sortRowsByCost(rows) };
+    const rows = breakdown === "provider"
+      ? cache.aggregateModelProviders(w.sinceIso, filter, w.untilIso)
+      : cache.aggregate(w.sinceIso, breakdown === "harness" ? "provider" : breakdown, filter, w.untilIso);
+    return { by: breakdown, window: toApiWindow(w), rows: sortRowsByCost(rows) };
   });
 }
 
-const TABLE_DIMS = ["provider", "model", "account", "machine", "project", "repo", "tool"] as const;
+const tableDimension = (by: string): Dimension => {
+  const dimension = parseDimension(by);
+  if (dimension === undefined) throw new Error(`invalid dimension: ${by} (valid: ${DIMENSION_NAMES.join(", ")})`);
+  return dimension;
+};
 const PERIODS = ["day", "week", "month", "year"] as const;
 
 export interface GaugeInfo {
@@ -262,9 +263,7 @@ export function apiTable(
   delta = true,
   showEmail = false,
 ): TablePayload {
-  if (!TABLE_DIMS.includes(by as (typeof TABLE_DIMS)[number])) {
-    throw new Error(`invalid dimension: ${by} (valid: ${TABLE_DIMS.join(", ")})`);
-  }
+  const dimension = tableDimension(by);
   // wp.last (when given) may be a named period OR a duration string
   // ("24h"); legacyPeriod (the `?period=` query param, used whenever wp.last
   // is absent) is a named period only. The old check only ever validated
@@ -291,7 +290,7 @@ export function apiTable(
     // Account tabs scope every view to one accountKey exactly.
     const rows0 = cache.aggregate(
       since,
-      by as (typeof TABLE_DIMS)[number],
+      dimension,
       providerFilter,
       undefined,
       filterAccount,
@@ -315,7 +314,7 @@ export function apiTable(
 
     if (delta && w.period !== undefined) {
       const prev = previousWindow(w.period);
-      const prevRows = cache.aggregate(prev.sinceIso, by as (typeof TABLE_DIMS)[number], providerFilter, prev.untilIso);
+      const prevRows = cache.aggregate(prev.sinceIso, dimension, providerFilter, prev.untilIso);
       payload.prevCostById = Object.fromEntries(prevRows.map((r) => [r.bucket, round2(r.costUsd)]));
       payload.totalPrevCost = round2(cache.totals(prev.sinceIso, providerFilter, prev.untilIso).costUsd);
     }
@@ -374,7 +373,7 @@ export function apiTable(
       for (const a of accounts) a.email = emails.get(a.key) ?? null;
     }
     // Repo efficiency metrics ride along when grouping by repo.
-    if (by === "repo") {
+    if (dimension === "repo") {
       const prevRows = new Map<string, AggRow>();
       if (w.period !== undefined) {
         const prev = previousWindow(w.period);
@@ -671,12 +670,10 @@ export function apiExport(
   filterAccount?: string,
   providers: string[] = [],
 ): ExportPayload {
-  if (!TABLE_DIMS.includes(by as (typeof TABLE_DIMS)[number])) {
-    throw new Error(`invalid dimension: ${by} (valid: ${TABLE_DIMS.join(", ")})`);
-  }
+  const dimension = tableDimension(by);
   const w = resolveTimeWindow({ ...wp, fallbackPeriod: "week" });
   return withCache((cache) => {
-    const rows = sortRowsByCost(cache.aggregate(w.sinceIso, by as (typeof TABLE_DIMS)[number], providers.length > 0 ? providers : undefined, w.untilIso));
+    const rows = sortRowsByCost(cache.aggregate(w.sinceIso, dimension, providers.length > 0 ? providers : undefined, w.untilIso));
     const windowLabel = `${w.sinceIso} → ${w.untilIso ?? "now"} (${w.label})`;
     if (format === "md") {
       return { content: renderMarkdownTable(rows, windowLabel), contentType: "text/markdown; charset=utf-8", filename: "tokitoki-usage.md" };

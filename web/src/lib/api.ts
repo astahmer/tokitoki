@@ -65,7 +65,8 @@ export interface TimeseriesPayload {
   series: Array<{ bucket: string; values: number[] }>;
 }
 
-export type BreakdownDimension = "harness" | "provider" | "model";
+/** `provider` (routing service: openrouter, opencode, …) stays API-only; the UI shows vendor/harness/model. */
+export type BreakdownDimension = "harness" | "vendor" | "provider" | "model";
 export interface BreakdownPayload {
   by: BreakdownDimension;
   window: ApiWindow;
@@ -378,6 +379,61 @@ export interface BudgetAlertInfo {
 
 export function fetchBudgets(): Promise<{ configured: boolean; rows: BudgetRow[]; alerts: BudgetAlertInfo[] }> {
   return get("/api/budgets");
+}
+
+/** Mirror of src/limits-document.ts (schema version 1) — keep in sync. */
+export interface LimitsPace {
+  expectedPercent: number;
+  deltaPercent: number;
+  status: "under" | "on" | "over";
+  runsOutAt?: string;
+}
+
+export interface LimitsWindow {
+  id: string;
+  label: string;
+  scope: "session" | "daily" | "weekly" | "monthly" | "model" | "other";
+  model?: string;
+  source: "provider" | "derived";
+  usedPercent: number | null;
+  amountUsd?: number;
+  windowMinutes?: number;
+  resetsAt?: string;
+  pace?: LimitsPace;
+  tokens: number;
+  costUsd: number;
+  requests: number;
+}
+
+export interface LimitsAccount {
+  id: string;
+  vendor: string;
+  vendorName: string;
+  harness: string;
+  alsoOn: string[];
+  accountKey: string;
+  label?: string;
+  email?: string;
+  plan?: string;
+  credential?: string;
+  origin?: string;
+  freshness?: "fresh" | "stale" | "unknown";
+  observedAt?: string;
+  extraUsage?: { enabled: boolean; usedUsd?: number; limitUsd?: number; usedPercent?: number };
+  balance?: { currency: string; remaining: number; total?: number; used?: number; granted?: number; paid?: number; available?: boolean };
+  bankedResets?: number;
+  bankedExpiresAt?: string;
+  windows: LimitsWindow[];
+}
+
+export interface LimitsDocument {
+  version: 1;
+  generatedAt: string;
+  accounts: LimitsAccount[];
+}
+
+export function fetchLimits(showEmail: boolean): Promise<LimitsDocument> {
+  return get(showEmail ? "/api/limits?showEmail=1" : "/api/limits");
 }
 
 export interface NotificationRecord {

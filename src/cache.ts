@@ -9,7 +9,8 @@ import { partitionBlocks, type BlockRow } from "./blocks.ts";import { resolveRep
 import { ensureSessionFts, sessionConversation } from "./sessionIndex.ts";
 import { describeSessionEvent, estimateCacheDuration, type CacheDurationEstimate } from "./session-insights.ts";
 import { EXTRACTION_VERSION } from "./scan.ts";
-import { modelProvider } from "./model-provider.ts";
+import { modelProvider, vendorFor } from "./model-provider.ts";
+import { QuotaAccountMetaSchema, type QuotaAccountMeta } from "./quota-windows.ts";
 
 /** SQLite can briefly reject a new connection while another process is
  * recovering a WAL. Retry only that transient class; programming/schema
@@ -53,6 +54,8 @@ export interface QuotaSnapshotRow {
   usedPct: number;
   /** Real USD spend for open-ended windows (e.g. Cursor's On-Demand). */
   amountUsd: number | null;
+  /** Model family for per-model limits (Claude's weekly Opus/Sonnet caps). */
+  model: string | null;
   resetsAt: number;
   creditsJson: string | null;
   capturedAt: string;
@@ -212,6 +215,9 @@ export class EventCache {
     if (!quotaColsAfterLabel.some((c) => c.name === "amount_usd")) {
       this.db.exec("ALTER TABLE quota_snapshots ADD COLUMN amount_usd REAL");
     }
+    if (!quotaColsAfterLabel.some((c) => c.name === "model")) {
+      this.db.exec("ALTER TABLE quota_snapshots ADD COLUMN model TEXT");
+    }
     // Limits are rendered for every detected account. These targeted lookups
     // keep per-account usage and identity attribution bounded by the account's
     // rows instead of rescanning every provider's history.
@@ -324,7 +330,7 @@ export class EventCache {
     provider: string;
     accountKey: string;
     accountId?: string;
-    windows: Array<{ windowMinutes: number; usedPct: number; resetsAtEpoch: number; label?: string; amountUsd?: number }>;
+    windows: Array<{ windowMinutes: number; usedPct: number; resetsAtEpoch: number; label?: string; amountUsd?: number; model?: string }>;
     credits?: { hasCredits: boolean; unlimited: boolean; balance: string; expiresAt?: string };
     capturedAtIso: string;
     eventId: string;
@@ -332,8 +338,8 @@ export class EventCache {
     const stmt = this.db.prepare(`
       INSERT OR REPLACE INTO quota_snapshots (
         provider, account_key, account_id, window_minutes, label, used_pct, resets_at,
-        captured_at, event_id, credits_json, amount_usd
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        captured_at, event_id, credits_json, amount_usd, model
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const tx = this.db.transaction(() => {
       for (const w of input.windows) {
@@ -350,6 +356,7 @@ export class EventCache {
           `${input.eventId}:${w.windowMinutes}:${label}`,
           input.credits !== undefined ? JSON.stringify(input.credits) : null,
           w.amountUsd ?? null,
+          w.model ?? null,
         );
       }
     });
@@ -680,7 +687,7 @@ export class EventCache {
           .query(
             `SELECT account_key AS accountKey, account_id AS accountId,
                     window_minutes AS windowMinutes, label AS label,
-                    used_pct AS usedPct, amount_usd AS amountUsd, resets_at AS resetsAt,
+                    used_pct AS usedPct, amount_usd AS amountUsd, model AS model, resets_at AS resetsAt,
                     credits_json AS creditsJson, captured_at AS capturedAt,
                     event_id AS eventId
              FROM quota_snapshots
@@ -694,7 +701,7 @@ export class EventCache {
       .query(
           `SELECT qs.account_key AS accountKey, qs.account_id AS accountId,
                   qs.window_minutes AS windowMinutes, qs.label AS label,
-                  qs.used_pct AS usedPct, qs.amount_usd AS amountUsd, qs.resets_at AS resetsAt,
+                  qs.used_pct AS usedPct, qs.amount_usd AS amountUsd, qs.model AS model, qs.resets_at AS resetsAt,
                   qs.credits_json AS creditsJson, qs.captured_at AS capturedAt,
                   qs.event_id AS eventId
            FROM quota_snapshots qs
@@ -713,6 +720,22 @@ export class EventCache {
       // table missing in pre-migration cache — treated as no embedded data
       return [];
     }
+  }
+
+  /** Latest account-level facts from a provider poll (plan, extra usage, identity). */
+  quotaAccountMeta(provider: string, accountKey: string): QuotaAccountMeta | undefined {
+    const raw = this.metaValue(`quota-account:${provider}@${accountKey}`);
+    if (raw === undefined) return undefined;
+    try {
+      const parsed = QuotaAccountMetaSchema.safeParse(JSON.parse(raw));
+      return parsed.success ? parsed.data : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  setQuotaAccountMeta(provider: string, accountKey: string, meta: QuotaAccountMeta): void {
+    this.setMetaValue(`quota-account:${provider}@${accountKey}`, JSON.stringify(meta));
   }
 
   /** Stable provider identities attached to the latest polled snapshots. */
@@ -766,6 +789,43 @@ export class EventCache {
     }
   }
 
+  /**
+   * Vendor is derived at query time (no stored column, so event ids and the
+   * on-disk schema stay untouched). Distinct harness/account/model triples
+   * come from daily_rollups, which mirrors every event, and are classified
+   * once per connection into a TEMP table that aggregates join against.
+   */
+  private ensureVendorMap(): void {
+    this.db.exec(`
+      CREATE TEMP TABLE IF NOT EXISTS vendor_map (
+        vm_provider TEXT NOT NULL,
+        vm_account TEXT NOT NULL,
+        vm_model TEXT NOT NULL,
+        vendor TEXT NOT NULL,
+        PRIMARY KEY (vm_provider, vm_account, vm_model)
+      )
+    `);
+    const missing = this.db
+      .query(
+        `SELECT DISTINCT d.provider AS provider, d.account_key AS accountKey, d.model AS model
+         FROM daily_rollups d
+         WHERE NOT EXISTS (
+           SELECT 1 FROM vendor_map v
+           WHERE v.vm_provider = d.provider AND v.vm_account = d.account_key AND v.vm_model = d.model
+         )`,
+      )
+      .all() as Array<{ provider: string; accountKey: string; model: string }>;
+    if (missing.length === 0) return;
+    const insert = this.db.prepare(
+      "INSERT OR IGNORE INTO vendor_map (vm_provider, vm_account, vm_model, vendor) VALUES (?, ?, ?, ?)",
+    );
+    this.db.transaction(() => {
+      for (const row of missing) {
+        insert.run(row.provider, row.accountKey, row.model, vendorFor({ harness: row.provider, model: row.model, accountKey: row.accountKey }));
+      }
+    })();
+  }
+
   private whereClause(
     providers?: string[],
     untilIso?: string,
@@ -802,8 +862,11 @@ export class EventCache {
   ): AggRow[] {
     // Repo rollup needs the mapping populated before joining on it.
     if (groupBy === "repo") this.ensureRepoMap();
+    if (groupBy === "vendor") this.ensureVendorMap();
     const column =
-      groupBy === "project"
+      groupBy === "vendor"
+        ? VENDOR_COLUMN
+        : groupBy === "project"
         ? "COALESCE(project_dir, '(no project)')"
         : groupBy === "repo"
           ? "COALESCE(repo_dirs.name, '(no repo)')"
@@ -817,7 +880,9 @@ export class EventCache {
                   ? "provider"
                   : "model";
     const join =
-      groupBy === "repo" ? "FROM events LEFT JOIN repo_dirs ON events.project_dir = repo_dirs.dir" : "FROM events";
+      groupBy === "repo"
+        ? "FROM events LEFT JOIN repo_dirs ON events.project_dir = repo_dirs.dir"
+        : groupBy === "vendor" ? `FROM events ${vendorJoin("events")}` : "FROM events";
     const where = this.whereClause(providers, untilIso, accountKey);
     const rows = this.db
       .query(
@@ -1090,14 +1155,17 @@ export class EventCache {
     topN = 5,
     metric: "tokens" | "cost" = "tokens",
   ): SeriesBucket[] {
+    if (groupBy === "vendor") this.ensureVendorMap();
     const column =
-      groupBy === "account"
-        ? "account_key"
-        : groupBy === "machine"
-          ? "machine_id"
-          : groupBy === "provider"
-            ? "provider"
-            : "model";
+      groupBy === "vendor"
+        ? VENDOR_COLUMN
+        : groupBy === "account"
+          ? "account_key"
+          : groupBy === "machine"
+            ? "machine_id"
+            : groupBy === "provider"
+              ? "provider"
+              : "model";
     const valueExpr =
       metric === "cost"
         ? "SUM(cost_usd)"
@@ -1108,7 +1176,7 @@ export class EventCache {
         SELECT ${column} AS bucket,
                date(ts, 'localtime') AS day,
                ${valueExpr} AS tokens
-        FROM events
+        FROM events ${groupBy === "vendor" ? vendorJoin("events") : ""}
         WHERE ts >= ?
         GROUP BY bucket, day
         `,
@@ -1175,18 +1243,8 @@ export class EventCache {
    * Day-granular boundaries (see rollupTotals); sessions always 0.
    */
   rollupAggregate(sinceIso: string, untilIso: string | undefined, dimension: RollupDimension): AggRow[] {
-    const column =
-      dimension === "account"
-        ? "account_key"
-        : dimension === "machine"
-          ? "machine_id"
-          : dimension === "repo"
-            ? "COALESCE(repo, '(no repo)')"
-            : dimension === "provider"
-              ? "provider"
-              : dimension === "day"
-                ? "day"
-                : "model";
+    if (dimension === "vendor") this.ensureVendorMap();
+    const column = rollupColumn(dimension);
     const { sql, params } = this.rollupWindowSql(sinceIso, untilIso);
     const rows = this.db
       .query(
@@ -1198,7 +1256,7 @@ export class EventCache {
                SUM(cache_read_tokens) AS cache_read_tokens,
                SUM(cache_write_tokens) AS cache_write_tokens,
                SUM(cost_usd) AS cost_usd
-        FROM daily_rollups
+        FROM daily_rollups ${dimension === "vendor" ? vendorJoin("daily_rollups") : ""}
         WHERE ${sql}
         GROUP BY bucket
         `,
@@ -1302,6 +1360,7 @@ export class EventCache {
         params.push(accountKey);
       }
       const column = rollupColumn(dimension ?? "day");
+      if (dimension === "vendor") this.ensureVendorMap();
       const rows = this.db
         .query(
           `SELECT ${column} AS bucket,
@@ -1311,7 +1370,8 @@ export class EventCache {
                   SUM(cache_read_tokens) AS cache_read_tokens,
                   SUM(cache_write_tokens) AS cache_write_tokens,
                   SUM(cost_usd) AS cost_usd
-           FROM daily_rollups WHERE ${conds.join(" AND ")}
+           FROM daily_rollups ${dimension === "vendor" ? vendorJoin("daily_rollups") : ""}
+           WHERE ${conds.join(" AND ")}
            GROUP BY bucket`,
         )
         .all(...params) as Array<RawAggRow>;
@@ -1415,8 +1475,11 @@ export class EventCache {
     }
     const column = rollupColumn(dimension);
     const join =
-      dimension === "repo" ? "FROM events LEFT JOIN repo_dirs ON events.project_dir = repo_dirs.dir" : "FROM events";
+      dimension === "repo"
+        ? "FROM events LEFT JOIN repo_dirs ON events.project_dir = repo_dirs.dir"
+        : dimension === "vendor" ? `FROM events ${vendorJoin("events")}` : "FROM events";
     if (dimension === "repo") this.ensureRepoMap();
+    if (dimension === "vendor") this.ensureVendorMap();
     const conds = ["events.ts >= ?", "events.ts < ?"];
     const params: SQLQueryBindings[] = [sinceIso, untilIso];
     if (providers !== undefined && providers.length > 0) {
@@ -1607,10 +1670,18 @@ export type Dimension =
   | "account"
   | "machine"
   | "provider"
+  | "vendor"
   | "tool";
 
 /** Dimensions answerable from the daily_rollups table alone (no sessions). */
-export type RollupDimension = "model" | "repo" | "account" | "machine" | "provider" | "day";
+export type RollupDimension = "model" | "repo" | "account" | "machine" | "provider" | "vendor" | "day";
+
+const VENDOR_COLUMN = "COALESCE(vendor_map.vendor, 'other')";
+
+const vendorJoin = (table: "events" | "daily_rollups"): string =>
+  `LEFT JOIN vendor_map ON vendor_map.vm_provider = ${table}.provider
+     AND vendor_map.vm_account = ${table}.account_key
+     AND vendor_map.vm_model = ${table}.model`;
 
 /** UTC calendar day of an ISO timestamp — the daily_rollups grouping key. */
 function rollupDay(isoTs: string): string {
@@ -1629,6 +1700,8 @@ function rollupColumn(dimension: RollupDimension): string {
       return "day";
     case "provider":
       return "provider";
+    case "vendor":
+      return VENDOR_COLUMN;
     default:
       return "model";
   }
@@ -1668,13 +1741,29 @@ function sumUsage(parts: AggRow[][]): UsageTotals {
 
 export const DIMENSIONS: Dimension[] = [
   "model",
+  "vendor",
+  "provider",
   "project",
   "repo",
   "account",
   "machine",
-  "provider",
   "tool",
 ];
+
+/** The `provider` column records the harness (claude-code, codex, pi, …); `harness` is its preferred name. */
+const DIMENSION_ALIASES: Readonly<Record<string, Dimension>> = { harness: "provider" };
+
+export const parseDimension = (input: string): Dimension | undefined => {
+  const value = input.trim().toLowerCase();
+  return DIMENSION_ALIASES[value] ?? DIMENSIONS.find((dimension) => dimension === value);
+};
+
+/** Display label for a dimension (`provider` renders as "harness"). */
+export const dimensionLabel = (dimension: Dimension): string =>
+  dimension === "provider" ? "harness" : dimension;
+
+/** Names accepted by `--by`, in help order (`provider` stays accepted as an alias of `harness`). */
+export const DIMENSION_NAMES: string[] = DIMENSIONS.map(dimensionLabel);
 
 interface RawModelProviderAggRow {
   provider: string;

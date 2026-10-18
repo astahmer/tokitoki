@@ -7,6 +7,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
 import { TokitokiMcpServer } from "../src/mcp-server.ts";
+import { LimitsDocumentSchema } from "../src/limits-document.ts";
 import type { UsageEvent } from "../src/types.ts";
 
 const DATA_DIR = mkdtempSync(path.join(os.tmpdir(), "tk-mcp-"));
@@ -82,7 +83,7 @@ afterAll(async () => {
 });
 
 describe("tokitoki MCP server", () => {
-  it("exposes all 14 tools over the wire", async () => {
+  it("exposes all 15 tools over the wire", async () => {
     ready = Promise.all([server.server.connect(serverTransport), client.connect(clientTransport)]);
     await ready;
     const { tools } = await client.listTools();
@@ -91,6 +92,7 @@ describe("tokitoki MCP server", () => {
       "anomalies",
       "budgets_status",
       "export_report",
+      "get_limits",
       "quota_snapshot",
       "repo_efficiency",
       "scan_now",
@@ -103,7 +105,25 @@ describe("tokitoki MCP server", () => {
       "usage_report",
       "usage_totals",
     ]);
-    expect(tools.length).toBe(14);
+    expect(tools.length).toBe(15);
+  });
+
+  it("usage_report groups by vendor and reports the harness label", async () => {
+    const byVendor = JSON.parse(textOf(await call("usage_report", { last: "week", dimension: "vendor" })));
+    expect(byVendor.dimension).toBe("vendor");
+    expect(byVendor.rows.map((r: { bucket: string }) => r.bucket)).toContain("openai");
+    const byHarness = JSON.parse(textOf(await call("usage_report", { last: "week", dimension: "harness" })));
+    expect(byHarness.dimension).toBe("harness");
+    expect(byHarness.rows.map((r: { bucket: string }) => r.bucket).sort()).toEqual(["codex", "pi"]);
+  });
+
+  it("get_limits returns the versioned limits document", async () => {
+    const res = await call("get_limits", {});
+    expect(res.isError).toBeUndefined();
+    const document = LimitsDocumentSchema.parse(JSON.parse(textOf(res)));
+    expect(document.version).toBe(1);
+    const filtered = LimitsDocumentSchema.parse(JSON.parse(textOf(await call("get_limits", { vendor: "openai" }))));
+    expect(filtered.accounts.every((account) => account.vendor === "openai")).toBe(true);
   });
 
   it("usage_report returns window rows + totals as JSON", async () => {
@@ -111,7 +131,7 @@ describe("tokitoki MCP server", () => {
     expect(res.isError).toBeUndefined();
     const payload = JSON.parse(textOf(res));
     expect(payload.window.since).toBeDefined();
-    expect(payload.dimension).toBe("provider");
+    expect(payload.dimension).toBe("harness");
     const pi = payload.rows.find((r: { bucket: string }) => r.bucket === "pi");
     expect(pi.requests).toBeGreaterThanOrEqual(3);
     expect(payload.totals.costUsd).toBeGreaterThan(0);

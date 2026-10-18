@@ -3,9 +3,18 @@ import { execFileSync } from "node:child_process";
 import path from "node:path";
 
 import { Database } from "bun:sqlite";
+import { z } from "zod";
 
+import { claudeOauthAccount } from "./accounts.ts";
 import type { EventCache } from "./cache.ts";
 import { cursorIdeDir } from "./providers/cursor.ts";
+import { deepseekApiKey, pollDeepSeekQuotas } from "./quota/deepseek.ts";
+import { geminiCredsPath, loadGeminiCreds, pollGeminiQuotas } from "./quota/gemini.ts";
+import { kimiCredential, pollKimiQuotas } from "./quota/kimi.ts";
+import { fetchOpenRouterCredits } from "./quota/openrouter-credits.ts";
+import { storeAccountMeta, type QuotaPollContext } from "./quota/shared.ts";
+import { pollZaiQuotas, zaiApiKey, type ZaiRegion } from "./quota/zai.ts";
+import type { AccountBalance, AccountExtraUsage } from "./quota-windows.ts";
 import { dataDir } from "./store.ts";
 
 /**
@@ -37,6 +46,7 @@ const OPENROUTER_KEY_URL = "https://openrouter.ai/api/v1/key";
 const OPENCODE_USAGE_URL = "https://opencode.ai/zen/go/v1/usage";
 /** Claude Code OAuth usage endpoint + refresh config (openusage ClaudeAuthStore). */
 const CLAUDE_USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
+const CLAUDE_PROFILE_URL = "https://api.anthropic.com/api/oauth/profile";
 const CLAUDE_REFRESH_URL = "https://platform.claude.com/v1/oauth/token";
 const CLAUDE_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 /** GitHub Copilot internal usage endpoint — `token` scheme, not Bearer. */
@@ -58,6 +68,8 @@ export interface PolledWindow {
   label?: string;
   /** Real USD spend for open-ended windows (e.g. Cursor's On-Demand) — displayed instead of usedPct when present. */
   amountUsd?: number;
+  /** Model family for per-model limits (Claude's weekly Opus/Sonnet caps). */
+  model?: string;
 }
 
 export interface PollAccountResult {
@@ -70,8 +82,13 @@ export interface PollAccountResult {
   planType?: string;
   windows: PolledWindow[];
   credits?: { hasCredits: boolean; unlimited: boolean; balance: string; expiresAt?: string };
+  extraUsage?: AccountExtraUsage;
+  /** Prepaid credit balance (DeepSeek, OpenRouter). Balance-only accounts carry no windows. */
+  balance?: AccountBalance;
   inserted: number;
   error?: string;
+  /** Set when this result was served from stored snapshots instead of a live request (backoff / min interval). */
+  deferredUntil?: string;
 }
 
 export interface PollResult {
@@ -98,11 +115,12 @@ function authRequiredCardProviders(provider: string): string[] {
 
 /** Provider auth failures should be visible even when the exact API wording varies. */
 function isAuthRequiredReason(reason: string): boolean {
-  return /not logged in|auth(?:entication)? (?:not found|required)|oauth[_ -]?token|unauthorized|token refresh failed|refresh token|\b(?:401|403)\b/i.test(reason);
+  return /not logged in|auth(?:entication)? (?:not found|required)|oauth[_ -]?token|unauthorized|token refresh failed|token expired|refresh token|\b(?:401|403)\b/i.test(reason);
 }
 
 function authStateFor(provider: string, reason: string): "login-required" | "api-key-required" | "temporarily-unavailable" | undefined {
-  const keyProvider = provider === "openrouter" || provider === "opencode-go";
+  const keyProvider = provider === "openrouter" || provider === "opencode-go" || provider === "zai" || provider === "deepseek" ||
+    (provider === "kimi" && !/\bkimi CLI\b/i.test(reason));
   if (keyProvider && (/no key|api[_ -]?key|oauth[_ -]?token|\b(?:401|403)\b|unauthorized/i.test(reason))) {
     return "api-key-required";
   }
@@ -126,6 +144,8 @@ export interface PollOptions {
   piAuthPath?: string;
   /** Absolute path to a claude .credentials.json fixture (tests). Default ~/.claude/.credentials.json; keychain fallback when absent. */
   claudeCredentialsPath?: string;
+  /** Absolute path to a .claude.json fixture holding oauthAccount (tests). Default ~/.claude.json. */
+  claudeAccountPath?: string;
   /** Absolute path to a github-copilot apps.json/hosts.json fixture (tests). Default ~/.config/github-copilot/{apps,hosts}.json. */
   copilotAuthPath?: string;
   /** Absolute path to a cursor cli-auth.json fixture (tests). Default ~/.cursor/cli-auth.json. */
@@ -142,6 +162,16 @@ export interface PollOptions {
   commandcodeAuthPath?: string;
   /** Manually registered provider keys polled as synthetic accounts. */
   manualKeys?: Array<{ id: string; provider: "opencode-go" | "openrouter"; key: string }>;
+  /** API keys from config.poll.extraKeys for single-account key providers (first key per provider wins). */
+  providerKeys?: Partial<Record<"zai" | "kimi" | "deepseek", string>>;
+  /** z.ai API host: global api.z.ai (default) or open.bigmodel.cn. */
+  zaiRegion?: ZaiRegion;
+  /** Absolute path to a gemini oauth_creds.json fixture (tests). Default ~/.gemini/oauth_creds.json. */
+  geminiCredsPath?: string;
+  /** Kimi Code CLI home (tests). Default $KIMI_CODE_HOME, else ~/.kimi-code then ~/.kimi. */
+  kimiHome?: string;
+  /** Environment for credential discovery (tests). Default process.env. */
+  env?: Record<string, string | undefined>;
   /** EventCache instance (tests use a temp db). Default: open the real one. */
   cache?: EventCache;
   now?: number;
@@ -389,8 +419,8 @@ interface OpenRouterKeyResponse {
   data?: { limit?: number | null; limit_remaining?: number | null; limit_reset?: string | null };
 }
 
-/** OpenRouter /key → one window when a credit limit is configured (else skip). */
-async function pollOpenRouter(key: string, fetcher: typeof fetch): Promise<{ windows: PolledWindow[]; skip?: string; error?: string }> {
+/** OpenRouter /key → one window when a credit limit is configured, plus the /credits balance. */
+async function pollOpenRouter(key: string, fetcher: typeof fetch): Promise<{ windows: PolledWindow[]; balance?: AccountBalance; skip?: string; error?: string }> {
   let body: OpenRouterKeyResponse;
   try {
     const res = await fetcher(OPENROUTER_KEY_URL, { headers: { authorization: `Bearer ${key}`, accept: "application/json" } });
@@ -399,14 +429,15 @@ async function pollOpenRouter(key: string, fetcher: typeof fetch): Promise<{ win
   } catch (e) {
     return { windows: [], error: String(e) };
   }
+  const balance = await fetchOpenRouterCredits({ key, fetcher });
   const d = body.data ?? {};
   if (typeof d.limit !== "number" || d.limit <= 0 || typeof d.limit_remaining !== "number") {
-    return { windows: [], skip: "no credit limit configured on the key" };
+    return balance !== undefined ? { windows: [], balance } : { windows: [], skip: "no credit limit configured on the key" };
   }
   const used = Math.max(0, d.limit - Math.max(0, d.limit_remaining));
   const pct = Math.min(100, (used / d.limit) * 100);
   const minutes = d.limit_reset === "daily" ? 1440 : d.limit_reset === "weekly" ? 10_080 : 43_200;
-  return { windows: [{ windowMinutes: minutes, usedPct: pct, resetsAtEpoch: 0 }] };
+  return { windows: [{ windowMinutes: minutes, usedPct: pct, resetsAtEpoch: 0 }], ...(balance !== undefined ? { balance } : {}) };
 }
 
 interface OpencodeUsageResponse {
@@ -450,7 +481,14 @@ async function pollOpencodeGo(key: string, fetcher: typeof fetch): Promise<{ win
  * An explicit opts.claudeCredentialsPath (fixture/tests) disables the
  * Keychain fallback so behavior stays deterministic.
  */
-export function loadClaudeCredentials(opts: PollOptions): { accessToken?: string; refreshToken?: string } | null {
+interface ClaudeCredentials {
+  accessToken?: string;
+  refreshToken?: string;
+  subscriptionType?: string;
+  rateLimitTier?: string;
+}
+
+export function loadClaudeCredentials(opts: PollOptions): ClaudeCredentials | null {
   const explicit = opts.claudeCredentialsPath !== undefined;
   const path = opts.claudeCredentialsPath ?? `${process.env.HOME ?? "~"}/.claude/.credentials.json`;
   let raw: string | undefined;
@@ -469,7 +507,7 @@ export function loadClaudeCredentials(opts: PollOptions): { accessToken?: string
     }
   }
   try {
-    const parsed = JSON.parse(raw) as { claudeAiOauth?: { accessToken?: string; refreshToken?: string } };
+    const parsed = JSON.parse(raw) as { claudeAiOauth?: ClaudeCredentials };
     const oauth = parsed.claudeAiOauth;
     if (oauth === undefined || typeof oauth.accessToken !== "string" || oauth.accessToken.length === 0) return null;
     return oauth;
@@ -576,17 +614,160 @@ async function refreshClaudeToken(
   }
 }
 
-interface ClaudeUsageWindow {
-  utilization?: number;
-  resets_at?: string;
+const ClaudeUsageWindowSchema = z.object({
+  utilization: z.number().nullish(),
+  resets_at: z.string().nullish(),
+}).nullish();
+
+const ClaudeUsageSchema = z.object({
+  five_hour: ClaudeUsageWindowSchema,
+  seven_day: ClaudeUsageWindowSchema,
+  seven_day_opus: ClaudeUsageWindowSchema,
+  seven_day_sonnet: ClaudeUsageWindowSchema,
+  extra_usage: z.object({
+    is_enabled: z.boolean().nullish(),
+    /** Minor currency units (cents). */
+    monthly_limit: z.number().nullish(),
+    used_credits: z.number().nullish(),
+    utilization: z.number().nullish(),
+  }).nullish(),
+});
+
+const ClaudeProfileSchema = z.object({
+  account: z.object({
+    uuid: z.string().optional(),
+    email_address: z.string().optional(),
+    email: z.string().optional(),
+  }).optional(),
+  organization: z.object({
+    uuid: z.string().optional(),
+    name: z.string().optional(),
+    organization_type: z.string().optional(),
+    rate_limit_tier: z.string().optional(),
+  }).optional(),
+});
+
+/** Human plan name from Claude's subscription type and rate-limit tier ("max" + "default_claude_max_20x" → "Max 20x"). */
+export const claudePlanLabel = (input: { subscriptionType?: string; rateLimitTier?: string }): string | undefined => {
+  const base = input.subscriptionType?.trim().toLowerCase().replace(/^claude_/, "");
+  const multiplier = input.rateLimitTier?.toLowerCase().match(/max_(\d+)x/)?.[1];
+  if (multiplier !== undefined && (base === undefined || base === "max")) return `Max ${multiplier}x`;
+  if (base === undefined || base.length === 0) return undefined;
+  return base.charAt(0).toUpperCase() + base.slice(1);
+};
+
+/** /api/oauth/usage body → session, weekly, and per-model weekly windows plus extra usage. */
+export const parseClaudeUsage = (body: unknown): { windows: PolledWindow[]; extraUsage?: AccountExtraUsage } | undefined => {
+  const parsed = ClaudeUsageSchema.safeParse(body);
+  if (!parsed.success) return undefined;
+  const usage = parsed.data;
+  const spec: Array<{ window: z.infer<typeof ClaudeUsageWindowSchema>; minutes: number; model?: string }> = [
+    { window: usage.five_hour, minutes: 300 },
+    { window: usage.seven_day, minutes: 10_080 },
+    { window: usage.seven_day_opus, minutes: 10_080, model: "opus" },
+    { window: usage.seven_day_sonnet, minutes: 10_080, model: "sonnet" },
+  ];
+  const windows: PolledWindow[] = [];
+  for (const entry of spec) {
+    const utilization = entry.window?.utilization;
+    if (typeof utilization !== "number") continue;
+    const resets = typeof entry.window?.resets_at === "string" ? Date.parse(entry.window.resets_at) : NaN;
+    windows.push({
+      windowMinutes: entry.minutes,
+      usedPct: Math.max(0, Math.min(100, utilization)),
+      resetsAtEpoch: Number.isFinite(resets) ? Math.round(resets / 1000) : 0,
+      ...(entry.model !== undefined
+        ? { model: entry.model, label: `${entry.model.charAt(0).toUpperCase()}${entry.model.slice(1)} weekly` }
+        : {}),
+    });
+  }
+  const extra = usage.extra_usage;
+  if (extra === null || extra === undefined || typeof extra.is_enabled !== "boolean") return { windows };
+  const usedUsd = typeof extra.used_credits === "number" ? extra.used_credits / 100 : undefined;
+  const limitUsd = typeof extra.monthly_limit === "number" ? extra.monthly_limit / 100 : undefined;
+  const usedPercent = typeof extra.utilization === "number"
+    ? extra.utilization
+    : usedUsd !== undefined && limitUsd !== undefined && limitUsd > 0 ? (usedUsd / limitUsd) * 100 : undefined;
+  return {
+    windows,
+    extraUsage: {
+      enabled: extra.is_enabled,
+      ...(usedUsd !== undefined ? { usedUsd } : {}),
+      ...(limitUsd !== undefined ? { limitUsd } : {}),
+      ...(usedPercent !== undefined ? { usedPercent: Math.max(0, Math.min(100, usedPercent)) } : {}),
+    },
+  };
+};
+
+export interface ClaudeIdentity {
+  email?: string;
+  accountId?: string;
+  organization?: string;
+  plan?: string;
 }
 
-interface ClaudeUsageResponse {
-  five_hour?: ClaudeUsageWindow;
-  seven_day?: ClaudeUsageWindow;
+/** /api/oauth/profile body → stable account identity and plan. */
+export const parseClaudeProfile = (body: unknown): ClaudeIdentity => {
+  const parsed = ClaudeProfileSchema.safeParse(body);
+  if (!parsed.success) return {};
+  const account = parsed.data.account;
+  const organization = parsed.data.organization;
+  const email = account?.email_address ?? account?.email;
+  const plan = claudePlanLabel({
+    subscriptionType: organization?.organization_type,
+    rateLimitTier: organization?.rate_limit_tier,
+  });
+  return {
+    ...(email !== undefined && email.includes("@") ? { email } : {}),
+    ...(account?.uuid !== undefined ? { accountId: account.uuid } : {}),
+    ...(organization?.name !== undefined ? { organization: organization.name } : {}),
+    ...(plan !== undefined ? { plan } : {}),
+  };
+};
+
+const claudeHeaders = (accessToken: string): Record<string, string> => ({
+  authorization: `Bearer ${accessToken}`,
+  accept: "application/json",
+  "anthropic-beta": "oauth-2025-04-20",
+  "user-agent": "claude-code/2.1.69",
+});
+
+/**
+ * Who is logged in: Claude Code's own .claude.json and credential metadata
+ * first (no network), then the OAuth profile endpoint only for what is
+ * missing. Identity failures never fail the quota poll.
+ */
+async function resolveClaudeIdentity(
+  opts: PollOptions,
+  creds: ClaudeCredentials,
+  accessToken: string,
+  fetcher: typeof fetch,
+): Promise<ClaudeIdentity> {
+  const local = claudeOauthAccount(opts.claudeAccountPath);
+  const localPlan = claudePlanLabel({ subscriptionType: creds.subscriptionType, rateLimitTier: creds.rateLimitTier });
+  const identity: ClaudeIdentity = {
+    ...(local?.email !== undefined ? { email: local.email } : {}),
+    ...(local?.accountUuid !== undefined ? { accountId: local.accountUuid } : {}),
+    ...(local?.organizationName !== undefined ? { organization: local.organizationName } : {}),
+    ...(localPlan !== undefined ? { plan: localPlan } : {}),
+  };
+  if (identity.email !== undefined && identity.accountId !== undefined && identity.plan !== undefined) return identity;
+  try {
+    const res = await fetcher(CLAUDE_PROFILE_URL, { headers: claudeHeaders(accessToken) });
+    if (!res.ok) return identity;
+    const remote = parseClaudeProfile(await res.json());
+    return { ...remote, ...identity };
+  } catch {
+    return identity;
+  }
 }
 
-/** claude-code OAuth usage → Session(300min) + Weekly(10080min) percent meters. */
+/**
+ * claude-code OAuth usage → session, weekly, and per-model weekly meters.
+ * Cards stay keyed by "default" because claude-code's local events (and
+ * their stable synced event ids) use that key; the real login is carried as
+ * accountId/email/plan instead.
+ */
 async function pollClaudeQuotas(opts: PollOptions, fetcher: typeof fetch): Promise<PollAccountResult | string> {
   const creds = loadClaudeCredentials(opts);
   if (creds === null || creds.accessToken === undefined || creds.accessToken.length === 0) {
@@ -595,27 +776,21 @@ async function pollClaudeQuotas(opts: PollOptions, fetcher: typeof fetch): Promi
 
   const fetchOnce = async (accessToken: string) => {
     try {
-      const res = await fetcher(CLAUDE_USAGE_URL, {
-        headers: {
-          authorization: `Bearer ${accessToken}`,
-          accept: "application/json",
-          "anthropic-beta": "oauth-2025-04-20",
-          "user-agent": "claude-code/2.1.69",
-        },
-      });
-      let body: ClaudeUsageResponse | null = null;
+      const res = await fetcher(CLAUDE_USAGE_URL, { headers: claudeHeaders(accessToken) });
+      let body: unknown = null;
       try {
-        body = (await res.json()) as ClaudeUsageResponse;
+        body = await res.json();
       } catch {
         // non-JSON error body
       }
-      return { status: res.status, body };
+      return { status: res.status, body, retryAfter: res.headers.get("retry-after") };
     } catch {
-      return { status: 0, body: null };
+      return { status: 0, body: null, retryAfter: null };
     }
   };
 
-  let res = await fetchOnce(creds.accessToken);
+  let accessToken = creds.accessToken;
+  let res = await fetchOnce(accessToken);
   if (res.status === 401 || res.status === 403) {
     if (creds.refreshToken === undefined || creds.refreshToken.length === 0) {
       return `unauthorized (${res.status}) and no refresh token available`;
@@ -625,39 +800,47 @@ async function pollClaudeQuotas(opts: PollOptions, fetcher: typeof fetch): Promi
       return `unauthorized (${res.status}) and token refresh failed${renewed.error !== undefined ? `: ${renewed.error}` : ""}`;
     }
     persistClaudeCredentials(opts, { accessToken: renewed.accessToken, refreshToken: renewed.refreshToken, expiresAt: renewed.expiresAt });
-    res = await fetchOnce(renewed.accessToken);
+    accessToken = renewed.accessToken;
+    res = await fetchOnce(accessToken);
+  }
+  if (res.status === 429) {
+    const seconds = Number(res.retryAfter);
+    return `usage endpoint returned HTTP 429${Number.isFinite(seconds) && seconds > 0 ? ` (retry after ${Math.round(seconds)}s)` : ""}`;
   }
   if (res.status < 200 || res.status >= 300 || res.body === null) {
     return `usage endpoint returned HTTP ${res.status}`;
   }
-
-  // Body windows carry {utilization: 0-100, resets_at: ISO} (openusage mapper).
-  const spec: Array<[ClaudeUsageWindow | undefined, number]> = [
-    [res.body.five_hour, 300],
-    [res.body.seven_day, 10_080],
-  ];
-  const windows: PolledWindow[] = [];
-  for (const [w, minutes] of spec) {
-    if (w === undefined || typeof w.utilization !== "number") continue;
-    const resets = typeof w.resets_at === "string" ? Date.parse(w.resets_at) : NaN;
-    windows.push({
-      windowMinutes: minutes,
-      usedPct: Math.max(0, Math.min(100, w.utilization)),
-      resetsAtEpoch: Number.isFinite(resets) ? Math.round(resets / 1000) : 0,
-    });
-  }
-  if (windows.length === 0) {
-    return { accountKey: "default", harnesses: ["claude-code"], windows, inserted: 0, error: "no usable windows in response" };
-  }
+  const usage = parseClaudeUsage(res.body);
+  if (usage === undefined) return "usage response shape unrecognized";
+  const identity = await resolveClaudeIdentity(opts, creds, accessToken, fetcher);
+  const accountKey = "default";
+  const result: PollAccountResult = {
+    accountKey,
+    ...(identity.accountId !== undefined ? { accountId: identity.accountId } : {}),
+    harnesses: ["claude-code"],
+    ...(identity.email !== undefined ? { email: identity.email } : {}),
+    ...(identity.plan !== undefined ? { planType: identity.plan } : {}),
+    ...(usage.extraUsage !== undefined ? { extraUsage: usage.extraUsage } : {}),
+    windows: usage.windows,
+    inserted: 0,
+  };
+  if (usage.windows.length === 0) return { ...result, error: "no usable windows in response" };
   const capturedAtIso = new Date(opts.now ?? Date.now()).toISOString();
-  const inserted = opts.cache?.insertPolledSnapshots({
+  opts.cache?.setQuotaAccountMeta("claude-code", accountKey, {
+    ...(identity.plan !== undefined ? { plan: identity.plan } : {}),
+    ...(identity.email !== undefined ? { email: identity.email } : {}),
+    ...(identity.organization !== undefined ? { organization: identity.organization } : {}),
+    ...(usage.extraUsage !== undefined ? { extraUsage: usage.extraUsage } : {}),
+  });
+  result.inserted = opts.cache?.insertPolledSnapshots({
     provider: "claude-code",
-    accountKey: "default",
-    windows,
+    accountKey,
+    ...(identity.accountId !== undefined ? { accountId: identity.accountId } : {}),
+    windows: usage.windows,
     capturedAtIso,
     eventId: `poll:${capturedAtIso}:claude`,
   }) ?? 0;
-  return { accountKey: "default", harnesses: ["claude-code"], windows, inserted };
+  return result;
 }
 
 /** github.com oauth_token from ~/.config/github-copilot/apps.json (newer) or hosts.json. */
@@ -1181,6 +1364,103 @@ function acquirePollLock(): { fd: number; file: string } | undefined {
   return undefined;
 }
 
+/** Hold after an HTTP 429 (Claude's usage endpoint rate-limits hard). */
+const RATE_LIMIT_HOLD_MS = 5 * 60_000;
+/** Floor between live requests for endpoints that rate-limit frequent pollers. */
+const MIN_POLL_INTERVAL_MS: Partial<Record<string, number>> = { "claude-code": 5 * 60_000 };
+
+const ProviderPollStateSchema = z.object({
+  lastAttemptAt: z.number().optional(),
+  holdUntil: z.number().optional(),
+});
+
+export type ProviderPollState = z.infer<typeof ProviderPollStateSchema>;
+
+type PollGate = { allowed: true } | { allowed: false; until: number; reason: string };
+
+/** Whether a provider may be polled live now, given its persisted backoff state. */
+export const pollGate = (input: { provider: string; state: ProviderPollState | undefined; now: number }): PollGate => {
+  const holdUntil = input.state?.holdUntil;
+  if (holdUntil !== undefined && holdUntil > input.now) {
+    return { allowed: false, until: holdUntil, reason: `rate limited (HTTP 429); holding until ${new Date(holdUntil).toISOString()}` };
+  }
+  const minInterval = MIN_POLL_INTERVAL_MS[input.provider];
+  const last = input.state?.lastAttemptAt;
+  if (minInterval !== undefined && last !== undefined && input.now - last < minInterval) {
+    return {
+      allowed: false,
+      until: last + minInterval,
+      reason: `polled ${Math.round((input.now - last) / 1000)}s ago; minimum interval ${minInterval / 1000}s`,
+    };
+  }
+  return { allowed: true };
+};
+
+/**
+ * Backoff state after a live attempt. Only answered requests count toward
+ * the minimum interval, so a login fix is never throttled; a 429 holds for
+ * at least RATE_LIMIT_HOLD_MS or the server's Retry-After, whichever is longer.
+ */
+export const nextPollState = (input: { outcome: PollAccountResult | string; now: number }): ProviderPollState | undefined => {
+  if (typeof input.outcome !== "string") return { lastAttemptAt: input.now };
+  if (!/\b429\b/.test(input.outcome)) return undefined;
+  const retryAfterSeconds = Number(input.outcome.match(/retry after (\d+)s/)?.[1] ?? 0);
+  return { lastAttemptAt: input.now, holdUntil: input.now + Math.max(RATE_LIMIT_HOLD_MS, retryAfterSeconds * 1000) };
+};
+
+const readPollState = (cache: EventCache, provider: string): ProviderPollState | undefined => {
+  const raw = cache.metaValue(`poll-state:${provider}`);
+  if (raw === undefined) return undefined;
+  try {
+    const parsed = ProviderPollStateSchema.safeParse(JSON.parse(raw));
+    return parsed.success ? parsed.data : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
+/**
+ * Run a single-account poller behind the persisted backoff gate. A deferred
+ * provider answers from its stored snapshots so card refreshes stay quiet.
+ */
+async function pollWithBackoff(input: {
+  provider: string;
+  cache: EventCache | undefined;
+  now: number;
+  poll: () => Promise<PollAccountResult | string>;
+}): Promise<PollAccountResult | string> {
+  const cache = input.cache;
+  if (cache === undefined) return input.poll();
+  const gate = pollGate({ provider: input.provider, state: readPollState(cache, input.provider), now: input.now });
+  if (!gate.allowed) {
+    const windows: PolledWindow[] = cache.latestQuotaSnapshots(input.provider, "default").map((snapshot) => ({
+      windowMinutes: snapshot.windowMinutes,
+      usedPct: snapshot.usedPct,
+      resetsAtEpoch: snapshot.resetsAt,
+      ...(snapshot.label.length > 0 ? { label: snapshot.label } : {}),
+      ...(snapshot.amountUsd !== null ? { amountUsd: snapshot.amountUsd } : {}),
+      ...(snapshot.model !== null ? { model: snapshot.model } : {}),
+    }));
+    const balance = cache.quotaAccountMeta(input.provider, "default")?.balance;
+    if (windows.length === 0 && balance === undefined) return `temporarily deferred: ${gate.reason}`;
+    return {
+      accountKey: "default",
+      harnesses: [input.provider],
+      windows,
+      ...(balance !== undefined ? { balance } : {}),
+      inserted: 0,
+      deferredUntil: new Date(gate.until).toISOString(),
+    };
+  }
+  const outcome = await input.poll();
+  const next = nextPollState({ outcome, now: input.now });
+  if (next !== undefined) cache.setMetaValue(`poll-state:${input.provider}`, JSON.stringify(next));
+  if (typeof outcome === "string" && next?.holdUntil !== undefined) {
+    return `${outcome}; temporarily holding until ${new Date(next.holdUntil).toISOString()}`;
+  }
+  return outcome;
+}
+
 function releasePollLock(lock: { fd: number; file: string }): void {
   try { fs.closeSync(lock.fd); } catch { /* already closed */ }
   try { fs.unlinkSync(lock.file); } catch { /* another process cleaned it */ }
@@ -1283,10 +1563,12 @@ async function pollQuotasLocked(opts: PollOptions = {}): Promise<PollResult> {
         // account object showed the patched value — the poll's own
         // immediate output disagreed with what was actually saved.
         const windows = r.windows.map((w) => ({ ...w, resetsAtEpoch: w.resetsAtEpoch || Math.round(now / 1000) }));
+        if (r.balance !== undefined) storeAccountMeta({ cache, provider: "pi", accountKey: "openrouter", meta: { balance: r.balance } });
         accounts.push({
           accountKey: "openrouter",
           harnesses: ["pi"],
           windows,
+          ...(r.balance !== undefined ? { balance: r.balance } : {}),
           inserted: persistWindows(windows, [["pi", "openrouter"]], ["pi"]),
         });
       }
@@ -1318,7 +1600,7 @@ async function pollQuotasLocked(opts: PollOptions = {}): Promise<PollResult> {
   // --- claude / copilot / cursor (each independent) ---------------------
   if (providerEnabled("claude-code")) {
     try {
-      const claude = await pollClaudeQuotas(opts, fetcher);
+      const claude = await pollWithBackoff({ provider: "claude-code", cache, now, poll: () => pollClaudeQuotas(opts, fetcher) });
       if (typeof claude === "string") addReason("claude-code", claude);
       else accounts.push(claude);
     } catch (e) {
@@ -1328,7 +1610,7 @@ async function pollQuotasLocked(opts: PollOptions = {}): Promise<PollResult> {
 
   if (providerEnabled("copilot")) {
     try {
-      const copilot = await pollCopilotQuotas(opts, fetcher, now);
+      const copilot = await pollWithBackoff({ provider: "copilot", cache, now, poll: () => pollCopilotQuotas(opts, fetcher, now) });
       if (typeof copilot === "string") addReason("copilot", copilot);
       else accounts.push(copilot);
     } catch (e) {
@@ -1338,7 +1620,7 @@ async function pollQuotasLocked(opts: PollOptions = {}): Promise<PollResult> {
 
   if (providerEnabled("cursor")) {
     try {
-      const cursor = await pollCursorQuotas(opts, fetcher, now);
+      const cursor = await pollWithBackoff({ provider: "cursor", cache, now, poll: () => pollCursorQuotas(opts, fetcher, now) });
       if (typeof cursor === "string") addReason("cursor", cursor);
       else accounts.push(cursor);
     } catch (e) {
@@ -1348,13 +1630,42 @@ async function pollQuotasLocked(opts: PollOptions = {}): Promise<PollResult> {
 
   if (providerEnabled("commandcode")) {
     try {
-      const commandcode = await pollCommandCodeQuotas(opts, fetcher, now);
+      const commandcode = await pollWithBackoff({ provider: "commandcode", cache, now, poll: () => pollCommandCodeQuotas(opts, fetcher, now) });
       if (typeof commandcode === "string") addReason("commandcode", commandcode);
       else accounts.push(commandcode);
     } catch (e) {
       addReason("commandcode", String(e));
     }
   }
+
+  // --- gemini / z.ai / kimi / deepseek: only when local credentials exist --
+  const quotaContext: QuotaPollContext = { fetcher, cache, now, env: opts.env ?? process.env };
+  const pollIfCredentialed = async (provider: string, poll: (() => Promise<PollAccountResult | string>) | undefined): Promise<void> => {
+    if (!providerEnabled(provider) || poll === undefined) return;
+    try {
+      const outcome = await pollWithBackoff({ provider, cache, now, poll });
+      if (typeof outcome === "string") addReason(provider, outcome);
+      else accounts.push(outcome);
+    } catch (e) {
+      addReason(provider, String(e));
+    }
+  };
+  const geminiPath = geminiCredsPath({ env: quotaContext.env, override: opts.geminiCredsPath });
+  const geminiCreds = loadGeminiCreds(geminiPath);
+  await pollIfCredentialed("gemini-cli", geminiCreds === undefined
+    ? undefined
+    : () => pollGeminiQuotas({ ctx: quotaContext, credsPath: geminiPath, creds: geminiCreds }));
+  const zaiRegion = opts.zaiRegion ?? "global";
+  const zaiKey = zaiApiKey({ ctx: quotaContext, region: zaiRegion, configKey: opts.providerKeys?.zai });
+  await pollIfCredentialed("zai", zaiKey === undefined
+    ? undefined
+    : () => pollZaiQuotas({ ctx: quotaContext, key: zaiKey, region: zaiRegion }));
+  const kimi = kimiCredential({ ctx: quotaContext, configKey: opts.providerKeys?.kimi, kimiHome: opts.kimiHome });
+  await pollIfCredentialed("kimi", kimi === undefined ? undefined : () => pollKimiQuotas({ ctx: quotaContext, credential: kimi }));
+  const deepseekKey = deepseekApiKey({ ctx: quotaContext, configKey: opts.providerKeys?.deepseek });
+  await pollIfCredentialed("deepseek", deepseekKey === undefined
+    ? undefined
+    : () => pollDeepSeekQuotas({ ctx: quotaContext, key: deepseekKey }));
 
   // --- manual gateway keys (config.poll.extraKeys) -----------------------
   for (const mk of opts.manualKeys ?? []) {
@@ -1366,10 +1677,12 @@ async function pollQuotasLocked(opts: PollOptions = {}): Promise<PollResult> {
       } else if (r.skip !== undefined) {
         addReason(mk.provider, `${mk.id}: ${r.skip}`);
       } else {
+        if (r.balance !== undefined) storeAccountMeta({ cache, provider: "openrouter", accountKey: mk.id, meta: { balance: r.balance } });
         accounts.push({
           accountKey: mk.id,
           harnesses: ["pi"],
           windows: r.windows,
+          ...(r.balance !== undefined ? { balance: r.balance } : {}),
           inserted: persistWindows(r.windows, [["openrouter", mk.id]], ["pi"]),
         });
       }
@@ -1517,7 +1830,7 @@ async function pollQuotasLocked(opts: PollOptions = {}): Promise<PollResult> {
     });
   }
 
-  const ok = accounts.some((a) => a.windows.length > 0);
+  const ok = accounts.some((a) => a.windows.length > 0 || a.balance !== undefined);
   return {
     ok,
     reason: ok ? undefined : reasons.join("; ") || "no provider returned quota data",

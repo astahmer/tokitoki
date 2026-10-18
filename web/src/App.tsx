@@ -35,9 +35,12 @@ const SessionsView = lazy(() => import("./components/SessionsView").then((m) => 
 const SourcesView = lazy(() => import("./components/SourcesView").then((m) => ({ default: m.SourcesView })));
 const AnomaliesView = lazy(() => import("./components/AnomaliesView").then((m) => ({ default: m.AnomaliesView })));
 const BudgetsView = lazy(() => import("./components/BudgetsView").then((m) => ({ default: m.BudgetsView })));
+const LimitsView = lazy(() => import("./components/LimitsView").then((m) => ({ default: m.LimitsView })));
 const ReportsView = lazy(() => import("./components/ReportsView").then((m) => ({ default: m.ReportsView })));
 
-const DIMENSIONS = ["model", "provider", "account", "machine", "project", "repo"] as const;
+const DIMENSIONS = ["model", "vendor", "harness", "account", "machine", "project", "repo"] as const;
+/** Old deep links used `by=provider` for the harness dimension. */
+const DIMENSION_ALIASES: Record<string, (typeof DIMENSIONS)[number]> = { provider: "harness" };
 const GRID_METRICS: GridMetric[] = ["tokens", "cost", "requests"];
 /** Preset chips: named rolling windows + Duration-style spans. */
 const RANGE_PRESETS: Array<{ label: string; value: string }> = [
@@ -50,7 +53,7 @@ const RANGE_PRESETS: Array<{ label: string; value: string }> = [
   { label: "90d", value: "90d" },
   { label: "year", value: "year" },
 ];
-const VIEWS = ["dashboard", "reports", "tools", "sessions", "anomalies", "budgets", "sources"] as const;
+const VIEWS = ["dashboard", "limits", "reports", "tools", "sessions", "anomalies", "budgets", "sources"] as const;
 type View = (typeof VIEWS)[number];
 
 // ---------------------------------------------------------------- url state
@@ -79,11 +82,12 @@ function readStateFromUrl(): AppState {
     const last = p.get("last") ?? "";
     if (RANGE_PRESETS.some((r) => r.value === last)) range = { last };
   }
-  const by = p.get("by") ?? "model";
+  const byRaw = p.get("by") ?? "model";
+  const by = DIMENSION_ALIASES[byRaw] ?? DIMENSIONS.find((d) => d === byRaw) ?? "model";
   return {
     view,
     range,
-    dimension: DIMENSIONS.includes(by as (typeof DIMENSIONS)[number]) ? by : "model",
+    dimension: by,
     account: p.get("account") ?? undefined,
     providers: p.getAll("provider").filter((x) => x.length > 0),
     showEmail: p.get("emails") === "1",
@@ -168,7 +172,7 @@ export function App() {
     () =>
       fetchTimeseries(
         dimension === "account" || dimension === "machine" || dimension === "repo"
-          ? "provider"
+          ? "harness"
           : dimension === "project"
             ? "model"
             : dimension,
@@ -303,6 +307,8 @@ export function App() {
         <SourcesView />
       ) : view === "anomalies" ? (
         <AnomaliesView win={win} onOpenDay={openDay} />
+      ) : view === "limits" ? (
+        <LimitsView refreshTick={refreshTick} showEmail={showEmail} />
       ) : view === "budgets" ? (
         <BudgetsView />
       ) : (
@@ -553,8 +559,8 @@ function FilterBar(props: FilterBarProps) {
       {hasAdvanced && (
         <>
           {providers.length > 0 && (
-            <Pill active onClick={() => setProviders([])} title={`providers: ${providers.join(", ")}`}>
-              {providers.length} provider{providers.length === 1 ? "" : "s"} ×
+            <Pill active onClick={() => setProviders([])} title={`harnesses: ${providers.join(", ")}`}>
+              {providers.length} harness{providers.length === 1 ? "" : "es"} ×
             </Pill>
           )}
           {account !== undefined && setAccount !== undefined && (
@@ -587,7 +593,7 @@ function FilterBar(props: FilterBarProps) {
                 )}
                 {providerChips.length > 0 && (
                   <MultiSelect
-                    label="provider"
+                    label="harness"
                     options={providerChips}
                     selected={providers}
                     onChange={(next) =>

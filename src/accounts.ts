@@ -1,5 +1,7 @@
 import fs from "node:fs";
 
+import { z } from "zod";
+
 /**
  * Best-effort resolution of the logged-in account email per provider, read
  * live from each harness's local store. No emails are persisted anywhere:
@@ -64,27 +66,57 @@ export function accountIdentityFor(providerId: string): AccountIdentity | null {
   }
 }
 
-function claudeEmail(): string | null {
+const ClaudeOauthAccountSchema = z.object({
+  oauthAccount: z.object({
+    accountUuid: z.string().optional(),
+    emailAddress: z.string().optional(),
+    organizationUuid: z.string().optional(),
+    organizationName: z.string().optional(),
+  }),
+});
+
+export interface ClaudeOauthAccount {
+  email: string;
+  accountUuid?: string;
+  organizationUuid?: string;
+  organizationName?: string;
+}
+
+/**
+ * The login Claude Code records in .claude.json (oauthAccount). An explicit
+ * path (tests) disables the CLAUDE_CONFIG_DIR / home lookup.
+ */
+export const claudeOauthAccount = (explicitPath?: string): ClaudeOauthAccount | null => {
   const configDir = process.env.CLAUDE_CONFIG_DIR;
-  const candidates = [
-    configDir !== undefined && configDir.length > 0
-      ? `${configDir}/.claude.json`
-      : `${process.env.HOME ?? "~"}/.claude.json`,
-    ...(configDir !== undefined && configDir.length > 0
-      ? [`${configDir}/../.claude.json`]
-      : []),
-  ];
+  const hasConfigDir = configDir !== undefined && configDir.length > 0;
+  const candidates = explicitPath !== undefined
+    ? [explicitPath]
+    : [
+      hasConfigDir ? `${configDir}/.claude.json` : `${process.env.HOME ?? "~"}/.claude.json`,
+      ...(hasConfigDir ? [`${configDir}/../.claude.json`] : []),
+    ];
   for (const file of candidates) {
     try {
-      const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as Record<string, unknown>;
-      const oauth = parsed.oauthAccount as Record<string, unknown> | undefined;
-      const email = oauth?.emailAddress;
-      if (typeof email === "string" && email.includes("@")) return email;
+      const parsed = ClaudeOauthAccountSchema.safeParse(JSON.parse(fs.readFileSync(file, "utf8")));
+      if (!parsed.success) continue;
+      const oauth = parsed.data.oauthAccount;
+      const email = oauth.emailAddress;
+      if (email === undefined || !email.includes("@")) continue;
+      return {
+        email,
+        ...(oauth.accountUuid !== undefined ? { accountUuid: oauth.accountUuid } : {}),
+        ...(oauth.organizationUuid !== undefined ? { organizationUuid: oauth.organizationUuid } : {}),
+        ...(oauth.organizationName !== undefined ? { organizationName: oauth.organizationName } : {}),
+      };
     } catch {
       // try next candidate
     }
   }
   return null;
+};
+
+function claudeEmail(): string | null {
+  return claudeOauthAccount()?.email ?? null;
 }
 
 function codexEmail(): string | null {

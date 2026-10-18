@@ -7,12 +7,13 @@ import { appendEvents, eventsFile, loadCursors, saveProviderCursors } from "./st
 import { PROVIDERS, getProvider } from "./providers/index.ts";
 import { scanProviderCore, type ScanResult } from "./scan.ts";
 import type { UsageEvent } from "./types.ts";
-import { DIMENSIONS, EventCache, type AggRow, type Dimension, type SeriesBucket, type SessionSummary } from "./cache.ts";
+import { DIMENSION_NAMES, EventCache, dimensionLabel, parseDimension, type AggRow, type Dimension, type SeriesBucket, type SessionSummary } from "./cache.ts";
+import { buildAccountLimits, readLimitsDocument } from "./limits-document.ts";
+import { DEFAULT_SERVE_HOST, DEFAULT_SERVE_PORT, isLoopbackHost, startLocalApiServer } from "./serve.ts";
 import { renderTable, renderMiniProjects, renderMarkdownTable, resolveExtraFiles, resolveSortColumn, sinceIsoFor, sinceIsoForDays, previousWindow, monthStartIso, sortRows, formatDelta, deltaInfo, totalRow, totalTokens, planGaugeFn, renderBurnLine, burnProjection, type TableContext } from "./report.ts";
-import { accountEmailFor, accountEmailMap } from "./accounts.ts";
-import { attachCodexPoolEmails, collapseHarnessVariants, computeLimits, dedupeAccountLimits, embeddedKind, groupBySharedCredential, mergeAliasLimits, type AccountLimits } from "./limits.ts";
-import { accountIdentityFor } from "./accounts.ts";
-import { opencodexAccountIdentities, opencodeCredentials, opencodexQuotas, piCredentials, pollQuotas, redactCredential } from "./poll.ts";
+import { accountEmailMap } from "./accounts.ts";
+import { gatewayExtraKeys, providerPollKeys } from "./limits.ts";
+import { pollQuotas } from "./poll.ts";
 import {
   assertValidSurface,
   isCardVisibleOn,
@@ -28,6 +29,9 @@ import {
 import { renderGrid } from "./grid.ts";
 import { renderBlocks } from "./blocks.ts";
 import { parseStatuslineStdin, renderStatusline } from "./statusline.ts";
+import { PROVIDER_REGISTRY } from "./provider-registry.ts";
+import { cachedStatusIncidents, refreshStatusIncidents } from "./status-incidents.ts";
+import { knownAccountVendors, tagWidgetVendors } from "./widget-providers.ts";
 import {
   installRebuiltMenubarBinary,
   resolveMenubarBin,
@@ -95,9 +99,13 @@ function readVersion(): string {
 
 const VERSION = readVersion();
 const WIDGET_PAYLOAD_SCHEMA = 1;
-const CHART_DIMENSIONS = ["provider", "model", "tool"] as const;
+const CHART_DIMENSIONS: ReadonlyArray<Dimension> = ["vendor", "provider", "model"];
+const PIE_DIMENSIONS: ReadonlyArray<Dimension> = ["vendor", "provider", "model", "tool"];
+const dimensionNames = (dimensions: ReadonlyArray<Dimension>): string => dimensions.map(dimensionLabel).join("|");
 
-const DIMENSION_LIST = "model|provider|account|machine|project|repo|tool";
+const DIMENSION_LIST = `${DIMENSION_NAMES.join("|")}
+                            (harness = claude-code/codex/pi…, vendor = anthropic/
+                            openai/google…; --by provider is a legacy alias of harness)`;
 
 export interface CommandHelp {
   usage: string;
@@ -134,7 +142,25 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
   --show-email              render account rows as name <email> (implies --by account
                             unless an explicit --by is given)
   --json                    machine-readable output`,
-    example: "tokitoki report --last week --by provider",
+    example: "tokitoki report --last week --by vendor",
+  },
+  limits: {
+    usage: "tokitoki limits --json",
+    flags: `  quota windows per vendor → account → plan as a stable, versioned JSON
+  document ({version:1, accounts:[…]}): used %, reset time, pace, runs-out
+  ETA, extra usage. Read-only: run 'tokitoki poll' to refresh provider data.
+  --json                    required (the human view lives in the menubar/web)
+  --show-email              include account emails (hidden by default)`,
+    example: "tokitoki limits --json | jq '.accounts[] | {vendor, plan, windows}'",
+  },
+  serve: {
+    usage: "tokitoki serve [--port <n>] [--host <addr>]",
+    flags: `  read-only local HTTP API for bars and widgets:
+  GET /v1/status · /v1/limits · /v1/usage?period=today|week|month&by=vendor|harness|model
+  --port <n>                listen port (default ${DEFAULT_SERVE_PORT})
+  --host <addr>             bind address (default ${DEFAULT_SERVE_HOST}); non-loopback
+                            addresses must be passed explicitly`,
+    example: "tokitoki serve --port 6736",
   },
   export: {
     usage: "tokitoki export [--format csv|json|md] [--out <file>]",
@@ -153,13 +179,13 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
   month: { usage: "tokitoki month", flags: "  shortcut for report --last month", example: "tokitoki month" },
   chart: {
     usage: "tokitoki chart [--last day|week|month|year|<duration>]",
-    flags: `  --by provider|model   one sparkline row per bucket
+    flags: `  --by ${dimensionNames(CHART_DIMENSIONS)}   one sparkline row per bucket
   --spark               compact inline sparklines
   (rolling windows like report; default period: week)`,
     example: "tokitoki chart --last month --spark",
   },
   pie: {
-    usage: "tokitoki pie [--last day|week|month|year|<duration>] [--by provider|model]",
+    usage: `tokitoki pie [--last day|week|month|year|<duration>] [--by ${dimensionNames(PIE_DIMENSIONS)}]`,
     flags: "  share-of-tokens legend bars with cost (default period: week)",
     example: "tokitoki pie --last week",
   },
@@ -218,13 +244,13 @@ Rows always show every configured scope×pattern; state is ok | warn (≥80%)
     example: "tokitoki import ~/Downloads/anthropic-usage.csv",
   },
   sessions: {
-    usage: "tokitoki sessions [--search \"query\"] [--last day|week|month|year|<duration>] [--top N] [--by provider|repo]",
+    usage: "tokitoki sessions [--search \"query\"] [--last day|week|month|year|<duration>] [--top N] [--by harness|repo]",
     flags: `  --search "query"          full-text search across ALL conversation content
                             (terms AND together; results ranked by relevance)
   --page N                  result page for --search (default 1, 50 per page)
   --last day|week|month|year rolling window (default: week); durations ok
   --top N                   leaderboard size (default: 10)
-  --by provider|repo        group the leaderboard under section headers
+  --by harness|repo         group the leaderboard under section headers
   --session <id>            drill into one session: request timeline + running total
   --events-limit N          detail requests per page (default: all in CLI, 40 in UI)
   --events-offset N         zero-based detail request offset
@@ -364,6 +390,8 @@ Commands:
   scan       incrementally scan harness stores into the local cache
   sources    where each provider's data comes from (roots, cursors, freshness)
   report     aggregate a rolling window (--last day|week|month|year|24h, default week)
+  limits     provider quota windows per vendor/account as versioned JSON
+  serve      read-only loopback HTTP API (/v1/limits, /v1/usage, /v1/status)
   today      shortcut for report --last day (+ top projects MTD)
   week       shortcut for report --last week
   month      shortcut for report --last month
@@ -430,7 +458,9 @@ export async function main(argv: string[]): Promise<void> {
       case "reindex": runReindex(parsed); break;
       case "anomalies": runAnomalies(parsed); break;
       case "budgets": runBudgets(parsed); break;
-      case "widget-payload": runWidgetPayload(parsed); break;
+      case "widget-payload": await refreshWidgetStatusIncidents(parsed); runWidgetPayload(parsed); break;
+      case "limits": runLimits(parsed); break;
+      case "serve": runServe(parsed); break;
       case "ui": runUi(parsed); break;
       case "presence": runPresence(parsed); break;
       case "tools": runTools(parsed); break;
@@ -464,6 +494,8 @@ export async function main(argv: string[]): Promise<void> {
 const KNOWN_FLAGS: Record<string, string[]> = {
   "widget-payload": ["cached", "skip-scan", "json"],
   ui: ["list", "hide", "show", "surface", "menubar-only", "card-set", "account-order", "tabs"],
+  limits: ["json", "show-email", "show-emails"],
+  serve: ["port", "host"],
   scan: ["provider", "if-needed"],
   sources: [],
   report: ["last", "by", "json", "sort", "asc", "provider", "delta", "no-delta", "show-email", "show-emails", "since", "until", "from", "to"],
@@ -761,11 +793,11 @@ function reportOptions(parsed: ParsedInvocation, defaultPeriod?: Period): Report
     to,
     fallbackPeriod: defaultPeriod ?? "week",
   });
-  const groupBy = (groupByRaw ?? "model") as Dimension;
-  if (!DIMENSIONS.includes(groupBy)) {
+  const groupBy = parseDimension(groupByRaw ?? "model");
+  if (groupBy === undefined) {
     throw new UserError(
-      `invalid --by: ${groupBy} (valid: ${DIMENSIONS.join(", ")})`,
-      "tokitoki report --by model",
+      `invalid --by: ${groupByRaw} (valid: ${DIMENSION_NAMES.join(", ")}; provider = harness)`,
+      "tokitoki report --by vendor",
     );
   }
 
@@ -822,7 +854,7 @@ function runReport(parsed: ParsedInvocation): void {
           {
             window: { since: sinceIso, until: untilIso ?? null, label: w.label },
             period: w.period ?? null,
-            groupBy: opts.groupBy,
+            groupBy: dimensionLabel(opts.groupBy),
             rows,
             total,
             prevTotalCost,
@@ -956,7 +988,7 @@ function runExport(parsed: ParsedInvocation): void {
       const windowLabel = `${fmtLocal(w.sinceIso)} → ${w.untilIso === undefined ? "now" : fmtLocal(w.untilIso)} (${w.label})`;
       if (format === "json") {
         return JSON.stringify(
-          { window: { since: w.sinceIso, until: w.untilIso ?? null, label: w.label }, groupBy: opts.groupBy, rows },
+          { window: { since: w.sinceIso, until: w.untilIso ?? null, label: w.label }, groupBy: dimensionLabel(opts.groupBy), rows },
           null,
           2,
         );
@@ -1040,10 +1072,11 @@ function runChart(parsed: ParsedInvocation): void {
   try {
     const w = resolveTimeWindow({ last: flagString(parsed, "last"), from: flagString(parsed, "from"), to: flagString(parsed, "to"), fallbackPeriod: "week" });
     const spark = flagBool(parsed, "spark");
-    const by = flagString(parsed, "by");
-    if (by !== undefined && !CHART_DIMENSIONS.includes(by as (typeof CHART_DIMENSIONS)[number])) {
+    const byRaw = flagString(parsed, "by");
+    const by = byRaw === undefined ? undefined : parseDimension(byRaw);
+    if (byRaw !== undefined && (by === undefined || !CHART_DIMENSIONS.includes(by))) {
       throw new UserError(
-        `invalid --by for chart: ${by} (valid: ${CHART_DIMENSIONS.join(", ")})`,
+        `invalid --by for chart: ${byRaw} (valid: ${dimensionNames(CHART_DIMENSIONS)})`,
         "tokitoki chart --last month",
       );
     }
@@ -1083,10 +1116,11 @@ function runChart(parsed: ParsedInvocation): void {
 function runPie(parsed: ParsedInvocation): void {
   try {
     const w = resolveTimeWindow({ last: flagString(parsed, "last"), from: flagString(parsed, "from"), to: flagString(parsed, "to"), fallbackPeriod: "week" });
-    const groupBy = (flagString(parsed, "by") ?? "provider") as Dimension;
-    if (groupBy !== "provider" && groupBy !== "model" && groupBy !== "tool") {
+    const groupByRaw = flagString(parsed, "by") ?? "harness";
+    const groupBy = parseDimension(groupByRaw);
+    if (groupBy === undefined || !PIE_DIMENSIONS.includes(groupBy)) {
       throw new UserError(
-        `invalid --by for pie: ${groupBy} (valid: provider, model, tool)`,
+        `invalid --by for pie: ${groupByRaw} (valid: ${dimensionNames(PIE_DIMENSIONS)})`,
         "tokitoki pie --last week",
       );
     }
@@ -1165,11 +1199,12 @@ function runSessions(parsed: ParsedInvocation): void {
     const drillId = flagString(parsed, "session");
     const searchQuery = flagString(parsed, "search");
     const topN = Math.max(1, Math.min(Number(flagString(parsed, "top") ?? (searchQuery !== undefined ? "50" : "10")) || 10, 100));
-    const by = flagString(parsed, "by");
+    const byRaw = flagString(parsed, "by");
+    const by = byRaw === "harness" ? "provider" : byRaw;
     if (by !== undefined && !(SESSION_DIMENSIONS as readonly string[]).includes(by)) {
       throw new UserError(
-        `invalid --by: ${by} (valid: ${SESSION_DIMENSIONS.join(", ")})`,
-        "tokitoki sessions --by provider",
+        `invalid --by: ${byRaw} (valid: harness, repo)`,
+        "tokitoki sessions --by harness",
       );
     }
     const json = flagBool(parsed, "json");
@@ -1827,13 +1862,11 @@ async function runPoll(parsed: ParsedInvocation): Promise<void> {
       cache,
       providers: flagStrings(parsed, "provider"),
       // Manually registered opencode gateway keys (multi-account).
-      manualKeys: (config.poll?.extraKeys ?? [])
+      manualKeys: gatewayExtraKeys(config)
         .filter((k) => k.key.length > 0)
-        .map((k) => ({
-          id: k.id,
-          provider: (k.provider ?? "opencode-go") as "opencode-go" | "openrouter",
-          key: k.key,
-        })),
+        .map((k) => ({ id: k.id, provider: k.provider, key: k.key })),
+      providerKeys: providerPollKeys(config),
+      ...(config.poll?.zaiRegion !== undefined ? { zaiRegion: config.poll.zaiRegion } : {}),
     });
     if (jsonOut) {
       console.log(JSON.stringify(result));
@@ -1849,13 +1882,20 @@ async function runPoll(parsed: ParsedInvocation): Promise<void> {
       return;
     }
     for (const acc of result.accounts) {
-      console.log(`${acc.accountKey}${acc.email !== undefined ? ` (${acc.email})` : ""}:`);
+      console.log(`${acc.accountKey}${acc.email !== undefined ? ` (${acc.email})` : ""}${acc.planType !== undefined ? ` · ${acc.planType}` : ""}:`);
       for (const w of acc.windows) {
         const label = w.label !== undefined ? `${w.label} — ` : "";
         console.log(`  ${label}${w.windowMinutes}min window · ${w.usedPct}% used · resets ${new Date(w.resetsAtEpoch * 1000).toLocaleString()}`);
       }
+      if (acc.balance !== undefined) {
+        console.log(`  balance ${acc.balance.remaining} ${acc.balance.currency}${acc.balance.available === false ? " (unavailable)" : ""}`);
+      }
       if (acc.credits?.hasCredits && !acc.credits.unlimited && Number(acc.credits.balance) > 0) {
         console.log(`  ${acc.credits.balance} banked reset(s)${acc.credits.expiresAt !== undefined ? ` · expires ${new Date(acc.credits.expiresAt).toLocaleString()}` : ""}`);
+      }
+      if (acc.deferredUntil !== undefined) {
+        console.log(`  → stored snapshot reused; next live poll after ${new Date(acc.deferredUntil).toLocaleString()}`);
+        continue;
       }
       console.log(`  → ${acc.inserted} snapshot(s) stored${acc.error !== undefined ? ` · ${acc.error}` : ""}`);
     }
@@ -1891,8 +1931,9 @@ async function runStatusline(_parsed: ParsedInvocation): Promise<void> {
   const input = parseStatuslineStdin(raw);
   const cache = new EventCache();
   try {
-    syncCache(cache, resolveExtraFiles(loadConfig()));
-    const line = await renderStatusline(input, cache);
+    const config = loadConfig();
+    syncCache(cache, resolveExtraFiles(config));
+    const line = await renderStatusline(input, cache, Date.now(), { refreshIncidents: config.statusIncidents?.enabled !== false });
     if (line.length > 0) console.log(line);
   } finally {
     cache.close();
@@ -1975,10 +2016,10 @@ function runConfigSet(parsed: ParsedInvocation): void {
     if (pathArg === undefined || pathArg.length === 0 || valueArg === undefined) {
       throw new UserError("usage: tokitoki config set <dot.path> <json>", 'tokitoki config set ui.stripMetric "tokens"');
     }
-    const allowed = new Set(["ui", "poll", "sync", "hidden", "plans", "budgets", "notifications", "privacy", "extraEventFiles", "experimental"]);
+    const allowed = new Set(["ui", "poll", "sync", "hidden", "plans", "accountAliases", "budgets", "notifications", "privacy", "extraEventFiles", "experimental"]);
     const top = pathArg.split(".")[0]!;
     if (!allowed.has(top)) {
-      throw new UserError(`unknown config section '${top}'`, "sections: ui, poll, plans, budgets, notifications, privacy");
+      throw new UserError(`unknown config section '${top}'`, "sections: ui, poll, plans, accountAliases, budgets, notifications, privacy");
     }
     let value: unknown;
     try {
@@ -2001,6 +2042,39 @@ function runConfigSet(parsed: ParsedInvocation): void {
   } catch (err) {
     handleError(err);
   }
+}
+
+function runLimits(parsed: ParsedInvocation): void {
+  if (!flagBool(parsed, "json")) {
+    throw new UserError(
+      "limits is a machine-readable contract; pass --json (the menubar and web dashboard render it for humans)",
+      "tokitoki limits --json",
+    );
+  }
+  console.log(JSON.stringify(readLimitsDocument({ showEmail: flagBool(parsed, "show-email") || flagBool(parsed, "show-emails") }), null, 2));
+}
+
+function runServe(parsed: ParsedInvocation): void {
+  const portRaw = flagString(parsed, "port") ?? String(DEFAULT_SERVE_PORT);
+  const port = Number(portRaw);
+  if (!Number.isInteger(port) || port < 0 || port > 65535) {
+    throw new UserError(`invalid --port: ${portRaw}`, `tokitoki serve --port ${DEFAULT_SERVE_PORT}`);
+  }
+  const hostFlag = parsed.flags["host"];
+  if (hostFlag === true) throw new UserError("--host needs an address", `tokitoki serve --host ${DEFAULT_SERVE_HOST}`);
+  const host = typeof hostFlag === "string" && hostFlag.length > 0 ? hostFlag : DEFAULT_SERVE_HOST;
+  const server = startLocalApiServer({ port, host, appVersion: VERSION });
+  const shownHost = host.includes(":") ? `[${host}]` : host;
+  console.log(`tokitoki API → http://${shownHost}:${server.port}/v1/limits`);
+  if (!isLoopbackHost(host)) {
+    console.error(`warning: listening on non-loopback ${host} — anyone who can reach it can read your usage data`);
+  }
+  const shutdown = () => {
+    server.stop(true);
+    process.exit(0);
+  };
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
 }
 
 function runWeb(parsed: ParsedInvocation): void {
@@ -2085,9 +2159,9 @@ function nextFreePort(from: number): number {
 // ---------------------------------------------------------------- helpers
 
 /** Daily evolution as compact sparklines (one row per top bucket). */
-function sparkSection(cache: EventCache, w: TimeWindow, by: string | undefined): string {
+function sparkSection(cache: EventCache, w: TimeWindow, by: Dimension | undefined): string {
   let series: SeriesBucket[];
-  if (by === "model" || by === "provider") {
+  if (by === "model" || by === "provider" || by === "vendor") {
     series = cache.seriesDaily(w.sinceIso, by);
   } else {
     const days = cache.dailyTotals(w.sinceIso, w.untilIso);
@@ -2488,248 +2562,7 @@ function runWidgetPayload(parsed: ParsedInvocation): void {
       syncCache(cache, config.extraEventFiles ?? []);
       // FULL limits go over the wire — the app filters popover cards via
       // hidden.menubar and strip marks via previewHidden independently.
-      const limits = computeLimits(cache, config);
-      const poolIdentities = opencodexAccountIdentities();
-      const poolQuotas = opencodexQuotas();
-      const localCodexAccountId = accountIdentityFor("codex")?.accountId;
-      // Attribute pooled Codex cards by the stable provider account ID. Reset
-      // timestamps are quota data, not identity, and can drift independently.
-      const limitsWithPoolEmails = attachCodexPoolEmails(
-        limits,
-        poolIdentities,
-        (accountKey) => cache.quotaAccountIds("codex", accountKey),
-      );
-      // Cursor has no local usage store, but its CLI config holds the login
-      // that every cursor-routed card bills against — including T3 Code's
-      // `cursor` backend. Without it those cards read as bare provider ids.
-      const cursorEmail = accountEmailFor("cursor");
-      const withHarnessEmails = cursorEmail === null ? limitsWithPoolEmails : limitsWithPoolEmails.map((l) => {
-        if (l.email !== undefined) return l;
-        const cursorRouted = l.provider === "cursor" || (l.provider === "t3code" && l.accountKey === "cursor");
-        return cursorRouted ? { ...l, email: cursorEmail } : l;
-      });
-      // The pool adapter's opaque `chatgpt-<timestamp>` key can also exist
-      // in old scanned logs. Once the same reset is refreshed into the
-      // canonical `codex` card, hide that stale duplicate from the UI.
-      const normalizedLimits = withHarnessEmails.filter((l) => {
-        if (l.provider !== "codex" || !l.accountKey.startsWith("codex:")) return true;
-        const poolKey = l.accountKey.slice("codex:".length);
-        if (poolQuotas[poolKey] === undefined) return true;
-        // Keep a pool-backed card when its stable account ID is known. The
-        // old reset-based rule hid the canonical work card and left its
-        // personal email on the remaining __main__ card.
-        const poolId = poolIdentities[poolKey]?.accountId;
-        return poolId === undefined || cache.quotaAccountIds("codex", l.accountKey).has(poolId);
-      });
-      // Older runs wrote the active login through both openai:plus and the
-      // opencodex codex alias. Once IDs are available, keep the canonical
-      // live-poll key and discard that duplicate permanently.
-      const withoutLocalCodexAliases = normalizedLimits.filter((l) => {
-        if (l.provider !== "codex" || localCodexAccountId === undefined) return true;
-        if (l.accountKey.startsWith("openai:")) return true;
-        return !cache.quotaAccountIds("codex", l.accountKey).has(localCodexAccountId);
-      });
-      // Same provider + same embedded-quota signature = same underlying
-      // account seen through different extraction eras. One card per account.
-      const merged = mergeAliasLimits(withoutLocalCodexAliases);
-      // Key-based harnesses: attach a redacted credential so accounts are
-      // distinguishable without emails (pi / opencode auth is API-key only).
-      // OpenRouter keys live in pi's auth store — same treatment.
-      const creds = opencodeCredentials();
-      const piKeys = piCredentials();
-      const withCreds = merged.map((l) => {
-        // opencodeCredentials() already returns a redacted display value;
-        // piCredentials() returns the raw key. Do not redact the former a
-        // second time (that collapsed it to just "…" and broke grouping).
-        const opencodeCred = creds[l.accountKey];
-        if (opencodeCred !== undefined) return { ...l, credential: opencodeCred };
-        const piCred = l.provider === "pi" ? piKeys[l.accountKey] : undefined;
-        return piCred !== undefined ? { ...l, credential: redactCredential(piCred) } : l;
-      });
-      // Accounts sharing one credential (pi + opencode on the same gateway
-      // key) are ONE real account — collapse to a single card. Harness-level
-      // variants remain available as an explicit opt-in.
-      const grouped = config.ui?.showHarnessVariants === true
-        ? withCreds
-        : groupBySharedCredential(withCreds);
-      // Origin provenance for the details disclosure: where did this
-      // account's quota data come from? One tiny indexed query per account.
-      const withOrigin = dedupeAccountLimits(grouped.map((l) => {
-        try {
-          const row = cache.database
-            .query(
-              `SELECT CASE WHEN event_id LIKE '%:opencodex' THEN 'opencodex'
-                           ELSE 'polled' END AS origin
-               FROM quota_snapshots
-               WHERE provider = ? AND account_key = ? AND event_id LIKE 'poll:%'
-               LIMIT 1`,
-            )
-            .get(l.provider, l.accountKey) as { origin?: string } | null;
-          return { ...l, origin: row?.origin ?? "scan" };
-        } catch {
-          return { ...l, origin: "scan" };
-        }
-      }));
-      // Detected-but-empty harnesses still deserve a card (commandcode etc.)
-      // so users can see the harness is known — zero windows until data lands.
-      if (config.experimental?.zeroStateCards !== false) {
-        const known = new Set(withOrigin.map((l) => `${l.provider}@${l.accountKey}`));
-        for (const [provider, accountKey, root] of [
-          ["commandcode", "default", `${process.env.HOME ?? "~"}/.commandcode`],
-        ] as Array<[string, string, string]>) {
-          if (known.has(`${provider}@${accountKey}`)) continue;
-          try {
-            if (fs.existsSync(root)) {
-              withOrigin.push({ provider, accountKey, origin: "scan", windows: [] });
-            }
-          } catch { /* probe only */ }
-        }
-      }
-      // Manual provider keys get a card even with zero scanned events. Keep
-      // them in the upstream provider group so multiple OpenCode Go or
-      // OpenRouter keys can use the same account switcher as OAuth accounts.
-      for (const mk of config.poll?.extraKeys ?? []) {
-        const provider = mk.provider ?? "opencode-go";
-        const cardProvider = provider === "openrouter" ? "openrouter" : "opencode";
-        const matchingProviders = provider === "openrouter" ? ["openrouter"] : ["pi", "opencode"];
-        const label = mk.label?.trim();
-        const existingIndex = withOrigin.findIndex((l) => matchingProviders.includes(l.provider) && l.accountKey === mk.id);
-        if (existingIndex >= 0) {
-          const existing = withOrigin[existingIndex]!;
-          withOrigin[existingIndex] = {
-            ...existing,
-            provider: cardProvider,
-            origin: "manual",
-            credential: existing.credential ?? redactCredential(mk.key),
-            ...(label !== undefined && label.length > 0 ? { label: label.slice(0, 48) } : {}),
-          };
-          continue;
-        }
-        const snaps = cache.latestQuotaSnapshots(cardProvider, mk.id);
-        const windows = snaps.map((snap) => ({
-          kind: snap.label.length > 0 ? snap.label : embeddedKind(snap.windowMinutes),
-          source: "embedded" as const,
-          tokens: 0,
-          cost: 0,
-          requests: 0,
-          usedPct: Math.max(0, Math.min(100, snap.usedPct)),
-          resetsAt: snap.resetsAt > 0 ? new Date(snap.resetsAt * 1000).toISOString() : undefined,
-        }));
-        withOrigin.push({
-          provider: cardProvider,
-          accountKey: mk.id,
-          credential: redactCredential(mk.key),
-          origin: "manual",
-          windows,
-          ...(label !== undefined && label.length > 0 ? { label: label.slice(0, 48) } : {}),
-        });
-      }
-      // Polled-only providers (Copilot/Cursor) may have no local event rows,
-      // but their live quota must still appear as a card and strip group.
-      try {
-        const polled = cache.database
-          .query("SELECT DISTINCT provider, account_key AS accountKey FROM quota_snapshots WHERE event_id LIKE 'poll:%'")
-          .all() as Array<{ provider: string; accountKey: string }>;
-        const known = new Set(withOrigin.map((l) => `${l.provider}@${l.accountKey}`));
-        for (const p of polled) {
-          const id = `${p.provider}@${p.accountKey}`;
-          // pollQuotas mirrors a gateway quota under both pi and opencode;
-          // grouping has already collapsed those into one card. Do not add
-          // the mirrored snapshot back as a duplicate here.
-          const mirroredInSharedGateway =
-            (p.provider === "pi" || p.provider === "opencode") &&
-            (known.has(`pi@${p.accountKey}`) || known.has(`opencode@${p.accountKey}`));
-          if (known.has(id)) {
-            const existingIndex = withOrigin.findIndex((l) => `${l.provider}@${l.accountKey}` === id);
-            // Replace the earlier detected-but-empty placeholder once a
-            // provider poll has produced real windows.
-            if (existingIndex >= 0 && withOrigin[existingIndex]!.windows.length === 0) {
-              withOrigin.splice(existingIndex, 1);
-              known.delete(id);
-            } else {
-              continue;
-            }
-          }
-          if (mirroredInSharedGateway) continue;
-          const snaps = cache.latestQuotaSnapshots(p.provider, p.accountKey);
-          let bankedResets: number | undefined;
-          let bankedExpiresAt: string | undefined;
-          for (const snap of snaps) {
-            if (snap.creditsJson === null) continue;
-            try {
-              const credits = JSON.parse(snap.creditsJson) as { hasCredits?: boolean; unlimited?: boolean; balance?: string; expiresAt?: string };
-              const balance = Number(credits.balance ?? 0);
-              if (credits.hasCredits === true && credits.unlimited !== true && balance > 0) {
-                bankedResets = Math.floor(balance);
-                if (typeof credits.expiresAt === "string") bankedExpiresAt = credits.expiresAt;
-              }
-            } catch { /* malformed provider metadata is ignored */ }
-          }
-          const windows = snaps.map((snap) => ({
-            kind: embeddedKind(snap.windowMinutes),
-            source: "embedded" as const,
-            tokens: 0,
-            cost: 0,
-            requests: 0,
-            usedPct: Math.max(0, Math.min(100, snap.usedPct)),
-            resetsAt: snap.resetsAt > 0 ? new Date(snap.resetsAt * 1000).toISOString() : undefined,
-          }));
-          const accountIds = cache.quotaAccountIds(p.provider, p.accountKey);
-          const observedEpoch = snaps
-            .map((snap) => Date.parse(snap.capturedAt))
-            .filter((value) => Number.isFinite(value))
-            .sort((a, b) => b - a)[0];
-          const pollObservedEpoch = snaps
-            .filter((snap) => snap.eventId?.startsWith("poll:") === true)
-            .map((snap) => Date.parse(snap.capturedAt))
-            .filter((value) => Number.isFinite(value))
-            .sort((a, b) => b - a)[0];
-          const freshness = pollObservedEpoch === undefined
-            ? "unknown" as const
-            : Date.now() - pollObservedEpoch <= Math.max(10, (config.poll?.intervalMinutes ?? 15) * 2) * 60_000
-              ? "fresh" as const
-              : "stale" as const;
-          if (
-            p.provider === "codex" &&
-            localCodexAccountId !== undefined &&
-            !p.accountKey.startsWith("openai:") &&
-            accountIds.has(localCodexAccountId)
-          ) {
-            // Already represented by the canonical openai:<plan> card.
-            continue;
-          }
-          const poolIdentity = p.provider === "codex"
-            ? Object.values(poolIdentities).find((identity) =>
-                identity.accountId !== undefined && accountIds.has(identity.accountId),
-              )
-            : undefined;
-          withOrigin.push({
-            provider: p.provider,
-            accountKey: p.accountKey,
-            ...(accountIds.size === 1 ? { accountId: [...accountIds][0] } : {}),
-            ...(poolIdentity?.email !== undefined ? { email: poolIdentity.email } : {}),
-            origin: "polled",
-            windows,
-            ...(observedEpoch !== undefined ? { observedAt: new Date(observedEpoch).toISOString() } : {}),
-            freshness,
-            ...(bankedResets !== undefined ? { bankedResets } : {}),
-            ...(bankedExpiresAt !== undefined ? { bankedExpiresAt } : {}),
-          });
-        }
-      } catch {
-        // pre-migration cache: no quota snapshot table
-      }
-      // Drag-saved display order first, then the default (token-heavy) order.
-      const savedOrder = config.ui?.menubarAccountOrder ?? [];
-      const rank = (l: AccountLimits): number => {
-        const i = savedOrder.indexOf(`${l.provider}@${l.accountKey}`);
-        return i === -1 ? savedOrder.length : i;
-      };
-      const cardLimits = config.ui?.showHarnessVariants === true
-        ? withOrigin
-        : collapseHarnessVariants(withOrigin);
-      cardLimits.sort((a, b) => rank(a) - rank(b));
-      console.log(JSON.stringify(cardLimits));
+      console.log(JSON.stringify(buildAccountLimits({ cache, config })));
     });
   });
   capture("spendPeriods", () => {
@@ -2814,12 +2647,30 @@ function runWidgetPayload(parsed: ParsedInvocation): void {
     sessions: numericWidgetPayloadValue(row.sessions),
     tokens: widgetPayloadTokens(row),
   }));
+  const vendorTagged = tagWidgetVendors({ limits: parts["limits"], today: parts["today"] });
+  parts["limits"] = vendorTagged.limits;
+  parts["today"] = vendorTagged.today;
+  parts.providerRegistry = PROVIDER_REGISTRY;
+  parts.statusIncidents = cachedStatusIncidents({ cache: payloadCache, vendors: vendorTagged.vendors });
   console.log(JSON.stringify(parts));
   } finally {
     activeCache = previousCache;
     payloadCache.close();
   }
 }
+
+/** Live payloads refresh vendor status pages (TTL-cached) before the synchronous composition reads them. */
+const refreshWidgetStatusIncidents = async (parsed: ParsedInvocation): Promise<void> => {
+  if (flagBool(parsed, "cached") || loadConfig().statusIncidents?.enabled === false) return;
+  const cache = new EventCache();
+  try {
+    await refreshStatusIncidents({ cache, vendors: knownAccountVendors(cache) });
+  } catch {
+    // status pages are advisory; the payload renders from whatever is cached
+  } finally {
+    cache.close();
+  }
+};
 
 function runUi(parsed: ParsedInvocation): void {
   const surface = assertValidSurface(flagString(parsed, "surface") ?? "widget");

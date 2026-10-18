@@ -4,10 +4,10 @@ import os from "node:os";
 import path from "node:path";
 
 import { EventCache } from "../src/cache.ts";
-import { parseStatuslineStdin, renderStatusline } from "../src/statusline.ts";
+import { incidentSegment, parseStatuslineStdin, renderStatusline } from "../src/statusline.ts";
 import type { UsageEvent } from "../src/types.ts";
 
-const T0 = Date.parse("2026-08-25T10:00:00Z");
+const T0 = new Date(2026, 7, 25, 10).getTime();
 const iso = (ms: number) => new Date(ms).toISOString();
 
 function ev(overrides: Partial<UsageEvent>): UsageEvent {
@@ -86,5 +86,35 @@ describe("renderStatusline", () => {
       cache.close();
       delete process.env.TOKITOKI_DATA_DIR;
     }
+  });
+
+  it("adds a short incident segment when the session vendor's status page is degraded", async () => {
+    const now = T0 + 60 * 60 * 1000;
+    const cache = setup([ev({ id: "1", ts: iso(T0), costUsd: 0.3 })]);
+    const fetcher: typeof fetch = Object.assign(
+      async () => new Response(JSON.stringify({
+        page: { url: "https://status.claude.com" },
+        status: { indicator: "major", description: "Partial System Outage" },
+        incidents: [{ name: "Elevated errors on Claude Opus 5 and Sonnet", status: "investigating", impact: "major", shortlink: "https://stspg.io/x" }],
+      })),
+      { preconnect: () => {} },
+    );
+    try {
+      const line = await renderStatusline(parseStatuslineStdin('{"session_id":"sess-1"}'), cache, now, { refreshIncidents: true, fetcher });
+      expect(line).toContain("Claude partial outage: Elevated errors on Claude Opus…");
+      const cachedOnly = await renderStatusline(parseStatuslineStdin("{}"), cache, now);
+      expect(cachedOnly).toContain("Claude partial outage");
+    } finally {
+      cache.close();
+      delete process.env.TOKITOKI_DATA_DIR;
+    }
+  });
+
+  it("keeps the incident segment out when every vendor is operational", () => {
+    expect(incidentSegment({ anthropic: { indicator: "none", description: "All Systems Operational" } })).toBeUndefined();
+    expect(incidentSegment({
+      google: { indicator: "minor", description: "" },
+      openai: { indicator: "critical", description: "API down" },
+    })).toBe("OpenAI outage: API down");
   });
 });

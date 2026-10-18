@@ -245,8 +245,8 @@ describe("computeLimits", () => {
     const cache = limitsCache();
     try {
       cache.insert([
-        makeEvent({ id: "1", ts: "2026-08-24T08:00:00.000Z" }),
-        makeEvent({ id: "2", inputTokens: 200, ts: "2026-08-24T08:30:00.000Z" }),
+        makeEvent({ id: "1", ts: new Date(2026, 7, 24, 8, 0).toISOString() }),
+        makeEvent({ id: "2", inputTokens: 200, ts: new Date(2026, 7, 24, 8, 30).toISOString() }),
       ]);
       const limits = computeLimits(cache, {}, new Date(2026, 7, 24, 12, 0));
       const codex = limits.find((l) => l.provider === "codex" && l.accountKey === "openai:plus");
@@ -400,7 +400,7 @@ describe("computeLimits", () => {
         // Half of Aug 24 has elapsed by noon. A $310 monthly cap over
         // August's 31 days is a $10/day budget, so $5 spent by noon is
         // exactly on pace (100%) — not ~3% of the full monthly cap.
-        makeEvent({ id: "1", ts: "2026-08-24T06:00:00.000Z", costUsd: 5 }),
+        makeEvent({ id: "1", ts: new Date(2026, 7, 24, 6, 0).toISOString(), costUsd: 5 }),
       ]);
       const config = { plans: { "openai:*": { monthlyCostCap: 310 } } };
       const limits = computeLimits(cache, config as never, new Date(2026, 7, 24, 12, 0));
@@ -421,6 +421,19 @@ describe("computeLimits", () => {
       const limits = computeLimits(cache, {}, new Date(2026, 7, 24, 12, 0));
       const week = limits[0]!.windows.find((w) => w.kind === "week")!;
       expect(week.usedPct).toBeCloseTo(5);
+    } finally {
+      cache.close();
+    }
+  });
+
+  it("marks scanned quota snapshots stale once they are hours old", () => {
+    const cache = limitsCache();
+    try {
+      cache.insert([
+        makeEvent({ id: "scanned", ts: "2026-08-20T10:00:00.000Z", quota: { primary: { usedPct: 40, windowMinutes: 300, resetsAtEpoch: 1 } } }),
+      ]);
+      expect(computeLimits(cache, {}, new Date("2026-08-20T12:00:00.000Z"))[0]?.freshness).toBe("fresh");
+      expect(computeLimits(cache, {}, new Date("2026-08-24T12:00:00.000Z"))[0]?.freshness).toBe("stale");
     } finally {
       cache.close();
     }
@@ -507,6 +520,52 @@ describe("ui toggles", () => {
       expect(cfg.ui.hidden.dashboard).toEqual(["pi"]);
     } finally {
       delete process.env.TOKITOKI_CONFIG;
+    }
+  });
+});
+
+describe("provider-neutral quota windows", () => {
+  it("describes every polled provider's windows with scope, id, and pace", () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "tk-limits-generic-"));
+    const cache = new EventCache(path.join(dir, "cache.db"));
+    const now = new Date();
+    const epoch = (offsetMinutes: number) => Math.round(now.getTime() / 1000) + offsetMinutes * 60;
+    try {
+      cache.insertPolledSnapshots({
+        provider: "opencode",
+        accountKey: "opencode-go",
+        windows: [
+          { windowMinutes: 300, usedPct: 10, resetsAtEpoch: epoch(240) },
+          { windowMinutes: 43_200, usedPct: 70, resetsAtEpoch: epoch(20 * 1440) },
+        ],
+        capturedAtIso: now.toISOString(),
+        eventId: "poll:test:opencode",
+      });
+      cache.insertPolledSnapshots({
+        provider: "cursor",
+        accountKey: "default",
+        windows: [
+          { windowMinutes: 44_640, usedPct: 30, resetsAtEpoch: epoch(10 * 1440), label: "Cursor Models" },
+          { windowMinutes: 44_640, usedPct: 0, resetsAtEpoch: epoch(10 * 1440), label: "On-Demand", amountUsd: 12 },
+        ],
+        capturedAtIso: now.toISOString(),
+        eventId: "poll:test:cursor",
+      });
+      const limits = computeLimits(cache, {}, now, [
+        { provider: "opencode", accountKey: "opencode-go" },
+        { provider: "cursor", accountKey: "default" },
+      ]);
+      const opencode = limits.find((limit) => limit.provider === "opencode")!;
+      expect(opencode.windows.find((window) => window.id === "session")).toMatchObject({ kind: "day", scope: "session", usedPercent: 10 });
+      const monthly = opencode.windows.find((window) => window.id === "monthly")!;
+      expect(monthly.pace?.status).toBe("over");
+      expect(monthly.pace?.runsOutAt).toBeDefined();
+      const cursor = limits.find((limit) => limit.provider === "cursor")!;
+      expect(cursor.windows.find((window) => window.id === "monthly:cursor-models")).toMatchObject({ scope: "monthly", label: "Cursor Models" });
+      expect(cursor.windows.find((window) => window.id === "monthly:on-demand")?.pace).toBeUndefined();
+      expect(cursor.windows.filter((window) => window.source === "derived").every((window) => window.scope === undefined)).toBe(true);
+    } finally {
+      cache.close();
     }
   });
 });

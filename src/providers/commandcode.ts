@@ -19,8 +19,7 @@ import { walkJsonl } from "./claude-code.ts";
  *     outputTokens, cacheReadTokens, cacheWriteTokens, costUsd?}
  *   - model is a top-level entry field (model_change entries carry it too)
  *
- * Quota API: api.commandcode.ai exists behind login but no public usage
- * endpoint is documented — polling is a future round.
+ * Quota windows come from the api.commandcode.ai billing API (`tokitoki poll`).
  */
 export const commandcodeProvider: Provider = {
   id: "commandcode",
