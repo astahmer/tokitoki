@@ -78,7 +78,8 @@ Item {
                     ? "tokitoki ?"
                     : root.money(root.stat("costUsd")) + " · " + root.compactNumber(root.stat("tokens"))
                 pointSize: root.barFontSize
-                color: Color.mOnSurface
+                applyUiScale: false
+                color: mouseArea.containsMouse ? Color.mOnHover : Color.mOnSurface
             }
         }
     }

@@ -126,7 +126,9 @@ Item {
         var date = new Date(milliseconds)
         if (!isFinite(date.getTime()))
             return "unknown time"
-        return date.toISOString().slice(0, 16).split("T").join(" ") + " UTC"
+        return date.getFullYear() + "-" + String(date.getMonth() + 1).padStart(2, "0") + "-" +
+            String(date.getDate()).padStart(2, "0") + " " + String(date.getHours()).padStart(2, "0") + ":" +
+            String(date.getMinutes()).padStart(2, "0")
     }
 
     function eventTime(value) {
@@ -136,7 +138,8 @@ Item {
         var date = new Date(milliseconds)
         if (!isFinite(date.getTime()))
             return "unknown time"
-        return date.toISOString().slice(11, 19) + " UTC"
+        return String(date.getHours()).padStart(2, "0") + ":" + String(date.getMinutes()).padStart(2, "0") + ":" +
+            String(date.getSeconds()).padStart(2, "0")
     }
 
     function trimDecimal(text) {
@@ -490,6 +493,18 @@ Item {
                 root.runSearch()
             }
         }
+
+        onRunningChanged: {
+            if (running || root.activeSearchRequest === null)
+                return
+            var failedReindex = root.activeSearchRequest.kind === "reindex"
+            root.activeSearchRequest = null
+            root.loading = false
+            root.reindexing = false
+            root.pendingSearch = false
+            root.status = (failedReindex ? "Reindex failed" : "Session search failed") +
+                ": could not start " + root.command
+        }
     }
 
     Process {
@@ -523,6 +538,16 @@ Item {
                 if (nextRequest.generation === root.detailGeneration && root.detail !== null)
                     root.startDrill(nextRequest)
             }
+        }
+
+        onRunningChanged: {
+            if (running || root.activeDrillRequest === null)
+                return
+            root.activeDrillRequest = null
+            root.pendingDrillRequest = null
+            root.eventsLoading = false
+            if (root.detail !== null)
+                root.status = "Could not load conversation: could not start " + root.command
         }
     }
 

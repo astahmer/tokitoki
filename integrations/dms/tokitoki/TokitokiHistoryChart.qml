@@ -159,6 +159,10 @@ Item {
     onPeriodChanged: rebuild()
     Component.onCompleted: rebuild()
 
+    TokitokiDayClock {
+        onTodayKeyChanged: root.rebuild()
+    }
+
     Column {
         id: chartColumn
         anchors.fill: parent

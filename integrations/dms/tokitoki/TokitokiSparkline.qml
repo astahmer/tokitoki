@@ -6,11 +6,11 @@ Canvas {
 
     property var history: null
     property color lineColor: Theme.primary
-    readonly property var samples: buildSamples()
+    readonly property var samples: buildSamples(dayClock.todayKey)
 
     implicitHeight: 48
 
-    function buildSamples() {
+    function buildSamples(todayKey) {
         var totals = {}
         var source = history || ({})
         var days = Array.isArray(source.days) ? source.days : []
@@ -21,16 +21,21 @@ Canvas {
                 return sum + (isFinite(value) ? Math.max(0, value) : 0)
             }, 0)
         }
+        var match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(todayKey || ""))
+        var today = match ? new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3])) : new Date()
         var values = []
         for (var offset = 29; offset >= 0; offset--) {
-            var date = new Date()
-            date.setDate(date.getDate() - offset)
+            var date = new Date(today.getFullYear(), today.getMonth(), today.getDate() - offset)
             var key = date.getFullYear() + "-" +
                 String(date.getMonth() + 1).padStart(2, "0") + "-" +
                 String(date.getDate()).padStart(2, "0")
             values.push(totals[key] || 0)
         }
         return values
+    }
+
+    TokitokiDayClock {
+        id: dayClock
     }
 
     onSamplesChanged: requestPaint()

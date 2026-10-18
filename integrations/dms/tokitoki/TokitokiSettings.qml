@@ -119,8 +119,7 @@ PluginSettings {
             const parsed = JSON.parse(String(raw || ""))
             if (!parsed || parsed.app !== "tokitoki" || parsed.schema !== 1 || !Array.isArray(parsed.limits))
                 throw new Error("Unsupported widget payload")
-            if (!parsed || !Array.isArray(parsed.limits) || !parsed.uiPreview ||
-                    !Array.isArray(parsed.uiPreview.menubarHidden))
+            if (!parsed.uiPreview || !Array.isArray(parsed.uiPreview.menubarHidden))
                 throw new Error("payload is missing account visibility data")
             root.accounts = parsed.limits
             root.hiddenEntries = parsed.uiPreview.menubarHidden
@@ -162,17 +161,13 @@ PluginSettings {
         }
     }
 
-    Timer {
-        running: true
-        interval: 0
-        onTriggered: root.reload()
-    }
+    Component.onCompleted: Qt.callLater(root.reload)
 
     Connections {
         target: root
 
         function onPluginServiceChanged() {
-            root.reload()
+            Qt.callLater(root.reload)
         }
     }
 

@@ -12,6 +12,9 @@ Button {
     implicitWidth: buttonSize
     implicitHeight: buttonSize
     focusPolicy: Qt.StrongFocus
+    HoverHandler {
+        cursorShape: Qt.PointingHandCursor
+    }
     Accessible.name: tooltipText || iconName
     ToolTip.visible: hovered && tooltipText.length > 0
     ToolTip.text: tooltipText

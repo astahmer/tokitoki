@@ -10,7 +10,6 @@ PlasmoidItem {
     property var payload: ({})
     property string errorText: ""
 
-    Plasmoid.preferredRepresentation: Plasmoid.fullRepresentation
     Layout.minimumWidth: 220
     Layout.minimumHeight: 72
 

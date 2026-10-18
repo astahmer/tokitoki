@@ -54,12 +54,19 @@ describe("DMS sessions QML helpers", () => {
       .not.toContain("private@example.test");
   });
 
-  it("formats numeric seconds, numeric milliseconds, and ISO timestamps", () => {
+  it("formats numeric seconds, numeric milliseconds, and ISO timestamps in local time", () => {
     const helpers = qmlFunctions(["timestampMillis", "timestampText", "eventTime"]);
+    const pad = (value: number) => String(value).padStart(2, "0");
+    const stamp = new Date(1_700_000_000_000);
+    const localStamp = `${stamp.getFullYear()}-${pad(stamp.getMonth() + 1)}-${pad(stamp.getDate())} ` +
+      `${pad(stamp.getHours())}:${pad(stamp.getMinutes())}`;
+    const event = new Date("2026-10-17T12:34:56.000Z");
     expect(helpers.timestampMillis(1_700_000_000)).toBe(1_700_000_000_000);
-    expect(helpers.timestampText(1_700_000_000)).toBe("2023-11-14 22:13 UTC");
-    expect(helpers.timestampText(1_700_000_000_000)).toBe("2023-11-14 22:13 UTC");
-    expect(helpers.eventTime("2026-10-17T12:34:56.000Z")).toBe("12:34:56 UTC");
+    expect(helpers.timestampText(1_700_000_000)).toBe(localStamp);
+    expect(helpers.timestampText(1_700_000_000_000)).toBe(localStamp);
+    expect(helpers.eventTime("2026-10-17T12:34:56.000Z"))
+      .toBe(`${pad(event.getHours())}:${pad(event.getMinutes())}:${pad(event.getSeconds())}`);
+    expect(helpers.timestampText(new Date(2026, 0, 2, 3, 4).getTime())).toBe("2026-01-02 03:04");
     expect(helpers.eventTime("invalid")).toBe("unknown time");
   });
 

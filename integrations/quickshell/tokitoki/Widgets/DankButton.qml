@@ -11,6 +11,9 @@ Button {
     implicitWidth: label.implicitWidth + horizontalPadding * 2
     padding: horizontalPadding
     focusPolicy: Qt.StrongFocus
+    HoverHandler {
+        cursorShape: Qt.PointingHandCursor
+    }
     contentItem: Row {
         id: label
         spacing: 6

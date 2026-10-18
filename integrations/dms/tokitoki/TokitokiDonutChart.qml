@@ -30,10 +30,12 @@ Item {
                 return
 
             var total = 0
+            var positiveSlices = 0
             for (var i = 0; i < root.slices.length; i++) {
                 var value = root.slices[i] ? Number(root.slices[i].value || 0) : 0
                 if (isFinite(value) && value > 0) {
                     total += value
+                    positiveSlices++
                 }
             }
             if (total <= 0)
@@ -46,7 +48,7 @@ Item {
             var centerX = width / 2
             var centerY = height / 2
             var start = -Math.PI / 2
-            var gap = Math.min(0.018, Math.PI / Math.max(1, radius))
+            var gap = positiveSlices > 1 ? Math.min(0.018, Math.PI / Math.max(1, radius)) : 0
 
             for (var j = 0; j < root.slices.length; j++) {
                 var slice = root.slices[j]
@@ -64,6 +66,7 @@ Item {
                     context.arc(centerX, centerY, radius, from, to, false)
                     context.arc(centerX, centerY, inner, to, from, true)
                     context.closePath()
+                    context.fillRule = Qt.OddEvenFill
                     context.fillStyle = String(slice.color || Theme.primary)
                     context.fill()
                 }

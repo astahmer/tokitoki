@@ -18,14 +18,17 @@ Scope {
     readonly property var widget: widgetLoader.item
     function openDashboard(tab) {
         pendingTab = tab || "";
-        if (widget && widget.tabOptions.indexOf(pendingTab) >= 0) {
-            widget.selectedTab = pendingTab;
-            widget.configOpen = false;
+        if (widget) {
+            if (widget.tabOptions.indexOf(pendingTab) >= 0) {
+                widget.selectedTab = pendingTab;
+                widget.configOpen = false;
+            }
             pendingTab = "";
         }
         dashboardVisible = true;
     }
     function closeDashboard() {
+        pendingTab = "";
         dashboardVisible = false;
     }
     StandaloneService {

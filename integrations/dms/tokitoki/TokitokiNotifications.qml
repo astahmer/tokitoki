@@ -254,6 +254,11 @@ Item {
             if (root.activeWrite !== null)
                 root.finishWrite(root.activeWrite.path, exitCode === 0)
         }
+
+        onRunningChanged: {
+            if (!running && root.activeWrite !== null)
+                root.finishWrite(root.activeWrite.path, false)
+        }
     }
 
     Column {

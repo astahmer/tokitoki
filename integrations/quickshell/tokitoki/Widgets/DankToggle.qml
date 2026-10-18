@@ -4,10 +4,11 @@ import "../Common"
 
 Item {
     id: root
-    property alias checked: nativeToggle.checked
+    property bool checked: false
     property string text: ""
     property string description: ""
-    signal toggled(bool isChecked)
+    signal clicked
+    signal toggled(bool checked)
     implicitWidth: text.length > 0 ? 280 : nativeToggle.implicitWidth
     implicitHeight: Math.max(labels.implicitHeight, nativeToggle.implicitHeight)
     Column {
@@ -35,9 +36,17 @@ Item {
         id: nativeToggle
         anchors.right: parent.right
         anchors.verticalCenter: parent.verticalCenter
+        checkable: false
+        checked: root.checked
         focusPolicy: Qt.StrongFocus
         Accessible.name: root.Accessible.name || root.text || root.description
-        onToggled: root.toggled(checked)
+        onClicked: {
+            root.clicked();
+            root.toggled(!root.checked);
+        }
+        HoverHandler {
+            cursorShape: Qt.PointingHandCursor
+        }
         indicator: Rectangle {
             implicitWidth: 42
             implicitHeight: 24

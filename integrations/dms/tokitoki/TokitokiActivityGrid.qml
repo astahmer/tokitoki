@@ -84,6 +84,14 @@ Item {
         root.maximum = maxValue
     }
 
+    function cellSize(layout) {
+        if (layout.columns <= 0 || layout.rows <= 0)
+            return 0
+        var byWidth = (layout.width - (layout.columns - 1) * layout.columnSpacing) / layout.columns
+        var byHeight = (layout.height - (layout.rows - 1) * layout.rowSpacing) / layout.rows
+        return Math.max(0, Math.floor(Math.min(byWidth, byHeight) * 2) / 2)
+    }
+
     function cellColor(cell) {
         if (!cell.present)
             return Theme.withAlpha(Theme.surfaceText, 0.035)
@@ -95,12 +103,26 @@ Item {
     onPayloadChanged: rebuild()
     Component.onCompleted: rebuild()
 
+    TokitokiDayClock {
+        onTodayKeyChanged: root.rebuild()
+    }
+
     Column {
         anchors.fill: parent
         spacing: Theme.spacingS
 
         Row {
             id: grid
+
+            readonly property int rowSpacing: 2
+            readonly property real cell: root.cellSize({
+                width: grid.width,
+                height: grid.height,
+                columns: root.columns.length,
+                rows: 7,
+                columnSpacing: grid.spacing,
+                rowSpacing: grid.rowSpacing
+            })
 
             width: parent.width
             height: 58
@@ -110,16 +132,13 @@ Item {
                 model: root.columns
 
                 delegate: Column {
-                    spacing: 2
+                    spacing: grid.rowSpacing
 
                     Repeater {
                         model: modelData
 
                         delegate: Rectangle {
-                            width: root.columns.length > 0
-                                ? Math.max(0, (grid.width - Math.max(0, root.columns.length - 1) * grid.spacing) /
-                                    root.columns.length)
-                                : 0
+                            width: grid.cell
                             height: width
                             radius: 1.5
                             color: root.cellColor(modelData)
