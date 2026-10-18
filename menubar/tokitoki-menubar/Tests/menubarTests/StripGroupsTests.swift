@@ -472,4 +472,21 @@ import Testing
         #expect(AppDelegate.localDashboardURL(path: "/?view=sources")?.absoluteString == "http://localhost:7788/?view=sources")
         #expect(AppDelegate.localDashboardURL(path: "?view=dashboard&range=month")?.absoluteString == "http://localhost:7788/?view=dashboard&range=month")
     }
+
+    @Test func decodesProviderNeutralQuotaFields() throws {
+        let json = """
+        {"provider":"claude-code","accountKey":"default","plan":"Max 5x","planLabel":"Max 5x",
+         "extraUsage":{"enabled":true,"usedUsd":12.5,"limitUsd":50},
+         "balance":{"currency":"USD","remaining":4.2},
+         "windows":[{"kind":"Opus weekly","source":"embedded","tokens":0,"cost":0,"requests":0,"usedPct":12,
+           "id":"weekly:opus","label":"Opus weekly","scope":"model","model":"opus","windowMinutes":10080,
+           "pace":{"expectedPercent":46,"deltaPercent":-34,"status":"under"}}]}
+        """
+        let limit = try JSONDecoder().decode(AccountLimits.self, from: Data(json.utf8))
+        #expect(limit.extraUsage?.limitUsd == 50)
+        #expect(limit.balance?.remaining == 4.2)
+        #expect(limit.windows.first?.scope == "model")
+        #expect(limit.windows.first?.pace?.status == "under")
+        #expect(limit.windows.first?.pace?.runsOutAt == nil)
+    }
 }

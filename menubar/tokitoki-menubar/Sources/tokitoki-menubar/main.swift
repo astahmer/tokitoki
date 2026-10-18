@@ -181,6 +181,46 @@ struct LimitWindow: Codable {
     let resetsAt: String?
     let windowStart: String?
     let windowEnd: String?
+    /// Provider-neutral fields (src/quota-windows.ts); `kind` stays the legacy key.
+    var id: String? = nil
+    var label: String? = nil
+    var scope: String? = nil
+    var model: String? = nil
+    var windowMinutes: Double? = nil
+    var pace: QuotaPace? = nil
+}
+
+struct QuotaPace: Codable {
+    let expectedPercent: Double
+    let deltaPercent: Double
+    /// "under" | "on" | "over"
+    let status: String
+    let runsOutAt: String?
+}
+
+struct AccountExtraUsage: Codable {
+    let enabled: Bool
+    let usedUsd: Double?
+    let limitUsd: Double?
+    let usedPercent: Double?
+}
+
+struct AccountBalance: Codable {
+    let currency: String
+    let remaining: Double
+    let total: Double?
+}
+
+struct VendorIncident: Codable {
+    /// "none" | "minor" | "major" | "critical"
+    let indicator: String
+    let description: String
+    let url: String
+}
+
+struct ProviderRegistryEntry: Codable {
+    let displayName: String
+    let vendor: String?
 }
 
 struct AccountLimits: Codable, Identifiable {
@@ -203,6 +243,9 @@ struct AccountLimits: Codable, Identifiable {
     let bankedExpiresAt: String?
     var observedAt: String? = nil
     var freshness: String? = nil
+    var vendor: String? = nil
+    var extraUsage: AccountExtraUsage? = nil
+    var balance: AccountBalance? = nil
 
     var id: String { "\(provider)@\(accountKey)" }
 }
@@ -456,6 +499,8 @@ struct WidgetPayload: Decodable {
     let blocks: BlocksPayload?
     let statuslinePreview: StatuslinePreviewPayload?
     let recentSessions: PopoverSessionsPayload?
+    let providerRegistry: [String: ProviderRegistryEntry]?
+    let statusIncidents: [String: VendorIncident]?
 }
 
 @MainActor
@@ -471,6 +516,8 @@ final class Model: ObservableObject {
     @Published var anomalyLine: String?
     @Published var spendHealth: SpendHealthPayload?
     @Published var limits: [AccountLimits] = []
+    @Published var providerRegistry: [String: ProviderRegistryEntry] = [:]
+    @Published var statusIncidents: [String: VendorIncident] = [:]
     @Published var previewEnabled = true
     @Published var previewMode: String = "inline"
     @Published var sideNotchEnabled = false
@@ -1451,6 +1498,8 @@ final class Model: ObservableObject {
                 let local = ProcessInfo.processInfo.hostName
                 self.activeOtherMachines = (p.presence ?? []).filter { $0.state == "active" && $0.machineId != local }.count
                 self.limits = p.limits ?? []
+                self.providerRegistry = p.providerRegistry ?? [:]
+                self.statusIncidents = p.statusIncidents ?? [:]
                 applyBudgets(p.budgets)
                 applyQuotaNotifications(self.limits)
                 applySpendHealthNotifications(p.spendHealth)
@@ -1574,6 +1623,13 @@ final class Model: ObservableObject {
     /// Compare persisted quota observations so a restart can still detect a
     /// reset after an exhausted window. Reset timestamps are part of the
     /// notification identity, which prevents repeated alerts in one window.
+    /// Active status-page incident for the account's vendor, if any.
+    func incident(for limit: AccountLimits) -> VendorIncident? {
+        let vendor = limit.vendor ?? providerRegistry[limit.provider]?.vendor ?? limit.provider
+        guard let incident = statusIncidents[vendor], incident.indicator != "none" else { return nil }
+        return incident
+    }
+
     private func applyQuotaNotifications(_ limits: [AccountLimits]) {
         var changed = false
         for account in limits {
@@ -1587,7 +1643,7 @@ final class Model: ObservableObject {
                     && previous?.resetAt != window.resetsAt
                 let recovered = previous.map { $0.remaining <= Double(quotaCriticalPercent) && remaining >= 50 } ?? false
                 let display = account.email ?? account.credential ?? account.accountKey
-                let name = "\(account.provider) · \(display) · \(windowDisplayName(window.kind, provider: account.provider))"
+                let name = "\(account.provider) · \(display) · \(windowDisplayName(window, provider: account.provider))"
                 let reset = window.resetsAt.map(countdown) ?? "—"
 
                 if notificationsEnabled && remaining <= Double(quotaCriticalPercent) {
@@ -1597,7 +1653,7 @@ final class Model: ObservableObject {
                         key: key,
                         title: "tokitoki quota critical",
                         body: "\(name): \(Int(remaining.rounded()))% left · resets in \(reset)",
-                        reason: "The reported \(windowDisplayName(window.kind, provider: account.provider).lowercased()) quota reached your configured critical threshold of \(quotaCriticalPercent)% remaining.",
+                        reason: "The reported \(windowDisplayName(window, provider: account.provider).lowercased()) quota reached your configured critical threshold of \(quotaCriticalPercent)% remaining.",
                     )
                 }
                 if notificationsEnabled && resetAwareNotifications && (resetChanged || recovered) {
@@ -6310,7 +6366,7 @@ struct HoverPreviewView: View {
                         id: "\(limit.id):\(window.kind)",
                         provider: limit.provider,
                         account: account,
-                        window: windowDisplayName(window.kind, provider: limit.provider),
+                        window: windowDisplayName(window, provider: limit.provider),
                         value: remaining.map { "\(Int($0.rounded()))% left" } ?? "~\(humanCount(window.tokens)) tokens",
                         reset: window.resetsAt.map(countdown) ?? "—",
                         remaining: remaining,
@@ -7237,7 +7293,7 @@ struct ContentView: View {
             let reset = window.0.resetsAt.map(countdown) ?? "—"
             let timing = reset == "now" ? "available now" : "resets in \(reset)"
             let identity = limit.email ?? "\(limit.provider) · \(limit.accountKey)"
-            return ("\(limit.provider)@\(limit.accountKey)", identity, "\(windowDisplayName(window.0.kind, provider: limit.provider)) · \(Int(window.1.rounded()))% left · \(timing)")
+            return ("\(limit.provider)@\(limit.accountKey)", identity, "\(windowDisplayName(window.0, provider: limit.provider)) · \(Int(window.1.rounded()))% left · \(timing)")
         }
         if let health = model.spendHealth, health.state != "ok", let cap = health.monthlyCap {
             attention.append(("spend", "Monthly spend pace", "projected $\(String(format: "%.0f", health.projected)) / $\(String(format: "%.0f", cap))"))
@@ -8720,7 +8776,7 @@ private struct HighlightedSnippet: View {
             for l in model.limits {
                 let wins = l.windows.map { w -> String in
                     let pct = w.usedPct.map { " \(Int(max(0, min(100, 100 - $0))))% left" } ?? " \(humanCount(w.tokens))"
-                    return "\(windowDisplayName(w.kind, provider: l.provider)):\(pct)"
+                    return "\(windowDisplayName(w, provider: l.provider)):\(pct)"
                 }.joined(separator: " · ")
                 let who = l.email ?? l.credential ?? l.accountKey
                 md += "| \(l.provider) | \(who) | \(wins) |\n"
@@ -9028,6 +9084,7 @@ private struct HighlightedSnippet: View {
                     budgets: matchingBudgets(for: l),
                     tokenScale: tokenMaxima(model.limits),
                     privacyMode: model.privacyHideIdentities,
+                    incident: model.incident(for: l),
                 )
                     .padding(8)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -9752,6 +9809,7 @@ struct AccountLimitCard: View {
     var tokenScale: [String: Double] = [:]
     /// Local-only redaction for screenshots/shared screens.
     var privacyMode = false
+    var incident: VendorIncident? = nil
     /// openusage-style collapsible "details" disclosure.
     @State private var showDetails = false
     /// Account cards default open but can be collapsed independently.
@@ -9759,13 +9817,16 @@ struct AccountLimitCard: View {
 
     private var orderedWindows: [LimitWindow] {
         let order = ["day": 0, "week": 1, "month": 2]
-        return lwindows.sorted { (order[$0.kind] ?? 9) < (order[$1.kind] ?? 9) }
+        let scopeOrder = ["session": 0, "daily": 0, "weekly": 1, "model": 2, "monthly": 3]
+        let rank = { (w: LimitWindow) in w.scope.flatMap { scopeOrder[$0] } ?? order[w.kind] ?? 9 }
+        return lwindows.sorted { rank($0) < rank($1) }
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             headerRow
             if let authState { authStateRow(authState) }
+            if let incident { incidentRow(incident) }
             if isExpanded {
                 ForEach(Array(orderedWindows.enumerated()), id: \.offset) { _, w in
                     windowBarRow(w)
@@ -9774,6 +9835,7 @@ struct AccountLimitCard: View {
                     Text("no usage recorded").font(.caption2).foregroundStyle(.tertiary)
                 }
                 bankedRow
+                accountExtrasRow
                 if !budgets.isEmpty { budgetFooter }
                 detailsDisclosure
             }
@@ -9885,7 +9947,7 @@ struct AccountLimitCard: View {
                     }
                     ForEach(Array(orderedWindows.enumerated()), id: \.offset) { _, w in
                         HStack(spacing: 6) {
-                            Text(windowDisplayName(w.kind, provider: limits.provider))
+                            Text(windowDisplayName(w, provider: limits.provider))
                                 .font(.caption2).foregroundStyle(.secondary)
                             Spacer()
                             if let r = w.resetsAt, let target = parseISO(r) {
@@ -9928,7 +9990,7 @@ struct AccountLimitCard: View {
     private func windowBarRow(_ w: LimitWindow) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 6) {
-                Text(windowDisplayName(w.kind, provider: limits.provider))
+                Text(windowDisplayName(w, provider: limits.provider))
                     .font(.caption2.weight(.medium)).foregroundStyle(.secondary)
                 Spacer()
                 if let amount = w.amountUsd {
@@ -9959,6 +10021,7 @@ struct AccountLimitCard: View {
             }
             progressBarRow(w)
             HStack {
+                if let pace = w.pace { paceLabel(pace) }
                 Spacer()
                 if let r = w.resetsAt {
                     let reset = countdown(r)
@@ -9967,6 +10030,21 @@ struct AccountLimitCard: View {
                 }
             }
         }
+    }
+
+    /// CodexBar-style pace: usage vs an even burn over the window.
+    private func paceLabel(_ pace: QuotaPace) -> some View {
+        let delta = Int(abs(pace.deltaPercent).rounded())
+        let text: String
+        switch pace.status {
+        case "over": text = "\(delta)% ahead of pace"
+        case "under": text = "\(delta)% under pace"
+        default: text = "On pace"
+        }
+        let runsOut = pace.runsOutAt.flatMap(parseISO).map { " · runs out ~" + $0.formatted(date: .omitted, time: .shortened) } ?? ""
+        return Text(text + runsOut)
+            .font(.caption2)
+            .foregroundStyle(pace.status == "over" ? AnyShapeStyle(.orange) : AnyShapeStyle(.tertiary))
     }
 
     @ViewBuilder private func progressBarRow(_ w: LimitWindow) -> some View {
@@ -10101,6 +10179,56 @@ struct AccountLimitCard: View {
         }
     }
 
+    private func incidentRow(_ incident: VendorIncident) -> some View {
+        let severe = incident.indicator == "major" || incident.indicator == "critical"
+        return HStack(spacing: 4) {
+            Image(systemName: "exclamationmark.triangle.fill")
+            Text(incident.indicator.uppercased()).fontWeight(.semibold)
+            Text(incident.description).lineLimit(1)
+            Spacer(minLength: 4)
+            if let url = URL(string: incident.url) {
+                Link("Status", destination: url)
+            }
+        }
+        .font(.caption2)
+        .foregroundStyle(severe ? .red : .orange)
+        .help(incident.description)
+    }
+
+    /// Claude-style extra usage and prepaid balances (DeepSeek, Kimi, OpenRouter).
+    @ViewBuilder private var accountExtrasRow: some View {
+        if let extra = limits.extraUsage, extra.enabled {
+            HStack(spacing: 4) {
+                Image(systemName: "plus.circle").font(.caption2)
+                Text("Extra usage")
+                Spacer()
+                if let used = extra.usedUsd, let cap = extra.limitUsd {
+                    Text(String(format: "$%.2f / $%.0f", used, cap)).monospacedDigit()
+                } else if let used = extra.usedUsd {
+                    Text(String(format: "$%.2f", used)).monospacedDigit()
+                } else if let pct = extra.usedPercent {
+                    Text("\(Int(pct.rounded()))% used").monospacedDigit()
+                }
+            }
+            .font(.caption2).foregroundStyle(.secondary)
+        }
+        if let balance = limits.balance {
+            HStack(spacing: 4) {
+                Image(systemName: "creditcard").font(.caption2)
+                Text("Balance")
+                Spacer()
+                Text(formatBalance(balance.remaining, currency: balance.currency)
+                    + (balance.total.map { " / " + formatBalance($0, currency: balance.currency) } ?? ""))
+                    .monospacedDigit()
+            }
+            .font(.caption2).foregroundStyle(.secondary)
+        }
+    }
+
+    private func formatBalance(_ value: Double, currency: String) -> String {
+        currency == "USD" ? String(format: "$%.2f", value) : String(format: "%.2f %@", value, currency)
+    }
+
     @ViewBuilder private var bankedRow: some View {
         if let banked = limits.bankedResets, banked > 0 {
             HStack(spacing: 3) {
@@ -10123,6 +10251,11 @@ struct AccountLimitCard: View {
 enum SpendMetric: String {
     case cost
     case tokens
+}
+
+private func windowDisplayName(_ window: LimitWindow, provider: String? = nil) -> String {
+    if let label = window.label, !label.isEmpty { return label }
+    return windowDisplayName(window.kind, provider: provider)
 }
 
 private func windowDisplayName(_ kind: String, provider: String? = nil) -> String {
