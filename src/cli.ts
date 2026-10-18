@@ -156,7 +156,7 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
   serve: {
     usage: "tokitoki serve [--port <n>] [--host <addr>]",
     flags: `  read-only local HTTP API for bars and widgets:
-  GET /v1/status · /v1/limits · /v1/usage?period=today|week|month&by=vendor|harness|model
+  GET /v1/health · /v1/status · /v1/limits · /v1/usage?period=today|week|month&by=vendor|harness|model
   --port <n>                listen port (default ${DEFAULT_SERVE_PORT})
   --host <addr>             bind address (default ${DEFAULT_SERVE_HOST}); non-loopback
                             addresses must be passed explicitly`,

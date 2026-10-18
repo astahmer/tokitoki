@@ -53,11 +53,18 @@ afterAll(() => {
 });
 
 describe("tokitoki serve", () => {
-  test("binds loopback and reports health on /v1/status", async () => {
+  test("binds loopback and reports health on /v1/health", async () => {
     expect(server.hostname).toBe("127.0.0.1");
-    const res = await fetch(`${base}/v1/status`);
+    const res = await fetch(`${base}/v1/health`);
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ version: 1, ok: true, app: "tokitoki", appVersion: "test", events: 3 });
+  });
+
+  test("/v1/status matches the web dashboard's compact widget summary", async () => {
+    const body = z.object({ app: z.literal("tokitoki"), stats: z.object({ requests: z.number() }), providers: z.array(z.object({ id: z.string() })) })
+      .parse(await getJson(`${base}/v1/status?last=week`));
+    expect(body.stats.requests).toBe(3);
+    expect(body.providers.map((provider) => provider.id).sort()).toEqual(["claude-code", "codex", "pi"]);
   });
 
   test("/v1/usage groups by vendor by default", async () => {

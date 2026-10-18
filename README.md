@@ -537,7 +537,8 @@ Read-only (GET/HEAD), JSON, versioned (`"version": 1` in every body):
 
 | Endpoint | Returns |
 |---|---|
-| `GET /v1/status` | health: `{version, ok, app, appVersion, generatedAt, events}` |
+| `GET /v1/health` | health: `{version, ok, app, appVersion, generatedAt, events}` |
+| `GET /v1/status[?last=day\|week]` | compact widget summary, same as `tokitoki web`'s `/v1/status` |
 | `GET /v1/limits[?showEmail=1]` | the `limits --json` document (emails hidden by default) |
 | `GET /v1/usage?period=today\|week\|month&by=vendor\|harness\|model` | `{version, period, by, window, total, rows:[{key, requests, sessions, …tokens, tokens, costUsd}]}` (defaults: `today`, `vendor`; `by=provider` = harness) |
 

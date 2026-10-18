@@ -5,6 +5,7 @@ import { loadConfig } from "./config.ts";
 import { readLimitsDocument } from "./limits-document.ts";
 import { calendarDayWindow, rollingWindow, type TimeWindow } from "./period.ts";
 import { resolveExtraFiles, totalTokens } from "./report.ts";
+import { apiWidgetStatus } from "./web/api.ts";
 
 const LOCAL_API_VERSION = 1;
 export const DEFAULT_SERVE_PORT = 6736;
@@ -90,7 +91,14 @@ export const handleLocalApiRequest = (request: Request, options: { loopbackOnly:
   if (request.method !== "GET" && request.method !== "HEAD") return error(405, "read-only API: use GET");
   try {
     switch (url.pathname) {
+      // Same routes as `tokitoki web`: /v1/health is the probe, /v1/status the compact widget summary.
       case "/v1/status":
+        return json(apiWidgetStatus({
+          last: url.searchParams.get("last") ?? undefined,
+          from: url.searchParams.get("from") ?? undefined,
+          to: url.searchParams.get("to") ?? undefined,
+        }));
+      case "/v1/health":
         return json(withSyncedCache((cache) => ({
           version: LOCAL_API_VERSION,
           ok: true,
@@ -98,7 +106,7 @@ export const handleLocalApiRequest = (request: Request, options: { loopbackOnly:
           appVersion: options.appVersion,
           generatedAt: new Date().toISOString(),
           events: cache.count(),
-          endpoints: ["/v1/status", "/v1/limits", "/v1/usage"],
+          endpoints: ["/v1/health", "/v1/status", "/v1/limits", "/v1/usage"],
         })));
       case "/v1/limits":
         return json(readLimitsDocument({ showEmail: url.searchParams.get("showEmail") === "1" }));
