@@ -33,7 +33,13 @@ it("widget-payload yesterday excludes today for harness, provider and model brea
       await main(["widget-payload", "--cached", "--json"]);
     `;
     const result = Bun.spawnSync([process.execPath, "--eval", script], {
-      env: { ...process.env, TOKITOKI_DATA_DIR: directory, TOKITOKI_CONFIG: join(directory, "config.json") },
+      // bun test runs in UTC without exporting TZ; pin the child to the same zone so both agree on "yesterday".
+      env: {
+        ...process.env,
+        TZ: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        TOKITOKI_DATA_DIR: directory,
+        TOKITOKI_CONFIG: join(directory, "config.json"),
+      },
       stdout: "pipe",
       stderr: "pipe",
     });
