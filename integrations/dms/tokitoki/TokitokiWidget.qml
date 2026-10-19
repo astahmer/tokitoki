@@ -29,6 +29,10 @@ PluginComponent {
     property bool pendingRefresh: false
     property bool pendingScan: false
     property bool statusExited: false
+    // The plugin can run ahead of the installed CLI (e.g. a linked checkout);
+    // drop --notify for this session instead of failing every refresh.
+    property bool notifySupported: true
+    property bool notifyRejected: false
     readonly property string barSummaryMode: root.pluginSetting("barSummaryMode", "summary")
     readonly property string barTotalPeriod: root.normalizeChoice(
         root.pluginSetting("barTotalPeriod", "day"),
@@ -3200,9 +3204,10 @@ PluginComponent {
     Process {
         id: statusProcess
 
-        command: root.scanNextRefresh
-            ? [root.command, "widget-payload", "--notify", "--json"]
-            : [root.command, "widget-payload", "--cached", "--notify", "--json"]
+        command: [root.command, "widget-payload"]
+            .concat(root.scanNextRefresh ? [] : ["--cached"])
+            .concat(root.notifySupported ? ["--notify"] : [])
+            .concat(["--json"])
         running: true
 
         stdout: StdioCollector {
@@ -3213,6 +3218,14 @@ PluginComponent {
         stderr: StdioCollector {
             id: errorOutput
             onStreamFinished: {
+                if (root.notifySupported && errorOutput.text.indexOf("unknown flag '--notify'") !== -1) {
+                    root.notifySupported = false
+                    if (root.statusExited)
+                        root.refresh(false)
+                    else
+                        root.notifyRejected = true
+                    return
+                }
                 if (errorOutput.text.trim().length > 0) {
                     if (root.hasPayload)
                         root.lastError = errorOutput.text.trim()
@@ -3224,6 +3237,15 @@ PluginComponent {
 
         onExited: function(exitCode, exitStatus) {
             root.statusExited = true
+            if (root.notifyRejected) {
+                root.notifyRejected = false
+                var retryScan = root.scanNextRefresh
+                root.scanNextRefresh = false
+                root.refresh(retryScan || root.pendingScan)
+                root.pendingRefresh = false
+                root.pendingScan = false
+                return
+            }
             root.scanNextRefresh = false
             if (exitCode !== 0 && errorOutput.text.trim().length === 0) {
                 if (root.hasPayload)

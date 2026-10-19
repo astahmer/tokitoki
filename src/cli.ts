@@ -2184,8 +2184,8 @@ function handlePortInUse(port: number): void {
   }
   const alt = nextFreePort(port + 1);
   console.error(`error: port ${port} is already in use (not a tokitoki dashboard)`);
-  console.error(`\x1b[2mtry: tokitoki web --port ${alt}\x1b[0m`);
-  console.error(`\x1b[2m     lsof -i :${port}   # see what holds the port\x1b[0m`);
+  console.error(dim(`try: tokitoki web --port ${alt}`));
+  console.error(dim(`     lsof -i :${port}   # see what holds the port`));
   process.exitCode = 1;
 }
 
@@ -2267,11 +2267,14 @@ const SYSCALL_HINTS: Record<string, (err: unknown) => string> = {
   EISDIR: () => "expected a file but found a directory",
 };
 
+/** Widgets capture stderr verbatim, so escape codes only go to terminals. */
+const dim = (text: string): string => (process.stderr.isTTY ? `\x1b[2m${text}\x1b[0m` : text);
+
 function handleError(err: unknown): void {
   if (err instanceof UserError) {
     console.error(`error: ${err.message}`);
     // The hint is the fix — never make the user re-read usage to find it.
-    if (err.hint !== undefined) console.error(`\x1b[2mtry: ${err.hint}\x1b[0m`);
+    if (err.hint !== undefined) console.error(dim(`try: ${err.hint}`));
     process.exitCode = 1;
     return;
   }
