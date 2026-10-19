@@ -107,6 +107,16 @@ let
         };
       }
     ]).config;
+  timed =
+    (evaluate [
+      {
+        programs.tokitoki.notify.enable = true;
+        programs.tokitoki.poll = {
+          enable = true;
+          interval = "30min";
+        };
+      }
+    ]).config;
   serveService = served.systemd.user.services.tokitoki-serve;
   service = standalone.systemd.user.services.tokitoki-quickshell;
   bars = dms.programs.dank-material-shell.settings.barConfigs;
@@ -122,6 +132,15 @@ assert success served;
 assert served.programs.tokitoki.enable;
 assert lib.hasSuffix " serve --port 7000 --host 127.0.0.1" (builtins.head serveService.Service.ExecStart);
 assert serveService.Install.WantedBy == [ "default.target" ];
+assert success timed;
+assert timed.programs.tokitoki.enable;
+assert lib.hasSuffix "/bin/tokitoki-notify" (builtins.head timed.systemd.user.services.tokitoki-notify.Service.ExecStart);
+assert timed.systemd.user.timers.tokitoki-notify.Timer.OnUnitActiveSec == "5min";
+assert timed.systemd.user.timers.tokitoki-notify.Install.WantedBy == [ timed.wayland.systemd.target ];
+assert lib.hasSuffix " poll" (builtins.head timed.systemd.user.services.tokitoki-poll.Service.ExecStart);
+assert timed.systemd.user.timers.tokitoki-poll.Timer.OnUnitActiveSec == "30min";
+assert timed.systemd.user.timers.tokitoki-poll.Install.WantedBy == [ "timers.target" ];
+assert cli.systemd.user.timers == { };
 assert !(served.systemd.user.services ? tokitoki-quickshell);
 assert !(standalone.systemd.user.services ? tokitoki-serve);
 assert !missingDms.success;

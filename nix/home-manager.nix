@@ -21,6 +21,18 @@ let
       exec qs -p ${cfg.package}/share/tokitoki/integrations/quickshell/tokitoki "$@"
     '';
   };
+  notifier = pkgs.writeShellApplication {
+    name = "tokitoki-notify";
+    runtimeInputs = [
+      cfg.package
+      pkgs.libnotify
+    ];
+    text = "exec tokitoki notify";
+  };
+  timer = interval: {
+    OnActiveSec = "1min";
+    OnUnitActiveSec = interval;
+  };
   addWidget =
     bar:
     let
@@ -106,6 +118,28 @@ in
         description = "Bind address. Anything other than loopback exposes your usage data to the network.";
       };
     };
+    notify = {
+      enable = lib.mkEnableOption "a timer sending desktop alerts (`tokitoki notify`) without relying on a bar widget. Alerts still require `notifications.enabled = true` in config.toml";
+      interval = lib.mkOption {
+        type = lib.types.str;
+        default = "5min";
+        description = "systemd time span between alert checks.";
+      };
+      target = lib.mkOption {
+        type = lib.types.str;
+        default = config.wayland.systemd.target;
+        defaultText = lib.literalExpression "config.wayland.systemd.target";
+        description = "Graphical session target; alerts only run while a notification daemon can show them.";
+      };
+    };
+    poll = {
+      enable = lib.mkEnableOption "a timer refreshing provider quotas through stored logins (`tokitoki poll`)";
+      interval = lib.mkOption {
+        type = lib.types.str;
+        default = "15min";
+        description = "systemd time span between quota polls.";
+      };
+    };
     quickshell = {
       enable = lib.mkEnableOption "the Tokitoki Quickshell widget";
       package = lib.mkOption {
@@ -160,14 +194,16 @@ in
 
   config = lib.mkMerge [
     {
-      programs.tokitoki.enable = lib.mkDefault (cfg.dms.enable || cfg.quickshell.enable || cfg.serve.enable);
+      programs.tokitoki.enable = lib.mkDefault (
+        cfg.dms.enable || cfg.quickshell.enable || cfg.serve.enable || cfg.notify.enable || cfg.poll.enable
+      );
     }
     (lib.mkIf cfg.enable {
       home.packages = [ cfg.package ] ++ lib.optional (linux && cfg.quickshell.enable) launcher;
       assertions = [
         {
-          assertion = !(cfg.dms.enable || cfg.quickshell.enable) || linux;
-          message = "Tokitoki shell integrations require Linux/Wayland.";
+          assertion = !(cfg.dms.enable || cfg.quickshell.enable || cfg.notify.enable || cfg.poll.enable) || linux;
+          message = "Tokitoki shell integrations and timers require Linux.";
         }
         {
           assertion = !cfg.dms.enable || hasDms;
@@ -209,6 +245,39 @@ in
           RestartSec = 5;
         };
         Install.WantedBy = [ "default.target" ];
+      };
+      # Session-bound: notify records an alert before showing it, so running
+      # without a notification daemon would silently swallow it.
+      systemd.user.services.tokitoki-notify = lib.mkIf (linux && cfg.notify.enable) {
+        Unit = {
+          Description = "Tokitoki desktop alerts";
+          After = [ cfg.notify.target ];
+        };
+        Service = {
+          Type = "oneshot";
+          ExecStart = lib.getExe notifier;
+        };
+      };
+      systemd.user.timers.tokitoki-notify = lib.mkIf (linux && cfg.notify.enable) {
+        Unit = {
+          Description = "Tokitoki desktop alerts";
+          PartOf = [ cfg.notify.target ];
+          After = [ cfg.notify.target ];
+        };
+        Timer = timer cfg.notify.interval;
+        Install.WantedBy = [ cfg.notify.target ];
+      };
+      systemd.user.services.tokitoki-poll = lib.mkIf (linux && cfg.poll.enable) {
+        Unit.Description = "Tokitoki provider quota poll";
+        Service = {
+          Type = "oneshot";
+          ExecStart = "${lib.getExe cfg.package} poll";
+        };
+      };
+      systemd.user.timers.tokitoki-poll = lib.mkIf (linux && cfg.poll.enable) {
+        Unit.Description = "Tokitoki provider quota poll";
+        Timer = timer cfg.poll.interval;
+        Install.WantedBy = [ "timers.target" ];
       };
     })
     (lib.optionalAttrs hasDms {

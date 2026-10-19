@@ -117,7 +117,7 @@ impl cosmic::Application for AppModel {
 
 fn read_status() -> String {
     let output = match Command::new("tokitoki")
-        .args(["widget-payload", "--cached", "--json"])
+        .args(["widget-payload", "--cached", "--notify", "--json"])
         .output()
     {
         Ok(output) if output.status.success() => output,

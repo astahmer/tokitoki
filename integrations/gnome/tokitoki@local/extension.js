@@ -33,7 +33,7 @@ export default class TokitokiExtension extends Extension {
         let process;
         try {
             process = Gio.Subprocess.new(
-                ["tokitoki", "widget-payload", "--cached", "--json"],
+                ["tokitoki", "widget-payload", "--cached", "--notify", "--json"],
                 Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE,
             );
         } catch (_error) {

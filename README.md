@@ -708,7 +708,7 @@ rate exhausts a window before it resets, CodexBar-style), `burnRate` and
 ### Desktop alerts on Linux (`tokitoki notify`)
 
 The same `[notifications]` settings drive desktop alerts on Linux. The DMS,
-Quickshell, Noctalia and Waybar integrations call
+Quickshell, Noctalia (v4 and v5), Waybar, GNOME and COSMIC integrations call
 `tokitoki widget-payload --notify` on every refresh, so enabling
 notifications in the widget settings is enough; alerts go through
 `notify-send` (libnotify). Each alert fires once per window reset or
@@ -721,6 +721,17 @@ menubar alerts.
 tokitoki notify --dry-run    # what would fire now, without sending or recording
 tokitoki notify              # send pending alerts (e.g. from a cron/systemd timer)
 ```
+
+KDE Plasma reads `tokitoki web` and never runs the CLI, so use the Home
+Manager timers there, or wherever alerts should not depend on a bar:
+
+```nix
+programs.tokitoki.notify.enable = true; # `tokitoki notify` every 5 min while the graphical session runs
+programs.tokitoki.poll.enable = true;   # optional: `tokitoki poll` every 15 min for live provider quotas
+```
+
+Both take an `interval` (systemd time span). The notify timer stops with the
+session, so an alert is never recorded without a notification daemon to show it.
 
 The side-notch is configured independently from the menubar preview:
 

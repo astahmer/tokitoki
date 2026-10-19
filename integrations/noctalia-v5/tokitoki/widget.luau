@@ -50,7 +50,7 @@ local function refresh()
   end
   refreshing = true
 
-  local accepted = noctalia.runAsync("tokitoki widget-payload --cached --json", function(result)
+  local accepted = noctalia.runAsync("tokitoki widget-payload --cached --notify --json", function(result)
     refreshing = false
     if result.exitCode ~= 0 then
       lastError = result.stderr ~= "" and result.stderr or "tokitoki widget payload failed"
