@@ -15,13 +15,15 @@ afterAll(() => fs.rmSync(dataDir, { recursive: true, force: true }));
 const now = new Date("2026-09-10T15:00:00.000Z");
 
 const window = (over: Partial<LimitWindow>): LimitWindow => ({
-  kind: "day",
+  kind: "300min",
   source: "embedded",
   tokens: 0,
   cost: 0,
   requests: 0,
   id: "session",
   label: "Session",
+  scope: "session",
+  windowMinutes: 300,
   resetsAt: "2026-09-10T17:00:00.000Z",
   ...over,
 });

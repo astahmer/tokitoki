@@ -218,7 +218,7 @@ export const evaluateNotifications = (input: {
 
 const deliver = (notification: PendingNotification): boolean => {
   const command = process.platform === "darwin"
-    ? ["osascript", "-e", `display notification ${JSON.stringify(notification.body)} with title ${JSON.stringify(notification.title)}`]
+    ? ["osascript", "-e", "on run argv", "-e", "display notification (item 2 of argv) with title (item 1 of argv)", "-e", "end run", notification.title, notification.body]
     : ["notify-send", "--app-name=tokitoki", `--urgency=${notification.kind === "quotaCritical" ? "critical" : "normal"}`, notification.title, notification.body];
   try {
     return Bun.spawnSync(command, { stdout: "ignore", stderr: "ignore" }).exitCode === 0;
