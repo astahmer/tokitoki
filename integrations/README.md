@@ -58,6 +58,39 @@ Adapters must not read `cache.db` or provider stores directly. Run `tokitoki
 scan` separately, or use `tokitoki widget-payload --json` for a one-shot live
 refresh. The web-based adapters need `tokitoki web` running as well.
 
+## Compact quota bar (DMS and Quickshell)
+
+The default **Quotas** mode shows each quota window, for example
+`5h 99% · 7d 64%`. Percentages represent available quota. Token and cost
+statistics are reserved for **Total usage** mode and the dashboard.
+The window duration comes from the provider; model-specific limits retain
+the model name. Windows with unknown or invalid durations are omitted from the compact bar.
+They remain available in the dashboard. Monthly windows use `1mo`; consecutive
+windows with the same duration share its label. Cursor’s main bucket uses only the duration, for example `1mo 37%`;
+other buckets use `API` and `OD` (full names on hover). On-demand spend displays its dollar
+amount rather than an artificial remaining percentage.
+
+With several visible profiles for one vendor, each profile has its own
+values: `EV: 5h 99% · 7d 64% · JO: 5h 32%`. Initials come from the profile
+label, then the email or account key; collisions receive a numeric suffix.
+Identity privacy uses `P1`, `P2` instead. Hide accounts in **Usage cards**
+to choose which profiles appear; **Provider visibility** filters vendors.
+
+Hover a vendor logo or its quotas for the profile names, all windows and
+countdowns such as `5h 99% · 3h 12m`. No reset wording is added. Vendors
+without quota data show their logo, with an unavailable hint on hover.
+The hover card groups profiles under provider logos, with separators, quota
+icons, colored values and clock icons beside countdowns. Long lists scroll.
+Choose **Bar item content → Shortest window per account** to keep every
+visible account while showing only its shortest available quota window.
+For example, two Codex profiles can show `EV: 5h 40% · GL: 5h 10%`, alongside
+Cursor's `30d 37%`. This selects by duration, not remaining percentage.
+Equal-duration buckets use the first provider-reported window; all buckets
+and longer windows remain in the hover card. Accounts without quota data
+show `—`. The old `lowest-session` setting automatically uses this behavior.
+
+Existing `summary` settings automatically use this compact presentation.
+
 ## Add to an existing setup
 
 On Linux/Wayland, choose the host you already use:
@@ -72,7 +105,20 @@ On Linux/Wayland, choose the host you already use:
 The standalone version creates its own top bar on each screen. For an existing
 Quickshell bar, choose the embedded mode below and insert its button component.
 
-## DMS installation
+## Dux Shell (DMS 2.0+) installation
+
+The plugin targets Dux Shell / DMS **2.0 or newer** and uses the shared
+`qs.DCommon.Widgets` API. Upgrade the shell before updating Tokitoki on an
+older DMS setup. The command remains `dms`; the Home Manager options remain
+`programs.dank-material-shell` and `programs.tokitoki.dms`.
+
+DMS 2.0 uses `~/.config/dms` (and `dms` under the XDG state, cache and data
+locations). Its CLI migrates legacy `DankMaterialShell` directories and keeps
+compatibility symlinks where possible. Home Manager's DMS module writes the
+new paths directly; the examples below use those canonical paths.
+
+The headless test environment pins DMS 2.0.0. See
+[the compatibility audit](../docs/dms-2-compatibility.md) for migration details.
 
 ### Existing DMS, without Home Manager
 
@@ -84,9 +130,9 @@ a stable location and link just its plugin subdirectory:
 mkdir -p "$HOME/.local/share"
 git clone --depth 1 https://github.com/astahmer/tokitoki.git \
   "$HOME/.local/share/tokitoki-source"
-mkdir -p "$HOME/.config/DankMaterialShell/plugins"
+mkdir -p "$HOME/.config/dms/plugins"
 ln -s "$HOME/.local/share/tokitoki-source/integrations/dms/tokitoki" \
-  "$HOME/.config/DankMaterialShell/plugins/tokitoki"
+  "$HOME/.config/dms/plugins/tokitoki"
 tokitoki scan
 dms ipc call plugin-scan rescan tokitoki
 ```
@@ -110,7 +156,7 @@ Update the separately installed CLI as well. DMS's
 `dms plugins install <plugin-id>` installs from configured registries; it is
 not an arbitrary GitHub URL/subdirectory installer. The manual path above
 works with Tokitoki's monorepo layout without a registry entry. See the
-[official plugin installation guide](https://danklinux.com/docs/dankmaterialshell/plugins-overview/).
+[official plugin installation guide](https://duxlabs.dev/docs/dms/plugins-overview).
 
 ### Home Manager: one input, one host option
 
@@ -241,9 +287,9 @@ From this repository, symlink the complete development plugin so its files stay
 editable:
 
 ```sh
-mkdir -p ~/.config/DankMaterialShell/plugins
+mkdir -p ~/.config/dms/plugins
 ln -sfn "$PWD/integrations/dms/tokitoki" \
-  ~/.config/DankMaterialShell/plugins/tokitoki
+  ~/.config/dms/plugins/tokitoki
 dms ipc call plugin-scan rescan tokitoki
 ```
 
@@ -345,7 +391,7 @@ E2E_SHELL=quickshell ./e2e/run.sh
 
 | Directory | Host | Status |
 |---|---|---|
-| `dms/tokitoki` | DankMaterialShell | Full QML widget |
+| `dms/tokitoki` | Dux Shell (DMS) | Full QML widget |
 | `noctalia-v5/tokitoki` | Current Noctalia | Luau widget |
 | `noctalia-v4/tokitoki` | Legacy Noctalia v4 | QML bar widget |
 | `quickshell/tokitoki` | Standalone Quickshell | Full shared widget, no DMS runtime |

@@ -37,7 +37,7 @@ import { homePath, type DbScanContext, type EntryContext, type Provider, type Se
  * silently reporting sessions as zero-cost.
  */
 export const CURSOR_NO_USAGE_NOTE =
-  "no exact token/cost data exposed locally — usage is estimated from message length";
+  "local IDE bubbles have no exact tokens — usage is estimated from message length; account totals come from the Cursor dashboard";
 
 /** Cursor IDE's VS Code-style data dir (state.vscdb lives under here) — also used by poll.ts's quota fetch. */
 export function cursorIdeDir(): string {

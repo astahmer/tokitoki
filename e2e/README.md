@@ -5,6 +5,10 @@ desktop: build one Docker image, boot it, drive the native QML UI, and assert on
 screenshots and CLI calls. Runs on Linux with Docker, no GPU or host Node install
 required.
 
+The DMS flake is pinned to **Dux Shell 2.0.0** from
+`duxlabs-dev/dux-shell`; the fixture uses the 2.0 config/state paths under
+`dms`. The plugin's shared widgets use `qs.DCommon.Widgets`.
+
 ## Why this shape
 
 Quickshell has no headless/offscreen mode and the bar needs
@@ -78,7 +82,7 @@ Standalone runs also create a second short output, click its bar to transfer an 
 
 `container/entrypoint.sh`:
 
-1. seeds `~/.config/DankMaterialShell` with a bar holding the tokitoki widget;
+1. seeds `~/.config/dms` with a bar holding the tokitoki widget;
 2. starts headless sway and DMS on a fixed 1600x1000 output;
 3. opens the widget and uses a wlroots virtual pointer plus a Wayland virtual
    keyboard to select all tabs, search, paginate, open and close a session, and

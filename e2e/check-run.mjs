@@ -15,6 +15,11 @@ for (const interaction of interactions) {
   assert.ok(index.interactions.includes(interaction), `missing interaction marker: ${interaction}`);
 }
 
+if (index.shell === "dms") {
+  assert.ok(index.interactions.includes("hover-countdown"), "hover must remain open across a countdown update");
+  assert.equal(JSON.parse(fs.readFileSync(path.join(out, "hover-after-tick.json"), "utf8")).open, true);
+}
+
 const logPath = path.join(out, "cli-invocations.jsonl");
 const invocations = fs.readFileSync(logPath, "utf8")
   .trim()

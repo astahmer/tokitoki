@@ -3,7 +3,7 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import Quickshell.Io
 import qs.Common
-import qs.Widgets
+import qs.DCommon.Widgets
 
 Item {
     id: root
@@ -87,7 +87,7 @@ Item {
         }
     }
 
-    component SettingToggle: DankToggle {
+    component SettingToggle: DToggle {
         property string label: ""
         property bool toggleEnabled: true
         text: label

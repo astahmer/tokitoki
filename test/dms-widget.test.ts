@@ -105,7 +105,7 @@ describe("DMS widget uses the existing payload without distorting totals", () =>
       { kind: "week", usedPct: 80 }, { kind: "5h", usedPct: 0 },
     ] }];
     ui.payload.today = { rows: [{ bucket: "codex", inputTokens: 120, costUsd: 2 }] };
-    expect(ui.buildStatusStripGroups()[0].lines[0]).toBe("5h: 100% · 120 · $2.00");
+    expect(ui.buildStatusStripGroups()[0].lines[0]).toBe("5h 100% · 7d 20%");
   });
 
   it("renders provider-neutral windows with labels, pace, and run-out time", () => {
@@ -130,14 +130,135 @@ describe("DMS widget uses the existing payload without distorting totals", () =>
     expect(ui.extraUsageLabel({ enabled: false })).toBe("");
     ui.hasLimits = true;
     ui.payload.limits = [{ provider: "claude-code", accountKey: "default", windows: [opus, weekly, session] }];
-    expect(ui.buildStatusStripGroups()[0].lines[0]).toBe("Session: 20% · 0 · $0.00");
+    expect(ui.buildStatusStripGroups()[0].lines[0]).toBe("5h 20% · 7d 70% · Opus 90%");
   });
 
   it("includes usage-only harnesses in the bar and uses real token fields in fallback", () => {
     const ui = makeWidget();
     ui.payload.today = { rows: [{ bucket: "cursor", inputTokens: 120, costUsd: 2 }], total: { inputTokens: 120, costUsd: 2 } };
-    expect(ui.buildStatusStripGroups()[0].lines[0]).toBe("120 · $2.00");
-    expect(ui.barSummaryText()).toContain("120 · $2.00");
+    expect(ui.buildStatusStripGroups()[0].lines).toEqual([]);
+    expect(ui.barSummaryText()).not.toContain("$2.00");
+  });
+
+  it("keeps profiles separate, prefixes multiple profiles, and shows only countdowns in tooltips", () => {
+    setSystemTime(new Date("2026-10-19T12:00:00Z"));
+    const ui = makeWidget();
+    ui.hasLimits = true;
+    ui.payload.limits = [
+      { provider: "codex", accountKey: "evvi", label: "Evvi", windows: [
+        { kind: "day", label: "Session", windowMinutes: 300, usedPct: 1, resetsAt: "2026-10-19T15:12:00Z" },
+        { kind: "week", windowMinutes: 10080, usedPct: 36 },
+      ] },
+      { provider: "codex", accountKey: "jonas", label: "Jonas", windows: [
+        { kind: "day", windowMinutes: 300, usedPct: 68 },
+      ] },
+    ];
+    const group = ui.buildStatusStripGroups()[0];
+    expect(group.lines).toEqual(["EV: 5h 99% · 7d 64%", "JO: 5h 32%"]);
+    expect(group.profiles[0].rows[0]).toMatchObject({ label: "5h", value: "99%", resetsAt: "2026-10-19T15:12:00Z" });
+    expect(ui.barCountdown(group.profiles[0].rows[0].resetsAt)).toBe("3h 12m");
+    ui.barNow = Date.parse("2026-10-19T12:01:00Z");
+    expect(ui.barCountdown(group.profiles[0].rows[0].resetsAt)).toBe("3h 11m");
+    ui.barNow = undefined;
+    expect(ui.barCountdown("bad")).toBe("");
+    expect(ui.resetLabel("2026-10-19T15:12:00Z")).toBe("3h 12m");
+    expect(ui.barWindowBucket({ windowMinutes: 43200, label: "Other Models" })).toBe("API");
+    expect(ui.barWindowDuration({ kind: "day" })).toBe("");
+    expect(ui.barCountdown("2026-10-19T11:00:00Z")).toBe("0m");
+    expect(ui.barCountdown("2026-10-21T14:00:00Z")).toBe("2d 2h");
+    expect(ui.barWindowDuration({ windowMinutes: 43200, kind: "month" })).toBe("1mo");
+    expect(ui.barWindowDuration({ windowMinutes: 90 })).toBe("90m");
+    ui.payload.uiPreview = { menubarHidden: ["codex:jonas"] };
+    expect(ui.buildStatusStripGroups()[0].lines).toEqual(["5h 99% · 7d 64%"]);
+  });
+
+  it("disambiguates identical initials and protects profile identities", () => {
+    const ui = makeWidget();
+    ui.hasLimits = true;
+    ui.payload.limits = ["Evvi", "Evan"].map((label) => ({
+      provider: "codex", accountKey: label, label,
+      windows: [{ kind: "week", usedPct: 20 }],
+    }));
+    expect(ui.buildStatusStripGroups()[0].lines).toEqual(["EV1: 7d 80%", "EV2: 7d 80%"]);
+    ui.privacyHideIdentities = true;
+    const group = ui.buildStatusStripGroups()[0];
+    expect(group.lines).toEqual(["P1: 7d 80%", "P2: 7d 80%"]);
+    expect(group.profiles.map((profile: { name: string }) => profile.name)).toEqual(["P1", "P2"]);
+  });
+
+  it("compacts Cursor buckets, shares the billing period, and shows on-demand dollars", () => {
+    const ui = makeWidget();
+    ui.hasLimits = true;
+    ui.payload.limits = [{ provider: "cursor", accountKey: "default", windows: [
+      { kind: "Cursor Models", label: "Cursor Models", windowMinutes: 43200, usedPct: 63 },
+      { kind: "Other Models", label: "Other Models", windowMinutes: 43200, usedPct: 1 },
+      { kind: "On-Demand", label: "On-Demand", windowMinutes: 43200, usedPct: 0, amountUsd: 2.5 },
+      { kind: "0min", usedPct: 0 },
+      { kind: "month", windowMinutes: 0, usedPct: 0 },
+    ] }];
+    const group = ui.buildStatusStripGroups()[0];
+    expect(group.lines).toEqual(["1mo 37% · API 99% · OD $2.50"]);
+    expect(group.profiles[0].rows.map((row: { label: string; value: string }) => [row.label, row.value])).toEqual([
+      ["1mo · Cursor Models", "37%"], ["1mo · Other Models", "99%"], ["1mo · On-Demand", "$2.50"],
+    ]);
+    ui.payload.limits[0].windows[2].amountUsd = 0;
+    expect(ui.buildStatusStripGroups()[0].lines[0]).toContain("OD $0.00");
+  });
+
+  it("shortest-window mode keeps every selected account and chooses by duration", () => {
+    const ui = makeWidget();
+    ui.hasLimits = true;
+    ui.barSummaryMode = "shortest-window";
+    ui.payload.limits = [
+      { provider: "codex", accountKey: "evvi", label: "Evvi", windows: [
+        { kind: "day", scope: "session", windowMinutes: 300, usedPct: 60 },
+        { kind: "week", windowMinutes: 10080, usedPct: 99 },
+      ] },
+      { provider: "codex", accountKey: "global", label: "Global", windows: [{ kind: "5h", usedPct: 90 }] },
+      { provider: "cursor", accountKey: "work", windows: [
+        { kind: "month", windowMinutes: 43200, usedPct: 63, label: "Cursor Models" },
+        { kind: "month", windowMinutes: 43200, usedPct: 99, label: "Other Models" },
+      ] },
+    ];
+    const all = ui.buildStatusStripGroups();
+    const selected = ui.shortestWindowGroups(all);
+    expect(selected.map((group: { provider: string }) => group.provider)).toEqual(["codex", "cursor"]);
+    expect(selected[0].lines).toEqual(["EV: 5h 40%", "GL: 5h 10%"]);
+    expect(selected[1].lines).toEqual(["30d 37%"]);
+    expect(all[0].profiles[0].rows.map((row: { value: string }) => row.value)).toEqual(["40%", "1%"]);
+    expect(all[1].profiles[0].rows).toHaveLength(2);
+    expect(ui.barSummaryText()).toContain("EV: 5h 40% · GL: 5h 10%");
+    expect(ui.barSummaryText()).not.toContain("7d");
+    ui.barSummaryMode = "lowest-session";
+    expect(ui.isShortestWindowMode()).toBe(true);
+    expect(ui.barSummaryText()).toContain("30d 37%");
+    ui.payload.uiPreview = { menubarHidden: ["codex:global"] };
+    expect(ui.shortestWindowGroups(ui.buildStatusStripGroups())[0].lines).toEqual(["5h 40%"]);
+    ui.payload.limits = [{ provider: "cursor", windows: [] }];
+    expect(ui.shortestWindowGroups(ui.buildStatusStripGroups())[0].lines).toEqual(["—"]);
+    expect(ui.shortestWindowGroups([])).toEqual([]);
+  });
+
+  it("keeps derived daily budget windows in shortest selection and hover details", () => {
+    const ui = makeWidget();
+    ui.hasLimits = true;
+    ui.barSummaryMode = "shortest-window";
+    const daily = {
+      kind: "day", source: "derived", usedPct: 40,
+      windowStart: "2026-10-22T00:00:00Z", windowEnd: "2026-10-23T00:00:00Z",
+    };
+    ui.payload.limits = [{ provider: "codex", accountKey: "work", windows: [
+      { kind: "week", usedPct: 20 }, daily,
+    ] }];
+    expect(ui.windowOrderMinutes(daily)).toBe(1440);
+    expect(ui.barWindowDuration(daily)).toBe("1d");
+    const groups = ui.buildStatusStripGroups();
+    expect(ui.shortestWindowGroups(groups)[0].lines).toEqual(["1d 60%"]);
+    expect(groups[0].profiles[0].rows.map((row: { label: string }) => row.label)).toEqual(["1d", "7d"]);
+    expect(ui.barWindowDuration({ ...daily, windowEnd: "invalid" })).toBe("");
+    expect(ui.barWindowDuration({ ...daily, windowEnd: daily.windowStart })).toBe("");
+    expect(ui.barWindowDuration({ kind: "0min", usedPct: 0 })).toBe("");
+    expect(ui.barWindowDuration({ kind: "day", source: "embedded", usedPct: 40 })).toBe("");
   });
 
   it("uses the selected period for token pulse and never loses a queued scan", () => {

@@ -1,6 +1,6 @@
 import QtQuick
 import "../../Common"
-import "../../Widgets"
+import "../../DCommon/Widgets"
 
 Setting {
     id: root
@@ -27,7 +27,7 @@ Setting {
                 wrapMode: Text.WordWrap
             }
         }
-        DankToggle {
+        DToggle {
             id: toggle
             anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter

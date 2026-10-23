@@ -2,7 +2,7 @@ import QtQuick
 import Quickshell
 import Quickshell.Io
 import qs.Common
-import qs.Widgets
+import qs.DCommon.Widgets
 
 // Sessions tab: read-only browser over `tokitoki sessions --cached --json`.
 // List mode is a keyword search + pagination; selecting a row swaps to the
@@ -69,7 +69,7 @@ Item {
             anchors.centerIn: parent
             spacing: Theme.spacingXXS
 
-            DankIcon {
+            DIcon {
                 name: chip.iconName
                 size: Theme.iconSizeSmall
                 color: Theme.surfaceText
@@ -163,39 +163,48 @@ Item {
         return "$" + safeNumber(value).toFixed(2)
     }
 
-    function escapeMarkup(text) {
-        return String(text).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
-    }
-
-    function highlight(raw) {
-        var color = String(Theme.warning)
-        return escapeMarkup(raw)
-            .split("[[").join('<font color="' + color + '">')
-            .split("]]").join("</font>")
-    }
-
     function sessionTitle(row) {
         if (root.privacyHideNames)
             return "Private session"
-        var title = String(row && row.title ? row.title : "").trim()
+        var title = String(row && row.title ? row.title : "").replace(/\s+/g, " ").trim()
         return title.length > 0 ? title : "(no title)"
     }
 
-    function snippetMarkup(row) {
+    // One line, no markup. Snippets arrive with newlines and [[match]] markers;
+    // wrapping those inside a fixed row paints the title, preview, and meta on
+    // top of each other.
+    function plainSnippet(row) {
         if (root.privacyHideNames)
             return "Hidden"
         var raw = String(row && row.snippet ? row.snippet : "")
-        if (raw.length === 0)
-            return "No indexed conversation text for this session."
-        return highlight(raw)
+        raw = raw.split("[[").join("").split("]]").join("")
+        raw = raw.replace(/[\u0000-\u001f]+/g, " ").replace(/\s+/g, " ").trim()
+        var title = String(row && row.title ? row.title : "").replace(/\s+/g, " ").trim()
+        if (title.length > 0 && raw.indexOf(title) === 0)
+            raw = raw.slice(title.length).replace(/^[\s.:\-–—]+/, "").trim()
+        return raw.length > 0 ? raw : "No preview for this session."
+    }
+
+    function sessionStats(row) {
+        var text = root.compactNumber(row ? row.requests : 0) + " req · " +
+            root.compactNumber(row ? row.totalTokens : 0) + " tok"
+        var cost = root.safeNumber(row ? row.costUsd : 0)
+        if (cost > 0)
+            text += " · " + root.formatMoney(cost)
+        return text
     }
 
     function sessionMeta(row) {
         var account = root.privacyHideNames || root.privacyHideIdentities
             ? "account hidden"
             : (row && row.accountKey ? String(row.accountKey) : "default")
-        return (row && row.provider ? row.provider : "provider") + " · " +
+        var text = (row && row.provider ? row.provider : "provider") + " · " +
             account + " · " + timestampText(row ? row.startedAt : null)
+        if (!root.privacyHideNames && row && row.sessionId) {
+            var id = String(row.sessionId)
+            text += " · " + (id.length > 8 ? id.slice(0, 8) : id)
+        }
+        return text
     }
 
     function eventTokens(event) {
@@ -632,64 +641,73 @@ Item {
                     Keys.onSpacePressed: root.openSession(modelData)
 
                     width: body.width
-                    height: 64
+                    height: 72
+                    clip: true
 
                     TokitokiListRow {
                         anchors.fill: parent
                         alternate: index % 2 === 1
-                        rowHeight: 64
+                        rowHeight: 72
 
                         Column {
-                            anchors.fill: parent
-                            spacing: 1
+                            width: parent.width
+                            spacing: 2
 
                             Item {
                                 width: parent.width
                                 height: 18
+                                clip: true
 
                                 StyledText {
+                                    id: titleText
+
                                     anchors.left: parent.left
-                                    anchors.right: sessionValue.left
                                     anchors.verticalCenter: parent.verticalCenter
+                                    width: Math.max(40, parent.width - statsText.implicitWidth - Theme.spacingS)
                                     text: root.sessionTitle(modelData)
                                     color: Theme.surfaceText
                                     font.pixelSize: Theme.fontSizeMedium
                                     font.weight: Font.DemiBold
+                                    wrapMode: Text.NoWrap
                                     elide: Text.ElideRight
+                                    clip: true
                                 }
 
                                 StyledText {
-                                    id: sessionValue
+                                    id: statsText
 
                                     anchors.right: parent.right
                                     anchors.verticalCenter: parent.verticalCenter
-                                    text: root.compactNumber(modelData.requests) + " req · " +
-                                        root.compactNumber(modelData.totalTokens) + " tok"
+                                    text: root.sessionStats(modelData)
                                     color: Theme.surfaceVariantText
                                     font.pixelSize: Theme.fontSizeSmall
                                     isMonospace: true
+                                    wrapMode: Text.NoWrap
                                 }
                             }
 
                             StyledText {
                                 width: parent.width
-                                height: 30
-                                text: root.snippetMarkup(modelData)
-                                textFormat: Text.StyledText
+                                height: 16
+                                text: root.plainSnippet(modelData)
+                                textFormat: Text.PlainText
                                 color: Theme.surfaceVariantText
                                 font.pixelSize: Theme.fontSizeSmall
-                                wrapMode: Text.WordWrap
-                                maximumLineCount: 2
+                                wrapMode: Text.NoWrap
                                 elide: Text.ElideRight
                                 clip: true
                             }
 
                             StyledText {
                                 width: parent.width
+                                height: 14
                                 text: root.sessionMeta(modelData)
+                                textFormat: Text.PlainText
                                 color: Theme.withAlpha(Theme.surfaceVariantText, 0.75)
                                 font.pixelSize: Theme.fontSizeSmall - 2
+                                wrapMode: Text.NoWrap
                                 elide: Text.ElideRight
+                                clip: true
                             }
                         }
                     }

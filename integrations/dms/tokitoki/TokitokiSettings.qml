@@ -2,7 +2,7 @@ import QtQuick
 import Quickshell.Io
 import qs.Common
 import qs.Modules.Plugins
-import qs.Widgets
+import qs.DCommon.Widgets
 
 PluginSettings {
     id: root
@@ -260,9 +260,10 @@ PluginSettings {
         id: barSummaryModeSetting
         settingKey: "barSummaryMode"
         label: "Bar item content"
-        description: "Choose a compact summary, aggregate usage totals, or the icon only."
+        description: "Show all quotas, the shortest window for each selected account, usage totals, or the icon only. The hover card keeps all windows."
         options: [
-            { label: "Compact summary", value: "summary" },
+            { label: "Quotas", value: "summary" },
+            { label: "Shortest window per account", value: "lowest-session" },
             { label: "Total usage", value: "total" },
             { label: "Icon only", value: "icon" }
         ]
@@ -326,7 +327,7 @@ PluginSettings {
         Repeater {
             model: root.accounts
 
-            DankToggle {
+            DToggle {
                 required property var modelData
 
                 width: parent.width

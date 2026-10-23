@@ -10,8 +10,8 @@ XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
 XDG_STATE_HOME="${XDG_STATE_HOME:-$HOME/.local/state}"
 XDG_CACHE_HOME="${XDG_CACHE_HOME:-$HOME/.cache}"
 export XDG_CONFIG_HOME XDG_STATE_HOME XDG_CACHE_HOME
-CONFIG="$XDG_CONFIG_HOME/DankMaterialShell"
-state_dir="$XDG_STATE_HOME/DankMaterialShell/plugins"
+CONFIG="$XDG_CONFIG_HOME/dms"
+state_dir="$XDG_STATE_HOME/dms/plugins"
 state_file="$state_dir/tokitoki_state.json"
 QS_CONFIG_FILE="$XDG_CONFIG_HOME/tokitoki/quickshell.json"
 QS_STATE_FILE="$XDG_STATE_HOME/tokitoki/quickshell-state.json"
@@ -72,7 +72,72 @@ if [ "$E2E_SHELL" = dms ]; then
   [ -n "$changelog_version" ] && touch "$CONFIG/.changelog-$changelog_version"
 
   cp -r /opt/e2e/dms/. "$CONFIG/"
-  ln -sfn "${E2E_PLUGIN_DIR:-/opt/e2e/plugin}" "$CONFIG/plugins/tokitoki"
+  cp -R "${E2E_PLUGIN_DIR:-/opt/e2e/plugin}" /tmp/e2e-plugin
+  # Keep inspection in the fixture: production plugins need no testing IPC.
+  node --input-type=module - /tmp/e2e-plugin/TokitokiWidget.qml <<'JS'
+import fs from "node:fs";
+const file = process.argv[2];
+const source = fs.readFileSync(file, "utf8")
+  .replace("property bool tooltipOpen: false", "property bool tooltipOpen: false\n                    onTooltipOpenChanged: if (tooltipOpen) root.e2eHoverGroup = providerGroup")
+  .replace("id: clearSearch", "id: clearSearch\n                                    Component.onCompleted: root.e2eClearSearch = clearSearch")
+  .replace("TokitokiSessionsView {", "TokitokiSessionsView {\n                                    Component.onCompleted: root.e2eSessionsView = this")
+  .replace("TokitokiNotifications {", "TokitokiNotifications {\n                                    Component.onCompleted: root.e2eNotifications = this")
+  .replace('tooltipText: root.configOpen ?', 'Component.onCompleted: root.e2eSettingsButton = this\n                        tooltipText: root.configOpen ?');
+const directory = file.slice(0, file.lastIndexOf("/"));
+const sessionsFile = directory + "/TokitokiSessionsView.qml";
+fs.writeFileSync(sessionsFile, fs.readFileSync(sessionsFile, "utf8")
+  .replace("id: root", "id: root\n    property alias e2ePrevious: testPrevious\n    property alias e2eNext: testNext")
+  .replace('label: "Previous"', 'id: testPrevious\n                label: "Previous"')
+  .replace('label: "Next"', 'id: testNext\n                label: "Next"'));
+const notificationsFile = directory + "/TokitokiNotifications.qml";
+fs.writeFileSync(notificationsFile, fs.readFileSync(notificationsFile, "utf8")
+  .replace("id: root", "id: root\n    property alias e2eToggle: testNotificationsToggle")
+  .replace('label: "Allow notifications"', 'id: testNotificationsToggle\n            label: "Allow notifications"'));
+const hook = `
+    property var e2eClearSearch: null
+    property var e2eHoverGroup: null
+    property var e2eSessionsView: null
+    property var e2eNotifications: null
+    property var e2eSettingsButton: null
+    IpcHandler {
+        target: "tokitoki-e2e"
+        function advanceBarClock(): string {
+            root.barNow += 60000;
+            return String(root.barNow);
+        }
+        function hoverState(): string {
+            return JSON.stringify({ open: Boolean(root.e2eHoverGroup && root.e2eHoverGroup.tooltipOpen) });
+        }
+        function controlGeometry(name: string): string {
+            var controls = { clearSearch: root.e2eClearSearch,
+                previous: root.e2eSessionsView ? root.e2eSessionsView.e2ePrevious : null,
+                next: root.e2eSessionsView ? root.e2eSessionsView.e2eNext : null,
+                notifications: root.e2eNotifications ? root.e2eNotifications.e2eToggle : null,
+                settings: root.e2eSettingsButton };
+            var item = controls[name];
+            if (!item || !item.visible)
+                return "{}";
+            var window = item.QsWindow.window;
+            var center = window.mapFromItem(item, item.width / 2, item.height / 2);
+            // Qt cannot infer a layer surface's compositor position; use its anchors/margins.
+            var x = window.anchors.left ? window.margins.left : window.screen.width - window.width - window.margins.right;
+            var y = window.anchors.top ? window.margins.top : window.screen.height - window.height - window.margins.bottom;
+            return JSON.stringify({ x: Math.round(x + center.x), y: Math.round(y + center.y) });
+        }
+        function geometry(): string {
+            var popout = Array.from(root.children).find(function(child) {
+                return child.alignedX !== undefined && child.shouldBeVisible !== undefined;
+            });
+            return JSON.stringify({ ready: root.hasPayload && !root.isBusy,
+                x: popout ? Math.round(popout.alignedX) : null,
+                y: popout ? Math.round(popout.alignedY) : null });
+        }
+    }
+`;
+const end = source.lastIndexOf("}");
+fs.writeFileSync(file, source.slice(0, end) + hook + source.slice(end));
+JS
+  ln -sfn /tmp/e2e-plugin "$CONFIG/plugins/tokitoki"
   jq --arg tab "$E2E_TAB" \
     '.tokitoki = ((.tokitoki // {}) + {enabled: true, openingTab: $tab})' \
     "$CONFIG/plugin_settings.json" > "$CONFIG/plugin_settings.json.next"
@@ -202,9 +267,11 @@ read_shell_selected_tab() {
 
 pointer_x=0
 pointer_y=0
+popout_offset_x=0
+popout_offset_y=0
 move_pointer_to() {
-  target_x=$1
-  target_y=$2
+  target_x=$(($1 + popout_offset_x))
+  target_y=$(($2 + popout_offset_y))
   delta_x=$((target_x - pointer_x))
   delta_y=$((target_y - pointer_y))
   wlrctl pointer move "$delta_x" "$delta_y"
@@ -217,6 +284,14 @@ click_at() {
   move_pointer_to "$1" "$2"
   wlrctl pointer click left
   sleep 0.15
+}
+
+click_dms_control() {
+  control_geometry=$(dms ipc call tokitoki-e2e controlGeometry "$1")
+  printf '%s\n' "$control_geometry" > "$E2E_OUT/control-$1-geometry.json"
+  control_x=$(printf '%s' "$control_geometry" | jq -er '.x')
+  control_y=$(printf '%s' "$control_geometry" | jq -er '.y')
+  click_at "$((control_x - popout_offset_x))" "$((control_y - popout_offset_y))"
 }
 
 select_tab() {
@@ -352,7 +427,26 @@ wait_for 30 "initial widget payload" grep -Fq '"widget-payload"' "$E2E_COMMAND_L
 if [ "$E2E_SHELL" = quickshell ]; then
   wait_for 15 "standalone payload cards ready" status_matches '.ready == true and .hasPayload == true and .isBusy == false'
 fi
+if [ "$E2E_SHELL" = dms ]; then
+  wait_for 15 "DMS payload ready" sh -c 'dms ipc call tokitoki-e2e geometry | jq -e ".ready == true"'
+fi
 grim -g "0,0 1600x44" "$E2E_OUT/bar.png"
+if [ "$E2E_SHELL" = dms ] && [ "$E2E_MODE" = all ]; then
+  move_pointer_to 70 24
+  wait_for 5 "quota hover opens" sh -c 'dms ipc call tokitoki-e2e hoverState | jq -e ".open == true"'
+  move_pointer_to 100 90
+  sleep 0.3
+  dms ipc call tokitoki-e2e hoverState | jq -e '.open == true' >/dev/null
+  grim -c "$E2E_OUT/hover-before-tick.png"
+  dms ipc call tokitoki-e2e advanceBarClock > "$E2E_OUT/hover-clock.txt"
+  sleep 0.3
+  dms ipc call tokitoki-e2e hoverState > "$E2E_OUT/hover-after-tick.json"
+  jq -e '.open == true' "$E2E_OUT/hover-after-tick.json" >/dev/null
+  grim -c "$E2E_OUT/hover-after-tick.png"
+  record_interaction hover-countdown
+  move_pointer_to 1500 900
+  sleep 0.3
+fi
 if [ "$E2E_SHELL" = dms ]; then
   dms ipc call widget toggle tokitoki >/dev/null
 else
@@ -360,6 +454,14 @@ else
   wait_for_tab "$E2E_TAB"
 fi
 sleep 0.5
+if [ "$E2E_SHELL" = dms ]; then
+  popout_geometry=$(dms ipc call tokitoki-e2e geometry)
+  printf '%s\n' "$popout_geometry" > "$E2E_OUT/popout-geometry.json"
+  popout_x=$(printf '%s' "$popout_geometry" | jq -er '.x')
+  popout_y=$(printf '%s' "$popout_geometry" | jq -er '.y')
+  popout_offset_x=$((popout_x - 4))
+  popout_offset_y=$((popout_y - 48))
+fi
 
 if [ "$E2E_MODE" = single ]; then
   capture "popout-$E2E_TAB.png"
@@ -395,19 +497,31 @@ else
   record_interaction session-back
 
   before="$(wc -l < "$E2E_COMMAND_LOG")"
-  click_at 487 157
+  if [ "$E2E_SHELL" = dms ]; then
+    click_dms_control clearSearch
+  else
+    click_at 487 157
+  fi
   wait_for_log_growth "$before" "unfiltered session list after clearing search"
   scroll_down 30
   capture sessions-pagination.png
   before="$(wc -l < "$E2E_COMMAND_LOG")"
-  click_at 195 775
+  if [ "$E2E_SHELL" = dms ]; then
+    click_dms_control next
+  else
+    click_at 195 775
+  fi
   wait_for_log_growth "$before" "session page two command"
   wait_for 10 "page two argument" grep -Fq '"--page","2"' "$E2E_COMMAND_LOG"
   record_interaction next-page
   capture sessions-page-2.png
   scroll_up 30
   before="$(wc -l < "$E2E_COMMAND_LOG")"
-  click_at 66 445
+  if [ "$E2E_SHELL" = dms ]; then
+    click_dms_control previous
+  else
+    click_at 66 445
+  fi
   wait_for_log_growth "$before" "session previous-page command"
   wait_for 10 "page one after page two" sh -c 'tail -n +"$1" "$2" | grep -F "\"--page\",\"1\"" | grep -vq -- --search' sh "$((before + 1))" "$E2E_COMMAND_LOG"
   record_interaction previous-page
@@ -415,12 +529,20 @@ else
 
   select_tab settings
   capture settings-tab.png
-  click_at 465 76
+  if [ "$E2E_SHELL" = dms ]; then
+    click_dms_control settings
+  else
+    click_at 465 76
+  fi
   if [ "$E2E_SHELL" = quickshell ]; then
     wait_for 5 "widget settings open" status_matches '.configOpen == true'
   fi
   capture settings-config.png
-  click_at 465 76
+  if [ "$E2E_SHELL" = dms ]; then
+    click_dms_control settings
+  else
+    click_at 465 76
+  fi
   if [ "$E2E_SHELL" = quickshell ]; then
     wait_for 5 "widget settings closed" status_matches '.configOpen == false'
   fi
@@ -429,7 +551,7 @@ else
   if [ "$E2E_SHELL" = quickshell ]; then
     click_at 460 560
   else
-    click_at 455 584
+    click_dms_control notifications
   fi
   wait_for 20 "notification setting write" grep -Fq '"config","set","notifications.enabled","true"' "$E2E_COMMAND_LOG"
   scroll_down 6

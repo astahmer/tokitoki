@@ -11,12 +11,11 @@ import { providerConfig } from "../config.ts";
 import { homePath, type EntryContext, type Provider } from "./types.ts";
 
 /**
- * T3 Code's real source of truth is a local event-sourced SQLite database at
- * ~/.t3/userdata/state.sqlite, run by T3 Code's own local server (confirmed
- * against pingdotgg/t3code's docs/internals/scripts.md, and by matching real
- * thread titles on disk, 2026-09-01). The Electron app's IndexedDB store
- * (used by an earlier version of this provider) is only renderer-side UI
- * scratch state — sparse, sometimes empty, not the actual thread data.
+ * T3 Code's live store since Orchestrator V2 is
+ * ~/.t3/userdata/statev2.sqlite. state.sqlite is the V1 database and stops
+ * receiving threads once V2 exists. Cursor-routed turns in V2 carry
+ * turnTokenUsage. Those rows are kept for the session page only: the Cursor
+ * dashboard already counts the same requests in the account total.
  *
  * Relevant tables:
  *   projection_threads         — thread_id, title, model_selection_json,
@@ -32,23 +31,28 @@ import { homePath, type EntryContext, type Provider } from "./types.ts";
  * so a "cursor" thread bills against the user's own Cursor account, not a
  * separate T3 Code allocation.
  *
- * Inspected 2026-09-01: unlike Cursor's own local stores, T3 Code DOES carry
- * real per-call `usage`/`typedUsage` token counts in
- * projection_thread_activities — but only for Claude-routed subagent
- * Task-tool calls. Cursor-routed (grok) threads carry none anywhere in this
- * database either, confirmed by grepping their own activity payloads. So
- * usage below stays a chars/4 estimate for every thread — for consistent,
- * comparable numbers rather than some threads exact and most not.
+ * V1 still has no per-turn token counts, so that file stays a chars/4
+ * estimate. V2 cursor turns use turnTokenUsage and are not added to totals.
  */
 export const T3CODE_NO_USAGE_NOTE =
-  "no exact token/cost data for cursor-routed threads — usage below is estimated from message length";
+  "cursor-routed V2 turns keep per-thread tokens for session detail and are not added to account totals; those come from the Cursor dashboard";
 
 export function t3codeStateDbDir(): string {
   return homePath("T3CODE_DIR", "/.t3/userdata");
 }
 
 function stateDbFile(root: string): string {
+  const v2 = path.join(root, "statev2.sqlite");
+  try {
+    if (fs.statSync(v2).isFile()) return v2;
+  } catch {
+    // V1-only installs still use state.sqlite.
+  }
   return path.join(root, "state.sqlite");
+}
+
+function isV2Store(db: Database): boolean {
+  return hasTables(db, ["orchestration_v2_projection_threads", "orchestration_v2_projection_messages"]);
 }
 
 /** Open read-only, falling back to immutable mode for a WAL db with no live writer. */
@@ -71,7 +75,7 @@ function openStore(storePath: string): Database | undefined {
 
 function hasTables(db: Database, names: string[]): boolean {
   const stmt = db.query<{ name: string }, [string]>("SELECT name FROM sqlite_master WHERE type='table' AND name = ?");
-  return names.every((n) => stmt.get(n) !== undefined);
+  return names.every((n) => stmt.get(n) != null);
 }
 
 /** `{instanceId, model}` from a thread's model_selection_json, falling back to its runtime row. */
@@ -96,10 +100,148 @@ function threadRouting(
 
 const BODY_CAP = 512 * 1024;
 
+function payloadText(payload: string): string {
+  try {
+    const parsed = JSON.parse(payload) as { text?: unknown };
+    return typeof parsed.text === "string" ? parsed.text : "";
+  } catch {
+    return "";
+  }
+}
+
+function modelFromThreadPayload(payload: string | null): { instanceId: string; model: string } | undefined {
+  if (payload === null) return undefined;
+  try {
+    const parsed = JSON.parse(payload) as { providerInstanceId?: unknown; modelSelection?: { instanceId?: unknown; model?: unknown } };
+    const instanceId = typeof parsed.modelSelection?.instanceId === "string" && parsed.modelSelection.instanceId.length > 0
+      ? parsed.modelSelection.instanceId
+      : typeof parsed.providerInstanceId === "string" ? parsed.providerInstanceId : "";
+    const model = typeof parsed.modelSelection?.model === "string" ? parsed.modelSelection.model : "unknown";
+    if (instanceId.length === 0) return undefined;
+    return { instanceId, model };
+  } catch {
+    return undefined;
+  }
+}
+
+function extractV2SessionDocs(db: Database): SessionDoc[] {
+  const threads = db
+    .prepare(
+      `SELECT thread_id, title, created_at, payload_json, provider_instance_id
+       FROM orchestration_v2_projection_threads
+       WHERE deleted_at IS NULL`,
+    )
+    .all() as Array<{
+    thread_id: string;
+    title: string;
+    created_at: string;
+    payload_json: string;
+    provider_instance_id: string | null;
+  }>;
+  const bodyStmt = db.prepare(
+    `SELECT role, payload_json FROM orchestration_v2_projection_messages
+     WHERE thread_id = ? AND role IN ('user', 'assistant')
+     ORDER BY created_at ASC LIMIT 4000`,
+  );
+  const docs: SessionDoc[] = [];
+  for (const thread of threads) {
+    const rows = bodyStmt.all(thread.thread_id) as Array<{ role: string; payload_json: string }>;
+    const parts: string[] = [];
+    let len = 0;
+    for (const row of rows) {
+      const text = payloadText(row.payload_json);
+      if (text.length === 0) continue;
+      parts.push(text);
+      len += text.length;
+      if (len >= BODY_CAP) break;
+    }
+    const body = parts.join("\n").slice(0, BODY_CAP);
+    if (thread.title.length === 0 && body.length === 0) continue;
+    const routed = modelFromThreadPayload(thread.payload_json);
+    docs.push({
+      sessionId: thread.thread_id,
+      accountKey: routed?.instanceId ?? thread.provider_instance_id ?? "default",
+      startedAt: thread.created_at,
+      title: thread.title.slice(0, 200),
+      body: body.length > 0 ? body : thread.title,
+    });
+  }
+  return docs;
+}
+
+/** Real per-turn tokens for Cursor threads. Account totals come from the dashboard, so these stay out of rollups. */
+function scanV2CursorTurns(db: Database, ctx: DbScanContext): UsageEvent[] {
+  if (!hasTables(db, ["orchestration_v2_projection_provider_turns"])) return [];
+  const watermark = typeof ctx.state.turnRowid === "number" ? ctx.state.turnRowid : 0;
+  const rows = db
+    .prepare(
+      `SELECT t.rowid, t.provider_turn_id, t.thread_id, t.completed_at, t.started_at, t.payload_json,
+              th.provider_instance_id, th.payload_json AS thread_payload
+       FROM orchestration_v2_projection_provider_turns t
+       JOIN orchestration_v2_projection_threads th ON th.thread_id = t.thread_id
+       WHERE t.rowid > ?
+       ORDER BY t.rowid ASC LIMIT 5000`,
+    )
+    .all(watermark) as Array<{
+    rowid: number;
+    provider_turn_id: string;
+    thread_id: string;
+    completed_at: string | null;
+    started_at: string | null;
+    payload_json: string;
+    provider_instance_id: string | null;
+    thread_payload: string;
+  }>;
+  const events: UsageEvent[] = [];
+  for (const row of rows) {
+    ctx.state.turnRowid = row.rowid;
+    const routed = modelFromThreadPayload(row.thread_payload);
+    const instanceId = routed?.instanceId ?? row.provider_instance_id ?? "";
+    if (instanceId !== "cursor") continue;
+    let usage: Record<string, unknown> | undefined;
+    try {
+      const parsed = JSON.parse(row.payload_json) as { turnTokenUsage?: unknown; status?: unknown };
+      if (parsed.status !== "completed" || typeof parsed.turnTokenUsage !== "object" || parsed.turnTokenUsage === null) continue;
+      usage = parsed.turnTokenUsage as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+    if (usage.usageStatus === "unavailable") continue;
+    const count = (key: string): number => {
+      const value = usage?.[key];
+      return typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.round(value) : 0;
+    };
+    const inputTokens = count("inputTokens");
+    const outputTokens = count("outputTokens");
+    const cacheReadTokens = count("cachedInputTokens");
+    const cacheWriteTokens = count("cacheCreationTokens");
+    if (inputTokens === 0 && outputTokens === 0) continue;
+    const model = routed?.model ?? "unknown";
+    const ts = row.completed_at ?? row.started_at;
+    if (ts === null) continue;
+    events.push({
+      id: eventId("t3code", "cursor", row.thread_id, row.provider_turn_id),
+      ts,
+      machineId: ctx.machineId,
+      provider: "t3code",
+      accountKey: "cursor",
+      model,
+      inputTokens,
+      outputTokens,
+      cacheReadTokens,
+      cacheWriteTokens,
+      costUsd: estimateCost(model, { inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens }),
+      sessionId: row.thread_id,
+    });
+  }
+  return events;
+}
+
 export function extractT3SessionDocs(storePath: string): SessionDoc[] {
   const db = openStore(storePath);
   if (db === undefined) return [];
   try {
+    if (isV2Store(db)) return extractV2SessionDocs(db);
     if (!hasTables(db, ["projection_threads", "projection_thread_messages"])) return [];
 
     const threads = db
@@ -163,6 +305,7 @@ function scanT3CodeUsageEvents(storePath: string, ctx: DbScanContext): UsageEven
   const db = openStore(storePath);
   if (db === undefined) return [];
   try {
+    if (isV2Store(db)) return scanV2CursorTurns(db, ctx);
     if (!hasTables(db, ["projection_thread_messages", "projection_threads"])) return [];
 
     const watermark = typeof ctx.state.msgRowid === "number" ? ctx.state.msgRowid : 0;

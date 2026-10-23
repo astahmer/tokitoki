@@ -47,7 +47,8 @@ describe("DMS widget provider registry lookups", () => {
       ["anthropic", "Claude"],
       ["openrouter", "OpenRouter"],
     ]);
-    expect(groups[1].lines[0]).toBe("50 · $1.00");
+    expect(groups[0].lines).toEqual(["5h 60%"]);
+    expect(groups[1].lines).toEqual([]);
   });
 
   it("honors legacy upstream aliases in saved strip and selection settings", () => {

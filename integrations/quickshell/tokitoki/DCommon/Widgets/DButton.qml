@@ -1,6 +1,6 @@
 import QtQuick
 import QtQuick.Controls
-import "../Common"
+import "../../Common"
 
 Button {
     id: root
@@ -17,7 +17,7 @@ Button {
     contentItem: Row {
         id: label
         spacing: 6
-        DankIcon {
+        DIcon {
             visible: root.iconName.length > 0
             name: root.iconName
             size: 18

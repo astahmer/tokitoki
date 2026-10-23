@@ -5,7 +5,7 @@ import Quickshell.Io
 import "."
 import qs.Common
 import qs.Modules.Plugins
-import qs.Widgets
+import qs.DCommon.Widgets
 
 PluginComponent {
     id: root
@@ -24,6 +24,7 @@ PluginComponent {
     property string compositionPeriod: "day"
     property bool stateReady: false
     property bool configOpen: false
+    property double barNow: Date.now()
     property string visibilityTarget: ""
     property bool visibilityHide: true
     property bool pendingRefresh: false
@@ -79,9 +80,11 @@ PluginComponent {
     readonly property var providerSlices: root.buildPeriodSlices(root.payload.providerPeriods, root.selectedPeriod, root.selectedMetric)
     readonly property var modelSlices: root.buildPeriodSlices(root.payload.modelPeriods, root.selectedPeriod, root.selectedMetric)
     readonly property var attentionItems: root.buildAttentionItems()
+    readonly property var quotaStripGroups: root.buildStatusStripGroups()
     readonly property var statusStripGroups: root.barSummaryMode === "icon" ||
         root.barSummaryMode === "total"
-        ? [] : root.buildStatusStripGroups()
+        ? [] : root.isShortestWindowMode()
+            ? root.shortestWindowGroups(root.quotaStripGroups) : root.quotaStripGroups
 
     layerNamespacePlugin: "tokitoki"
 
@@ -576,31 +579,13 @@ PluginComponent {
                 return "tokitoki ?"
             return compactNumber(totalTokens(report.total)) + " · " + formatMoney(report.total.costUsd)
         }
-        var quota = ""
-        if (hasLimits) {
-            for (var i = 0; i < payload.limits.length; i++) {
-                var account = payload.limits[i]
-                if (!providerIsVisible(account.provider, account.accountKey, account.vendor))
-                    continue
-                var windows = Array.isArray(account.windows) ? account.windows : []
-                for (var j = 0; j < windows.length; j++) {
-                    var windowData = windows[j]
-                    if (!hasUsedPercent(windowData))
-                        continue
-                    var remaining = Math.round(remainingPercent(windowData))
-                    if (quota.length === 0 || remaining < Number(quota.replace("%", "")))
-                        quota = remaining + "%"
-                }
-            }
-        }
-        var today = payload.today && payload.today.total ? payload.today.total : null
-        var stats = today || payload.stats || ({})
-        var parts = []
-        if (quota.length > 0)
-            parts.push(quota)
-        parts.push(compactNumber(today ? totalTokens(today) : stats.tokens))
-        parts.push(formatMoney(stats.costUsd))
-        return parts.join(" · ")
+        var groups = root.buildStatusStripGroups()
+        if (root.isShortestWindowMode())
+            groups = root.shortestWindowGroups(groups)
+        return groups.map(function(group) {
+            var text = group.lines.join(" · ")
+            return group.label + (text ? " " + text : "")
+        }).join(" | ")
     }
 
     function accountTarget(provider, accountKey) {
@@ -879,11 +864,22 @@ PluginComponent {
         })
     }
 
-    function windowOrderMinutes(windowData) {
+    function windowDurationMinutes(windowData) {
         var minutes = Number(windowData && windowData.windowMinutes)
-        if (isFinite(minutes) && minutes > 0)
-            return minutes
-        return windowRank(windowData && windowData.kind)
+        if (windowData && windowData.windowMinutes !== undefined)
+            return isFinite(minutes) && minutes > 0 ? minutes : NaN
+        if (windowData && windowData.source === "derived") {
+            var start = Date.parse(String(windowData.windowStart || ""))
+            var end = Date.parse(String(windowData.windowEnd || ""))
+            if (isFinite(start) && isFinite(end) && end > start)
+                return (end - start) / 60000
+        }
+        return NaN
+    }
+
+    function windowOrderMinutes(windowData) {
+        var minutes = windowDurationMinutes(windowData)
+        return isFinite(minutes) ? minutes : windowRank(windowData && windowData.kind)
     }
 
     function windowTitle(windowData) {
@@ -1028,21 +1024,7 @@ PluginComponent {
     }
 
     function resetLabel(value) {
-        if (!value)
-            return ""
-        var target = Date.parse(String(value))
-        if (!isFinite(target))
-            return ""
-        var seconds = Math.max(0, (target - Date.now()) / 1000)
-        if (seconds <= 30)
-            return "Available now"
-        var minutes = Math.max(1, Math.round(seconds / 60))
-        if (minutes < 60)
-            return "Resets in " + minutes + "m"
-        if (minutes < 1440)
-            return "Resets in " + Math.floor(minutes / 60) + "h " + minutes % 60 + "m"
-        var hours = Math.round(minutes / 60)
-        return "Resets in " + Math.floor(hours / 24) + "d " + hours % 24 + "h"
+        return barCountdown(value)
     }
 
     function buildAttentionItems() {
@@ -1139,13 +1121,55 @@ PluginComponent {
         return entry && entry.shortName ? entry.shortName : displayLabel(provider)
     }
 
-    function barWindowLabel(kind) {
-        switch (kind) {
-        case "day": return "Day"
-        case "week": return "Week"
-        case "month": return "Month"
-        default: return displayLabel(kind || "Limit")
+    function barWindowDuration(windowData) {
+        var minutes = windowDurationMinutes(windowData)
+        if (windowData.windowMinutes !== undefined && (!isFinite(minutes) || minutes <= 0))
+            return ""
+        if (isFinite(minutes) && minutes > 0) {
+            if (minutes >= 28 * 1440 && minutes <= 31 * 1440)
+                return "1mo"
+            if (minutes % 1440 === 0)
+                return minutes / 1440 + "d"
+            if (minutes % 60 === 0)
+                return minutes / 60 + "h"
+            return minutes + "m"
         }
+        var kind = String(windowData.kind || "").toLowerCase()
+        var durations = { week: "7d", weekly: "7d", month: "1mo", monthly: "1mo", "5h": "5h" }
+        if (durations[kind])
+            return durations[kind]
+        var match = kind.match(/^(\d+(?:\.\d+)?)(min|h|d|w|mo)$/)
+        if (!match || Number(match[1]) <= 0)
+            return ""
+        return match[1] + (match[2] === "min" ? "m" : match[2])
+    }
+
+    function barWindowBucket(windowData) {
+        if (windowData.model)
+            return displayLabel(windowData.model)
+        var label = String(windowData.label || "")
+        var aliases = { "cursor models": "", "other models": "API", "on-demand": "OD" }
+        if (aliases[label.toLowerCase()] !== undefined)
+            return aliases[label.toLowerCase()]
+        return /^(session|daily|weekly|monthly|limit)$/i.test(label) ? "" : label
+    }
+
+    function barCountdown(value) {
+        var timestamp = Date.parse(String(value || ""))
+        if (!isFinite(timestamp))
+            return ""
+        var minutes = Math.max(0, Math.ceil((timestamp - (root.barNow || Date.now())) / 60000))
+        if (minutes < 60)
+            return minutes + "m"
+        if (minutes < 1440)
+            return Math.floor(minutes / 60) + "h " + minutes % 60 + "m"
+        return Math.floor(minutes / 1440) + "d " + Math.floor(minutes % 1440 / 60) + "h"
+    }
+
+    function barProfileName(account, index) {
+        if (privacyHideIdentities)
+            return "P" + (index + 1)
+        return String(account.label || account.email || account.accountKey || "Profile").split("@")[0]
     }
 
     function windowRank(kind) {
@@ -1173,109 +1197,93 @@ PluginComponent {
         }
     }
 
-    function todayUsageForProvider(provider) {
-        var result = { tokens: 0, cost: 0, found: false }
-        var report = payload.today || ({})
-        var rows = Array.isArray(report.rows) ? report.rows : []
-        for (var i = 0; i < rows.length; i++) {
-            var bucket = String(rows[i].bucket || "")
-            var rowVendor = vendorFor(bucket, rows[i].vendor)
-            if (rowVendor !== provider && bucket !== provider)
-                continue
-            result.tokens += totalTokens(rows[i])
-            result.cost += safeNumber(rows[i].costUsd)
-            result.found = true
-        }
-        return result
+    function isShortestWindowMode() {
+        return root.barSummaryMode === "shortest-window" || root.barSummaryMode === "lowest-session"
+    }
+
+    function shortestWindowGroups(groups) {
+        return groups.map(function(group) {
+            return Object.assign({}, group, { lines: group.profiles.map(function(profile) {
+                return profile.prefix + (profile.shortest ? profile.shortest.text : "—")
+            }) })
+        })
     }
 
     function buildStatusStripGroups() {
         if (!hasPayload)
             return []
-
         var groups = []
-
         var accounts = hasLimits ? payload.limits.slice() : []
         var usageRows = payload.today && Array.isArray(payload.today.rows) ? payload.today.rows : []
         for (var usageIndex = 0; usageIndex < usageRows.length; usageIndex++) {
             var harness = String(usageRows[usageIndex].bucket || "")
-            if (!accounts.some(function(account) { return account.provider === harness }))
+            var usageVendor = vendorFor(harness, usageRows[usageIndex].vendor) || harness
+            if (!accounts.some(function(account) {
+                return (vendorFor(account.provider, account.vendor) || account.provider) === usageVendor
+            }))
                 accounts.push({ provider: harness, accountKey: "", vendor: usageRows[usageIndex].vendor, windows: [] })
         }
         for (var i = 0; i < accounts.length; i++) {
             var account = accounts[i]
             var provider = vendorFor(account.provider, account.vendor) || String(account.provider || "")
-            if (provider.length === 0 || !providerIsVisible(account.provider, account.accountKey, account.vendor))
+            if (!provider || !providerIsVisible(account.provider, account.accountKey, account.vendor))
                 continue
-
-            var group = null
-            for (var groupIndex = 0; groupIndex < groups.length; groupIndex++) {
-                if (groups[groupIndex].provider === provider) {
-                    group = groups[groupIndex]
-                    break
-                }
-            }
+            var group = groups.find(function(item) { return item.provider === provider })
             if (!group) {
-                group = {
-                    provider: provider,
-                    label: providerShortName(provider),
-                    windows: []
-                }
+                group = { provider: provider, label: providerShortName(provider), accounts: [], profiles: [], lines: [] }
                 groups.push(group)
             }
-
-            var windows = Array.isArray(account.windows) ? account.windows : []
-            for (var j = 0; j < windows.length; j++) {
-                var windowData = windows[j]
-                if (windowData.amountUsd !== null && windowData.amountUsd !== undefined) {
-                    group.windows.push({
-                        kind: String(windowData.label || windowData.kind || ""),
-                        rank: windowOrderMinutes(windowData),
-                        amount: formatMoney(windowData.amountUsd)
-                    })
-                } else if (hasUsedPercent(windowData)) {
-                    group.windows.push({
-                        kind: String(windowData.label || windowData.kind || ""),
-                        rank: windowOrderMinutes(windowData),
-                        remaining: Math.round(remainingPercent(windowData))
-                    })
-                }
-            }
+            group.accounts.push(account)
         }
-
-        for (var summaryIndex = 0; summaryIndex < groups.length; summaryIndex++) {
-            var summaryGroup = groups[summaryIndex]
-            var quotaText = ""
-            var percentWindows = summaryGroup.windows.filter(function(windowData) {
-                return windowData.remaining !== undefined
+        for (var groupIndex = 0; groupIndex < groups.length; groupIndex++) {
+            var currentGroup = groups[groupIndex]
+            var initials = currentGroup.accounts.map(function(account, index) {
+                return barProfileName(account, index).slice(0, 2).toUpperCase()
             })
-            if (percentWindows.length > 0) {
-                var currentWindow = percentWindows[0]
-                for (var windowIndex = 1; windowIndex < percentWindows.length; windowIndex++) {
-                    var candidate = percentWindows[windowIndex]
-                    if (candidate.rank < currentWindow.rank ||
-                            (candidate.rank === currentWindow.rank && candidate.remaining < currentWindow.remaining))
-                        currentWindow = candidate
+            for (var accountIndex = 0; accountIndex < currentGroup.accounts.length; accountIndex++) {
+                var currentAccount = currentGroup.accounts[accountIndex]
+                var prefix = initials[accountIndex]
+                if (initials.filter(function(value) { return value === prefix }).length > 1)
+                    prefix += accountIndex + 1
+                var parts = []
+                var profile = { name: barProfileName(currentAccount, accountIndex), rows: [],
+                    prefix: currentGroup.accounts.length > 1 ? prefix + ": " : "", shortest: null }
+                var lastDuration = ""
+                var windows = orderedWindows(currentAccount.windows)
+                for (var windowIndex = 0; windowIndex < windows.length; windowIndex++) {
+                    var windowData = windows[windowIndex]
+                    if (!hasUsedPercent(windowData) && (windowData.amountUsd === undefined || windowData.amountUsd === null))
+                        continue
+                    var duration = barWindowDuration(windowData)
+                    if (!duration)
+                        continue
+                    var hasAmount = windowData.amountUsd !== undefined && windowData.amountUsd !== null
+                    var value = hasAmount ? formatMoney(windowData.amountUsd)
+                        : Math.round(remainingPercent(windowData)) + "%"
+                    var bucket = barWindowBucket(windowData)
+                    parts.push((duration !== lastDuration ? duration + " " : "") +
+                        (bucket ? bucket + " " : "") + value)
+                    lastDuration = duration
+                    var fullBucket = String(windowData.label || windowData.model || "")
+                    if (/^(session|daily|weekly|monthly|limit)$/i.test(fullBucket))
+                        fullBucket = ""
+                    profile.rows.push({ label: duration + (fullBucket ? " · " + fullBucket : ""),
+                        value: value, resetsAt: String(windowData.resetsAt || ""),
+                        color: hasAmount ? Theme.primary : limitColor(windowData),
+                        icon: hasAmount ? "payments" : "hourglass_empty" })
+                    var minutes = windowOrderMinutes(windowData)
+                    if (!profile.shortest || minutes < profile.shortest.minutes) {
+                        var shortDuration = duration === "1mo" ? Math.round(minutes / 1440) + "d" : duration
+                        profile.shortest = { minutes: minutes,
+                            text: shortDuration + (bucket ? " " + bucket : "") + " " + value }
+                    }
                 }
-                quotaText = barWindowLabel(currentWindow.kind) + ": " + currentWindow.remaining + "%"
-            } else if (summaryGroup.windows.length > 0) {
-                var amountWindow = summaryGroup.windows[0]
-                quotaText = barWindowLabel(amountWindow.kind) + " " + amountWindow.amount
+                if (parts.length > 0)
+                    currentGroup.lines.push((currentGroup.accounts.length > 1 ? prefix + ": " : "") + parts.join(" · "))
+                currentGroup.profiles.push(profile)
             }
-
-            var usage = todayUsageForProvider(summaryGroup.provider)
-            summaryGroup.hasData = usage.found || summaryGroup.windows.length > 0
-            var parts = []
-            if (quotaText.length > 0)
-                parts.push(quotaText)
-            parts.push(compactNumber(usage.tokens))
-            parts.push(formatMoney(usage.cost))
-            summaryGroup.lines = [parts.join(" · ")]
         }
-
-        return groups.filter(function(groupData) {
-            return groupData.hasData && groupData.lines.length > 0
-        })
+        return groups
     }
 
     function refresh(scan) {
@@ -1337,11 +1345,18 @@ PluginComponent {
     onHistoryPeriodChanged: saveState("historyPeriod", historyPeriod)
     onCompositionPeriodChanged: saveState("compositionPeriod", compositionPeriod)
 
+    Timer {
+        interval: 60000
+        running: true
+        repeat: true
+        onTriggered: root.barNow = Date.now()
+    }
+
     horizontalBarPill: Component {
         Row {
             spacing: Theme.spacingS
 
-            DankIcon {
+            DIcon {
                 name: "warning"
                 size: root.iconSize
                 color: root.incidentColor(root.vendorIncident(root.degradedVendors()[0]))
@@ -1349,7 +1364,7 @@ PluginComponent {
                 visible: root.degradedVendors().length > 0
             }
 
-            DankIcon {
+            DIcon {
                 name: "monitoring"
                 size: root.iconSize
                 color: Theme.widgetIconColor
@@ -1374,7 +1389,175 @@ PluginComponent {
                 model: root.statusStripGroups
 
                 delegate: Row {
+                    id: providerGroup
                     property var groupData: modelData
+                    property bool tooltipOpen: false
+
+                    HoverHandler {
+                        id: providerHover
+                        onHoveredChanged: {
+                            if (hovered) {
+                                tooltipClose.stop()
+                                providerGroup.tooltipOpen = true
+                            } else {
+                                tooltipClose.restart()
+                            }
+                        }
+                    }
+
+                    Timer {
+                        id: tooltipClose
+                        interval: 180
+                        onTriggered: {
+                            if (!providerHover.hovered && !cardHover.hovered)
+                                providerGroup.tooltipOpen = false
+                        }
+                    }
+
+                    PopupWindow {
+                        anchor.item: providerGroup
+                        anchor.rect.y: providerGroup.height + 8
+                        visible: providerGroup.tooltipOpen
+                        implicitWidth: 350
+                        implicitHeight: Math.min(tooltipContent.implicitHeight + 24,
+                            (root.parentScreen ? root.parentScreen.height : 1000) - 80)
+                        color: "transparent"
+
+                        Rectangle {
+                            anchors.fill: parent
+                            radius: 10
+                            color: Theme.surfaceContainerHigh
+                            border.color: Theme.outlineLight
+
+                            HoverHandler {
+                                id: cardHover
+                                onHoveredChanged: {
+                                    if (hovered)
+                                        tooltipClose.stop()
+                                    else
+                                        tooltipClose.restart()
+                                }
+                            }
+                        }
+
+                        Flickable {
+                            anchors.fill: parent
+                            anchors.margins: 12
+                            contentHeight: tooltipContent.implicitHeight
+                            clip: true
+
+                            Column {
+                                id: tooltipContent
+                                x: 0
+                                y: 0
+                                width: 326
+                                spacing: 10
+
+                                Row {
+                                    spacing: 8
+                                    TokitokiProviderLogo {
+                                        provider: providerGroup.groupData.provider
+                                        registry: root.payload.providerRegistry || ({})
+                                        size: 18
+                                    }
+                                    StyledText {
+                                        text: providerGroup.groupData.label
+                                        color: Theme.surfaceText
+                                        font.weight: Font.DemiBold
+                                        font.pixelSize: Theme.fontSizeSmall
+                                    }
+                                }
+
+                                Repeater {
+                                    model: providerGroup.groupData.profiles
+                                    delegate: Column {
+                                        required property var modelData
+                                        required property int index
+                                        width: tooltipContent.width
+                                        spacing: 6
+
+                                        Rectangle {
+                                            width: parent.width
+                                            height: 1
+                                            color: Theme.withAlpha(Theme.outlineLight, 0.5)
+                                            visible: index > 0
+                                        }
+
+                                        Row {
+                                            spacing: 6
+                                            DIcon {
+                                                name: "account_circle"
+                                                size: 14
+                                                color: Theme.surfaceVariantText
+                                            }
+                                            StyledText {
+                                                text: modelData.name
+                                                width: tooltipContent.width - 22
+                                                elide: Text.ElideRight
+                                                color: Theme.surfaceVariantText
+                                                font.pixelSize: Theme.fontSizeSmall
+                                            }
+                                        }
+
+                                        Repeater {
+                                            model: modelData.rows
+                                            delegate: RowLayout {
+                                                id: quotaTooltipRow
+                                                required property var modelData
+                                                readonly property string countdown: root.barCountdown(modelData.resetsAt)
+                                                width: tooltipContent.width
+                                                spacing: 6
+
+                                                DIcon {
+                                                    name: modelData.icon
+                                                    size: 14
+                                                    color: Theme.surfaceVariantText
+                                                }
+                                                StyledText {
+                                                    text: modelData.label
+                                                    Layout.fillWidth: true
+                                                    elide: Text.ElideRight
+                                                    color: Theme.surfaceText
+                                                    font.pixelSize: Theme.fontSizeSmall
+                                                }
+                                                StyledText {
+                                                    text: modelData.value
+                                                    color: modelData.color
+                                                    font.weight: Font.DemiBold
+                                                    font.pixelSize: Theme.fontSizeSmall
+                                                }
+                                                Rectangle {
+                                                    width: 1
+                                                    height: 12
+                                                    color: Theme.outlineLight
+                                                    visible: quotaTooltipRow.countdown.length > 0
+                                                }
+                                                DIcon {
+                                                    name: "schedule"
+                                                    size: 14
+                                                    color: Theme.surfaceVariantText
+                                                    visible: quotaTooltipRow.countdown.length > 0
+                                                }
+                                                StyledText {
+                                                    text: quotaTooltipRow.countdown
+                                                    color: Theme.surfaceVariantText
+                                                    font.pixelSize: Theme.fontSizeSmall
+                                                    visible: text.length > 0
+                                                }
+                                            }
+                                        }
+
+                                        StyledText {
+                                            text: "Quota unavailable"
+                                            visible: modelData.rows.length === 0
+                                            color: Theme.surfaceVariantText
+                                            font.pixelSize: Theme.fontSizeSmall
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
 
                     spacing: Theme.spacingXS
 
@@ -1421,7 +1604,7 @@ PluginComponent {
         Column {
             spacing: Theme.spacingXXS
 
-            DankIcon {
+            DIcon {
                 name: "warning"
                 size: root.iconSize
                 color: root.incidentColor(root.vendorIncident(root.degradedVendors()[0]))
@@ -1429,7 +1612,7 @@ PluginComponent {
                 visible: root.degradedVendors().length > 0
             }
 
-            DankIcon {
+            DIcon {
                 name: "monitoring"
                 size: root.iconSize
                 color: Theme.widgetIconColor
@@ -1457,15 +1640,31 @@ PluginComponent {
 
             width: parent.width
             headerText: root.configOpen ? "Tokitoki Settings" : "Tokitoki Usage"
-            showCloseButton: true
 
             headerActions: Component {
-                DankActionButton {
-                    buttonSize: 32
-                    iconName: root.configOpen ? "close" : "more_vert"
-                    iconSize: 18
-                    iconColor: Theme.surfaceText
-                    onClicked: root.configOpen = !root.configOpen
+                Row {
+                    spacing: Theme.spacingXXS
+
+                    DActionButton {
+                        buttonSize: 32
+                        iconName: root.configOpen ? "arrow_back" : "more_vert"
+                        iconSize: 18
+                        iconColor: Theme.surfaceText
+                        tooltipText: root.configOpen ? "Back to usage" : "Tokitoki settings"
+                        onClicked: root.configOpen = !root.configOpen
+                    }
+
+                    DActionButton {
+                        buttonSize: 32
+                        iconName: "close"
+                        iconSize: 18
+                        iconColor: Theme.surfaceText
+                        tooltipText: "Close Tokitoki"
+                        onClicked: {
+                            if (popout.closePopout)
+                                popout.closePopout()
+                        }
+                    }
                 }
             }
 
@@ -1477,7 +1676,7 @@ PluginComponent {
                     popout.detailsHeight - Theme.spacingXL)
                 height: implicitHeight
 
-                DankFlickable {
+                DFlickable {
                     id: viewport
 
                     anchors.left: parent.left
@@ -1520,7 +1719,7 @@ PluginComponent {
                                     width: parent.width
                                     spacing: Theme.spacingXS
 
-                                    DankIcon {
+                                    DIcon {
                                         name: "warning"
                                         size: Theme.iconSizeSmall
                                         color: Theme.error
@@ -1536,7 +1735,7 @@ PluginComponent {
                                         wrapMode: Text.WordWrap
                                     }
 
-                                    DankButton {
+                                    DButton {
                                         id: retryButton
                                         text: "Retry"
                                         iconName: "refresh"
@@ -1575,7 +1774,7 @@ PluginComponent {
                                 }
                             }
 
-                            DankIcon {
+                            DIcon {
                                 anchors.right: parent.right
                                 anchors.verticalCenter: parent.verticalCenter
                                 name: "sync"
@@ -1599,7 +1798,7 @@ PluginComponent {
                                 anchors.rightMargin: Theme.spacingS
                                 spacing: Theme.spacingXS
 
-                                DankIcon {
+                                DIcon {
                                     name: "search"
                                     size: Theme.iconSizeSmall
                                     color: Theme.surfaceVariantText
@@ -1643,7 +1842,7 @@ PluginComponent {
                                     }
                                 }
 
-                                DankIcon {
+                                DIcon {
                                     id: clearSearch
                                     name: "close"
                                     size: Theme.iconSizeSmall
@@ -1938,7 +2137,7 @@ PluginComponent {
                                                 anchors.fill: parent
                                                 spacing: Theme.spacingXS
 
-                                                DankIcon {
+                                                DIcon {
                                                     name: "error"
                                                     size: Theme.iconSizeSmall
                                                     color: Theme.warning
@@ -2072,7 +2271,7 @@ PluginComponent {
                                                             anchors.centerIn: parent
                                                             spacing: Theme.spacingXXS
 
-                                                            DankIcon {
+                                                            DIcon {
                                                                 name: "warning"
                                                                 size: 14
                                                                 color: root.incidentColor(incidentBadge.incident)
@@ -2118,7 +2317,7 @@ PluginComponent {
                                                         }
                                                     }
 
-                                                    DankActionButton {
+                                                    DActionButton {
                                                         id: hideButton
                                                         buttonSize: 26
                                                         iconSize: 16
@@ -2776,7 +2975,7 @@ PluginComponent {
                                                 anchors.fill: parent
                                                 spacing: Theme.spacingXS
 
-                                                DankIcon {
+                                                DIcon {
                                                     name: modelData.state === "exceeded" ? "error" : "speed"
                                                     size: Theme.iconSizeSmall
                                                     color: root.stateColor(modelData.state)
@@ -2832,7 +3031,7 @@ PluginComponent {
                                                 anchors.fill: parent
                                                 spacing: Theme.spacingXS
 
-                                                DankIcon {
+                                                DIcon {
                                                     name: "warning"
                                                     size: Theme.iconSizeSmall
                                                     color: Theme.warning
@@ -3084,7 +3283,7 @@ PluginComponent {
                     }
                 }
 
-                DankFlickable {
+                DFlickable {
                     id: settingsViewport
 
                     anchors.fill: parent
@@ -3149,7 +3348,7 @@ PluginComponent {
                         anchors.rightMargin: Theme.spacingM
                         spacing: Theme.spacingS
 
-                        DankButton {
+                        DButton {
                             id: refreshButton
                             text: root.isBusy
                                 ? (root.scanNextRefresh ? "Scanning…" : "Refreshing…")
@@ -3164,7 +3363,7 @@ PluginComponent {
 
                         Item { Layout.fillWidth: true }
 
-                        DankButton {
+                        DButton {
                             id: openButton
                             text: "Dashboard"
                             iconName: "open_in_new"

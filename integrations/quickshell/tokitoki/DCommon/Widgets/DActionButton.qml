@@ -1,6 +1,6 @@
 import QtQuick
 import QtQuick.Controls
-import "../Common"
+import "../../Common"
 
 Button {
     id: root
@@ -18,7 +18,7 @@ Button {
     Accessible.name: tooltipText || iconName
     ToolTip.visible: hovered && tooltipText.length > 0
     ToolTip.text: tooltipText
-    contentItem: DankIcon {
+    contentItem: DIcon {
         name: root.iconName
         size: root.iconSize
         color: root.iconColor

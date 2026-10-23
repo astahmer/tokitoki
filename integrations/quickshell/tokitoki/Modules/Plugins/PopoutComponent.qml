@@ -1,6 +1,6 @@
 import QtQuick
 import "../../Common"
-import "../../Widgets"
+import "../../DCommon/Widgets"
 
 Column {
     id: root
@@ -32,7 +32,7 @@ Column {
             Loader {
                 id: actions
             }
-            DankActionButton {
+            DActionButton {
                 visible: root.showCloseButton
                 iconName: "close"
                 tooltipText: "Close Tokitoki"

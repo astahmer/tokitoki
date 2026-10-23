@@ -8,6 +8,7 @@ import { z } from "zod";
 import { claudeOauthAccount } from "./accounts.ts";
 import type { EventCache } from "./cache.ts";
 import { cursorIdeDir } from "./providers/cursor.ts";
+import { syncCursorDashboardUsage } from "./providers/cursor-dashboard.ts";
 import { deepseekApiKey, pollDeepSeekQuotas } from "./quota/deepseek.ts";
 import { geminiCredsPath, loadGeminiCreds, pollGeminiQuotas } from "./quota/gemini.ts";
 import { kimiCredential, pollKimiQuotas } from "./quota/kimi.ts";
@@ -1159,6 +1160,14 @@ interface CursorUsageResult {
 async function pollCursorQuotas(opts: PollOptions, fetcher: typeof fetch, now: number): Promise<PollAccountResult | string> {
   const token = cursorAccessToken(opts);
   if (token === null) return "cursor auth not found (no cursor-agent CLI login and no Cursor IDE login)";
+
+  // Account events cover the IDE and T3 once. A dashboard failure must not
+  // drop the quota windows this function already knows how to read.
+  try {
+    await syncCursorDashboardUsage({ accessToken: token, fetcher, cache: opts.cache, now });
+  } catch (error) {
+    console.error(`cursor dashboard usage: ${error instanceof Error ? error.message : String(error)}`);
+  }
 
   let body: unknown;
   try {

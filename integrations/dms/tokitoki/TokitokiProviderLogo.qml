@@ -1,6 +1,6 @@
 import QtQuick
 import qs.Common
-import qs.Widgets
+import qs.DCommon.Widgets
 
 Item {
     id: root
@@ -52,7 +52,7 @@ Item {
         visible: status === Image.Ready
     }
 
-    DankIcon {
+    DIcon {
         anchors.centerIn: parent
         name: root.fallbackIcon
         size: root.showBackground ? Math.min(root.size, Theme.iconSize) : root.size

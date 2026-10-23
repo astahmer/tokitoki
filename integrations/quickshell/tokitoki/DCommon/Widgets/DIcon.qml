@@ -1,5 +1,5 @@
 import QtQuick
-import "../Common"
+import "../../Common"
 
 Text {
     property string name: ""
@@ -14,6 +14,6 @@ Text {
     height: size
     FontLoader {
         id: symbols
-        source: "../assets/material-symbols-rounded.ttf"
+        source: "../../assets/material-symbols-rounded.ttf"
     }
 }

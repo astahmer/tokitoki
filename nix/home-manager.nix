@@ -89,7 +89,7 @@ in
       description = "Tokitoki CLI and integration assets.";
     };
     dms = {
-      enable = lib.mkEnableOption "the Tokitoki DankMaterialShell plugin";
+      enable = lib.mkEnableOption "the Tokitoki Dux Shell (DMS 2.0+) plugin";
       addToBar = lib.mkOption {
         type = lib.types.bool;
         default = true;
@@ -202,7 +202,8 @@ in
       home.packages = [ cfg.package ] ++ lib.optional (linux && cfg.quickshell.enable) launcher;
       assertions = [
         {
-          assertion = !(cfg.dms.enable || cfg.quickshell.enable || cfg.notify.enable || cfg.poll.enable) || linux;
+          assertion =
+            !(cfg.dms.enable || cfg.quickshell.enable || cfg.notify.enable || cfg.poll.enable) || linux;
           message = "Tokitoki shell integrations and timers require Linux.";
         }
         {
@@ -288,10 +289,17 @@ in
           settings.executablePath = lib.getExe cfg.package;
         };
       };
-      assertions = lib.optional (cfg.enable && cfg.dms.enable) {
-        assertion = config.programs.dank-material-shell.enable;
-        message = "Enable your existing programs.dank-material-shell setup to host Tokitoki.";
-      };
+      assertions = lib.optionals (cfg.enable && cfg.dms.enable) [
+        {
+          assertion = config.programs.dank-material-shell.enable;
+          message = "Enable your existing programs.dank-material-shell setup to host Tokitoki.";
+        }
+        {
+          assertion = lib.versionAtLeast (config.programs.dank-material-shell.package.version or "2.0.0"
+          ) "2.0.0";
+          message = "Tokitoki requires Dux Shell / DMS 2.0 or newer. Update the DMS package before enabling programs.tokitoki.dms.enable.";
+        }
+      ];
     })
   ];
 }

@@ -33,6 +33,17 @@ function sqliteRetry<T>(operation: () => T): T {
 }
 
 /**
+ * Cursor-routed T3 turns stay in `events` so a session can show its own
+ * tokens. They are left out of every total: the Cursor dashboard events
+ * already count those requests once.
+ */
+const THREAD_DETAIL_ONLY_SQL = "NOT (provider = 't3code' AND account_key = 'cursor')";
+
+function countsTowardTotals(event: UsageEvent): boolean {
+  return !(event.provider === "t3code" && event.accountKey === "cursor");
+}
+
+/**
  * SQLite cache over the merged event logs. Rebuildable at any time: it is a
  * pure projection of (local + extra) JSONL files deduped on event id.
  */
@@ -418,6 +429,7 @@ export class EventCache {
       for (const r of rows) repoNames.set(r.dir, r.name);
     }
     for (const e of events) {
+      if (!countsTowardTotals(e)) continue;
       this.rollupStmtUpsert.run(
         rollupDay(e.ts),
         e.provider,
@@ -451,6 +463,7 @@ export class EventCache {
              SUM(e.cost_usd), COUNT(*)
       FROM events e
       LEFT JOIN repo_dirs r ON e.project_dir = r.dir
+      WHERE NOT (e.provider = 't3code' AND e.account_key = 'cursor')
       GROUP BY day, e.provider, e.account_key, e.model, e.machine_id, r.name;
     `);
   }
@@ -463,7 +476,7 @@ export class EventCache {
   private checkRollups(): void {
     const row = this.db
       .query(
-        `SELECT (SELECT COUNT(*) FROM events) AS n,
+        `SELECT (SELECT COUNT(*) FROM events WHERE ${THREAD_DETAIL_ONLY_SQL}) AS n,
                 (SELECT COALESCE(SUM(requests), 0) FROM daily_rollups) AS rolled`,
       )
       .get() as { n: number; rolled: number };
@@ -831,7 +844,9 @@ export class EventCache {
     untilIso?: string,
     accountKey?: string,
   ): { sql: string; params: SQLQueryBindings[] } {
-    const parts = ["ts >= ?"];
+    // Cursor-routed T3 turns are session detail only. The dashboard events
+    // already include those requests in the cursor provider total.
+    const parts = ["ts >= ?", THREAD_DETAIL_ONLY_SQL];
     const params: SQLQueryBindings[] = [];
     if (providers !== undefined && providers.length > 0) {
       const placeholders = providers.map(() => "?").join(", ");
@@ -1450,7 +1465,7 @@ export class EventCache {
     dimension?: RollupDimension,
   ): AggRow[] {
     if (dimension === undefined) {
-      const conds = ["ts >= ?", "ts < ?"];
+      const conds = ["ts >= ?", "ts < ?", THREAD_DETAIL_ONLY_SQL];
       const params: SQLQueryBindings[] = [sinceIso, untilIso];
       if (providers !== undefined && providers.length > 0) {
         conds.push(`provider IN (${providers.map(() => "?").join(",")})`);
@@ -1480,7 +1495,7 @@ export class EventCache {
         : dimension === "vendor" ? `FROM events ${vendorJoin("events")}` : "FROM events";
     if (dimension === "repo") this.ensureRepoMap();
     if (dimension === "vendor") this.ensureVendorMap();
-    const conds = ["events.ts >= ?", "events.ts < ?"];
+    const conds = ["events.ts >= ?", "events.ts < ?", "NOT (events.provider = 't3code' AND events.account_key = 'cursor')"];
     const params: SQLQueryBindings[] = [sinceIso, untilIso];
     if (providers !== undefined && providers.length > 0) {
       conds.push(`events.provider IN (${providers.map(() => "?").join(",")})`);
@@ -1511,7 +1526,7 @@ export class EventCache {
     untilIso: string,
     providers?: string[],
   ): RawModelProviderAggRow[] {
-    const conds = ["ts >= ?", "ts < ?"];
+    const conds = ["ts >= ?", "ts < ?", THREAD_DETAIL_ONLY_SQL];
     const params: SQLQueryBindings[] = [sinceIso, untilIso];
     if (providers !== undefined && providers.length > 0) {
       conds.push(`provider IN (${providers.map(() => "?").join(",")})`);

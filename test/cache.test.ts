@@ -193,6 +193,41 @@ describe("EventCache.sync (incremental)", () => {
   });
 });
 
+describe("cursor thread detail", () => {
+  it("keeps T3 cursor turns out of totals and rollups", () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "tk-cursor-detail-"));
+    const cache = new EventCache(path.join(dir, "cache.db"));
+    try {
+      const account = makeEvent({
+        id: "dash",
+        provider: "cursor",
+        accountKey: "default",
+        model: "grok-4.7",
+        costUsd: 4,
+        ts: "2026-10-20T12:00:00.000Z",
+      });
+      const thread = makeEvent({
+        id: "thread",
+        provider: "t3code",
+        accountKey: "cursor",
+        model: "grok-4.7",
+        sessionId: "thread-1",
+        costUsd: 4,
+        inputTokens: 1000,
+        ts: "2026-10-20T12:05:00.000Z",
+      });
+      expect(cache.insert([account, thread])).toBe(2);
+      expect(cache.totals("2026-10-01T00:00:00.000Z").costUsd).toBeCloseTo(4);
+      const rows = cache.database.query("SELECT id FROM events ORDER BY id").all() as Array<{ id: string }>;
+      expect(rows.map((row) => row.id)).toEqual(["dash", "thread"]);
+      const rolled = cache.database.query("SELECT COALESCE(SUM(cost_usd), 0) AS cost FROM daily_rollups").get() as { cost: number };
+      expect(rolled.cost).toBeCloseTo(4);
+    } finally {
+      cache.close();
+    }
+  });
+});
+
 describe("daily_rollups", () => {
   function rollupRows(cache: EventCache): Array<{
     day: string; provider: string; account_key: string; model: string;

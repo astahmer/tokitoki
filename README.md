@@ -175,7 +175,7 @@ For Home Manager, add `inputs.tokitoki.url = "github:astahmer/tokitoki"`,
 import `inputs.tokitoki.homeManagerModules.default`, then choose one host:
 
 ```nix
-programs.tokitoki.dms.enable = true; # existing DMS: plugin + DankBar placement
+programs.tokitoki.dms.enable = true; # existing Dux Shell / DMS 2.0+: plugin + DankBar placement
 # Or:
 programs.tokitoki.quickshell.enable = true; # standalone bar + session service
 ```

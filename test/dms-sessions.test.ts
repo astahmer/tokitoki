@@ -43,6 +43,27 @@ describe("DMS sessions QML helpers", () => {
     expect(root.pendingSearch).toBe(true);
   });
 
+  it("keeps a session row to one plain preview line", () => {
+    const root = { privacyHideNames: false };
+    const helpers = qmlFunctions(
+      ["sessionTitle", "plainSnippet", "sessionStats", "compactNumber", "safeNumber", "trimDecimal", "formatMoney"],
+      root,
+    );
+    Object.assign(root, helpers);
+    const row = {
+      title: "T3 code customizations",
+      snippet: "T3 code customizations\n### User\nwe dont see the [[bookmarks]]\nlike jj view",
+      requests: 1100,
+      totalTokens: 252_100_000,
+      costUsd: 0,
+    };
+    expect(helpers.plainSnippet(row)).toBe("### User we dont see the bookmarks like jj view");
+    expect(helpers.plainSnippet(row)).not.toContain("\n");
+    expect(helpers.plainSnippet(row)).not.toContain("[[");
+    expect(helpers.sessionStats(row)).toBe("1.1k req · 252.1M tok");
+    expect(helpers.sessionStats({ ...row, costUsd: 1.5 })).toBe("1.1k req · 252.1M tok · $1.50");
+  });
+
   it("can mask account identities without hiding conversation titles", () => {
     const helpers = qmlFunctions(["timestampMillis", "timestampText", "sessionMeta"], {
       privacyHideNames: false,

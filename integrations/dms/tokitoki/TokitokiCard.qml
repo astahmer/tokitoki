@@ -1,6 +1,6 @@
 import QtQuick
 import qs.Common
-import qs.Widgets
+import qs.DCommon.Widgets
 
 Rectangle {
     id: root
@@ -35,7 +35,7 @@ Rectangle {
             height: 32
             spacing: Theme.spacingXS
 
-            DankIcon {
+            DIcon {
                 name: root.iconName
                 size: Theme.iconSizeSmall
                 color: Theme.primary

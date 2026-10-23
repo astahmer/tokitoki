@@ -83,6 +83,20 @@ let
         };
       }
     ]).config;
+  oldDms = builtins.tryEval (
+    (evaluate [
+      dmsModule
+      {
+        programs.tokitoki.dms.enable = true;
+        programs.dank-material-shell.package = lib.mkForce (
+          pkgs.hello.overrideAttrs (_: {
+            version = "1.6.0";
+            __intentionallyOverridingVersion = true;
+          })
+        );
+      }
+    ]).config.programs.tokitoki.enable
+  );
   defaultDms =
     (evaluate [
       dmsModule
@@ -126,18 +140,26 @@ assert success cli;
 assert success standalone;
 assert success embedded;
 assert success dms;
+assert !oldDms.success;
 assert success defaultDms;
 assert success manualDms;
 assert success served;
 assert served.programs.tokitoki.enable;
-assert lib.hasSuffix " serve --port 7000 --host 127.0.0.1" (builtins.head serveService.Service.ExecStart);
+assert lib.hasSuffix " serve --port 7000 --host 127.0.0.1" (
+  builtins.head serveService.Service.ExecStart
+);
 assert serveService.Install.WantedBy == [ "default.target" ];
 assert success timed;
 assert timed.programs.tokitoki.enable;
-assert lib.hasSuffix "/bin/tokitoki-notify" (builtins.head timed.systemd.user.services.tokitoki-notify.Service.ExecStart);
+assert lib.hasSuffix "/bin/tokitoki-notify" (
+  builtins.head timed.systemd.user.services.tokitoki-notify.Service.ExecStart
+);
 assert timed.systemd.user.timers.tokitoki-notify.Timer.OnUnitActiveSec == "5min";
-assert timed.systemd.user.timers.tokitoki-notify.Install.WantedBy == [ timed.wayland.systemd.target ];
-assert lib.hasSuffix " poll" (builtins.head timed.systemd.user.services.tokitoki-poll.Service.ExecStart);
+assert
+  timed.systemd.user.timers.tokitoki-notify.Install.WantedBy == [ timed.wayland.systemd.target ];
+assert lib.hasSuffix " poll" (
+  builtins.head timed.systemd.user.services.tokitoki-poll.Service.ExecStart
+);
 assert timed.systemd.user.timers.tokitoki-poll.Timer.OnUnitActiveSec == "30min";
 assert timed.systemd.user.timers.tokitoki-poll.Install.WantedBy == [ "timers.target" ];
 assert cli.systemd.user.timers == { };
@@ -153,6 +175,10 @@ assert lib.hasSuffix " --no-duplicate" (builtins.head service.Service.ExecStart)
 assert embedded.systemd.user.services == { };
 assert embedded.xdg.configFile ? "quickshell/Tokitoki";
 assert dms.programs.dank-material-shell.managePluginSettings;
+assert dms.xdg.configFile ? "dms/plugins/tokitoki";
+assert dms.xdg.configFile ? "dms/plugin_settings.json";
+assert dms.xdg.configFile ? "dms/settings.json";
+assert !(dms.xdg.configFile ? "DankMaterialShell/plugins/tokitoki");
 assert
   dms.programs.dank-material-shell.plugins.tokitoki.settings.executablePath
   == lib.getExe dms.programs.tokitoki.package;

@@ -9,7 +9,7 @@ cp -R "$integrations/dms/tokitoki" "$destination/views"
 for view in "$destination/views/"*.qml; do
   sed -i \
     -e 's|import qs.Common$|import "../Common"|' \
-    -e 's|import qs.Widgets$|import "../Widgets"|' \
+    -e 's|import qs.DCommon.Widgets$|import "../DCommon/Widgets"|' \
     -e 's|import qs.Modules.Plugins$|import "../Modules/Plugins"|' \
     "$view"
 done

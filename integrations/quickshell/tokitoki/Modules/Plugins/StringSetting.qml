@@ -1,7 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import "../../Common"
-import "../../Widgets"
+import "../../DCommon/Widgets"
 
 Setting {
     id: root

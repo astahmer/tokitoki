@@ -4,7 +4,7 @@ import Quickshell
 import Quickshell.Io
 import Quickshell.Wayland
 import "Common"
-import "Widgets"
+import "DCommon/Widgets"
 import "Modules/Plugins"
 
 ShellRoot {

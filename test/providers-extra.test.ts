@@ -165,6 +165,97 @@ void (async () => {
     }
   }
 
+  // --- t3code v2: cursor turns are session detail, other providers are not re-counted
+  {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "t3code-v2-"));
+    const dbPath = path.join(dir, "statev2.sqlite");
+    const db = new Database(dbPath);
+    db.exec(`
+      CREATE TABLE orchestration_v2_projection_threads (
+        thread_id TEXT PRIMARY KEY, title TEXT NOT NULL, created_at TEXT NOT NULL,
+        deleted_at TEXT, payload_json TEXT NOT NULL, provider_instance_id TEXT
+      );
+      CREATE TABLE orchestration_v2_projection_messages (
+        message_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, role TEXT NOT NULL,
+        created_at TEXT NOT NULL, payload_json TEXT NOT NULL
+      );
+      CREATE TABLE orchestration_v2_projection_provider_turns (
+        provider_turn_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL,
+        completed_at TEXT, started_at TEXT, payload_json TEXT NOT NULL
+      );
+    `);
+    const threadPayload = JSON.stringify({
+      providerInstanceId: "cursor",
+      modelSelection: { instanceId: "cursor", model: "grok-4.7" },
+    });
+    db.query("INSERT INTO orchestration_v2_projection_threads VALUES (?, ?, ?, NULL, ?, ?)").run(
+      "thread-cursor",
+      "T3 cursor thread",
+      "2026-10-20T21:00:00.000Z",
+      threadPayload,
+      "cursor",
+    );
+    db.query("INSERT INTO orchestration_v2_projection_messages VALUES (?, ?, ?, ?, ?)").run(
+      "m1",
+      "thread-cursor",
+      "user",
+      "2026-10-20T21:00:01.000Z",
+      JSON.stringify({ text: "how much did cursor cost" }),
+    );
+    db.query("INSERT INTO orchestration_v2_projection_provider_turns VALUES (?, ?, ?, ?, ?)").run(
+      "turn-1",
+      "thread-cursor",
+      "2026-10-20T21:01:00.000Z",
+      "2026-10-20T21:00:01.000Z",
+      JSON.stringify({
+        status: "completed",
+        turnTokenUsage: {
+          usageStatus: "complete",
+          inputTokens: 1000,
+          outputTokens: 40,
+          cachedInputTokens: 200,
+          cacheCreationTokens: 0,
+        },
+      }),
+    );
+    db.query("INSERT INTO orchestration_v2_projection_threads VALUES (?, ?, ?, NULL, ?, ?)").run(
+      "thread-codex",
+      "codex thread",
+      "2026-10-20T21:02:00.000Z",
+      JSON.stringify({ modelSelection: { instanceId: "codex", model: "gpt-5" } }),
+      "codex",
+    );
+    db.query("INSERT INTO orchestration_v2_projection_provider_turns VALUES (?, ?, ?, ?, ?)").run(
+      "turn-codex",
+      "thread-codex",
+      "2026-10-20T21:03:00.000Z",
+      null,
+      JSON.stringify({
+        status: "completed",
+        turnTokenUsage: { usageStatus: "complete", inputTokens: 5, outputTokens: 5, cachedInputTokens: 0, cacheCreationTokens: 0 },
+      }),
+    );
+    db.close();
+    try {
+      const files = t3CodeProvider.listFiles(dir);
+      assert.deepEqual(files, [dbPath]);
+      const docs = extractT3SessionDocs(dbPath);
+      assert.equal(docs.find((doc) => doc.sessionId === "thread-cursor")?.title, "T3 cursor thread");
+      assert.equal(docs.find((doc) => doc.sessionId === "thread-cursor")?.accountKey, "cursor");
+      const ctx = { state: {}, freshFile: true, machineId: "test" };
+      const events = t3CodeProvider.scanDb!(dbPath, ctx);
+      assert.equal(events.length, 1);
+      assert.equal(events[0]!.provider, "t3code");
+      assert.equal(events[0]!.accountKey, "cursor");
+      assert.equal(events[0]!.sessionId, "thread-cursor");
+      assert.equal(events[0]!.inputTokens, 1000);
+      assert.equal(events[0]!.cacheReadTokens, 200);
+      assert.deepEqual(t3CodeProvider.scanDb!(dbPath, ctx), []);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
   // --- sources note rendering ---------------------------------------------------
   {
     const fake = { ...t3CodeProvider, discoverRoots: () => [], listFiles: () => [] };
