@@ -79,6 +79,7 @@ PluginComponent {
     readonly property var tokenMixSlices: root.buildTokenMixSlices(root.compositionPeriod)
     readonly property var providerSlices: root.buildPeriodSlices(root.payload.providerPeriods, root.selectedPeriod, root.selectedMetric)
     readonly property var modelSlices: root.buildPeriodSlices(root.payload.modelPeriods, root.selectedPeriod, root.selectedMetric)
+    readonly property var t3codeReport: root.t3codeActivityForPeriod(root.selectedPeriod)
     readonly property var attentionItems: root.buildAttentionItems()
     readonly property var quotaStripGroups: root.buildStatusStripGroups()
     readonly property var statusStripGroups: root.barSummaryMode === "icon" ||
@@ -152,6 +153,7 @@ PluginComponent {
     }
 
     component ReportControls: Flow {
+        property bool showMetric: true
         width: parent ? parent.width : 0
         spacing: Theme.spacingS
         Row {
@@ -187,6 +189,7 @@ PluginComponent {
             }
         }
         Row {
+            visible: parent.showMetric
             spacing: Theme.spacingS
             Rectangle {
                 width: 1
@@ -766,7 +769,9 @@ PluginComponent {
     function accountSecondaryLabel(account) {
         if (privacyHideIdentities)
             return providerName(account.provider) + " · identities hidden"
-        var label = String(account.accountKey || "default")
+        var label = (!account.email && !account.accountId && !account.credential)
+            ? "Identity unverified · " + String(account.accountKey || "default")
+            : String(account.accountKey || "default")
         if (Array.isArray(account.alsoOn) && account.alsoOn.length > 0)
             label += " · via " + account.alsoOn.join(", ")
         return label
@@ -815,6 +820,17 @@ PluginComponent {
         })
     }
 
+    function t3codeActivityForPeriod(key) {
+        var periods = payload.t3codeActivity
+        if (!hasPayload || !Array.isArray(periods) || !periods.some(function(period) {
+            return period.total && Number(period.total.requests) > 0
+        }))
+            return null
+        return periods.find(function(period) {
+            return period.key === key && period.total && Array.isArray(period.rows)
+        }) || null
+    }
+
     function cardSurvives(id) {
         if (!searchIsActive())
             return true
@@ -823,6 +839,11 @@ PluginComponent {
             return filteredLimits().length > 0
         if (id === "harness")
             return searchMatchesInRows(payload.today ? payload.today.rows : [], "bucket")
+        if (id === "t3code") {
+            var activity = t3codeActivityForPeriod(selectedPeriod)
+            return searchMatches("Via T3code application activity sessions requests models tokens estimated cost excluded from totals") ||
+                Boolean(activity && searchMatchesInRows(activity.rows, "bucket"))
+        }
         if (id === "repos")
             return !privacyHideRepoSessionNames &&
                 searchMatchesInRows(payload.reposMonth ? payload.reposMonth.rows : [], "bucket")
@@ -854,7 +875,8 @@ PluginComponent {
             return []
         var ordered = []
         for (var i = 0; i < windows.length; i++)
-            ordered.push(windows[i])
+            if (windows[i].source !== "derived")
+                ordered.push(windows[i])
         return ordered.sort(function(a, b) {
             var rankA = windowOrderMinutes(a)
             var rankB = windowOrderMinutes(b)
@@ -885,7 +907,41 @@ PluginComponent {
     function windowTitle(windowData) {
         if (windowData && windowData.label)
             return String(windowData.label)
+        if (windowData && windowData.scope && windowData.scope !== "other")
+            return displayLabel(windowData.scope)
+        if (windowData && ["day", "week", "month"].indexOf(windowData.kind) >= 0)
+            return windowName(windowData.kind)
+        var duration = barWindowDuration(windowData || {})
+        if (duration)
+            return duration + " limit"
+        if (!windowData || /^(0min|unknown)$/.test(String(windowData.kind)))
+            return "Limit"
         return windowName(windowData && windowData.kind)
+    }
+
+    function quotaStatus(windowData) {
+        if (!windowData)
+            return "unknown"
+        if (windowData.status && windowData.status !== "current")
+            return windowData.status
+        var end = Date.parse(String(windowData.resetsAt || windowData.windowEnd || ""))
+        return isFinite(end) && end <= root.barNow ? "expired" : "current"
+    }
+
+    function observationLabel(windowData) {
+        return windowData && windowData.observedAt
+            ? "Observed " + relativeAge(windowData.observedAt) : "Observation time unknown"
+    }
+
+    function budgetValueLabel(windowData) {
+        var text = formatMoney(windowData.cost) + " spent · " + compactNumber(windowData.tokens) + " tokens · " + safeNumber(windowData.requests) + " requests"
+        if (windowData.usedPct !== undefined && windowData.usedPct !== null && isFinite(Number(windowData.usedPct)))
+            text += " · " + Math.round(Number(windowData.usedPct)) + (windowData.kind === "month" ? "% of local budget" : "% of local budget pace")
+        return text
+    }
+
+    function budgetBoundsLabel(windowData) {
+        return String(windowData.windowStart || "Unknown start") + " → " + String(windowData.windowEnd || "Unknown end")
     }
 
     function clockLabel(value) {
@@ -902,7 +958,7 @@ PluginComponent {
 
     function paceLabel(windowData) {
         var pace = windowData && windowData.pace
-        if (!pace)
+        if (!pace || !hasUsedPercent(windowData))
             return ""
         if (pace.status === "over" && pace.runsOutAt && clockLabel(pace.runsOutAt).length > 0)
             return "Runs out ~" + clockLabel(pace.runsOutAt)
@@ -915,7 +971,7 @@ PluginComponent {
 
     function paceMarkerFraction(windowData) {
         var pace = windowData && windowData.pace
-        if (!pace || !isFinite(Number(pace.expectedPercent)))
+        if (!pace || !hasUsedPercent(windowData) || !isFinite(Number(pace.expectedPercent)))
             return -1
         return Math.max(0, Math.min(1, 1 - Number(pace.expectedPercent) / 100))
     }
@@ -969,17 +1025,19 @@ PluginComponent {
     }
 
     function hasUsedPercent(windowData) {
-        return windowData && windowData.usedPct !== null &&
+        return windowData && windowData.source !== "derived" && quotaStatus(windowData) === "current" && windowData.usedPct !== null &&
             windowData.usedPct !== undefined && isFinite(Number(windowData.usedPct))
     }
 
     function remainingPercent(windowData) {
         if (!hasUsedPercent(windowData))
-            return 0
+            return NaN
         return Math.max(0, Math.min(100, 100 - safeNumber(windowData.usedPct)))
     }
 
     function limitFraction(windowData) {
+        if (quotaStatus(windowData) !== "current")
+            return 0
         if (hasUsedPercent(windowData))
             return remainingPercent(windowData) / 100
         var scale = tokenScale(windowData && windowData.kind)
@@ -1013,6 +1071,8 @@ PluginComponent {
     }
 
     function limitValueLabel(windowData) {
+        if (quotaStatus(windowData) !== "current")
+            return displayLabel(quotaStatus(windowData)) + " · " + observationLabel(windowData)
         if (windowData && windowData.amountUsd !== null &&
                 windowData.amountUsd !== undefined)
             return sourceLabel(windowData.source) + " · " + formatMoney(windowData.amountUsd)
@@ -1020,7 +1080,7 @@ PluginComponent {
             return sourceLabel(windowData.source) + " · " + Math.round(remainingPercent(windowData)) + "% left"
         if (windowData && safeNumber(windowData.tokens) > 0)
             return "Estimated · " + compactNumber(windowData.tokens) + " tokens"
-        return "No usage recorded"
+        return "Usage unknown · " + observationLabel(windowData)
     }
 
     function resetLabel(value) {
@@ -1080,7 +1140,7 @@ PluginComponent {
         var timestamp = Date.parse(String(value || ""))
         if (!isFinite(timestamp))
             return "unknown"
-        var seconds = Math.max(0, (Date.now() - timestamp) / 1000)
+        var seconds = Math.max(0, (root.barNow - timestamp) / 1000)
         if (seconds < 60)
             return "just now"
         if (seconds < 3600)
@@ -1252,7 +1312,13 @@ PluginComponent {
                 var windows = orderedWindows(currentAccount.windows)
                 for (var windowIndex = 0; windowIndex < windows.length; windowIndex++) {
                     var windowData = windows[windowIndex]
-                    if (!hasUsedPercent(windowData) && (windowData.amountUsd === undefined || windowData.amountUsd === null))
+                    if (quotaStatus(windowData) !== "current") {
+                        profile.rows.push({ label: windowTitle(windowData),
+                            value: displayLabel(quotaStatus(windowData)) + " · " + observationLabel(windowData),
+                            resetsAt: "", color: Theme.primary, icon: "history" })
+                        continue
+                    }
+                    if (quotaStatus(windowData) !== "current" || (!hasUsedPercent(windowData) && (windowData.amountUsd === undefined || windowData.amountUsd === null)))
                         continue
                     var duration = barWindowDuration(windowData)
                     if (!duration)
@@ -2427,12 +2493,47 @@ PluginComponent {
 
                                                                     StyledText {
                                                                         id: resetText
-                                                                        text: root.resetLabel(windowData.resetsAt)
+                                                                        text: root.quotaStatus(windowData) === "current"
+                                                                            ? root.resetLabel(windowData.resetsAt) : "Awaiting fresh observation"
                                                                         color: Theme.surfaceVariantText
                                                                         font.pixelSize: Theme.fontSizeSmall
                                                                         horizontalAlignment: Text.AlignRight
                                                                     }
                                                                 }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+
+                                                Column {
+                                                    width: parent.width
+                                                    spacing: Theme.spacingXS
+                                                    visible: (accountCard.account.budgetWindows || []).length > 0
+
+                                                    StyledText {
+                                                        text: "Local usage / budgets"
+                                                        color: Theme.surfaceText
+                                                        font.pixelSize: Theme.fontSizeSmall + 1
+                                                        font.weight: Font.DemiBold
+                                                    }
+
+                                                    Repeater {
+                                                        model: accountCard.account.budgetWindows || []
+                                                        delegate: Column {
+                                                            width: parent.width
+                                                            StyledText {
+                                                                width: parent.width
+                                                                text: root.windowName(modelData.kind) + " · " + root.budgetValueLabel(modelData)
+                                                                color: Theme.surfaceVariantText
+                                                                font.pixelSize: Theme.fontSizeSmall + 1
+                                                                wrapMode: Text.WordWrap
+                                                            }
+                                                            StyledText {
+                                                                width: parent.width
+                                                                text: root.budgetBoundsLabel(modelData)
+                                                                color: Theme.surfaceVariantText
+                                                                font.pixelSize: Theme.fontSizeSmall
+                                                                wrapMode: Text.WrapAnywhere
                                                             }
                                                         }
                                                     }
@@ -2784,6 +2885,73 @@ PluginComponent {
                                 TokitokiActivityGrid {
                                     width: parent ? parent.width : 0
                                     payload: root.payload.activityGrid
+                                }
+                            }
+                        }
+
+                        TokitokiCard {
+                            title: "Via T3code"
+                            iconName: "apps"
+                            visible: (root.tabIs("overview") || root.tabIs("sources")) &&
+                                Boolean(root.t3codeReport) && root.cardSurvives("t3code")
+                            contentComponent: Component {
+                                Column {
+                                    width: parent ? parent.width : 0
+                                    spacing: Theme.spacingS
+
+                                    ReportControls { showMetric: false }
+
+                                    StyledText {
+                                        width: parent.width
+                                        text: root.t3codeReport
+                                            ? root.compactNumber(root.t3codeReport.total.sessions) + " sessions · " +
+                                                root.compactNumber(root.t3codeReport.total.requests) + " requests · " +
+                                                root.compactNumber(root.totalTokens(root.t3codeReport.total)) + " tokens · " +
+                                                root.formatMoney(root.t3codeReport.total.costUsd) + " estimated"
+                                            : ""
+                                        color: Theme.surfaceText
+                                        font.pixelSize: Theme.fontSizeMedium
+                                        wrapMode: Text.WordWrap
+                                    }
+
+                                    StyledText {
+                                        width: parent.width
+                                        text: "Observed application activity. Excluded from totals; may already be included in harnesses. Costs are estimated."
+                                        color: Theme.surfaceVariantText
+                                        font.pixelSize: Theme.fontSizeSmall + 1
+                                        wrapMode: Text.WordWrap
+                                    }
+
+                                    Repeater {
+                                        model: root.t3codeReport ? root.t3codeReport.rows : []
+                                        delegate: TokitokiListRow {
+                                            alternate: index % 2 === 1
+                                            rowHeight: t3codeModelDetails.implicitHeight + verticalPadding * 2
+                                            Column {
+                                                id: t3codeModelDetails
+                                                anchors.fill: parent
+                                                spacing: Theme.spacingXS
+                                                StyledText {
+                                                    width: parent.width
+                                                    text: modelData.bucket
+                                                    color: Theme.surfaceText
+                                                    font.pixelSize: Theme.fontSizeMedium
+                                                    elide: Text.ElideRight
+                                                }
+                                                StyledText {
+                                                    width: parent.width
+                                                    text: root.compactNumber(modelData.sessions) + " sess · " +
+                                                        root.compactNumber(modelData.requests) + " req · " +
+                                                        root.compactNumber(root.totalTokens(modelData)) + " tok · " +
+                                                        root.formatMoney(modelData.costUsd) + " est."
+                                                    color: Theme.surfaceVariantText
+                                                    font.pixelSize: Theme.fontSizeSmall + 1
+                                                    isMonospace: true
+                                                    wrapMode: Text.WordWrap
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }

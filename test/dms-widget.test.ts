@@ -12,6 +12,7 @@ const makeWidget = () => {
   const context = createContext({
     // The vm realm has its own Date; share ours so setSystemTime pins "now".
     Date,
+    barNow: Date.now(),
     payload: { schema: 1, app: "tokitoki" },
     hasPayload: true,
     hasLimits: false,
@@ -36,6 +37,42 @@ const makeWidget = () => {
 afterEach(() => setSystemTime());
 
 describe("DMS widget uses the existing payload without distorting totals", () => {
+  it("keeps T3code activity separate, period-aware, and searchable with privacy enabled", () => {
+    const ui = makeWidget();
+    expect(ui.t3codeActivityForPeriod("today")).toBeNull();
+    ui.payload.t3codeActivity = [];
+    expect(ui.t3codeActivityForPeriod("today")).toBeNull();
+    ui.payload.t3codeActivity = [{ key: "today", total: { requests: 0 }, rows: [] }];
+    expect(ui.t3codeActivityForPeriod("today")).toBeNull();
+    ui.payload.today = { rows: [{ bucket: "codex", inputTokens: 50, costUsd: 1 }], total: { inputTokens: 50, costUsd: 1 } };
+    ui.payload.t3codeActivity = [{
+      key: "today",
+      total: { sessions: 1, requests: 3, inputTokens: 100, outputTokens: 20, cacheReadTokens: 30, cacheWriteTokens: 10, costUsd: 2 },
+      rows: [
+        { bucket: "gpt-6", sessions: 1, requests: 2, inputTokens: 100, costUsd: 1.5 },
+        { bucket: "claude-opus", sessions: 1, requests: 1, outputTokens: 20, costUsd: 0.5 },
+      ],
+    }];
+    const activity = ui.t3codeActivityForPeriod("today");
+    expect(activity.total.sessions).toBe(1);
+    expect(ui.totalTokens(activity.total)).toBe(160);
+    expect(ui.t3codeActivityForPeriod("week")).toBeNull();
+    ui.privacyHideIdentities = true;
+    ui.privacyHideRepoSessionNames = true;
+    for (const query of ["T3code", "gpt-6", "estimated", "excluded"]) {
+      ui.searchText = query;
+      expect(ui.cardSurvives("t3code")).toBe(true);
+    }
+    ui.searchText = "unrelated";
+    expect(ui.cardSurvives("t3code")).toBe(false);
+    expect(ui.metricTotal("today", "tokens")).toBe(50);
+    expect(ui.metricTotal("today", "cost")).toBe(1);
+    expect(ui.rowsForPeriod("today").map((row: { bucket: string }) => row.bucket)).toEqual(["codex"]);
+    ui.selectedPeriod = "week";
+    ui.searchText = "gpt-6";
+    expect(ui.cardSurvives("t3code")).toBe(false);
+  });
+
   it("uses the shell host name when searching integration settings", () => {
     const ui = makeWidget();
     ui.shellName = "Quickshell";
@@ -239,7 +276,7 @@ describe("DMS widget uses the existing payload without distorting totals", () =>
     expect(ui.shortestWindowGroups([])).toEqual([]);
   });
 
-  it("keeps derived daily budget windows in shortest selection and hover details", () => {
+  it("keeps local budgets out of quota selection and hover details", () => {
     const ui = makeWidget();
     ui.hasLimits = true;
     ui.barSummaryMode = "shortest-window";
@@ -249,16 +286,43 @@ describe("DMS widget uses the existing payload without distorting totals", () =>
     };
     ui.payload.limits = [{ provider: "codex", accountKey: "work", windows: [
       { kind: "week", usedPct: 20 }, daily,
-    ] }];
+    ], budgetWindows: [daily] }];
     expect(ui.windowOrderMinutes(daily)).toBe(1440);
     expect(ui.barWindowDuration(daily)).toBe("1d");
     const groups = ui.buildStatusStripGroups();
-    expect(ui.shortestWindowGroups(groups)[0].lines).toEqual(["1d 60%"]);
-    expect(groups[0].profiles[0].rows.map((row: { label: string }) => row.label)).toEqual(["1d", "7d"]);
+    expect(ui.shortestWindowGroups(groups)[0].lines).toEqual(["7d 80%"]);
+    expect(groups[0].profiles[0].rows.map((row: { label: string }) => row.label)).toEqual(["7d"]);
+    expect(ui.budgetValueLabel({ ...daily, cost: 2, tokens: 100, requests: 3 })).toBe("$2.00 spent · 100 tokens · 3 requests · 40% of local budget pace");
+    expect(ui.budgetBoundsLabel(daily)).toContain(daily.windowStart);
+    expect(ui.budgetValueLabel({ kind: "month", cost: 0, tokens: 10, requests: 1 })).not.toContain("%");
     expect(ui.barWindowDuration({ ...daily, windowEnd: "invalid" })).toBe("");
     expect(ui.barWindowDuration({ ...daily, windowEnd: daily.windowStart })).toBe("");
     expect(ui.barWindowDuration({ kind: "0min", usedPct: 0 })).toBe("");
     expect(ui.barWindowDuration({ kind: "day", source: "embedded", usedPct: 40 })).toBe("");
+  });
+
+  it("keeps invalid observations neutral and suppresses capacity and pace", () => {
+    setSystemTime(new Date("2026-10-24T12:00:00Z"));
+    const ui = makeWidget();
+    for (const status of ["stale", "expired", "unknown"]) {
+      const window = { kind: "week", status, observedAt: "2026-10-23T12:00:00Z", usedPct: 0, tokens: 100,
+        pace: { expectedPercent: 50, status: "under" } };
+      expect(ui.hasUsedPercent(window)).toBe(false);
+      expect(Number.isNaN(ui.remainingPercent(window))).toBe(true);
+      expect(ui.limitFraction(window)).toBe(0);
+      expect(ui.limitColor(window)).not.toBe("green");
+      expect(ui.limitValueLabel(window)).toBe(status.charAt(0).toUpperCase() + status.slice(1) + " · Observed 1d ago");
+      expect(ui.paceLabel(window)).toBe("");
+      expect(ui.paceMarkerFraction(window)).toBe(-1);
+    }
+    expect(ui.quotaStatus({ usedPct: 0, resetsAt: "2026-10-24T11:00:00Z" })).toBe("expired");
+    const rolling = { status: "current", usedPct: 25, resetsAt: "2026-10-24T12:01:00Z" };
+    expect(ui.hasUsedPercent(rolling)).toBe(true);
+    ui.barNow += 60_000;
+    expect(ui.hasUsedPercent(rolling)).toBe(false);
+    expect(ui.hasUsedPercent({ status: "current", usedPct: 0, windowMinutes: 300 })).toBe(true);
+    expect(ui.windowTitle({ kind: "0min" })).toBe("Limit");
+    expect(ui.accountSecondaryLabel({ provider: "codex", accountKey: "codex" })).toContain("Identity unverified");
   });
 
   it("uses the selected period for token pulse and never loses a queued scan", () => {

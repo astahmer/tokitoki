@@ -122,7 +122,8 @@ export function apiWidgetStatus(wp: WindowParams = {}): WidgetStatusPayload {
         sessions: row.sessions,
         tokens: totalTokens(row),
       }));
-    const budgetPayload = computeBudgetStatus(cache, loadConfig().budgets);
+    const config = loadConfig();
+    const budgetPayload = computeBudgetStatus(cache, config.budgets);
     return {
       schema: WIDGET_STATUS_SCHEMA,
       app: "tokitoki",
@@ -136,6 +137,12 @@ export function apiWidgetStatus(wp: WindowParams = {}): WidgetStatusPayload {
         cachePct: cachePct(total.inputTokens, total.cacheReadTokens),
       },
       providers,
+      t3codeActivity: cache.t3codeActivity({ sinceIso: w.sinceIso, untilIso: w.untilIso }).total,
+      uiPreview: {
+        menubarHidden: config.ui?.hidden?.widget ?? config.ui?.hidden?.menubar ?? config.ui?.hidden?.bar ?? [],
+        previewHidden: config.ui?.previewHidden ?? [],
+        privacyHideIdentities: config.privacy?.hideIdentities === true,
+      },
       budgets: gaugesForMenubar(budgetPayload).map((gauge) => ({
         scope: gauge.scope,
         label: gauge.label,

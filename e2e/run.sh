@@ -62,7 +62,7 @@ if [ "$mode" = all ]; then
   screenshots=(tab-overview tab-quotas tab-tokens tab-reports tab-sessions \
     tab-sources tab-mcp tab-settings sessions-search sessions-detail sessions-back \
     sessions-pagination sessions-page-2 sessions-page-1-return settings-tab settings-config \
-    tokens-lower tokens-models reports-lower settings-notifications)
+    quotas-lower tokens-lower tokens-models reports-lower settings-notifications)
   if [ "$shell" = quickshell ]; then
     screenshots+=(widget-config-before after-restart)
   fi

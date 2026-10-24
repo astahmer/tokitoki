@@ -165,7 +165,7 @@ void (async () => {
     }
   }
 
-  // --- t3code v2: cursor turns are session detail, other providers are not re-counted
+  // --- t3code v2: all routed turns remain available as separate activity
   {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "t3code-v2-"));
     const dbPath = path.join(dir, "statev2.sqlite");
@@ -242,14 +242,16 @@ void (async () => {
       const docs = extractT3SessionDocs(dbPath);
       assert.equal(docs.find((doc) => doc.sessionId === "thread-cursor")?.title, "T3 cursor thread");
       assert.equal(docs.find((doc) => doc.sessionId === "thread-cursor")?.accountKey, "cursor");
-      const ctx = { state: {}, freshFile: true, machineId: "test" };
+      const ctx = { state: { turnRowid: 999 }, freshFile: true, machineId: "test" };
       const events = t3CodeProvider.scanDb!(dbPath, ctx);
-      assert.equal(events.length, 1);
+      assert.equal(events.length, 2);
       assert.equal(events[0]!.provider, "t3code");
       assert.equal(events[0]!.accountKey, "cursor");
       assert.equal(events[0]!.sessionId, "thread-cursor");
       assert.equal(events[0]!.inputTokens, 1000);
       assert.equal(events[0]!.cacheReadTokens, 200);
+      assert.equal(events[1]!.accountKey, "codex");
+      assert.equal(events[1]!.sessionId, "thread-codex");
       assert.deepEqual(t3CodeProvider.scanDb!(dbPath, ctx), []);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });

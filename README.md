@@ -296,6 +296,14 @@ Two different axes answer "where did this usage go?":
 Vendor is derived at query time from (harness, account, model), so stored
 events and their dedupe ids never change and no migration runs.
 
+T3 Code is an application layer over the underlying harnesses. Its activity
+is excluded from shared spending, token/request/session totals, budgets and
+charts, including historical rollups. The separate **Via T3code** card shows
+observed activity and estimated costs without adding them to those totals.
+Raw events and conversations remain available, including through
+`tokitoki sessions --provider t3code --last month`. V2 stores contribute
+reported turn tokens when available; V1 activity uses text-based estimates.
+
 Multi-machine merge: sync `~/.local/share/tokitoki/events.jsonl` between Macs
 (e.g. Syncthing) and list the other machines' files in
 `~/.config/tokitoki/config.json`:
@@ -525,6 +533,16 @@ The command is read-only (it never scans or polls); run `tokitoki poll` to
 refresh provider-reported windows. Optional fields are omitted, never `null`,
 except `usedPercent`.
 
+Provider quotas live in `windows`; local calendar usage and configured budget
+gauges live separately in `budgetWindows`. Quota windows carry `status`
+(`current`, `stale`, `expired`, or `unknown`) and their original `observedAt`.
+Only current observations expose capacity percentages or pace. An elapsed reset
+does not establish zero usage. Complete provider responses replace previous
+window sets, including empty responses; independent model meters retain their
+own identities. Codex account emails require a matching stable account ID.
+See [provider adapter limits](docs/provider-quota-adapter-limits.md) for supported
+response shapes, including the unverified current Cursor weekly schema.
+
 ## Local HTTP API (`tokitoki serve`)
 
 ```sh
@@ -722,7 +740,8 @@ tokitoki notify --dry-run    # what would fire now, without sending or recording
 tokitoki notify              # send pending alerts (e.g. from a cron/systemd timer)
 ```
 
-KDE Plasma reads `tokitoki web` and never runs the CLI, so use the Home
+KDE Plasma reads `tokitoki serve` (port 6736 by default) or `tokitoki web`
+(set port 7788 in its widget settings) and never runs the CLI, so use the Home
 Manager timers there, or wherever alerts should not depend on a bar:
 
 ```nix
@@ -770,7 +789,7 @@ a one-time stderr note.
 | pi | `pi` | ✅ working | `$PI_DIR/agent/sessions` JSONL | tokens, cost reported by harness |
 | Codex CLI | `codex` | ✅ working | `~/.codex/sessions` JSONL | delta-usage rollouts, best effort on unknown shapes |
 | opencode | `opencode` | ✅ working | `$XDG_DATA_HOME/opencode/opencode*.db` SQLite | request-level tokens+cost from assistant messages; watermark cursor on `message.time_updated`; legacy WAL stores opened via immutable fallback; sessions searchable (title + text parts) |
-| T3 Code | `t3code` | ◐ indexed only | `~/Library/Application Support/t3code/IndexedDB/*.leveldb` | threads searchable (titles/prompts); store exposes **no token usage** |
+| T3 Code | `t3code` | ✅ separate activity | `~/.t3/userdata/statev2.sqlite` (V1: `state.sqlite`) | searchable threads and observed turn usage; excluded from shared totals to avoid counting underlying harness usage twice |
 | Antigravity CLI | `antigravity-cli` | ◐ provenance only | `~/.gemini/antigravity-cli/conversations/*.db` | protobuf blobs; no usage exposed |
 | Cursor | `cursor` | ◐ indexed only | `state.vscdb` + `ai-tracking/ai-code-tracking.db` | transcripts/summaries searchable; **no token counts in any inspected store** (199k activity-hash rows verified) |
 | Grok CLI | `grok` | ✅ working | `$GROK_HOME/sessions/**/*.jsonl` | tolerant codex-family parser (`last_token_usage` deltas preferred, flat `usage` spellings accepted) |

@@ -1,4 +1,4 @@
-import type { UsageEvent } from "../types.ts";
+import type { QuotaObservationEvent, UsageEvent } from "../types.ts";
 
 /**
  * Persisted per-file scanner state so incremental scans keep context
@@ -19,6 +19,8 @@ export interface EntryContext {
   freshFile: boolean;
   /** Machine attribution for locally produced events */
   machineId: string;
+  /** Provider quota observations must not manufacture usage requests. */
+  onQuota?: (report: QuotaObservationEvent) => void;
 }
 
 /** Context handed to DB-backed providers (see Provider.scanDb). */

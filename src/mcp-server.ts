@@ -119,6 +119,7 @@ export class TokitokiMcpServer {
     for (const p of PROVIDERS) {
       scanned.push(
         scanProviderCore(p, machineId, {
+          onQuotas: (batch) => cache.insertQuotaObservations(batch),
           onEvents: (batch) => {
             appendEvents(batch);
             cache.insert(batch);

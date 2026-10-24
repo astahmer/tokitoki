@@ -28,6 +28,7 @@ fs.writeFileSync(
     event("a", { provider: "claude-code", accountKey: "default", model: "claude-sonnet-4", costUsd: 1 }),
     event("b", { provider: "pi", accountKey: "openrouter", model: "openrouter/anthropic/claude-opus-4", costUsd: 2 }),
     event("c", { provider: "codex", accountKey: "openai:plus", model: "gpt-5", costUsd: 0.5 }),
+    event("t3", { provider: "t3code", accountKey: "codex", model: "gpt-5", costUsd: 5 }),
   ].join("\n") + "\n",
 );
 
@@ -57,7 +58,7 @@ describe("tokitoki serve", () => {
     expect(server.hostname).toBe("127.0.0.1");
     const res = await fetch(`${base}/v1/health`);
     expect(res.status).toBe(200);
-    expect(await res.json()).toMatchObject({ version: 1, ok: true, app: "tokitoki", appVersion: "test", events: 3 });
+    expect(await res.json()).toMatchObject({ version: 1, ok: true, app: "tokitoki", appVersion: "test", events: 4 });
   });
 
   test("/v1/status matches the web dashboard's compact widget summary", async () => {
@@ -65,6 +66,17 @@ describe("tokitoki serve", () => {
       .parse(await getJson(`${base}/v1/status?last=week`));
     expect(body.stats.requests).toBe(3);
     expect(body.providers.map((provider) => provider.id).sort()).toEqual(["claude-code", "codex", "pi"]);
+  });
+
+  test("native widgets receive separate T3 activity and shared visibility without double counting", async () => {
+    const body = z.object({
+      stats: z.object({ requests: z.number(), costUsd: z.number() }),
+      t3codeActivity: z.object({ requests: z.number(), costUsd: z.number() }),
+      uiPreview: z.object({ menubarHidden: z.array(z.string()), previewHidden: z.array(z.string()), privacyHideIdentities: z.boolean() }),
+    }).parse(await getJson(`${base}/v1/status?last=week`));
+    expect(body.stats).toMatchObject({ requests: 3, costUsd: 3.5 });
+    expect(body.t3codeActivity).toMatchObject({ requests: 1, costUsd: 5 });
+    expect(body.uiPreview).toEqual({ menubarHidden: [], previewHidden: [], privacyHideIdentities: false });
   });
 
   test("/v1/usage groups by vendor by default", async () => {

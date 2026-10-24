@@ -1,0 +1,6 @@
+#!/bin/sh
+if jq -e '.failure' /tmp/native-payload.json >/dev/null; then
+  echo 'fixture unavailable' >&2
+  exit 1
+fi
+cat /tmp/native-payload.json

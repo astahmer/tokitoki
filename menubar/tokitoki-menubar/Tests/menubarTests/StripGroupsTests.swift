@@ -11,7 +11,7 @@ import Testing
 
     private func window(
         kind: String,
-        source: String = "derived",
+        source: String = "embedded",
         tokens: Double,
         usedPct: Double? = nil,
         resetsAt: String? = nil,
@@ -297,7 +297,7 @@ import Testing
 
     // MARK: tokens mode (uniform)
 
-    @Test func tokensModeShowsUsageForEveryGroup() {
+    @Test func tokensModeExcludesDerivedBudgetWindows() {
         let limits = [
             account(provider: "claude-code", accountKey: "default", windows: [
                 window(kind: "week", source: "derived", tokens: 600_000_000),
@@ -310,11 +310,8 @@ import Testing
         let groups = Model.stripGroups(from: limits, metric: "tokens", previewHidden: [])
         let byId = Dictionary(uniqueKeysWithValues: groups.map { ($0.provider, $0.lines) })
 
-        // Exactly one ~line per group; week is the preferred basis.
-        #expect(byId["claude"]?.count == 1)
-        #expect(byId["claude"]?.first?.hasPrefix("~") == true)
-        #expect(byId["openrouter"]?.count == 1)
-        #expect(byId["openrouter"]?.first?.hasPrefix("~") == true)
+        #expect(byId["claude"] == nil)
+        #expect(byId["openrouter"] == nil)
     }
 
     // MARK: preview visibility
@@ -447,14 +444,10 @@ import Testing
             previewLines: 3, previewEnabled: nil, previewMode: "hover", sideNotchEnabled: nil, sideNotchHidden: nil, sideNotchMetric: nil, sideNotchSyncPreview: nil, sideNotchPlacement: nil, providers: nil, menubarHidden: nil,
             cards: nil, pollAuto: nil, pollIntervalMinutes: nil, previewHidden: nil, stripMetric: nil, stripExhausted: nil,
         ), labeled: true)
-        #expect(preview == "session 60% weekly 100% monthly 88%")
+        #expect(preview == "Daily 60% Weekly 100% Monthly 88%")
     }
 
-    @Test func hoverPreviewLabelsCommandCodeDayWindowAsSessionLikeCodexAndClaude() {
-        // windowDisplayName (used by the popover/detail rows) calls
-        // commandcode's daily window "Session", same as codex and
-        // claude-code. The hover strip label must agree, not fall back to
-        // the generic "day" label.
+    @Test func hoverPreviewDoesNotInferSessionFromLegacyDayKind() {
         let limits = [
             account(provider: "commandcode", accountKey: "default", windows: [
                 window(kind: "day", source: "polled", tokens: 0, usedPct: 40),
@@ -464,7 +457,7 @@ import Testing
             previewLines: 3, previewEnabled: nil, previewMode: "hover", sideNotchEnabled: nil, sideNotchHidden: nil, sideNotchMetric: nil, sideNotchSyncPreview: nil, sideNotchPlacement: nil, providers: nil, menubarHidden: nil,
             cards: nil, pollAuto: nil, pollIntervalMinutes: nil, previewHidden: nil, stripMetric: nil, stripExhausted: nil,
         ), labeled: true)
-        #expect(preview == "session 60%")
+        #expect(preview == "Daily 60%")
     }
 
     @Test func localDashboardRoutesUseTheSharedServer() {

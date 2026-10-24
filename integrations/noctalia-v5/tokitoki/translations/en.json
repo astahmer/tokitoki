@@ -1,0 +1,10 @@
+{
+  "display_mode": "Bar display",
+  "shortest": "Shortest window per account",
+  "quotas": "All quota windows",
+  "total": "Usage totals",
+  "icon": "Icon only",
+  "accounts": "Account IDs (provider@accountKey; empty shows all)",
+  "hide_identities": "Hide account identities",
+  "executable": "Tokitoki executable"
+}

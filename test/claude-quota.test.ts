@@ -22,10 +22,10 @@ describe("Claude usage and profile parsing", () => {
   it("keeps per-model weekly windows and extra usage", () => {
     const parsed = parseClaudeUsage(fixture("usage.json"));
     expect(parsed?.windows).toEqual([
-      { windowMinutes: 300, usedPct: 42, resetsAtEpoch: Math.round(Date.parse("2026-10-18T15:00:00.123Z") / 1000) },
-      { windowMinutes: 10_080, usedPct: 61, resetsAtEpoch: Date.parse("2026-10-22T09:00:00Z") / 1000 },
-      { windowMinutes: 10_080, usedPct: 12, resetsAtEpoch: Date.parse("2026-10-22T09:00:00Z") / 1000, model: "opus", label: "Opus weekly" },
-      { windowMinutes: 10_080, usedPct: 35.5, resetsAtEpoch: Date.parse("2026-10-22T09:00:00Z") / 1000, model: "sonnet", label: "Sonnet weekly" },
+      { bucketId: "claude", windowId: "five_hour", scope: "session", windowEnd: "2026-10-18T15:00:00.123Z", windowMinutes: 300, usedPct: 42, resetsAtEpoch: Math.round(Date.parse("2026-10-18T15:00:00.123Z") / 1000) },
+      { bucketId: "claude", windowId: "seven_day", scope: "weekly", windowEnd: "2026-10-22T09:00:00.000Z", windowMinutes: 10_080, usedPct: 61, resetsAtEpoch: Date.parse("2026-10-22T09:00:00Z") / 1000 },
+      { bucketId: "opus", windowId: "seven_day", scope: "model", windowEnd: "2026-10-22T09:00:00.000Z", windowMinutes: 10_080, usedPct: 12, resetsAtEpoch: Date.parse("2026-10-22T09:00:00Z") / 1000, model: "opus", label: "Opus weekly" },
+      { bucketId: "sonnet", windowId: "seven_day", scope: "model", windowEnd: "2026-10-22T09:00:00.000Z", windowMinutes: 10_080, usedPct: 35.5, resetsAtEpoch: Date.parse("2026-10-22T09:00:00Z") / 1000, model: "sonnet", label: "Sonnet weekly" },
     ]);
     expect(parsed?.extraUsage).toEqual({ enabled: true, usedUsd: 12.5, limitUsd: 50, usedPercent: 25 });
   });
@@ -123,11 +123,16 @@ describe("Claude polling", () => {
       expect(card.plan).toBe("Max 5x");
       expect(card.planLabel).toBe("Max 5x");
       expect(card.extraUsage).toEqual({ enabled: false });
-      const session = card.windows.find((window) => window.id === "session")!;
-      expect(session).toMatchObject({ kind: "day", scope: "session", label: "Session", usedPercent: 80, windowMinutes: 300, tokens: 1500 });
+      expect(card.windows.map((window) => window.id).sort()).toEqual(["claude:five_hour", "claude:seven_day", "opus:seven_day:opus"]);
+      expect(card.windows.every((window) => window.source === "embedded" && window.status === "current")).toBe(true);
+      const session = card.windows.find((window) => window.id === "claude:five_hour")!;
+      expect(session).toMatchObject({ bucketId: "claude", windowId: "five_hour", kind: "day", scope: "session", label: "Session", usedPercent: 80, windowMinutes: 300, tokens: 1500 });
       expect(session.pace?.status).toBe("over");
       expect(Date.parse(session.pace!.runsOutAt!)).toBeLessThan(Date.parse(session.resetsAt!));
-      expect(card.windows.find((window) => window.id === "weekly:opus")).toMatchObject({
+      expect(card.windows.find((window) => window.id === "opus:seven_day:opus")).toMatchObject({
+        bucketId: "opus",
+        windowId: "seven_day",
+        source: "embedded",
         kind: "Opus weekly",
         scope: "model",
         model: "opus",

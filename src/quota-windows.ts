@@ -38,10 +38,11 @@ const ON_PACE_TOLERANCE = 5;
 
 const durationScope = (windowMinutes: number): Exclude<QuotaScope, "model"> => {
   if (!Number.isFinite(windowMinutes) || windowMinutes <= 0) return "other";
-  if (windowMinutes <= 12 * 60) return "session";
-  if (windowMinutes <= 1.5 * 1440) return "daily";
-  if (windowMinutes <= 9 * 1440) return "weekly";
-  return "monthly";
+  if (windowMinutes === 300) return "session";
+  if (windowMinutes === 1440) return "daily";
+  if (windowMinutes === 10080) return "weekly";
+  if (windowMinutes >= 28 * 1440 && windowMinutes <= 31 * 1440) return "monthly";
+  return "other";
 };
 
 const SCOPE_LABELS: Record<Exclude<QuotaScope, "model">, string> = {
@@ -67,22 +68,27 @@ export const describeQuotaWindow = (input: {
   usedPercent: number;
   label?: string;
   model?: string;
+  scope?: QuotaScope;
+  bucketId?: string;
+  windowId?: string;
 }): Omit<QuotaWindowFields, "pace"> => {
   const durationKind = durationScope(input.windowMinutes);
+  const labelScope = input.scope !== undefined && input.scope !== "model" ? input.scope : durationKind;
   const bucket = input.model ?? input.label;
   const hasBucket = bucket !== undefined && bucket.length > 0;
   const label = input.model !== undefined
     ? `${titleCase(input.model)} ${SCOPE_LABELS[durationKind].toLowerCase()}`
     : input.label !== undefined && input.label.length > 0
       ? input.label
-      : SCOPE_LABELS[durationKind];
+      : SCOPE_LABELS[labelScope];
+  const stableId = input.windowId ? [input.bucketId, input.windowId, input.model].filter(Boolean).join(":") : undefined;
   return {
-    id: hasBucket ? `${durationKind}:${slug(bucket)}` : durationKind,
+    id: stableId ?? (hasBucket ? `${durationKind}:${slug(bucket)}` : durationKind),
     label,
-    scope: input.model !== undefined ? "model" : durationKind,
+    scope: input.scope ?? (input.model !== undefined ? "model" : durationKind),
     ...(input.model !== undefined ? { model: input.model } : {}),
     usedPercent: Math.max(0, Math.min(100, input.usedPercent)),
-    ...(durationKind !== "other" ? { windowMinutes: input.windowMinutes } : {}),
+    ...(Number.isFinite(input.windowMinutes) && input.windowMinutes > 0 ? { windowMinutes: input.windowMinutes } : {}),
   };
 };
 
@@ -106,12 +112,16 @@ export const computePace = (input: {
   resetsAt: string | undefined;
   windowMinutes: number | undefined;
   now: Date;
+  windowStart?: string;
 }): QuotaPace | undefined => {
-  if (input.resetsAt === undefined || input.windowMinutes === undefined || input.windowMinutes <= 0) return undefined;
+  if (input.resetsAt === undefined) return undefined;
   const resetMs = Date.parse(input.resetsAt);
   const nowMs = input.now.getTime();
   if (!Number.isFinite(resetMs) || resetMs <= nowMs) return undefined;
-  const durationMs = input.windowMinutes * 60_000;
+  const suppliedStart = input.windowStart !== undefined ? Date.parse(input.windowStart) : NaN;
+  const durationMs = Number.isFinite(suppliedStart) ? resetMs - suppliedStart
+    : input.windowMinutes !== undefined ? input.windowMinutes * 60_000 : NaN;
+  if (!Number.isFinite(durationMs) || durationMs <= 0) return undefined;
   const elapsedMs = durationMs - (resetMs - nowMs);
   if (elapsedMs <= 0) return undefined;
 

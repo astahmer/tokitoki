@@ -1,6 +1,7 @@
 import { monthStartIso, sinceIsoFor } from "./report.ts";
 import type { EventCache } from "./cache.ts";
 import type { BlockRow } from "./blocks.ts";
+import { embeddedLimitWindow } from "./limits.ts";
 import { providerInfo } from "./provider-registry.ts";
 import { vendorForProvider } from "./model-provider.ts";
 import { cachedStatusIncidents, refreshStatusIncidents, type IncidentIndicator } from "./status-incidents.ts";
@@ -72,7 +73,7 @@ export async function renderStatusline(
   if (input.sessionId !== undefined) {
     const row = cache.database
       .query(
-        "SELECT COALESCE(SUM(cost_usd), 0) AS c FROM events WHERE session_id = ?",
+        "SELECT COALESCE(SUM(cost_usd), 0) AS c FROM events WHERE session_id = ? AND provider <> 't3code'",
       )
       .get(input.sessionId) as { c: number };
     if (row.c > 0) segments.push(`$${row.c.toFixed(2)} sess`);
@@ -94,7 +95,7 @@ export async function renderStatusline(
     input.sessionId !== undefined
       ? (
           cache.database
-            .query("SELECT account_key, provider FROM events WHERE session_id = ? LIMIT 1")
+            .query("SELECT account_key, provider FROM events WHERE session_id = ? AND provider <> 't3code' LIMIT 1")
             .get(input.sessionId) as { account_key?: string; provider?: string } | undefined
         )
       : undefined;
@@ -116,7 +117,11 @@ export async function renderStatusline(
     if (owner?.provider !== undefined && owner.account_key !== undefined) {
       const snaps = cache.latestQuotaSnapshots(owner.provider, owner.account_key);
       const primary = snaps.find((s) => s.windowMinutes === 300) ?? snaps[0];
-      if (primary !== undefined) usedPct = Math.round(primary.usedPct);
+      if (primary !== undefined) {
+        const quota = embeddedLimitWindow({ snapshot: primary, now: new Date(now),
+          identityVerified: owner.provider !== "codex" || Boolean(primary.accountId) });
+        if (quota.usedPct !== undefined) usedPct = Math.round(quota.usedPct);
+      }
     }
     if (usedPct === undefined) {
       usedPct = Math.min(100, Math.max(0,

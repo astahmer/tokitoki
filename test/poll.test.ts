@@ -174,7 +174,7 @@ describe("pollQuotas", () => {
     const ocCache = path.join(dir, "codex-quota-cache.json");
     const ocAccounts = path.join(dir, "codex-accounts.json");
     writeFileSync(ocCache, JSON.stringify({
-      quotas: { "chatgpt-work": { weeklyPercent: 41, weeklyResetAt: 1_800_000_001 } },
+      quotas: { "chatgpt-work": { updatedAt: Date.now(), weeklyPercent: 41, weeklyResetAt: 1_800_000_001 } },
     }));
     writeFileSync(ocAccounts, JSON.stringify({
       "chatgpt-work": { credential: { chatgptAccountId: "work-account" } },
@@ -232,7 +232,7 @@ describe("pollQuotas", () => {
       });
       const account = res.accounts.find((a) => a.harnesses === undefined && a.accountKey === "default" && a.email === "cc@example.com");
       expect(account).toBeDefined();
-      expect(account!.windows.map((w) => w.windowMinutes).sort((a, b) => a - b)).toEqual([300, 10_080, 43_200]);
+      expect(account!.windows.map((w) => w.windowMinutes).sort((a, b) => a - b)).toEqual([0, 300, 10_080]);
       expect(account!.windows.map((w) => Math.round(w.usedPct)).sort((a, b) => a - b)).toEqual([25, 20, 100 * 5 / 25].sort((a, b) => a - b));
       expect(account!.inserted).toBe(3);
     } finally {
@@ -280,8 +280,7 @@ describe("pollQuotas", () => {
       expect(called).toBe(4); // codex usage + reset credits + gateway probes
       expect(res.ok).toBe(true);
       const acc = res.accounts[0]!;
-      // scan-era key shape: <model_provider>:<plan_type>
-      expect(acc.accountKey).toBe("openai:plus");
+      expect(acc.accountKey).toBe("openai:acct-123");
       expect(acc.email).toBe("user@example.com");
       expect(acc.windows.map((w) => w.windowMinutes).sort((a, b) => a - b)).toEqual([300, 10_080]);
       expect(acc.inserted).toBe(2);
@@ -290,10 +289,10 @@ describe("pollQuotas", () => {
         .query("SELECT account_key, window_minutes, used_pct FROM quota_snapshots ORDER BY window_minutes")
         .all() as Array<{ account_key: string; window_minutes: number; used_pct: number }>;
       expect(rows.map((r) => [r.account_key, r.window_minutes])).toEqual([
-        ["openai:plus", 300],
-        ["openai:plus", 10_080],
+        ["openai:acct-123", 300],
+        ["openai:acct-123", 10_080],
       ]);
-      expect(rows.every((r) => r.account_key === "openai:plus")).toBe(true);
+      expect(rows.every((r) => r.account_key === "openai:acct-123")).toBe(true);
     } finally {
       cache.close();
     }
@@ -328,7 +327,7 @@ describe("pollQuotas", () => {
       const res = await pollQuotas({ authPath: fixtureAuth(), piAuthPath: piAuth, fetcher, cache, ...hermeticPaths() });
       expect(res.accounts.length).toBeGreaterThan(0);
       const acc = res.accounts[0]!;
-      expect(acc.accountKey).toBe("openai:plus");
+      expect(acc.accountKey).toBe("openai:acct-123");
       expect(acc.windows[0]!.usedPct).toBeLessThanOrEqual(100);
     } finally {
       cache.close();
@@ -926,12 +925,8 @@ describe("pollQuotas", () => {
     }
   });
 
-  it("persists the same reset-time fallback it returns for OpenRouter's key-based account", async () => {
-    // OpenRouter's /key endpoint carries no reset timestamp (resetsAtEpoch
-    // is always 0 from pollOpenRouter itself). The pi-store branch patches
-    // this to "now" for display, but previously persisted the RAW,
-    // unpatched windows — so the immediately-returned account object and
-    // the row actually written to quota_snapshots disagreed.
+  it("persists the same unknown reset it returns for OpenRouter's key-based account", async () => {
+    // The key endpoint supplies a period, but no reset timestamp.
     const dir = mkdtempSync(path.join(os.tmpdir(), "tk-poll-or-reset-"));
     const cache = new EventCache(path.join(dir, "cache.db"));
     try {
@@ -958,7 +953,7 @@ describe("pollQuotas", () => {
       const acc = res.accounts.find((a) => a.accountKey === "openrouter");
       expect(acc).toBeDefined();
       const returnedResetsAt = acc!.windows[0]!.resetsAtEpoch;
-      expect(returnedResetsAt).toBeGreaterThan(0); // patched to "now", not the raw 0
+      expect(returnedResetsAt).toBe(0);
 
       const row = cache.database
         .query("SELECT resets_at FROM quota_snapshots WHERE provider = 'pi' AND account_key = 'openrouter'")
@@ -980,13 +975,14 @@ describe("pollQuotas", () => {
         JSON.stringify({
           quotas: {
             __main__: {
+              updatedAt: Date.now(),
               weeklyPercent: 41,
               weeklyResetAt: 1_800_000_000,
               shortPercent: 12,
               shortResetAt: 1_800_001_000,
               shortWindowSeconds: 18_000,
             },
-            "chatgpt-abc": { weeklyPercent: 41, weeklyResetAt: 1_800_000_000 }, // same window → collapses
+            "chatgpt-abc": { updatedAt: Date.now(), weeklyPercent: 41, weeklyResetAt: 1_800_000_000 },
           },
         }),
       );
@@ -1005,7 +1001,8 @@ describe("pollQuotas", () => {
       expect(codexRows).toHaveLength(2);
       expect(codexRows.find((row) => row.window_minutes === 10_080)?.used_pct).toBeCloseTo(41);
       const windows = res.accounts.find((a) => a.accountKey === "codex")?.windows ?? [];
-      expect(windows.map((window) => window.windowMinutes)).toEqual([18_000 / 60, 10_080]);
+      expect(windows.map((window) => window.windowMinutes).sort((a, b) => a - b)).toEqual([18_000 / 60, 10_080]);
+      expect(res.accounts.some((account) => account.accountKey === "codex:chatgpt-abc")).toBe(true);
       void res;
     } finally {
       cache.close();
@@ -1052,7 +1049,7 @@ describe("pollQuotas", () => {
       writeFileSync(
         ocCache,
         JSON.stringify({
-          quotas: { "chatgpt-newperson": { weeklyPercent: 55, weeklyResetAt: sharedResetAt } },
+          quotas: { "chatgpt-newperson": { updatedAt: Date.now(), weeklyPercent: 55, weeklyResetAt: sharedResetAt } },
         }),
       );
       writeFileSync(
@@ -1133,8 +1130,8 @@ describe("pollQuotas", () => {
       const ocCache = path.join(dir, "codex-quota-cache.json");
       const ocAccounts = path.join(dir, "codex-accounts.json");
       writeFileSync(ocCache, JSON.stringify({ quotas: {
-        "chatgpt-personal": { weeklyPercent: 0, weeklyResetAt: 1_800_000_000 },
-        "chatgpt-work": { weeklyPercent: 44, weeklyResetAt: 1_800_000_000 },
+        "chatgpt-personal": { updatedAt: Date.now(), weeklyPercent: 0, weeklyResetAt: 1_800_000_000 },
+        "chatgpt-work": { updatedAt: Date.now(), weeklyPercent: 44, weeklyResetAt: 1_800_000_000 },
       }}));
       writeFileSync(ocAccounts, JSON.stringify({
         "chatgpt-personal": { credential: { chatgptAccountId: "personal-id", email: "personal@example.com" } },

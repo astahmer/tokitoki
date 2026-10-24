@@ -188,6 +188,35 @@ struct LimitWindow: Codable {
     var model: String? = nil
     var windowMinutes: Double? = nil
     var pace: QuotaPace? = nil
+    var status: String? = nil
+    var observedAt: String? = nil
+    var bucketId: String? = nil
+    var windowId: String? = nil
+
+    var notificationIdentity: String {
+        if let id, !id.isEmpty { return "id:" + id }
+        let legacyLabel = bucketId == nil && windowId == nil && model == nil ? label ?? "" : ""
+        let parts = [bucketId ?? "", windowId ?? kind, model ?? "", legacyLabel]
+        return "meter:" + parts.map { "\($0.utf8.count):\($0)" }.joined()
+    }
+
+    var quotaStatus: String {
+        if let status, status != "current" { return status }
+        if let end = (resetsAt ?? windowEnd).flatMap(parseISO), end <= Date() { return "expired" }
+        return "current"
+    }
+
+    var currentUsedPct: Double? {
+        guard source != "derived", quotaStatus == "current", let usedPct, usedPct.isFinite else { return nil }
+        return usedPct
+    }
+
+    var observationLabel: String {
+        guard let observedAt, let date = parseISO(observedAt) else { return "Observation time unknown" }
+        let age = max(0, Int(Date().timeIntervalSince(date)))
+        let text = age < 60 ? "just now" : age < 3600 ? "\(age / 60)m ago" : age < 86400 ? "\(age / 3600)h ago" : "\(age / 86400)d ago"
+        return "Observed " + text
+    }
 }
 
 struct QuotaPace: Codable {
@@ -196,6 +225,40 @@ struct QuotaPace: Codable {
     /// "under" | "on" | "over"
     let status: String
     let runsOutAt: String?
+}
+
+struct QuotaObservation: Codable {
+    let remaining: Double
+    let resetAt: String?
+}
+
+struct QuotaNotificationUpdate {
+    let identity: String
+    let remaining: Double
+    let resetAt: String?
+    let critical: Bool
+    let availableAgain: Bool
+    let changed: Bool
+
+    var criticalKey: String { "quota-critical|\(identity)|\(resetAt ?? "unknown")" }
+    var paceKey: String { "quota-pace|\(identity)|\(resetAt ?? "unknown")" }
+    var resetKey: String { "quota-reset|\(identity)|\(resetAt ?? "unknown")" }
+
+    static func record(account: AccountLimits, window: LimitWindow, criticalPercent: Double,
+                       observations: inout [String: QuotaObservation]) -> QuotaNotificationUpdate? {
+        guard let used = window.currentUsedPct else { return nil }
+        let remaining = max(0, min(100, 100 - used))
+        let identity = "\(account.provider)@\(account.accountKey)|\(window.notificationIdentity)"
+        let previous = observations[identity]
+        let resetChanged = previous?.resetAt != nil && window.resetsAt != nil
+            && previous?.resetAt != window.resetsAt
+        let previouslyCritical = previous.map { $0.remaining <= criticalPercent } ?? false
+        let availableAgain = previouslyCritical && remaining > criticalPercent && (resetChanged || remaining >= 50)
+        let changed = previous?.remaining != remaining || previous?.resetAt != window.resetsAt
+        observations[identity] = QuotaObservation(remaining: remaining, resetAt: window.resetsAt)
+        return QuotaNotificationUpdate(identity: identity, remaining: remaining, resetAt: window.resetsAt,
+                                       critical: remaining <= criticalPercent, availableAgain: availableAgain, changed: changed)
+    }
 }
 
 struct AccountExtraUsage: Codable {
@@ -246,6 +309,9 @@ struct AccountLimits: Codable, Identifiable {
     var vendor: String? = nil
     var extraUsage: AccountExtraUsage? = nil
     var balance: AccountBalance? = nil
+    var budgetWindows: [LimitWindow]? = nil
+
+    var quotaWindows: [LimitWindow] { windows.filter { $0.source != "derived" } }
 
     var id: String { "\(provider)@\(accountKey)" }
 }
@@ -351,6 +417,12 @@ enum SideNotchMode: String, CaseIterable, Identifiable {
 /// The payload carries separate harness, inferred-provider, and model series.
 struct SpendPeriod: Codable {
     let key: String
+    let rows: [ReportRow]
+}
+
+struct T3codeActivityPeriod: Codable {
+    let key: String
+    let total: TotalsRow
     let rows: [ReportRow]
 }
 
@@ -493,6 +565,7 @@ struct WidgetPayload: Decodable {
     let spendPeriods: [SpendPeriod]?
     let providerPeriods: [SpendPeriod]?
     let modelPeriods: [SpendPeriod]?
+    let t3codeActivity: [T3codeActivityPeriod]?
     let history: DailyUsageHistory?
     let activityGrid: ActivityGridPayload?
     let repoHistory: DailyUsageHistory?
@@ -573,6 +646,7 @@ final class Model: ObservableObject {
     @Published var spendPeriods: [SpendPeriod] = []
     @Published var providerPeriods: [SpendPeriod] = []
     @Published var modelPeriods: [SpendPeriod] = []
+    @Published var t3codeActivity: [T3codeActivityPeriod] = []
     @Published var history: DailyUsageHistory?
     @Published var activityGrid: ActivityGridPayload?
     @Published var repoHistory: DailyUsageHistory?
@@ -642,11 +716,6 @@ final class Model: ObservableObject {
     private var sessionTask: Task<Void, Never>?
     private var sessionPageCache: [String: PopoverSessionsPayload] = [:]
     private var sideNotchDisplayNameTasks: [String: Task<Void, Never>] = [:]
-
-    private struct QuotaObservation: Codable {
-        let remaining: Double
-        let resetAt: String?
-    }
 
     private static let debug = ProcessInfo.processInfo.environment["TOKITOKI_MENUBAR_DEBUG"] == "1"
 
@@ -1357,7 +1426,7 @@ final class Model: ObservableObject {
         guard pollAdaptive else { return max(1, pollIntervalMinutes) }
         let now = Date()
         let nearestReset = limits
-            .flatMap { $0.windows }
+            .flatMap { $0.quotaWindows }
             .compactMap { $0.resetsAt.flatMap(parseISO) }
             .filter { $0 > now }
             .min()
@@ -1470,6 +1539,7 @@ final class Model: ObservableObject {
                 self.spendPeriods = p.spendPeriods ?? []
                 self.providerPeriods = p.providerPeriods ?? []
                 self.modelPeriods = p.modelPeriods ?? []
+                self.t3codeActivity = p.t3codeActivity ?? []
                 self.history = p.history
                 self.activityGrid = p.activityGrid
                 self.repoHistory = p.repoHistory
@@ -1634,24 +1704,19 @@ final class Model: ObservableObject {
     private func applyQuotaNotifications(_ limits: [AccountLimits]) {
         var changed = false
         for account in limits {
-            for window in account.windows {
-                guard let used = window.usedPct else { continue }
-                let remaining = max(0, min(100, 100 - used))
-                let identity = "\(account.provider)@\(account.accountKey)|\(window.kind)"
-                let previous = quotaObservations[identity]
-                let resetChanged = previous?.resetAt != nil
-                    && window.resetsAt != nil
-                    && previous?.resetAt != window.resetsAt
-                let recovered = previous.map { $0.remaining <= Double(quotaCriticalPercent) && remaining >= 50 } ?? false
+            for window in account.quotaWindows {
+                guard let update = QuotaNotificationUpdate.record(account: account, window: window,
+                    criticalPercent: Double(quotaCriticalPercent), observations: &quotaObservations) else { continue }
+                changed = changed || update.changed
+                let remaining = update.remaining
                 let display = account.email ?? account.credential ?? account.accountKey
                 let name = "\(account.provider) · \(display) · \(windowDisplayName(window, provider: account.provider))"
                 let reset = window.resetsAt.map(countdown) ?? "—"
 
-                if notificationsEnabled && remaining <= Double(quotaCriticalPercent) {
-                    let key = "quota-critical|\(identity)|\(window.resetsAt ?? "unknown")"
+                if notificationsEnabled && update.critical {
                     notifyOnce(
                         kind: "quotaCritical",
-                        key: key,
+                        key: update.criticalKey,
                         title: "tokitoki quota critical",
                         body: "\(name): \(Int(remaining.rounded()))% left · resets in \(reset)",
                         reason: "The reported \(windowDisplayName(window, provider: account.provider).lowercased()) quota reached your configured critical threshold of \(quotaCriticalPercent)% remaining.",
@@ -1662,27 +1727,20 @@ final class Model: ObservableObject {
                    let runsOut = pace.runsOutAt.flatMap(parseISO) {
                     notifyOnce(
                         kind: "quotaPace",
-                        key: "quota-pace|\(identity)|\(window.resetsAt ?? "unknown")",
+                        key: update.paceKey,
                         title: "tokitoki quota running out",
                         body: "\(name): \(Int(remaining.rounded()))% left · runs out ~\(runsOut.formatted(date: .omitted, time: .shortened)), resets in \(reset)",
                         reason: "At the current burn rate this window is exhausted before it resets.",
                     )
                 }
-                if notificationsEnabled && resetAwareNotifications && (resetChanged || recovered) {
-                    let key = "quota-reset|\(identity)|\(window.resetsAt ?? "unknown")"
+                if notificationsEnabled && resetAwareNotifications && update.availableAgain {
                     notifyOnce(
                         kind: "quotaReset",
-                        key: key,
+                        key: update.resetKey,
                         title: "tokitoki quota available",
                         body: "\(name) is available again · \(Int(remaining.rounded()))% left",
                         reason: "This quota was previously exhausted or critical and its provider now reports usable capacity again.",
                     )
-                }
-
-                let next = QuotaObservation(remaining: remaining, resetAt: window.resetsAt)
-                if previous?.remaining != next.remaining || previous?.resetAt != next.resetAt {
-                    quotaObservations[identity] = next
-                    changed = true
                 }
             }
         }
@@ -1897,7 +1955,7 @@ final class Model: ObservableObject {
         }
         var maxima: [String: Double] = [:]
         for l in limits {
-            for w in l.windows { maxima[w.kind] = max(maxima[w.kind] ?? 0, w.tokens) }
+            for w in l.quotaWindows { maxima[w.kind] = max(maxima[w.kind] ?? 0, w.tokens) }
         }
 
         struct AccountPreview {
@@ -1923,10 +1981,14 @@ final class Model: ObservableObject {
             // fixed cap — keep it out of the exhaustion/reset math below and
             // just append its dollar figure to whatever percent lines exist.
             var amountLines: [String] = []
-            for w in l.windows {
+            for w in l.quotaWindows {
+                if w.quotaStatus != "current" {
+                    amountLines.append(w.quotaStatus.capitalized)
+                    continue
+                }
                 if let amount = w.amountUsd {
                     amountLines.append(String(format: "$%.2f", amount))
-                } else if let pct = w.usedPct {
+                } else if let pct = w.currentUsedPct {
                     let remaining = Int(max(0, min(100, 100 - pct)).rounded())
                     accountPcts.append(remaining)
                     if remaining == 0, let reset = w.resetsAt, let date = parseISO(reset) {
@@ -2309,7 +2371,7 @@ final class Model: ObservableObject {
 
     func sideNotchRemaining(for upstream: String) -> Double? {
         sideNotchAccounts(for: upstream)
-            .compactMap { Self.sideNotchWindow($0, preference: sideNotchWindow)?.usedPct.map { max(0, min(100, 100 - $0)) } }
+            .compactMap { Self.sideNotchWindow($0, preference: sideNotchWindow)?.currentUsedPct.map { max(0, min(100, 100 - $0)) } }
             .min()
     }
 
@@ -2557,7 +2619,7 @@ final class Model: ObservableObject {
     }
 
     static func primaryWindow(_ l: AccountLimits) -> LimitWindow? {
-        l.windows.first { $0.usedPct != nil } ?? l.windows.first
+        l.quotaWindows.first { $0.currentUsedPct != nil } ?? l.quotaWindows.first
     }
 
     /// Choose the quota window used by the rail's compact ring/value. A
@@ -2571,7 +2633,7 @@ final class Model: ObservableObject {
         case "month": kind = "month"
         default: kind = nil
         }
-        if let kind, let selected = l.windows.first(where: { $0.kind == kind }) {
+        if let kind, let selected = l.quotaWindows.first(where: { $0.kind == kind }) {
             return selected
         }
         return primaryWindow(l)
@@ -2594,23 +2656,20 @@ final class Model: ObservableObject {
         }
         var groups: [String] = []
         for l in limits {
-            let pcts = l.windows.compactMap { w -> String? in
+            let pcts = l.quotaWindows.compactMap { w -> String? in
+                if w.quotaStatus != "current" {
+                    return labeled ? windowDisplayName(w) + " · " + w.quotaStatus.capitalized + " · " + w.observationLabel : w.quotaStatus.capitalized
+                }
                 // Open-ended spend (e.g. Cursor's On-Demand): a dollar figure,
                 // never a percent — matches the provider's own dashboard.
                 if let amount = w.amountUsd {
                     let value = String(format: "$%.2f", amount)
                     return labeled ? "\(w.kind) \(value)" : value
                 }
-                guard let pct = w.usedPct else { return nil }
+                guard let pct = w.currentUsedPct else { return nil }
                 let remaining = Int(max(0, min(100, 100 - pct)).rounded())
                 guard labeled else { return "\(remaining)%" }
-                let label: String
-                switch w.kind {
-                case "day": label = (l.provider == "codex" || l.provider == "claude-code" || l.provider == "commandcode") ? "session" : "day"
-                case "week": label = "weekly"
-                case "month": label = "monthly"
-                default: label = w.kind
-                }
+                let label = windowDisplayName(w, provider: l.provider)
                 return "\(label) \(remaining)%"
             }
             if !pcts.isEmpty { groups.append(pcts.joined(separator: " ")) }
@@ -3831,7 +3890,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 acc["\(l.provider)@\(l.accountKey)"] = [
                     "resetsAt": p?.resetsAt ?? "nil",
                     "countdown": countdown(p?.resetsAt),
-                    "usedPct": p?.usedPct as Any,
+                    "usedPct": p?.currentUsedPct as Any,
                 ]
             },
         ]
@@ -5315,7 +5374,7 @@ struct SideNotchView: View {
         return groups.map { group in
             let limits = group.limits
             let remaining = limits.compactMap { limit in
-                Model.sideNotchWindow(limit, preference: model.sideNotchWindow)?.usedPct.map { max(0, min(100, 100 - $0)) }
+                Model.sideNotchWindow(limit, preference: model.sideNotchWindow)?.currentUsedPct.map { max(0, min(100, 100 - $0)) }
             }.min()
             let tokenTotal = limits.compactMap { Model.sideNotchWindow($0, preference: model.sideNotchWindow)?.tokens }.reduce(0, +)
             let freshness = limits.contains(where: { $0.freshness == "stale" })
@@ -5355,7 +5414,7 @@ struct SideNotchView: View {
         guard let selectedEntry else {
             return SideNotchGeometry.dynamicDetailHeight(forRowCount: 0)
         }
-        let rowCount = Set(selectedEntry.limits.flatMap(\.windows).map(\.kind)).count
+        let rowCount = Set(selectedEntry.limits.flatMap(\.quotaWindows).map(\.kind)).count
         // The header contains title/actions, account identity, freshness or
         // recovery action, and the mode summary. Keep the row formula honest
         // so the card ends after its content rather than clipping the final
@@ -5839,19 +5898,28 @@ struct SideNotchDetailView: View {
     }
 
     private var rows: [Row] {
-        let grouped = Dictionary(grouping: entry.limits.flatMap(\.windows), by: \.kind)
+        let grouped = Dictionary(grouping: entry.limits.flatMap(\.quotaWindows)) { window in
+            window.id ?? [window.bucketId ?? "", window.windowId ?? "", window.kind, window.model ?? ""].joined(separator: ":")
+        }
         let order = ["day": 0, "week": 1, "month": 2]
-        return grouped.map { kind, windows in
-            let remaining = windows.compactMap { $0.usedPct.map { max(0, min(100, 100 - $0)) } }.min()
+        return grouped.sorted {
+            let left = $0.value.first
+            let right = $1.value.first
+            let leftMinutes = left?.windowMinutes.flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
+            let rightMinutes = right?.windowMinutes.flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
+            return (leftMinutes ?? Double(order[left?.kind ?? ""] ?? 9) * 10080)
+                < (rightMinutes ?? Double(order[right?.kind ?? ""] ?? 9) * 10080)
+        }.map { identity, windows in
+            let remaining = windows.compactMap { $0.currentUsedPct.map { max(0, min(100, 100 - $0)) } }.min()
             let tokens = windows.map(\.tokens).max() ?? 0
             return Row(
-                id: kind,
-                label: windowDisplayName(kind, provider: entry.limits.first?.provider ?? entry.provider),
+                id: identity,
+                label: windows.first.map { windowDisplayName($0) + ($0.quotaStatus == "current" ? "" : " · " + $0.quotaStatus.capitalized + " · " + $0.observationLabel) } ?? "Limit",
                 remaining: remaining,
                 tokens: tokens,
                 reset: windows.compactMap(\.resetsAt).map(countdown).first ?? "—",
             )
-        }.sorted { (order[$0.id] ?? 9) < (order[$1.id] ?? 9) }
+        }
     }
 
     private var notchMode: SideNotchMode {
@@ -6372,14 +6440,14 @@ struct HoverPreviewView: View {
             .filter { !model.menubarHidden.contains($0.provider) && !model.menubarHidden.contains("\($0.provider):\($0.accountKey)") }
             .flatMap { limit in
                 let account = model.privacyHideIdentities ? "Private account" : (limit.email ?? limit.credential ?? limit.accountKey)
-                return limit.windows.prefix(3).map { window in
-                    let remaining = window.usedPct.map { max(0, min(100, 100 - $0)) }
+                return limit.quotaWindows.prefix(3).map { window in
+                    let remaining = window.currentUsedPct.map { max(0, min(100, 100 - $0)) }
                     return Entry(
                         id: "\(limit.id):\(window.kind)",
                         provider: limit.provider,
                         account: account,
                         window: windowDisplayName(window, provider: limit.provider),
-                        value: remaining.map { "\(Int($0.rounded()))% left" } ?? "~\(humanCount(window.tokens)) tokens",
+                        value: window.quotaStatus != "current" ? window.quotaStatus.capitalized + " · " + window.observationLabel : (remaining.map { "\(Int($0.rounded()))% left" } ?? "Usage unknown"),
                         reset: window.resetsAt.map(countdown) ?? "—",
                         remaining: remaining,
                     )
@@ -7066,6 +7134,9 @@ struct ContentView: View {
             return model.limits.contains(where: accountMatches)
         case "harness":
             return (model.today?.rows ?? []).contains { matches($0.bucket) }
+        case "t3code":
+            return matches("Via T3code application activity sessions requests models tokens estimated cost excluded from totals")
+                || (model.t3codeActivity.first { $0.key == spendPeriodKey }?.rows ?? []).contains { matches($0.bucket) }
         case "repos":
             return model.repos.contains { matches($0.bucket) }
         case "usage":
@@ -7231,6 +7302,7 @@ struct ContentView: View {
                     attentionSummary
                     searchBar
                     webDashboardLinks
+                    t3codeActivityCard
                     ForEach(orderedVisibleCards(), id: \.self) { id in
                         Group {
                             if cardSurvives(id) { cardBody(id) }
@@ -7298,8 +7370,8 @@ struct ContentView: View {
 
     private var attentionSummary: some View {
         var attention: [(String, String, String)] = model.limits.compactMap { limit -> (String, String, String)? in
-            guard let window = limit.windows.compactMap({ window -> (LimitWindow, Double)? in
-                guard let used = window.usedPct else { return nil }
+            guard let window = limit.quotaWindows.compactMap({ window -> (LimitWindow, Double)? in
+                guard let used = window.currentUsedPct else { return nil }
                 return (window, max(0, min(100, 100 - used)))
             }).min(by: { $0.1 < $1.1 }), window.1 <= Double(model.quotaCriticalPercent) else { return nil }
             let reset = window.0.resetsAt.map(countdown) ?? "—"
@@ -8190,6 +8262,8 @@ private struct HighlightedSnippet: View {
         ScrollView(.vertical) {
             LazyVStack(alignment: .leading, spacing: 10) {
                 freshnessRow
+                searchBar
+                t3codeActivityCard
                 card(title: "tracked sources", icon: "doc.text.magnifyingglass") {
                     Text("tokitoki reads local harness logs and keeps the dashboard projection in sync.")
                         .font(.caption).foregroundStyle(.secondary)
@@ -8786,8 +8860,8 @@ private struct HighlightedSnippet: View {
         if !model.limits.isEmpty {
             md += "\n## Accounts\n\n| harness | account | windows |\n|---|---|---|\n"
             for l in model.limits {
-                let wins = l.windows.map { w -> String in
-                    let pct = w.usedPct.map { " \(Int(max(0, min(100, 100 - $0))))% left" } ?? " \(humanCount(w.tokens))"
+                let wins = l.quotaWindows.map { w -> String in
+                    let pct = w.currentUsedPct.map { " \(Int(max(0, min(100, 100 - $0))))% left" } ?? " \(humanCount(w.tokens))"
                     return "\(windowDisplayName(w, provider: l.provider)):\(pct)"
                 }.joined(separator: " · ")
                 let who = l.email ?? l.credential ?? l.accountKey
@@ -9215,8 +9289,12 @@ private struct HighlightedSnippet: View {
     }
 
     private var spendPeriodPicker: some View {
+        spendPeriodControls(includeCustom: true)
+    }
+
+    private func spendPeriodControls(includeCustom: Bool) -> some View {
         HStack(spacing: 0) {
-            ForEach(Self.spendPeriodOrder, id: \.self) { key in
+            ForEach(Self.spendPeriodOrder.filter { includeCustom || $0 != "custom" }, id: \.self) { key in
                 Button {
                     spendPeriodKey = key
                 } label: {
@@ -9236,6 +9314,41 @@ private struct HighlightedSnippet: View {
         }
         .background(.quaternary.opacity(0.35), in: Capsule())
         .accessibilityIdentifier("spend-period-picker")
+    }
+
+    @ViewBuilder private var t3codeActivityCard: some View {
+        if model.t3codeActivity.contains(where: { $0.total.requests > 0 }), cardSurvives("t3code") {
+            CollapsibleCard(title: "Via T3code", icon: "apps.iphone", showsDragHandle: false) {
+                spendPeriodControls(includeCustom: false)
+                if let activity = model.t3codeActivity.first(where: { $0.key == spendPeriodKey }) {
+                    HStack(alignment: .top) {
+                        VStack(alignment: .leading, spacing: 3) {
+                            metric("sessions", "\(activity.total.sessions)")
+                            metric("requests", humanCount(Double(activity.total.requests)))
+                        }
+                        Spacer()
+                        VStack(alignment: .trailing, spacing: 3) {
+                            metric("tokens", humanCount(activity.total.totalTokens))
+                            metric("estimated cost", String(format: "$%.2f", activity.total.costUsd))
+                        }
+                    }
+                    ForEach(activity.rows, id: \.bucket) { row in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(row.bucket).font(.caption.weight(.medium)).textSelection(.enabled)
+                            Text("\(row.sessions) sessions · \(row.requests) requests · \(humanCount(row.totalTokens)) tokens · \(String(format: "$%.2f", row.costUsd)) est.")
+                                .font(.caption2).foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                } else {
+                    Text("Choose a period to view observed T3code activity.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Text("Observed application activity. Excluded from totals; may already be included in harnesses. Costs are estimated.")
+                    .font(.caption2).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
     }
 
     private func pieCard() -> some View {
@@ -9801,7 +9914,7 @@ func bucketColor(_ name: String, peers: [String] = []) -> Color {
 private func tokenMaxima(_ limits: [AccountLimits]) -> [String: Double] {
     var maxima: [String: Double] = [:]
     for l in limits {
-        for w in l.windows { maxima[w.kind] = max(maxima[w.kind] ?? 0, w.tokens) }
+        for w in l.quotaWindows { maxima[w.kind] = max(maxima[w.kind] ?? 0, w.tokens) }
     }
     return maxima
 }
@@ -9844,8 +9957,9 @@ struct AccountLimitCard: View {
                     windowBarRow(w)
                 }
                 if orderedWindows.isEmpty {
-                    Text("no usage recorded").font(.caption2).foregroundStyle(.tertiary)
+                    Text("No provider quota reported").font(.caption2).foregroundStyle(.tertiary)
                 }
+                localUsageSection
                 bankedRow
                 accountExtrasRow
                 if !budgets.isEmpty { budgetFooter }
@@ -9996,16 +10110,16 @@ struct AccountLimitCard: View {
         }
     }
 
-    /// openusage-style labeled bar per window: name · bar · % left / resets-in.
-    /// The track ALWAYS renders (empty fill at zero usage); fill tint follows
-    /// the traffic palette when a real % exists, emerald otherwise.
     private func windowBarRow(_ w: LimitWindow) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 6) {
                 Text(windowDisplayName(w, provider: limits.provider))
                     .font(.caption2.weight(.medium)).foregroundStyle(.secondary)
                 Spacer()
-                if let amount = w.amountUsd {
+                if w.quotaStatus != "current" {
+                    Text(w.quotaStatus.capitalized + " · " + w.observationLabel)
+                        .font(.caption2).foregroundStyle(.secondary)
+                } else if let amount = w.amountUsd {
                     // Open-ended spend (e.g. Cursor's On-Demand) — Cursor's own
                     // dashboard shows this as a dollar figure, never a percent.
                     HStack(spacing: 4) {
@@ -10016,7 +10130,7 @@ struct AccountLimitCard: View {
                             .font(.caption2.monospacedDigit().weight(.semibold))
                             .foregroundStyle(.secondary)
                     }
-                } else if let pct = w.usedPct {
+                } else if let pct = w.currentUsedPct {
                     let remaining = max(0, min(100, 100 - pct))
                     HStack(spacing: 4) {
                         Text(w.source == "embedded" ? "Reported" : "Estimated")
@@ -10029,15 +10143,20 @@ struct AccountLimitCard: View {
                 } else if w.tokens > 0 {
                     Text("Estimated · \(humanCount(w.tokens)) tokens")
                         .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                } else {
+                    Text("Usage unknown · " + w.observationLabel)
+                        .font(.caption2).foregroundStyle(.secondary)
                 }
             }
             progressBarRow(w)
             HStack {
-                if let pace = w.pace { paceLabel(pace) }
+                if let pace = w.pace, w.currentUsedPct != nil { paceLabel(pace) }
                 Spacer()
-                if let r = w.resetsAt {
+                if w.quotaStatus != "current" {
+                    Text("Awaiting fresh observation").font(.caption2).foregroundStyle(.tertiary)
+                } else if let r = w.resetsAt {
                     let reset = countdown(r)
-                    Text(reset == "now" ? "Available now" : "Resets in " + reset)
+                    Text(reset == "now" ? "Awaiting fresh observation" : "Resets in " + reset)
                         .font(.caption2).foregroundStyle(.tertiary)
                 }
             }
@@ -10060,10 +10179,10 @@ struct AccountLimitCard: View {
     }
 
     @ViewBuilder private func progressBarRow(_ w: LimitWindow) -> some View {
-        if let pct = w.usedPct {
+        if let pct = w.currentUsedPct {
             let remaining = max(0, min(100, 100 - pct))
             explicitProgressBar(fraction: remaining / 100, tint: barTint(remaining))
-        } else if w.tokens > 0, let scale = tokenScale[w.kind], scale > 0 {
+        } else if w.quotaStatus == "current", w.tokens > 0, let scale = tokenScale[w.kind], scale > 0 {
             // No real quota denominator (estimate window): RELATIVE bar vs the
             // largest same-kind window — informational only. Use an explicit
             // blue tint; semantic secondary colors can resolve to black in a
@@ -10091,6 +10210,27 @@ struct AccountLimitCard: View {
             }
         }
         .frame(height: 6)
+    }
+
+    @ViewBuilder private var localUsageSection: some View {
+        if let windows = limits.budgetWindows, !windows.isEmpty {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Local usage / budgets").font(.caption.weight(.semibold))
+                ForEach(Array(windows.enumerated()), id: \.offset) { _, window in
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(windowDisplayName(window) + " · " + String(format: "$%.2f spent", window.cost)
+                             + " · \(humanCount(window.tokens)) tokens · \(window.requests) requests")
+                            .font(.caption2).foregroundStyle(.secondary)
+                        if let percent = window.usedPct, percent.isFinite {
+                            Text(String(format: "%.0f%%", percent) + (window.kind == "month" ? " of local budget" : " of local budget pace"))
+                                .font(.caption2).foregroundStyle(.secondary)
+                        }
+                        Text((window.windowStart ?? "Unknown start") + " → " + (window.windowEnd ?? "Unknown end"))
+                            .font(.caption2).foregroundStyle(.tertiary).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+        }
     }
 
     private var budgetFooter: some View {
@@ -10174,7 +10314,8 @@ struct AccountLimitCard: View {
 
     private var accountSecondaryLabel: String {
         if privacyMode { return limits.provider + " · identities hidden" }
-        var label = limits.accountKey
+        var label = limits.email == nil && limits.accountId == nil && limits.credential == nil
+            ? "Identity unverified · " + limits.accountKey : limits.accountKey
         if let also = limits.alsoOn, !also.isEmpty {
             label += " · via " + also.joined(separator: ", ")
         }
@@ -10256,7 +10397,7 @@ struct AccountLimitCard: View {
 
     // `limits` shadows the member when accessed unqualified inside SwiftUI
     // property initializers; explicit accessor keeps the intent obvious.
-    private var lwindows: [LimitWindow] { limits.windows }
+    private var lwindows: [LimitWindow] { limits.quotaWindows }
 }
 
 /// Donut metric selector.
@@ -10267,13 +10408,18 @@ enum SpendMetric: String {
 
 private func windowDisplayName(_ window: LimitWindow, provider: String? = nil) -> String {
     if let label = window.label, !label.isEmpty { return label }
+    if let scope = window.scope, scope != "other" { return scope.capitalized }
+    if let minutes = window.windowMinutes, minutes.isFinite, minutes > 0 {
+        return minutes.truncatingRemainder(dividingBy: 60) == 0 ? "\(Int(minutes / 60))h limit" : "\(Int(minutes))m limit"
+    }
+    if window.kind == "0min" || window.kind == "unknown" { return "Limit" }
     return windowDisplayName(window.kind, provider: provider)
 }
 
 private func windowDisplayName(_ kind: String, provider: String? = nil) -> String {
     switch kind {
     case "day":
-        return provider == "codex" || provider == "claude-code" || provider == "commandcode" ? "Session" : "Day"
+        return "Daily"
     case "week": return "Weekly"
     case "month": return "Monthly"
     default: return kind.capitalized

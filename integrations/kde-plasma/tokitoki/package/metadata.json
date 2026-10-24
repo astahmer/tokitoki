@@ -6,11 +6,11 @@
       }
     ],
     "Category": "System Information",
-    "Description": "Small usage statistics from tokitoki",
+    "Description": "Provider quotas by account, usage totals and separate budget pace",
     "Icon": "view-statistics",
     "Id": "com.github.astahmer.tokitoki",
     "Name": "Tokitoki Usage",
-    "Version": "0.1.0",
+    "Version": "0.2.0",
     "Website": "https://github.com/astahmer/tokitoki"
   },
   "X-Plasma-API-Minimum-Version": "6.0",

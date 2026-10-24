@@ -40,13 +40,28 @@ export interface UsageEvent {
 export interface QuotaWindow {
   /** Provider-reported share of the window consumed, 0–100. */
   usedPct: number;
-  /** Window length in minutes (300 = 5h, 10080 = weekly, ...). */
+  /** Window length in minutes; 0 is legacy metadata for an unknown duration. */
   windowMinutes: number;
   /** Unix epoch seconds when the window resets. */
   resetsAtEpoch: number;
+  bucketId?: string;
+  windowId?: string;
+  scope?: "session" | "daily" | "weekly" | "monthly" | "model" | "other";
+  label?: string;
+  model?: string;
+  windowStart?: string;
+  windowEnd?: string;
+  observedAt?: string;
 }
 
 export interface QuotaSnapshot {
+  /** Stable identity carried by the source event/session, never inferred from current auth. */
+  accountId?: string;
+  /** Meter identity, independent of the account and window duration. */
+  limitId?: string;
+  limitName?: string;
+  /** Both window slots were explicitly serialized, including null removals. Absent means partial. */
+  complete?: boolean;
   primary?: QuotaWindow;
   secondary?: QuotaWindow;
   credits?: {
@@ -56,6 +71,16 @@ export interface QuotaSnapshot {
     /** Provider-reported expiry for purchased/banked reset credits. */
     expiresAt?: string;
   };
+}
+
+/** Provider quota observation, independent of a billable request. */
+export interface QuotaObservationEvent {
+  id: string;
+  ts: string;
+  provider: string;
+  accountKey: string;
+  sessionId?: string;
+  quota: QuotaSnapshot;
 }
 
 /** Optional on UsageEvent — only providers with embedded quota set it. */

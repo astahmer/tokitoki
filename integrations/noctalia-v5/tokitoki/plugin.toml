@@ -1,10 +1,47 @@
 id = "tokitoki/usage"
 name = "Tokitoki Usage"
-version = "0.1.0"
-plugin_api = 3
+version = "0.2.0"
+plugin_api = 32
 author = "Tokitoki"
-description = "Small usage statistics from tokitoki"
+description = "Provider quotas by account, usage totals and separate budget pace"
 
 [[widget]]
 id = "usage"
 entry = "widget.luau"
+
+[[panel]]
+id = "details"
+entry = "panel.luau"
+width = 520
+height = 720
+open_near_click = true
+
+[[setting]]
+key = "display_mode"
+type = "select"
+label_key = "display_mode"
+default = "shortest"
+options = [
+  { value = "shortest", label_key = "shortest" },
+  { value = "quotas", label_key = "quotas" },
+  { value = "total", label_key = "total" },
+  { value = "icon", label_key = "icon" },
+]
+
+[[setting]]
+key = "accounts"
+type = "string_list"
+label_key = "accounts"
+default = []
+
+[[setting]]
+key = "hide_identities"
+type = "bool"
+label_key = "hide_identities"
+default = false
+
+[[setting]]
+key = "executable"
+type = "string"
+label_key = "executable"
+default = "tokitoki"

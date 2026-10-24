@@ -5,8 +5,8 @@ import path from "node:path";
 import { localMachineId } from "./machine.ts";
 import { appendEvents, eventsFile, loadCursors, saveProviderCursors } from "./store.ts";
 import { PROVIDERS, getProvider } from "./providers/index.ts";
-import { scanProviderCore, type ScanResult } from "./scan.ts";
-import type { UsageEvent } from "./types.ts";
+import { extractionVersionFor, scanProviderCore, type ScanResult } from "./scan.ts";
+import type { QuotaObservationEvent, UsageEvent } from "./types.ts";
 import { DIMENSION_NAMES, EventCache, dimensionLabel, parseDimension, type AggRow, type Dimension, type SeriesBucket, type SessionSummary } from "./cache.ts";
 import { buildAccountLimits, readLimitsDocument } from "./limits-document.ts";
 import { DEFAULT_SERVE_HOST, DEFAULT_SERVE_PORT, isLoopbackHost, startLocalApiServer } from "./serve.ts";
@@ -627,6 +627,7 @@ const MAX_SCAN_WORKERS = 4;
 interface ScanOutcome {
   result: ScanResult;
   events: UsageEvent[];
+  quotas: QuotaObservationEvent[];
 }
 
 /** Whether a provider has any discovered file that has never been scanned. */
@@ -634,7 +635,7 @@ export function scanNeedsInitialPass(providers = PROVIDERS): boolean {
   const cursors = loadCursors();
   return providers.some((provider) => {
     const files = provider.discoverRoots().flatMap((root) => provider.listFiles(root));
-    return files.some((file) => cursors[file] === undefined);
+    return files.some((file) => cursors[file]?.state?.extractionVersion !== extractionVersionFor(provider.id));
   });
 }
 
@@ -643,20 +644,28 @@ export function scanNeedsInitialPass(providers = PROVIDERS): boolean {
  * the worker persists its own cursor shard so an interrupted scan resumes
  * instead of replaying gigabytes.
  */
-function scanInWorker(providerId: string, machineId: string): Promise<ScanOutcome> {
+function scanInWorker(input: {
+  providerId: string;
+  machineId: string;
+  events: UsageEvent[];
+  quotas: QuotaObservationEvent[];
+}): Promise<ScanOutcome> {
   return new Promise((resolve, reject) => {
     const worker = new Worker(new URL("./scan-worker.ts", import.meta.url));
-    const events: UsageEvent[] = [];
+    const { events, quotas } = input;
     const onMessage = (ev: MessageEvent) => {
       const msg = ev.data as
         | { type: "events"; events: UsageEvent[] }
+        | { type: "quotas"; quotas: QuotaObservationEvent[] }
         | { type: "done"; result: ScanResult }
         | { type: "error"; message: string };
       if (msg.type === "events") {
         events.push(...msg.events);
+      } else if (msg.type === "quotas") {
+        quotas.push(...msg.quotas);
       } else if (msg.type === "done") {
         cleanup();
-        resolve({ result: msg.result, events });
+        resolve({ result: msg.result, events, quotas });
       } else {
         cleanup();
         reject(new Error(msg.message));
@@ -673,12 +682,14 @@ function scanInWorker(providerId: string, machineId: string): Promise<ScanOutcom
     };
     worker.addEventListener("message", onMessage);
     worker.addEventListener("error", onError);
-    worker.postMessage({ type: "scan", providerId, machineId });
+    worker.postMessage({ type: "scan", providerId: input.providerId, machineId: input.machineId });
   });
 }
 
 async function runScan(parsed: ParsedInvocation): Promise<void> {
-  const only = flagString(parsed, "provider");
+  const selected = flagStrings(parsed, "provider");
+  if (selected.length > 1) throw new UserError("scan accepts only one provider", "tokitoki scan --provider <id>");
+  const only = selected[0];
   if (only !== undefined && getProvider(only) === undefined) {
     throw new UserError(
       `unknown provider: ${only}`,
@@ -709,6 +720,7 @@ async function runScan(parsed: ParsedInvocation): Promise<void> {
           // Single writer: batches are appended by this process only.
           appendEvents(outcome.events);
           cache.insert(outcome.events);
+          cache.insertQuotaObservations(outcome.quotas);
           const { provider, eventsEmitted, filesScanned } = outcome.result;
           if (eventsEmitted === 0 && filesScanned === 0) {
             // Nothing new on disk — one quiet italic line instead of a zero row.
@@ -740,16 +752,18 @@ async function runScan(parsed: ParsedInvocation): Promise<void> {
 
 /** Worker-per-provider with inline fallback when workers are unavailable. */
 async function runWithWorkerFallback(providerId: string, machineId: string): Promise<ScanOutcome> {
+  const events: UsageEvent[] = [];
+  const quotas: QuotaObservationEvent[] = [];
   try {
-    return await scanInWorker(providerId, machineId);
+    return await scanInWorker({ providerId, machineId, events, quotas });
   } catch {
     const provider = getProvider(providerId)!;
-    const events: UsageEvent[] = [];
     const result = scanProviderCore(provider, machineId, {
       onEvents: (batch) => events.push(...batch),
+      onQuotas: (batch) => quotas.push(...batch),
       onSaveCursors: (cursors) => saveProviderCursors(provider.id, cursors),
     });
-    return { result, events };
+    return { result, events, quotas };
   }
 }
 
@@ -2386,7 +2400,11 @@ function runWidgetPayload(parsed: ParsedInvocation): void {
     const machineId = localMachineId();
     for (const provider of PROVIDERS) {
       scanProviderCore(provider, machineId, {
-        onEvents: (events) => appendEvents(events),
+        onEvents: (events) => {
+          appendEvents(events);
+          payloadCache.insert(events);
+        },
+        onQuotas: (reports) => payloadCache.insertQuotaObservations(reports),
         onSaveCursors: (cursors) => saveProviderCursors(provider.id, cursors),
       });
     }
@@ -2474,7 +2492,7 @@ function runWidgetPayload(parsed: ParsedInvocation): void {
                date(e.ts, 'localtime') AS day,
                SUM(e.input_tokens + e.output_tokens + e.cache_read_tokens + e.cache_write_tokens) AS value
         FROM events e LEFT JOIN repo_dirs r ON e.project_dir = r.dir
-        WHERE e.ts >= ?
+        WHERE e.ts >= ? AND e.provider <> 't3code'
         GROUP BY bucket, day
         ORDER BY value DESC
       `).all(sinceIso) as Array<{ bucket: string; day: string; value: number | null }>;
@@ -2656,10 +2674,20 @@ function runWidgetPayload(parsed: ParsedInvocation): void {
         });
         return { key, rows: cache.hybridAggregateModelProviders(window.sinceIso, undefined, window.untilIso) };
       });
+      const t3codeActivity = periodFlags.map(([key, flags]) => {
+        const window = resolveTimeWindow({
+          last: flagString({ command: "report", flags, rest: [] }, "last"),
+          from: flagString({ command: "report", flags, rest: [] }, "from"),
+          to: flagString({ command: "report", flags, rest: [] }, "to"),
+          fallbackPeriod: "month",
+        });
+        return { key, ...cache.t3codeActivity(window) };
+      });
       console.log(JSON.stringify({
         harnessPeriods: collect("provider", {}),
         modelPeriods: collect("model", {}),
         providerPeriods,
+        t3codeActivity,
       }));
     });
   });
@@ -2667,11 +2695,13 @@ function runWidgetPayload(parsed: ParsedInvocation): void {
     harnessPeriods?: unknown;
     modelPeriods?: unknown;
     providerPeriods?: unknown;
+    t3codeActivity?: unknown;
   } | undefined;
   if (tokenBreakdowns !== undefined && !Array.isArray(tokenBreakdowns)) {
     parts["spendPeriods"] = tokenBreakdowns.harnessPeriods ?? [];
     parts["modelPeriods"] = tokenBreakdowns.modelPeriods ?? [];
     parts["providerPeriods"] = tokenBreakdowns.providerPeriods ?? [];
+    parts["t3codeActivity"] = tokenBreakdowns.t3codeActivity ?? [];
   }
   const report = parts["rollingDay"] as WidgetPayloadReport | undefined;
   const total = report?.total ?? {};

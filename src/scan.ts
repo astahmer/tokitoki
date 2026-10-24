@@ -1,9 +1,10 @@
 import fs from "node:fs";
 
-import type { UsageEvent } from "./types.ts";
+import type { QuotaObservationEvent, UsageEvent } from "./types.ts";
 import type { FileScanState, Provider } from "./providers/types.ts";
 import {
   appendEvents,
+  dataDir,
   loadProviderCursors,
   saveProviderCursors,
 } from "./store.ts";
@@ -17,6 +18,7 @@ export interface ScanResult {
 export interface ScanHooks {
   /** Called with batches of extracted events as they are produced. */
   onEvents?: (events: UsageEvent[]) => void;
+  onQuotas?: (reports: QuotaObservationEvent[]) => void;
   /**
    * Persist the provider's cursor entries. Called periodically (byte-budgeted)
    * and once at the end, so an interrupted scan resumes where it stopped
@@ -41,6 +43,9 @@ const CHUNK_SIZE = 8 * 1024 * 1024;
  */
 export const EXTRACTION_VERSION = 3; // v3: codex quota snapshots extracted
 
+export const extractionVersionFor = (providerId: string): number =>
+  providerId === "codex" ? 5 : EXTRACTION_VERSION;
+
 /**
  * Incrementally scan one provider's session stores.
  *
@@ -57,6 +62,7 @@ export const EXTRACTION_VERSION = 3; // v3: codex quota snapshots extracted
  * streams batches to its parent instead.
  */
 export function scanProviderCore(provider: Provider, machineId: string, hooks: ScanHooks): ScanResult {
+  const extractionVersion = extractionVersionFor(provider.id);
   const cursors = loadProviderCursors(provider.id);
   const roots = provider.discoverRoots();
   const files = roots.flatMap((r) => provider.listFiles(r));
@@ -69,11 +75,13 @@ export function scanProviderCore(provider: Provider, machineId: string, hooks: S
   let totalEvents = 0;
   let bytesSinceSave = 0;
   let pendingBatch: UsageEvent[] = [];
+  let pendingQuotas: QuotaObservationEvent[] = [];
 
   const flushBatch = () => {
-    if (pendingBatch.length === 0) return;
-    hooks.onEvents?.(pendingBatch);
+    if (pendingBatch.length > 0) hooks.onEvents?.(pendingBatch);
     pendingBatch = [];
+    if (pendingQuotas.length > 0) hooks.onQuotas?.(pendingQuotas);
+    pendingQuotas = [];
   };
   const maybeSaveCursors = (force = false) => {
     if (!force && bytesSinceSave < CURSOR_SAVE_INTERVAL_BYTES) return;
@@ -100,9 +108,9 @@ export function scanProviderCore(provider: Provider, machineId: string, hooks: S
     // skip logic below never applies.
     if (provider.scanDb !== undefined) {
       const entry = cursors[file];
-      const fresh = entry === undefined || entry.state?.extractionVersion !== EXTRACTION_VERSION;
+      const fresh = entry === undefined || entry.state?.extractionVersion !== extractionVersion;
       const state: FileScanState = fresh ? {} : { ...(entry.state ?? {}) };
-      state.extractionVersion = EXTRACTION_VERSION;
+      state.extractionVersion = extractionVersion;
       try {
         const events = provider.scanDb(file, { state, freshFile: fresh, machineId });
         if (events.length > 0) {
@@ -124,12 +132,12 @@ export function scanProviderCore(provider: Provider, machineId: string, hooks: S
     const state: FileScanState = fresh ? {} : { ...(entry.state ?? {}) };
     let replayed = false;
     // Extraction logic changed since this file was scanned → full replay.
-    if (!fresh && state.extractionVersion !== EXTRACTION_VERSION) {
+    if (!fresh && state.extractionVersion !== extractionVersion) {
       offset = 0;
       for (const k of Object.keys(state)) delete state[k];
       replayed = true;
     }
-    state.extractionVersion = EXTRACTION_VERSION;
+    state.extractionVersion = extractionVersion;
     // Truncated or replaced file → start over
     if (!fresh && offset > size) {
       offset = 0;
@@ -147,6 +155,14 @@ export function scanProviderCore(provider: Provider, machineId: string, hooks: S
     let touched = false;
     try {
       const ctxBase = { path: file, state, freshFile: (fresh && offset === 0) || replayed, machineId };
+      const ctx = {
+        ...ctxBase,
+        onQuota: (report: QuotaObservationEvent) => {
+          touched = true;
+          pendingQuotas.push(report);
+          if (pendingQuotas.length >= EVENT_BATCH_SIZE) flushBatch();
+        },
+      };
       // `offset` = safe consumption point (end of the last complete line);
       // `readPos` races ahead while a single line spans multiple chunks.
       // Codex rollouts contain multi-hundred-MB lines, so a chunk with no
@@ -175,7 +191,7 @@ export function scanProviderCore(provider: Provider, machineId: string, hooks: S
           const trimmed = line.trim();
           if (trimmed.length === 0) continue;
           try {
-            const emitted = provider.parseLine(trimmed, ctxBase);
+            const emitted = provider.parseLine(trimmed, ctx);
             if (emitted.length > 0) {
               touched = true;
               totalEvents += emitted.length;
@@ -228,8 +244,20 @@ export function scanProviderCore(provider: Provider, machineId: string, hooks: S
  * tests and as the fallback when workers are unavailable.
  */
 export function scanProvider(provider: Provider, machineId: string): ScanResult {
-  return scanProviderCore(provider, machineId, {
-    onEvents: (events) => appendEvents(events),
-    onSaveCursors: (cursors) => saveProviderCursors(provider.id, cursors),
-  });
+  let cache: import("./cache.ts").EventCache | undefined;
+  try {
+    return scanProviderCore(provider, machineId, {
+      onEvents: (events) => appendEvents(events),
+      onQuotas: (reports) => {
+        // Cache imports extraction metadata from this module; load it only at scan time.
+        const cacheModule: typeof import("./cache.ts") = require("./cache.ts");
+        fs.mkdirSync(dataDir(), { recursive: true });
+        cache ??= new cacheModule.EventCache();
+        cache.insertQuotaObservations(reports);
+      },
+      onSaveCursors: (cursors) => saveProviderCursors(provider.id, cursors),
+    });
+  } finally {
+    cache?.close();
+  }
 }

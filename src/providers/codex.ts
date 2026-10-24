@@ -1,7 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
+import { z } from "zod";
 
-import type { QuotaWindow, UsageEvent } from "../types.ts";
+import type { QuotaSnapshot, QuotaWindow, UsageEvent } from "../types.ts";
 import { providerConfig } from "../config.ts";
 import { eventId } from "../machine.ts";
 import { estimateCost } from "../pricing.ts";
@@ -14,6 +15,65 @@ interface CodexTokenUsage {
   cached_input_tokens?: number;
   output_tokens?: number;
 }
+
+const quotaWindowSchema = z.object({
+  used_percent: z.number().finite(),
+  window_minutes: z.number().finite().positive().nullish(),
+  resets_at: z.number().finite().nonnegative().nullish(),
+});
+
+const sourceId = (value: unknown): string | undefined =>
+  typeof value === "string" && value.trim().length > 0 ? value : undefined;
+
+/** Also usable by a quota-only scanner sink, without manufacturing a usage event. */
+export const parseCodexQuotaSnapshot = (input: {
+  rateLimits: unknown;
+  accountId?: string;
+  observedAt?: string;
+}): QuotaSnapshot | undefined => {
+  if (typeof input.rateLimits !== "object" || input.rateLimits === null) return undefined;
+  const rl = input.rateLimits as Record<string, unknown>;
+  const limitId = sourceId(rl.limit_id);
+  const limitName = sourceId(rl.limit_name);
+  const win = (value: unknown, windowId: string): QuotaWindow | undefined => {
+    const parsed = quotaWindowSchema.safeParse(value);
+    if (!parsed.success) return undefined;
+    return {
+      usedPct: parsed.data.used_percent,
+      windowMinutes: parsed.data.window_minutes ?? 0,
+      resetsAtEpoch: parsed.data.resets_at ?? 0,
+      bucketId: limitId,
+      windowId,
+      label: limitName,
+      observedAt: input.observedAt,
+    };
+  };
+  const creditsRaw = rl.credits as Record<string, unknown> | undefined;
+  const credits =
+    creditsRaw && typeof creditsRaw.has_credits === "boolean"
+      ? {
+          hasCredits: creditsRaw.has_credits,
+          unlimited: creditsRaw.unlimited === true,
+          balance: typeof creditsRaw.balance === "string" ? creditsRaw.balance : "0",
+          expiresAt: creditExpiry(
+            creditsRaw.expires_at ?? creditsRaw.expiration_date ?? creditsRaw.expiresAt ?? creditsRaw.expirationDate,
+          ),
+        }
+      : undefined;
+  const primary = win(rl.primary, "primary");
+  const secondary = win(rl.secondary, "secondary");
+  const complete = Object.hasOwn(rl, "primary") && Object.hasOwn(rl, "secondary");
+  if (primary === undefined && secondary === undefined && credits === undefined && !complete) return undefined;
+  return {
+    accountId: sourceId(rl.account_id) ?? sourceId(input.accountId),
+    limitId,
+    limitName,
+    complete,
+    primary,
+    secondary,
+    credits,
+  };
+};
 
 /** Normalize the several expiry encodings used by Codex credit responses. */
 function creditExpiry(value: unknown): string | undefined {
@@ -83,6 +143,7 @@ export const codexProvider: Provider = {
         if (typeof payload.cwd === "string") state.cwd = payload.cwd;
       }
       if (typeof payload.model_provider === "string") state.providerLabel = payload.model_provider;
+      state.accountId = sourceId(payload.account_id);
       return [];
     }
     if (payload === undefined) return [];
@@ -119,33 +180,41 @@ export const codexProvider: Provider = {
     }
     if (entry.type !== "event_msg" || payload.type !== "token_count") return [];
 
-    const info = payload.info as Record<string, unknown> | undefined;
-    if (info === undefined) return [];
-
-    const delta = info.last_token_usage as CodexTokenUsage | undefined;
-    if (delta === undefined) return [];
-    const inputTokens = delta.input_tokens ?? 0;
-    const outputTokens = delta.output_tokens ?? 0;
-    if (inputTokens === 0 && outputTokens === 0) return [];
-
     const sessionId = typeof state.sessionId === "string" ? state.sessionId : "unknown-session";
     const model = typeof state.model === "string" ? state.model : "unknown";
 
-    // Account attribution: rate_limits carries limit_id + plan_type
+    // Keep the legacy accounting label; quota identity is carried separately.
     let account = typeof state.providerLabel === "string" ? state.providerLabel : "default";
     const rateLimits = payload.rate_limits as Record<string, unknown> | undefined;
     const planType = rateLimits?.plan_type;
     if (rateLimits !== undefined && typeof planType === "string") {
       account = `${account}:${planType}`;
-    } else if (typeof rateLimits?.limit_id === "string") {
-      account = rateLimits.limit_id as string;
     }
+    // Historical usage IDs included the meter fallback. Preserve them on replay.
+    const idAccount = typeof planType !== "string" && typeof rateLimits?.limit_id === "string"
+      ? rateLimits.limit_id : account;
+    const id = eventId("codex", idAccount, sessionId, `line-${lineIndex}`);
+    const ts = typeof entry.timestamp === "string" ? entry.timestamp : new Date().toISOString();
+    const quota = parseCodexQuotaSnapshot({
+      rateLimits,
+      accountId: sourceId(payload.account_id) ?? sourceId(state.accountId),
+      observedAt: ts,
+    });
+    if (quota !== undefined) ctx.onQuota?.({ id, ts, provider: this.id, accountKey: account, sessionId, quota });
+
+    const info = payload.info as Record<string, unknown> | undefined;
+    if (info === undefined || info === null) return [];
+    const delta = info.last_token_usage as CodexTokenUsage | undefined;
+    if (delta === undefined || delta === null) return [];
+    const inputTokens = delta.input_tokens ?? 0;
+    const outputTokens = delta.output_tokens ?? 0;
+    if (inputTokens === 0 && outputTokens === 0) return [];
 
     const cachedInput = delta.cached_input_tokens ?? 0;
 
     const event: UsageEvent = {
-      id: eventId("codex", account, sessionId, `line-${lineIndex}`),
-      ts: typeof entry.timestamp === "string" ? entry.timestamp : new Date().toISOString(),
+      id,
+      ts,
       machineId: ctx.machineId,
       provider: this.id,
       accountKey: account,
@@ -165,45 +234,7 @@ export const codexProvider: Provider = {
     };
     state.lastTool = undefined;
 
-    // Embedded quota: real provider-reported rate-limit windows. Prefer over
-    // any derived estimate (see src/limits.ts).
-    if (rateLimits !== undefined && typeof rateLimits === "object") {
-      const rl = rateLimits as Record<string, unknown>;
-      const win = (w: unknown): QuotaWindow | undefined => {
-        if (typeof w !== "object" || w === null) return undefined;
-        const o = w as Record<string, unknown>;
-        const usedPct = o.used_percent;
-        const windowMinutes = o.window_minutes;
-        const resetsAtEpoch = o.resets_at;
-        if (
-          typeof usedPct !== "number" ||
-          typeof windowMinutes !== "number" ||
-          typeof resetsAtEpoch !== "number"
-        )
-          return undefined;
-        return { usedPct, windowMinutes, resetsAtEpoch };
-      };
-      const creditsRaw = rl.credits as Record<string, unknown> | undefined;
-      const credits =
-        creditsRaw && typeof creditsRaw.has_credits === "boolean"
-          ? {
-              hasCredits: creditsRaw.has_credits,
-              unlimited: creditsRaw.unlimited === true,
-              balance: typeof creditsRaw.balance === "string" ? creditsRaw.balance : "0",
-              expiresAt: creditExpiry(
-                creditsRaw.expires_at ?? creditsRaw.expiration_date ?? creditsRaw.expiresAt ?? creditsRaw.expirationDate,
-              ),
-            }
-          : undefined;
-      const primary = win(rl.primary);
-      const secondary = win(rl.secondary);
-      if (primary !== undefined || secondary !== undefined || credits !== undefined) {
-        event.quota = {};
-        if (primary !== undefined) event.quota.primary = primary;
-        if (secondary !== undefined) event.quota.secondary = secondary;
-        if (credits !== undefined) event.quota.credits = credits;
-      }
-    }
+    event.quota = quota;
     return [event];
   },
 

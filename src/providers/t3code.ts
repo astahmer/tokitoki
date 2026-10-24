@@ -13,9 +13,9 @@ import { homePath, type EntryContext, type Provider } from "./types.ts";
 /**
  * T3 Code's live store since Orchestrator V2 is
  * ~/.t3/userdata/statev2.sqlite. state.sqlite is the V1 database and stops
- * receiving threads once V2 exists. Cursor-routed turns in V2 carry
- * turnTokenUsage. Those rows are kept for the session page only: the Cursor
- * dashboard already counts the same requests in the account total.
+ * receiving threads once V2 exists. V2 turns may carry turnTokenUsage.
+ * All T3 rows stay available as application activity and session detail,
+ * outside account totals already supplied by the underlying harnesses.
  *
  * Relevant tables:
  *   projection_threads         — thread_id, title, model_selection_json,
@@ -32,10 +32,10 @@ import { homePath, type EntryContext, type Provider } from "./types.ts";
  * separate T3 Code allocation.
  *
  * V1 still has no per-turn token counts, so that file stays a chars/4
- * estimate. V2 cursor turns use turnTokenUsage and are not added to totals.
+ * estimate. V2 turns use turnTokenUsage and are not added to totals.
  */
 export const T3CODE_NO_USAGE_NOTE =
-  "cursor-routed V2 turns keep per-thread tokens for session detail and are not added to account totals; those come from the Cursor dashboard";
+  "T3 Code activity is shown separately and excluded from totals; the underlying harnesses supply account usage. Costs shown via T3 Code are estimates.";
 
 export function t3codeStateDbDir(): string {
   return homePath("T3CODE_DIR", "/.t3/userdata");
@@ -169,10 +169,11 @@ function extractV2SessionDocs(db: Database): SessionDoc[] {
   return docs;
 }
 
-/** Real per-turn tokens for Cursor threads. Account totals come from the dashboard, so these stay out of rollups. */
-function scanV2CursorTurns(db: Database, ctx: DbScanContext): UsageEvent[] {
+/** Observed per-turn activity; underlying harnesses supply account totals. */
+function scanV2Turns(db: Database, ctx: DbScanContext): UsageEvent[] {
   if (!hasTables(db, ["orchestration_v2_projection_provider_turns"])) return [];
-  const watermark = typeof ctx.state.turnRowid === "number" ? ctx.state.turnRowid : 0;
+  const watermark = ctx.state.turnUsageVersion === 1 && typeof ctx.state.turnRowid === "number" ? ctx.state.turnRowid : 0;
+  ctx.state.turnUsageVersion = 1;
   const rows = db
     .prepare(
       `SELECT t.rowid, t.provider_turn_id, t.thread_id, t.completed_at, t.started_at, t.payload_json,
@@ -197,7 +198,7 @@ function scanV2CursorTurns(db: Database, ctx: DbScanContext): UsageEvent[] {
     ctx.state.turnRowid = row.rowid;
     const routed = modelFromThreadPayload(row.thread_payload);
     const instanceId = routed?.instanceId ?? row.provider_instance_id ?? "";
-    if (instanceId !== "cursor") continue;
+    if (instanceId.length === 0) continue;
     let usage: Record<string, unknown> | undefined;
     try {
       const parsed = JSON.parse(row.payload_json) as { turnTokenUsage?: unknown; status?: unknown };
@@ -220,11 +221,11 @@ function scanV2CursorTurns(db: Database, ctx: DbScanContext): UsageEvent[] {
     const ts = row.completed_at ?? row.started_at;
     if (ts === null) continue;
     events.push({
-      id: eventId("t3code", "cursor", row.thread_id, row.provider_turn_id),
+      id: eventId("t3code", instanceId, row.thread_id, row.provider_turn_id),
       ts,
       machineId: ctx.machineId,
       provider: "t3code",
-      accountKey: "cursor",
+      accountKey: instanceId,
       model,
       inputTokens,
       outputTokens,
@@ -305,7 +306,7 @@ function scanT3CodeUsageEvents(storePath: string, ctx: DbScanContext): UsageEven
   const db = openStore(storePath);
   if (db === undefined) return [];
   try {
-    if (isV2Store(db)) return scanV2CursorTurns(db, ctx);
+    if (isV2Store(db)) return scanV2Turns(db, ctx);
     if (!hasTables(db, ["projection_thread_messages", "projection_threads"])) return [];
 
     const watermark = typeof ctx.state.msgRowid === "number" ? ctx.state.msgRowid : 0;

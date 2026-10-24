@@ -1,0 +1,31 @@
+import fs from 'node:fs';
+import assert from 'node:assert/strict';
+const log=fs.readFileSync('/out/noctalia.log','utf8');
+const noctalia=log.split('\n').filter(l=>l.includes('E2E_STATE ')).map(l=>JSON.parse(l.split('E2E_STATE ')[1]));
+assert.equal(noctalia.length,6);
+assert.equal(noctalia[0].accounts.length,4);
+assert.deepEqual(noctalia[0].accounts[0].windows,['5h 80%']);
+assert.deepEqual(noctalia[0].accounts[1].windows,['5h 55%']);
+assert.deepEqual(noctalia[0].accounts[2].windows,['1mo 37%']);
+assert.deepEqual(noctalia[0].accounts[3].windows,['5h expired']);
+assert.equal(noctalia[0].accounts[0].fullCount,2);
+assert.equal(noctalia[0].labelUnknown,'?');
+assert.equal(noctalia[0].valueUnknown,'unknown');
+assert.equal(noctalia[1].accounts[0].windows.length,2);
+assert.deepEqual(noctalia[2].accounts.map(a=>a.id),['codex@work','cursor@personal']);
+assert.equal(noctalia[3].mode,'total');
+assert.match(noctalia[4].error,/unavailable/);
+assert.equal(noctalia[5].error,'');
+const plasma=fs.readFileSync('/out/plasma-states.jsonl','utf8').trim().split('\n').map(JSON.parse);
+assert(plasma.some(s=>s.mode==='shortest'&&s.accounts.length===4&&s.bar.includes('EV: 5h 80%')&&s.bar.includes('WO: 5h 55%')&&s.bar.includes('1mo 37%')));
+assert(plasma.some(s=>s.accounts.length===2&&s.accounts[0].id==='codex@work'));
+assert(plasma.some(s=>s.mode==='shortest'&&s.tooltip.includes('7d 63%')));
+assert(plasma.some(s=>s.error.includes('HTTP 503')));
+assert(plasma.some(s=>s.mode==='total'&&s.error===''&&s.bar==='$21.92 · 154.7M'));
+assert(plasma.some(s=>s.renderedText.includes('Via T3 Code') && s.renderedText.includes('Activity only · excluded from usage totals') && s.renderedText.includes('Local usage / budget pace')));
+for (const file of ['noctalia.log','plasma.log','plasma-panel.log']) {
+ const text=fs.readFileSync('/out/'+file,'utf8');
+ assert(!/call to .* failed|ReferenceError:|TypeError:|is not installed|Cannot assign|is not a type/.test(text),file+' has runtime errors');
+}
+fs.writeFileSync('/out/result.json',JSON.stringify({status:'passed',noctaliaSnapshots:noctalia.length,plasmaSnapshots:plasma.length,checks:['per-account shortest window','multiple profiles','all-window tooltip','selected accounts','expired/unknown states','amount precedence','separate budgets and T3 activity','backend error and recovery','native runtime logs']},null,2));
+console.log('Native Noctalia + Plasma E2E passed');

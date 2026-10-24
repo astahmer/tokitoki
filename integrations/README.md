@@ -14,7 +14,7 @@ tokitoki scan
 tokitoki widget-payload --cached --json
 ```
 
-The same payload is available from the local web server at:
+A compact projection is available from the local web server at:
 
 ```text
 GET http://127.0.0.1:7788/v1/status?last=day
@@ -26,6 +26,12 @@ The payload is versioned with `schema: 1` and contains:
 - `stats`: cost, tokens, requests, sessions, and cache percentage;
 - `providers`: the largest provider slices;
 - `budgets`: configured budget gauges, when present.
+- `uiPreview`: shared account visibility and identity privacy preferences;
+- `t3codeActivity`: app-layer activity, excluded from usage totals.
+
+Plasma also reads `GET /v1/limits` for the versioned account/quota document.
+Noctalia 5 reads the full CLI payload. These contracts share quota semantics,
+but the compact HTTP response is not the complete CLI payload.
 
 `widget-payload` adds a few fields that the DMS and Quickshell views use:
 
@@ -392,10 +398,10 @@ E2E_SHELL=quickshell ./e2e/run.sh
 | Directory | Host | Status |
 |---|---|---|
 | `dms/tokitoki` | Dux Shell (DMS) | Full QML widget |
-| `noctalia-v5/tokitoki` | Current Noctalia | Luau widget |
+| [`noctalia-v5/tokitoki`](noctalia-v5/tokitoki/README.md) | Noctalia 5, plugin API 32+ | Native Luau quota bar, hover, panel and settings |
 | `noctalia-v4/tokitoki` | Legacy Noctalia v4 | QML bar widget |
 | `quickshell/tokitoki` | Standalone Quickshell | Full shared widget, no DMS runtime |
-| `kde-plasma/tokitoki/package` | KDE Plasma 6 | Plasmoid |
+| [`kde-plasma/tokitoki/package`](kde-plasma/tokitoki/README.md) | KDE Plasma 6 | Compact quota bar, complete view and settings |
 | `waybar` | Waybar | `custom/*` JSON module; vendor incidents add a ⚠, tooltip lines, and an `incident` CSS class |
 | `gnome/tokitoki@local` | GNOME Shell 45+ | GJS extension |
 | `cosmic/tokitoki-applet` | COSMIC | Rust/libcosmic applet scaffold |

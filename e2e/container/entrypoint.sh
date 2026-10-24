@@ -472,6 +472,9 @@ else
     capture "tab-$tab.png"
   done
 
+  select_tab quotas
+  scroll_down 30
+  capture quotas-lower.png
   select_tab tokens
   scroll_down 5
   capture tokens-lower.png

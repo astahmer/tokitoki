@@ -3,14 +3,14 @@ import path from "node:path";
 import fs from "node:fs";
 import { Database, type SQLQueryBindings } from "bun:sqlite";
 
-import type { QuotaWindow, UsageEvent } from "./types.ts";
+import type { QuotaSnapshot, UsageEvent } from "./types.ts";
 import { dataDir, eventsFile, readEventsFile, readEventsTail } from "./store.ts";
 import { partitionBlocks, type BlockRow } from "./blocks.ts";import { resolveRepo } from "./repos.ts";
 import { ensureSessionFts, sessionConversation } from "./sessionIndex.ts";
 import { describeSessionEvent, estimateCacheDuration, type CacheDurationEstimate } from "./session-insights.ts";
 import { EXTRACTION_VERSION } from "./scan.ts";
 import { modelProvider, vendorFor } from "./model-provider.ts";
-import { QuotaAccountMetaSchema, type QuotaAccountMeta } from "./quota-windows.ts";
+import { QuotaAccountMetaSchema, type QuotaAccountMeta, type QuotaScope } from "./quota-windows.ts";
 
 /** SQLite can briefly reject a new connection while another process is
  * recovering a WAL. Retry only that transient class; programming/schema
@@ -33,14 +33,13 @@ function sqliteRetry<T>(operation: () => T): T {
 }
 
 /**
- * Cursor-routed T3 turns stay in `events` so a session can show its own
- * tokens. They are left out of every total: the Cursor dashboard events
- * already count those requests once.
+ * T3 Code records application activity that overlaps its underlying harnesses.
+ * Keep its events for activity/session views, outside account totals.
  */
-const THREAD_DETAIL_ONLY_SQL = "NOT (provider = 't3code' AND account_key = 'cursor')";
+const COUNTED_USAGE_SQL = "provider <> 't3code'";
 
 function countsTowardTotals(event: UsageEvent): boolean {
-  return !(event.provider === "t3code" && event.accountKey === "cursor");
+  return event.provider !== "t3code";
 }
 
 /**
@@ -72,6 +71,34 @@ export interface QuotaSnapshotRow {
   capturedAt: string;
   /** Original event id; poll:* rows are authenticated/provider-live data. */
   eventId?: string;
+  bucketId?: string;
+  windowId?: string;
+  scope?: QuotaScope;
+  windowStart?: string;
+  windowEnd?: string;
+  observedAt?: string;
+}
+
+interface QuotaObservation {
+  id: number;
+  bucketId: string;
+  capturedAt: string;
+  accountId: string | null;
+}
+
+interface StoredQuotaWindow {
+  windowMinutes: number;
+  usedPct: number;
+  resetsAtEpoch: number;
+  label?: string;
+  amountUsd?: number;
+  model?: string;
+  bucketId?: string;
+  windowId?: string;
+  scope?: QuotaScope;
+  windowStart?: string;
+  windowEnd?: string;
+  observedAt?: string;
 }
 export class EventCache {
   private db: Database;
@@ -92,6 +119,8 @@ export class EventCache {
     sqliteRetry(() => this.db.exec("PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 10000; PRAGMA temp_store = MEMORY;"));
     this.repoNameFor = repoNameFor ?? ((dir: string) => resolveRepo(dir).name);
     this.migrate();
+    // Upgrade historical rollups even on cached-only reads; raw activity stays intact.
+    this.db.exec("DELETE FROM daily_rollups WHERE provider = 't3code'");
     this.repoStmtInsert = this.db.prepare(
       "INSERT OR REPLACE INTO repo_dirs (dir, name) VALUES (?, ?)",
     );
@@ -229,6 +258,44 @@ export class EventCache {
     if (!quotaColsAfterLabel.some((c) => c.name === "model")) {
       this.db.exec("ALTER TABLE quota_snapshots ADD COLUMN model TEXT");
     }
+    if (!quotaColsAfterLabel.some((c) => c.name === "bucket_id")) {
+      this.db.transaction(() => this.db.exec(`
+        ALTER TABLE quota_snapshots RENAME TO quota_snapshots_legacy;
+        CREATE TABLE quota_snapshots (
+          provider TEXT NOT NULL, account_key TEXT NOT NULL, account_id TEXT,
+          bucket_id TEXT NOT NULL DEFAULT '', window_id TEXT NOT NULL DEFAULT '',
+          window_minutes INTEGER NOT NULL, label TEXT NOT NULL DEFAULT '',
+          model TEXT NOT NULL DEFAULT '', used_pct REAL NOT NULL, resets_at INTEGER NOT NULL,
+          captured_at TEXT NOT NULL, event_id TEXT NOT NULL, credits_json TEXT, amount_usd REAL,
+          scope TEXT, window_start TEXT, window_end TEXT, observed_at TEXT,
+          observation_id INTEGER,
+          PRIMARY KEY(provider, account_key, bucket_id, window_id, window_minutes, label, model, captured_at)
+        );
+        INSERT INTO quota_snapshots
+          (provider, account_key, account_id, window_minutes, label, model, used_pct,
+           resets_at, captured_at, event_id, credits_json, amount_usd, observed_at)
+        SELECT provider, account_key, account_id, window_minutes, label, COALESCE(model, ''), used_pct,
+               resets_at, COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', captured_at), captured_at),
+               event_id, credits_json, amount_usd, captured_at
+        FROM quota_snapshots_legacy;
+        DROP TABLE quota_snapshots_legacy;
+      `))();
+    }
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_quota_lookup ON quota_snapshots(provider, account_key, captured_at);
+      CREATE TABLE IF NOT EXISTS quota_observations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        provider TEXT NOT NULL, account_key TEXT NOT NULL, account_id TEXT,
+        bucket_id TEXT NOT NULL, captured_at TEXT NOT NULL, event_id TEXT NOT NULL,
+        UNIQUE(provider, account_key, bucket_id, captured_at, event_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_quota_observations
+        ON quota_observations(provider, account_key, bucket_id, captured_at);
+    `);
+    const observationCols = this.db.query("PRAGMA table_info(quota_observations)").all() as Array<{ name: string }>;
+    if (!observationCols.some(column => column.name === "complete")) {
+      this.db.exec("ALTER TABLE quota_observations ADD COLUMN complete INTEGER NOT NULL DEFAULT 1");
+    }
     // Limits are rendered for every detected account. These targeted lookups
     // keep per-account usage and identity attribution bounded by the account's
     // rows instead of rescanning every provider's history.
@@ -341,19 +408,41 @@ export class EventCache {
     provider: string;
     accountKey: string;
     accountId?: string;
-    windows: Array<{ windowMinutes: number; usedPct: number; resetsAtEpoch: number; label?: string; amountUsd?: number; model?: string }>;
+    windows: StoredQuotaWindow[];
     credits?: { hasCredits: boolean; unlimited: boolean; balance: string; expiresAt?: string };
     capturedAtIso: string;
     eventId: string;
+    /** A successful full response replaces the account's current topology, even when empty. */
+    complete?: boolean;
+    /** Complete scanner packets can replace just one metered bucket. */
+    bucketId?: string;
   }): number {
+    const capturedAtMs = Date.parse(input.capturedAtIso);
+    if (!Number.isFinite(capturedAtMs)) return 0;
+    const capturedAtIso = new Date(capturedAtMs).toISOString();
     const stmt = this.db.prepare(`
       INSERT OR REPLACE INTO quota_snapshots (
         provider, account_key, account_id, window_minutes, label, used_pct, resets_at,
-        captured_at, event_id, credits_json, amount_usd, model
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        captured_at, event_id, credits_json, amount_usd, model,
+        bucket_id, window_id, scope, window_start, window_end, observed_at, observation_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
+    let inserted = 0;
     const tx = this.db.transaction(() => {
+      let observationId: number | null = null;
+      {
+        const bucketId = input.bucketId ?? "*";
+        this.db.query(`INSERT OR IGNORE INTO quota_observations
+          (provider, account_key, account_id, bucket_id, captured_at, event_id, complete) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+          .run(input.provider, input.accountKey, input.accountId ?? null, bucketId, capturedAtIso, input.eventId, input.complete !== false ? 1 : 0);
+        observationId = this.db.query<{ id: number }, string[]>(`SELECT id FROM quota_observations
+          WHERE provider = ? AND account_key = ? AND bucket_id = ? AND captured_at = ? AND event_id = ?`)
+          .get(input.provider, input.accountKey, bucketId, capturedAtIso, input.eventId)!.id;
+      }
       for (const w of input.windows) {
+        if (!Number.isFinite(w.usedPct) || !Number.isFinite(w.windowMinutes) || w.windowMinutes < 0 ||
+            !Number.isFinite(w.resetsAtEpoch) || w.resetsAtEpoch < 0)
+          continue;
         const label = w.label ?? "";
         stmt.run(
           input.provider,
@@ -361,51 +450,50 @@ export class EventCache {
           input.accountId ?? null,
           Math.round(w.windowMinutes),
           label,
-          w.usedPct,
+          Math.max(0, Math.min(100, w.usedPct)),
           Math.round(w.resetsAtEpoch),
-          input.capturedAtIso,
+          capturedAtIso,
           `${input.eventId}:${w.windowMinutes}:${label}`,
           input.credits !== undefined ? JSON.stringify(input.credits) : null,
           w.amountUsd ?? null,
-          w.model ?? null,
+          w.model ?? "",
+          w.bucketId ?? input.bucketId ?? "",
+          w.windowId ?? "",
+          w.scope ?? null,
+          w.windowStart ?? null,
+          w.windowEnd ?? null,
+          w.observedAt ?? capturedAtIso,
+          observationId,
         );
+        inserted += 1;
       }
     });
     sqliteRetry(() => tx());
-    return input.windows.length;
+    return inserted;
   }
 
-  private insertQuotaSnapshots(events: UsageEvent[]): void {
-    const rows: Array<{ e: UsageEvent; w: QuotaWindow }> = [];
+  insertQuotaObservations(reports: Array<{ id: string; ts: string; provider: string; accountKey: string; sessionId?: string; quota?: QuotaSnapshot }>): void {
+    this.insertQuotaSnapshots(reports);
+  }
+
+  private insertQuotaSnapshots(events: Array<{ id: string; ts: string; provider: string; accountKey: string; sessionId?: string; quota?: QuotaSnapshot }>): void {
     for (const e of events) {
       if (e.quota === undefined) continue;
-      for (const w of [e.quota.primary, e.quota.secondary]) {
-        if (w !== undefined) rows.push({ e, w });
-      }
+      const quota = e.quota;
+      const bucketId = quota.limitId ?? (e.provider === "codex" ? "codex" : "");
+      const accountKey = e.provider === "codex"
+        ? quota.accountId !== undefined ? `account:${quota.accountId}` : `unidentified:${e.sessionId ?? e.id}`
+        : e.accountKey;
+      this.insertPolledSnapshots({
+        provider: e.provider, accountKey, accountId: quota.accountId,
+        capturedAtIso: e.ts, eventId: e.id, credits: quota.credits,
+        complete: quota.complete === true, bucketId,
+        windows: [quota.primary, quota.secondary].flatMap((w, index) => w === undefined ? [] : [{
+          ...w, bucketId: w.bucketId ?? bucketId, windowId: w.windowId ?? (index === 0 ? "primary" : "secondary"),
+          ...(w.label === undefined && quota.limitName !== undefined ? { label: quota.limitName } : {}),
+        }]),
+      });
     }
-    if (rows.length === 0) return;
-    const stmt = this.db.prepare(`
-      INSERT OR REPLACE INTO quota_snapshots (
-        provider, account_key, window_minutes, label, used_pct, resets_at,
-        captured_at, event_id, credits_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-    const tx = this.db.transaction(() => {
-      for (const { e, w } of rows) {
-        stmt.run(
-          e.provider,
-          e.accountKey,
-          Math.round(w.windowMinutes),
-          "",
-          w.usedPct,
-          Math.round(w.resetsAtEpoch),
-          e.ts,
-          e.id,
-          e.quota?.credits !== undefined ? JSON.stringify(e.quota.credits) : null,
-        );
-      }
-    });
-    sqliteRetry(() => tx());
   }
 
   // -- daily rollups -------------------------------------------------------
@@ -463,7 +551,7 @@ export class EventCache {
              SUM(e.cost_usd), COUNT(*)
       FROM events e
       LEFT JOIN repo_dirs r ON e.project_dir = r.dir
-      WHERE NOT (e.provider = 't3code' AND e.account_key = 'cursor')
+      WHERE e.provider <> 't3code'
       GROUP BY day, e.provider, e.account_key, e.model, e.machine_id, r.name;
     `);
   }
@@ -476,7 +564,7 @@ export class EventCache {
   private checkRollups(): void {
     const row = this.db
       .query(
-        `SELECT (SELECT COUNT(*) FROM events WHERE ${THREAD_DETAIL_ONLY_SQL}) AS n,
+        `SELECT (SELECT COUNT(*) FROM events WHERE ${COUNTED_USAGE_SQL}) AS n,
                 (SELECT COALESCE(SUM(requests), 0) FROM daily_rollups) AS rolled`,
       )
       .get() as { n: number; rolled: number };
@@ -631,7 +719,7 @@ export class EventCache {
   accountProviders(sinceIso: string): Map<string, string> {
     const rows = this.db
       .query(
-        `SELECT DISTINCT account_key AS key, provider FROM events WHERE ts >= ?`,
+        `SELECT DISTINCT account_key AS key, provider FROM events WHERE ts >= ? AND ${COUNTED_USAGE_SQL}`,
       )
       .all(sinceIso) as Array<{ key: string; provider: string }>;
     return new Map(rows.map((r) => [r.key, r.provider]));
@@ -658,7 +746,7 @@ export class EventCache {
         `SELECT COALESCE(SUM(input_tokens + output_tokens), 0) AS tokens,
                 COALESCE(SUM(cost_usd), 0) AS cost,
                 COUNT(*) AS requests
-         FROM events WHERE provider = ? AND account_key = ? AND ts >= ?`,
+         FROM events WHERE provider = ? AND account_key = ? AND ts >= ? AND ${COUNTED_USAGE_SQL}`,
       )
       .get(provider, accountKey, sinceIso) as UsageRow | undefined;
     return row ?? ZERO_ROW;
@@ -689,50 +777,42 @@ export class EventCache {
   }
 
   latestQuotaSnapshots(provider: string, accountKey: string): QuotaSnapshotRow[] {
-    try {
-      // Copilot's API has one representative meter whose reset timestamp
-      // moves on every poll. Older versions encoded time-until-reset as the
-      // window length, leaving dozens of historical `NNNNMin` windows. Keep
-      // only the newest Copilot snapshot while those legacy rows remain in a
-      // user's rebuildable cache.
-      if (provider === "copilot") {
-        return this.db
-          .query(
-            `SELECT account_key AS accountKey, account_id AS accountId,
-                    window_minutes AS windowMinutes, label AS label,
-                    used_pct AS usedPct, amount_usd AS amountUsd, model AS model, resets_at AS resetsAt,
-                    credits_json AS creditsJson, captured_at AS capturedAt,
-                    event_id AS eventId
-             FROM quota_snapshots
-             WHERE provider = ? AND account_key = ?
-             ORDER BY captured_at DESC, window_minutes DESC
-             LIMIT 1`,
-          )
-          .all(provider, accountKey) as QuotaSnapshotRow[];
-      }
-      return this.db
-      .query(
-          `SELECT qs.account_key AS accountKey, qs.account_id AS accountId,
-                  qs.window_minutes AS windowMinutes, qs.label AS label,
-                  qs.used_pct AS usedPct, qs.amount_usd AS amountUsd, qs.model AS model, qs.resets_at AS resetsAt,
-                  qs.credits_json AS creditsJson, qs.captured_at AS capturedAt,
-                  qs.event_id AS eventId
-           FROM quota_snapshots qs
-           JOIN (
-             SELECT window_minutes, MAX(captured_at) AS captured_at
-             FROM quota_snapshots
-             WHERE provider = ? AND account_key = ?
-             GROUP BY window_minutes
-           ) latest
-             ON qs.window_minutes = latest.window_minutes
-            AND qs.captured_at = latest.captured_at
-           WHERE qs.provider = ? AND qs.account_key = ?`,
-        )
-        .all(provider, accountKey, provider, accountKey) as QuotaSnapshotRow[];
-    } catch {
-      // table missing in pre-migration cache — treated as no embedded data
-      return [];
+    const observations = this.db.query<QuotaObservation, string[]>(`
+      SELECT id, bucket_id AS bucketId, captured_at AS capturedAt, account_id AS accountId
+      FROM (SELECT *, ROW_NUMBER() OVER (PARTITION BY bucket_id ORDER BY captured_at DESC, id DESC) AS position
+            FROM quota_observations WHERE provider = ? AND account_key = ? AND complete = 1)
+      WHERE position = 1
+    `).all(provider, accountKey);
+    const full = observations.find(row => row.bucketId === "*");
+    const rows = this.db.query<QuotaSnapshotRow & { observationId: number | null }, string[]>(`
+      SELECT account_key AS accountKey, account_id AS accountId, window_minutes AS windowMinutes,
+             label, used_pct AS usedPct, amount_usd AS amountUsd, NULLIF(model, '') AS model,
+             resets_at AS resetsAt, credits_json AS creditsJson, captured_at AS capturedAt, event_id AS eventId,
+             bucket_id AS bucketId, window_id AS windowId, scope, window_start AS windowStart,
+             window_end AS windowEnd, COALESCE(observed_at, captured_at) AS observedAt, observation_id AS observationId
+      FROM quota_snapshots WHERE provider = ? AND account_key = ?
+      ${full !== undefined ? "AND captured_at >= ?" : ""}
+      ORDER BY captured_at DESC, COALESCE(observation_id, 0) DESC
+    `).all(provider, accountKey, ...(full !== undefined ? [full.capturedAt] : []));
+    const legacyLatest = observations.length === 0 && rows.every(row => row.observationId === null)
+      ? rows[0]?.capturedAt : undefined;
+    const byBucket = new Map(observations.filter(row => row.bucketId !== "*" &&
+      (full === undefined || row.capturedAt > full.capturedAt ||
+        (row.capturedAt === full.capturedAt && row.id > full.id))).map(row => [row.bucketId, row]));
+    const windows = new Map<string, QuotaSnapshotRow>();
+    for (const row of rows) {
+      if (legacyLatest !== undefined && row.capturedAt !== legacyLatest) continue;
+      if (full !== undefined && row.capturedAt === full.capturedAt && (row.observationId ?? 0) < full.id) continue;
+      if (full?.accountId && row.accountId !== full.accountId) continue;
+      const bucket = row.bucketId ?? "";
+      const complete = byBucket.get(bucket);
+      if (complete !== undefined && (row.capturedAt < complete.capturedAt ||
+          (row.capturedAt === complete.capturedAt && (row.observationId ?? 0) < complete.id))) continue;
+      const slot = row.windowId || row.label || row.model || String(row.windowMinutes);
+      const key = JSON.stringify([bucket, slot, row.model ?? ""]);
+      if (!windows.has(key)) windows.set(key, row);
     }
+    return [...windows.values()];
   }
 
   /** Latest account-level facts from a provider poll (plan, extra usage, identity). */
@@ -752,15 +832,28 @@ export class EventCache {
   }
 
   /** Stable provider identities attached to the latest polled snapshots. */
+  quotaAccountKeys(input: { provider: string; accountId: string }): string[] {
+    const rows = this.db.query<{ accountKey: string }, string[]>(`
+      SELECT account_key AS accountKey FROM quota_observations WHERE provider = ? AND account_id = ?
+      UNION SELECT account_key AS accountKey FROM quota_snapshots WHERE provider = ? AND account_id = ?
+    `).all(input.provider, input.accountId, input.provider, input.accountId);
+    return rows.map(row => row.accountKey).filter(key => this.quotaAccountIds(input.provider, key).has(input.accountId));
+  }
+
   quotaAccountIds(provider: string, accountKey: string): Set<string> {
     try {
       const rows = this.db
         .query(
-          `SELECT DISTINCT account_id AS accountId
-           FROM quota_snapshots
-           WHERE provider = ? AND account_key = ? AND account_id IS NOT NULL AND account_id <> ''`,
+          `SELECT DISTINCT account_id AS accountId FROM quota_observations
+           WHERE provider = ? AND account_key = ? AND account_id IS NOT NULL AND account_id <> ''
+           AND captured_at = (SELECT MAX(captured_at) FROM quota_observations WHERE provider = ? AND account_key = ?)
+           UNION
+           SELECT account_id AS accountId FROM quota_snapshots
+           WHERE provider = ? AND account_key = ? AND account_id IS NOT NULL AND account_id <> ''
+           AND NOT EXISTS (SELECT 1 FROM quota_observations WHERE provider = ? AND account_key = ?)
+           AND captured_at = (SELECT MAX(captured_at) FROM quota_snapshots WHERE provider = ? AND account_key = ?)`,
         )
-        .all(provider, accountKey) as Array<{ accountId: string | null }>;
+        .all(provider, accountKey, provider, accountKey, provider, accountKey, provider, accountKey, provider, accountKey) as Array<{ accountId: string | null }>;
       return new Set(rows.map((r) => r.accountId).filter((id): id is string => typeof id === "string" && id.length > 0));
     } catch {
       return new Set();
@@ -843,10 +936,9 @@ export class EventCache {
     providers?: string[],
     untilIso?: string,
     accountKey?: string,
+    includeActivity = false,
   ): { sql: string; params: SQLQueryBindings[] } {
-    // Cursor-routed T3 turns are session detail only. The dashboard events
-    // already include those requests in the cursor provider total.
-    const parts = ["ts >= ?", THREAD_DETAIL_ONLY_SQL];
+    const parts = includeActivity ? ["ts >= ?"] : ["ts >= ?", COUNTED_USAGE_SQL];
     const params: SQLQueryBindings[] = [];
     if (providers !== undefined && providers.length > 0) {
       const placeholders = providers.map(() => "?").join(", ");
@@ -1020,6 +1112,20 @@ export class EventCache {
     return fromRawRow({ ...row, bucket: "TOTAL" });
   }
 
+  t3codeActivity(window: { sinceIso: string; untilIso?: string }): { total: AggRow; rows: AggRow[] } {
+    const where = this.whereClause(["t3code"], window.untilIso, undefined, true);
+    const readRows = ({ byModel }: { byModel: boolean }): AggRow[] => this.db.query<RawAggRow, SQLQueryBindings[]>(`
+      SELECT ${byModel ? "model" : "'TOTAL'"} AS bucket,
+             COUNT(*) AS requests, COUNT(DISTINCT session_id) AS sessions,
+             SUM(input_tokens) AS input_tokens, SUM(output_tokens) AS output_tokens,
+             SUM(cache_read_tokens) AS cache_read_tokens, SUM(cache_write_tokens) AS cache_write_tokens,
+             SUM(cost_usd) AS cost_usd
+      FROM events WHERE ${where.sql}
+      ${byModel ? "GROUP BY model ORDER BY cost_usd DESC, input_tokens DESC" : ""}
+    `).all(window.sinceIso, ...where.params).map(fromRawRow);
+    return { total: readRows({ byModel: false })[0]!, rows: readRows({ byModel: true }) };
+  }
+
   /**
    * Total + per-account spend for three windows in two queries (instead of
    * six full scans). Used by the post-scan budget banners, which run on every
@@ -1087,7 +1193,7 @@ export class EventCache {
                SUM(cost_usd) AS cost_usd,
                COUNT(*) AS requests
         FROM events
-        WHERE ts >= ? ${bound}
+        WHERE ts >= ? ${bound} AND ${COUNTED_USAGE_SQL}
         GROUP BY day
         ORDER BY day
         `,
@@ -1119,7 +1225,7 @@ export class EventCache {
     accountKey?: string,
     opts?: { now?: number },
   ): BlockRow[] {
-    const conds = ["ts >= ?"];
+    const conds = ["ts >= ?", COUNTED_USAGE_SQL];
     const params: SQLQueryBindings[] = [sinceIso];
     if (untilIso !== undefined) {
       conds.push("ts < ?");
@@ -1192,7 +1298,7 @@ export class EventCache {
                date(ts, 'localtime') AS day,
                ${valueExpr} AS tokens
         FROM events ${groupBy === "vendor" ? vendorJoin("events") : ""}
-        WHERE ts >= ?
+        WHERE ts >= ? AND ${COUNTED_USAGE_SQL}
         GROUP BY bucket, day
         `,
       )
@@ -1465,7 +1571,7 @@ export class EventCache {
     dimension?: RollupDimension,
   ): AggRow[] {
     if (dimension === undefined) {
-      const conds = ["ts >= ?", "ts < ?", THREAD_DETAIL_ONLY_SQL];
+      const conds = ["ts >= ?", "ts < ?", COUNTED_USAGE_SQL];
       const params: SQLQueryBindings[] = [sinceIso, untilIso];
       if (providers !== undefined && providers.length > 0) {
         conds.push(`provider IN (${providers.map(() => "?").join(",")})`);
@@ -1495,7 +1601,7 @@ export class EventCache {
         : dimension === "vendor" ? `FROM events ${vendorJoin("events")}` : "FROM events";
     if (dimension === "repo") this.ensureRepoMap();
     if (dimension === "vendor") this.ensureVendorMap();
-    const conds = ["events.ts >= ?", "events.ts < ?", "NOT (events.provider = 't3code' AND events.account_key = 'cursor')"];
+    const conds = ["events.ts >= ?", "events.ts < ?", "events.provider <> 't3code'"];
     const params: SQLQueryBindings[] = [sinceIso, untilIso];
     if (providers !== undefined && providers.length > 0) {
       conds.push(`events.provider IN (${providers.map(() => "?").join(",")})`);
@@ -1526,7 +1632,7 @@ export class EventCache {
     untilIso: string,
     providers?: string[],
   ): RawModelProviderAggRow[] {
-    const conds = ["ts >= ?", "ts < ?", THREAD_DETAIL_ONLY_SQL];
+    const conds = ["ts >= ?", "ts < ?", COUNTED_USAGE_SQL];
     const params: SQLQueryBindings[] = [sinceIso, untilIso];
     if (providers !== undefined && providers.length > 0) {
       conds.push(`provider IN (${providers.map(() => "?").join(",")})`);
@@ -1568,7 +1674,7 @@ export class EventCache {
     sort?: "cost" | "recent";
   }): SessionSummary[] {
     this.ensureRepoMap();
-    const where = this.whereClause(opts.providers, opts.untilIso, opts.accountKey);
+    const where = this.whereClause(opts.providers, opts.untilIso, opts.accountKey, true);
     const rows = this.db
       .query(
         `

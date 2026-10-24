@@ -59,6 +59,7 @@ Artifacts:
 | --- | --- |
 | `bar.png` | top strip with the widget's status |
 | `tab-<tab>.png` | full frame after selecting each tab in the UI |
+| `quotas-lower.png` | expired/unknown quota examples and separately labeled local usage/budgets |
 | `tokens-lower.png` / `tokens-models.png` | Tokens after scrolling through Pulse, provider, and model cards |
 | `reports-lower.png` | Reports after scrolling to repository and activity cards |
 | `sessions-search.png` | session list after entering the fixture search term |
@@ -122,3 +123,39 @@ history and monthly cards stay aligned with the run date.
   comparison or OCR.
 - Input coordinates assume the fixed output size and current widget layout.
   The run also checks saved tab state and the CLI calls caused by interactions.
+
+## Native Noctalia 5 and KDE Plasma 6
+
+These adapters have a separate fixture-backed host UI scenario. It uses the
+real Noctalia C++/Luau runtime and KDE's `plasmoidviewer` under headless Sway,
+with isolated HOME/XDG directories. The CLI and HTTP responses are synthetic;
+this validates host compatibility and UI behavior, not provider authentication.
+The complete adapter directories are loaded, including modules, configuration,
+translations and icons. Production adapters contain no test hooks.
+
+Prerequisites: Nix, Docker, and the `tokitoki-e2e:latest` image built by the
+main harness. Noctalia is pinned to revision
+`42c5d09a10f5642fd30fbdb0ded503c0098e6f22` (5.3.0); the Plasma SDK and desktop
+containment use `e2e/flake.lock` (6.7.5 when validated).
+
+```sh
+./e2e/native/run.sh
+# Output defaults to /tmp/tokitoki-native-e2e; override E2E_OUT_DIR at startup.
+```
+
+`run.sh` removes its container on exit. For an interactive debugging session,
+use `start.sh`, then `docker exec tokitoki-native-e2e sh /repo/e2e/native/scenario.sh`,
+and finally `docker rm -f tokitoki-native-e2e`.
+
+The scenario checks shortest window **per selected account**, multiple profiles,
+all-window tooltips, local account selection, expired/unknown quota states,
+amount precedence, backend failure and recovery, and native runtime errors.
+Budgets and T3 Code activity are exercised in the detail view. It writes
+`result.json`, native runtime logs, state probes and PNG screenshots. Plasma
+`*-widget.png` captures crop the actual compositor output using the live
+plasmoid's measured bounds; full output captures are retained too.
+
+The test shim is only available inside this disposable container. It reads no
+personal accounts, changes no live desktop configuration, and sends no desktop
+notifications. To repeat, remove the previous test container and use a fresh
+output directory so stale probes cannot satisfy readiness checks.

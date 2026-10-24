@@ -32,6 +32,25 @@ describe("describeQuotaWindow", () => {
     expect(bucket.label).toBe("Other Models");
     expect(bucket.scope).toBe("monthly");
   });
+
+  it("recognizes only established durations and preserves arbitrary meter lengths", () => {
+    for (const minutes of [28 * 1440, 29 * 1440, 30 * 1440, 31 * 1440]) {
+      expect(describeQuotaWindow({ windowMinutes: minutes, usedPercent: 5 }).scope).toBe("monthly");
+    }
+    for (const minutes of [1, 60, 299, 301, 720, 1441, 9 * 1440, 14 * 1440, 27 * 1440, 32 * 1440, 365 * 1440]) {
+      expect(describeQuotaWindow({ windowMinutes: minutes, usedPercent: 5 })).toMatchObject({ scope: "other", label: "Limit", windowMinutes: minutes });
+    }
+    for (const minutes of [0, -1, NaN, Infinity]) {
+      const window = describeQuotaWindow({ windowMinutes: minutes, usedPercent: 5 });
+      expect(window.scope).toBe("other");
+      expect(window.windowMinutes).toBeUndefined();
+    }
+  });
+
+  it("prefers provider scope and stable meter slots over duration-derived identity", () => {
+    expect(describeQuotaWindow({ windowMinutes: 60, usedPercent: 20, scope: "daily", bucketId: "requests", windowId: "primary" })).toMatchObject({ id: "requests:primary", label: "Daily", scope: "daily", windowMinutes: 60 });
+    expect(describeQuotaWindow({ windowMinutes: 10080, usedPercent: 30, model: "opus", scope: "model", bucketId: "opus", windowId: "seven_day" })).toMatchObject({ id: "opus:seven_day:opus", scope: "model", label: "Opus weekly", model: "opus" });
+  });
 });
 
 describe("computePace", () => {
@@ -95,6 +114,28 @@ describe("window ids", () => {
     expect(unknown.windowMinutes).toBeUndefined();
     const ids = [snapshot(300), snapshot(0), snapshot(10_080)].map((row) => embeddedLimitWindow({ snapshot: row, now }).id);
     expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it("keeps a fresh known-duration observation current without inventing its reset", () => {
+    const window = embeddedLimitWindow({ snapshot: snapshot(300), now: new Date("2026-10-18T12:05:00Z") });
+    expect(window).toMatchObject({ status: "current", usedPct: 10, usedPercent: 10, observedAt: "2026-10-18T12:00:00.000Z" });
+    expect(window.resetsAt).toBeUndefined();
+    expect(window.pace).toBeUndefined();
+  });
+
+  it("suppresses current usage for expired, stale and unverified observations", () => {
+    const now = new Date("2026-10-18T12:05:00Z");
+    const expired = embeddedLimitWindow({ snapshot: { ...snapshot(300), resetsAt: Date.parse("2026-10-18T12:00:00Z") / 1000 }, now });
+    const stale = embeddedLimitWindow({ snapshot: snapshot(300), now, maxAgeMs: 60_000 });
+    const unknown = embeddedLimitWindow({ snapshot: snapshot(300), now, identityVerified: false });
+    expect([expired.status, stale.status, unknown.status]).toEqual(["expired", "stale", "unknown"]);
+    expect(expired.resetsAt).toBe("2026-10-18T12:00:00.000Z");
+    for (const window of [expired, stale, unknown]) {
+      expect(window.usedPct).toBeUndefined();
+      expect(window.usedPercent).toBeUndefined();
+      expect(window.pace).toBeUndefined();
+      expect(window.observedAt).toBe("2026-10-18T12:00:00.000Z");
+    }
   });
 
   it("suffixes repeated ids within one account", () => {

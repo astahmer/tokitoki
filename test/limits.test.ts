@@ -145,18 +145,20 @@ function limitsCache(): EventCache {
 }
 
 describe("computeLimits", () => {
-  it("only attaches pool emails to pooled Codex account keys", () => {
+  it("only attaches pool emails when the cached stable account identity matches", () => {
     const limits = attachCodexPoolEmails(
       [
         { provider: "codex", accountKey: "codex", windows: [] },
         { provider: "codex", accountKey: "codex:work", windows: [] },
+        { provider: "codex", accountKey: "account:work-account", windows: [] },
       ],
       { work: { accountId: "work-account", email: "work@example.com" } },
-      () => new Set(["work-account"]),
+      (accountKey) => new Set(accountKey === "codex:work" || accountKey === "account:work-account" ? ["work-account"] : []),
     );
 
     expect(limits[0]?.email).toBeUndefined();
     expect(limits[1]?.email).toBe("work@example.com");
+    expect(limits[2]?.email).toBe("work@example.com");
   });
 
   it("never merges distinct stable Codex accounts with identical quota windows", () => {
@@ -252,27 +254,31 @@ describe("computeLimits", () => {
       const codex = limits.find((l) => l.provider === "codex" && l.accountKey === "openai:plus");
       expect(codex).toBeDefined();
       const codexDef = codex!;
-      const kinds = codex!.windows.map((w) => w.kind);
+      expect(codexDef.windows).toEqual([]);
+      const kinds = codexDef.budgetWindows?.map((w) => w.kind);
       expect(kinds).toEqual(["day", "week", "month"]);
-      for (const w of codexDef.windows) {
+      for (const w of codexDef.budgetWindows ?? []) {
         expect(w.source).toBe("derived");
         expect(w.usedPct).toBeUndefined(); // no caps configured
         expect(w.resetsAt).toBeDefined();
       }
-      const day = codexDef.windows.find((w) => w.kind === "day")!;
-      expect(day.tokens).toBeGreaterThan(0);
+      const day = codexDef.budgetWindows?.find((w) => w.kind === "day")!;
+      expect(day.tokens).toBe(400);
+      expect(day.requests).toBe(2);
+      expect(day).toMatchObject({ id: "local:day", scope: "daily", label: "Today usage" });
     } finally {
       cache.close();
     }
   });
 
-  it("treats an embedded window that already reset as empty, not as exhausted", () => {
+  it("keeps an expired quota unknown while preserving a fresh independent weekly meter", () => {
     const cache = limitsCache();
     try {
       const now = new Date("2026-09-10T12:00:00.000Z");
       cache.insertPolledSnapshots({
         provider: "codex",
         accountKey: "codex",
+        accountId: "reported-account",
         windows: [
           // 5h session window: its reset instant is months in the past, so the
           // captured 100% used describes a window that no longer exists.
@@ -280,25 +286,33 @@ describe("computeLimits", () => {
           // Still-open weekly window: the provider-reported utilization stands.
           { windowMinutes: 10_080, usedPct: 10, resetsAtEpoch: Math.round(Date.parse("2026-09-14T10:47:05.000Z") / 1000) },
         ],
-        capturedAtIso: "2026-08-02T22:21:23.333Z",
+        capturedAtIso: "2026-09-10T11:55:00.000Z",
         eventId: "poll:stale",
       });
       const limits = computeLimits(cache, {}, now, [{ provider: "codex", accountKey: "codex" }]);
       const windows = limits[0]!.windows;
-      expect(windows.find((w) => w.kind === "day")?.usedPct).toBe(0);
-      expect(windows.find((w) => w.kind === "week")?.usedPct).toBe(10);
+      const session = windows.find((w) => w.kind === "day")!;
+      expect(session).toMatchObject({ status: "expired", observedAt: "2026-09-10T11:55:00.000Z", resetsAt: "2026-07-12T21:17:06.000Z" });
+      expect(session.usedPct).toBeUndefined();
+      expect(session.usedPercent).toBeUndefined();
+      expect(session.pace).toBeUndefined();
+      expect(windows.find((w) => w.kind === "week")).toMatchObject({ status: "current", usedPct: 10, usedPercent: 10 });
+      expect(cache.latestQuotaSnapshots("codex", "codex").find((row) => row.windowMinutes === 300)?.usedPct).toBe(100);
     } finally {
       cache.close();
     }
   });
 
-  it("prefers embedded quota over derived for the same window kind", () => {
+  it("keeps provider quota separate from local calendar usage of the same scope", () => {
     const cache = limitsCache();
     try {
       cache.insert([
         makeEvent({
           id: "q",
+          accountKey: "account:reported-account",
+          ts: "2026-08-24T11:00:00.000Z",
           quota: {
+            accountId: "reported-account",
             primary: { usedPct: 42.5, windowMinutes: 10080, resetsAtEpoch: 1788160164 },
             credits: {
               hasCredits: true,
@@ -309,14 +323,15 @@ describe("computeLimits", () => {
           },
         }),
       ]);
-      const limits = computeLimits(cache, {}, new Date(2026, 7, 24, 12, 0));
+      const limits = computeLimits(cache, {}, new Date("2026-08-24T12:00:00.000Z"));
       const codex = limits.find((l) => l.provider === "codex")!;
       const week = codex.windows.find((w) => w.kind === "week")!;
       expect(week.source).toBe("embedded");
       expect(week.usedPct).toBeCloseTo(42.5);
       expect(week.resetsAt).toBe(new Date(1788160164 * 1000).toISOString());
-      // derived day/month still present alongside the embedded week
-      expect(codex.windows.filter((w) => w.source === "derived").map((w) => w.kind)).toEqual(["day", "month"]);
+      expect(codex.windows).toHaveLength(1);
+      expect(codex.budgetWindows?.map((w) => w.kind)).toEqual(["day", "week", "month"]);
+      expect(codex.budgetWindows?.every((w) => w.source === "derived" && w.usedPct === undefined)).toBe(true);
       // credits surface as banked resets
       expect(codex.bankedResets).toBe(2);
       expect(codex.bankedExpiresAt).toBe("2026-08-30T12:00:00.000Z");
@@ -325,9 +340,11 @@ describe("computeLimits", () => {
     }
   });
 
-  it("suppresses spurious Day/Weekly rows for providers with no real day/week limit", () => {
+  it("keeps provider quota rows separate from local usage for every provider", () => {
     const cache = limitsCache();
     try {
+      const now = new Date("2026-08-24T12:00:00.000Z");
+      cache.insert(["cursor", "copilot", "grok"].map((provider) => makeEvent({ id: `usage:${provider}`, provider, accountKey: "default", ts: "2026-08-24T11:00:00.000Z" })));
       // Cursor: anniversary billing cycle (~31 days = 44640min, not exactly
       // 43200) split into three differently-labeled real buckets.
       cache.insertPolledSnapshots({
@@ -338,18 +355,18 @@ describe("computeLimits", () => {
           { windowMinutes: 44640, usedPct: 0, resetsAtEpoch: 1790148296, label: "Other Models" },
           { windowMinutes: 44640, usedPct: 11.6, resetsAtEpoch: 1790148296, label: "On-Demand", amountUsd: 34.77 },
         ],
-        capturedAtIso: new Date().toISOString(),
+        capturedAtIso: now.toISOString(),
         eventId: "poll:test:cursor",
       });
-      // Copilot: one real rolling ~monthly meter, no separate day/week.
+      // Copilot: one provider monthly meter, no separate day/week quota.
       cache.insertPolledSnapshots({
         provider: "copilot",
         accountKey: "default",
         windows: [{ windowMinutes: 43200, usedPct: 55, resetsAtEpoch: 1790148296 }],
-        capturedAtIso: new Date().toISOString(),
+        capturedAtIso: now.toISOString(),
         eventId: "poll:test:copilot",
       });
-      const limits = computeLimits(cache, {}, new Date(), [
+      const limits = computeLimits(cache, {}, now, [
         { provider: "cursor", accountKey: "default" },
         { provider: "copilot", accountKey: "default" },
         { provider: "grok", accountKey: "default" },
@@ -358,17 +375,20 @@ describe("computeLimits", () => {
       const cursor = limits.find((l) => l.provider === "cursor")!;
       expect(cursor.windows.map((w) => w.kind).sort()).toEqual(["Cursor Models", "On-Demand", "Other Models"]);
       expect(cursor.windows.find((w) => w.kind === "On-Demand")?.amountUsd).toBeCloseTo(34.77);
-      // No redundant derived "month" row alongside the three real buckets,
-      // and no fabricated "day"/"week" rows — Cursor has neither.
       expect(cursor.windows.some((w) => w.kind === "day" || w.kind === "week" || w.kind === "month")).toBe(false);
+      expect(cursor.budgetWindows?.map((w) => w.kind)).toEqual(["day", "week", "month"]);
 
       const copilot = limits.find((l) => l.provider === "copilot")!;
       expect(copilot.windows.map((w) => w.kind)).toEqual(["month"]);
+      expect(copilot.budgetWindows?.map((w) => w.kind)).toEqual(["day", "week", "month"]);
 
-      // Providers with no known limit shape keep their full estimate set —
-      // this fix must not suppress the genuinely-only signal they have.
       const grok = limits.find((l) => l.provider === "grok")!;
-      expect(grok.windows.map((w) => w.kind)).toEqual(["day", "week", "month"]);
+      expect(grok.windows).toEqual([]);
+      expect(grok.budgetWindows?.map((w) => w.kind)).toEqual(["day", "week", "month"]);
+      for (const limit of [cursor, copilot, grok]) {
+        expect(limit.budgetWindows?.every((w) => w.source === "derived" && w.requests === 1 && w.usedPct === undefined)).toBe(true);
+        expect(limit.windows.every((w) => w.source === "embedded")).toBe(true);
+      }
     } finally {
       cache.close();
     }
@@ -383,10 +403,11 @@ describe("computeLimits", () => {
       const config = { plans: { "openai:*": { monthlyCostCap: 200 } } };
       const limits = computeLimits(cache, config as never, new Date(2026, 7, 24, 12, 0));
       expect(limits.length).toBeGreaterThan(0);
-      const month = limits[0]!.windows.find((w) => w.kind === "month")!;
+      expect(limits[0]!.windows).toEqual([]);
+      const month = limits[0]!.budgetWindows?.find((w) => w.kind === "month")!;
       expect(month.usedPct).toBeCloseTo(5, 0); // $10 of $200
       // day window carries a pace gauge (>100% = burning hot), not raw share
-      const day = limits[0]!.windows.find((w) => w.kind === "day")!;
+      const day = limits[0]!.budgetWindows?.find((w) => w.kind === "day")!;
       expect(day.usedPct).toBeUndefined(); // zero-cost day has no pace signal
     } finally {
       cache.close();
@@ -404,36 +425,54 @@ describe("computeLimits", () => {
       ]);
       const config = { plans: { "openai:*": { monthlyCostCap: 310 } } };
       const limits = computeLimits(cache, config as never, new Date(2026, 7, 24, 12, 0));
-      const day = limits[0]!.windows.find((w) => w.kind === "day")!;
+      expect(limits[0]!.windows).toEqual([]);
+      const day = limits[0]!.budgetWindows?.find((w) => w.kind === "day")!;
       expect(day.usedPct).toBeCloseTo(100, 0);
     } finally {
       cache.close();
     }
   });
 
-  it("latest snapshot wins per window length", () => {
+  it("uses the latest observation of the same identified bucket and slot", () => {
     const cache = limitsCache();
     try {
       cache.insert([
-        makeEvent({ id: "old", ts: "2026-08-20T10:00:00.000Z", quota: { primary: { usedPct: 90, windowMinutes: 10080, resetsAtEpoch: 1 } } }),
-        makeEvent({ id: "new", ts: "2026-08-24T10:00:00.000Z", quota: { primary: { usedPct: 5, windowMinutes: 10080, resetsAtEpoch: 1788160164 } } }),
+        makeEvent({ id: "old", accountKey: "account:reported-account", ts: "2026-08-20T10:00:00.000Z", quota: { accountId: "reported-account", primary: { usedPct: 90, windowMinutes: 10080, resetsAtEpoch: 1 } } }),
+        makeEvent({ id: "new", accountKey: "account:reported-account", ts: "2026-08-24T10:00:00.000Z", quota: { accountId: "reported-account", primary: { usedPct: 5, windowMinutes: 10080, resetsAtEpoch: 1788160164 } } }),
       ]);
       const limits = computeLimits(cache, {}, new Date(2026, 7, 24, 12, 0));
       const week = limits[0]!.windows.find((w) => w.kind === "week")!;
       expect(week.usedPct).toBeCloseTo(5);
+      expect(week).toMatchObject({ status: "current", bucketId: "codex", windowId: "primary", observedAt: "2026-08-24T10:00:00.000Z" });
+      expect(cache.latestQuotaSnapshots("codex", "account:reported-account")).toHaveLength(1);
     } finally {
       cache.close();
     }
   });
 
-  it("marks scanned quota snapshots stale once they are hours old", () => {
+  it("quarantines unidentified scanned quota while keeping its original observation time", () => {
     const cache = limitsCache();
     try {
       cache.insert([
-        makeEvent({ id: "scanned", ts: "2026-08-20T10:00:00.000Z", quota: { primary: { usedPct: 40, windowMinutes: 300, resetsAtEpoch: 1 } } }),
+        makeEvent({ id: "scanned", sessionId: "unbound-session", ts: "2026-08-20T10:00:00.000Z", quota: { primary: { usedPct: 40, windowMinutes: 300, resetsAtEpoch: 0 } } }),
       ]);
-      expect(computeLimits(cache, {}, new Date("2026-08-20T12:00:00.000Z"))[0]?.freshness).toBe("fresh");
-      expect(computeLimits(cache, {}, new Date("2026-08-24T12:00:00.000Z"))[0]?.freshness).toBe("stale");
+      const usageAccount = computeLimits(cache, {}, new Date("2026-08-20T12:00:00.000Z"))[0]!;
+      expect(usageAccount.accountKey).toBe("openai:plus");
+      expect(usageAccount.freshness).toBe("unknown");
+      expect(usageAccount.windows).toEqual([]);
+      expect(usageAccount.budgetWindows?.find((window) => window.kind === "day")?.requests).toBe(1);
+      expect(cache.latestQuotaSnapshots("codex", "openai:plus")).toEqual([]);
+      const snapshots = cache.latestQuotaSnapshots("codex", "unidentified:unbound-session");
+      expect(snapshots).toHaveLength(1);
+      expect(snapshots[0]).toMatchObject({ accountId: null, usedPct: 40, capturedAt: "2026-08-20T10:00:00.000Z" });
+      const accounts = [{ provider: "codex", accountKey: "unidentified:unbound-session" }];
+      const fresh = computeLimits(cache, {}, new Date("2026-08-20T12:00:00.000Z"), accounts)[0]!;
+      expect(fresh.freshness).toBe("fresh");
+      expect(fresh.email).toBeUndefined();
+      expect(fresh.windows[0]).toMatchObject({ status: "unknown", observedAt: "2026-08-20T10:00:00.000Z" });
+      expect(fresh.windows[0]?.usedPct).toBeUndefined();
+      expect(fresh.windows[0]?.usedPercent).toBeUndefined();
+      expect(computeLimits(cache, {}, new Date("2026-08-24T12:00:00.000Z"), accounts)[0]?.freshness).toBe("stale");
     } finally {
       cache.close();
     }
@@ -458,7 +497,11 @@ describe("computeLimits", () => {
       );
       expect(limits[0]?.freshness).toBe("stale");
       expect(limits[0]?.observedAt).toBe("2026-08-27T10:00:00.000Z");
-      expect(limits[0]?.windows[0]?.usedPct).toBe(73);
+      expect(limits[0]?.windows[0]).toMatchObject({ status: "stale", observedAt: "2026-08-27T10:00:00.000Z" });
+      expect(limits[0]?.windows[0]?.usedPct).toBeUndefined();
+      expect(limits[0]?.windows[0]?.usedPercent).toBeUndefined();
+      expect(limits[0]?.windows[0]?.pace).toBeUndefined();
+      expect(cache.latestQuotaSnapshots("codex", "openai:plus")[0]?.usedPct).toBe(73);
     } finally {
       cache.close();
     }
@@ -563,7 +606,8 @@ describe("provider-neutral quota windows", () => {
       const cursor = limits.find((limit) => limit.provider === "cursor")!;
       expect(cursor.windows.find((window) => window.id === "monthly:cursor-models")).toMatchObject({ scope: "monthly", label: "Cursor Models" });
       expect(cursor.windows.find((window) => window.id === "monthly:on-demand")?.pace).toBeUndefined();
-      expect(cursor.windows.filter((window) => window.source === "derived").every((window) => window.scope === undefined)).toBe(true);
+      expect(cursor.windows.every((window) => window.source === "embedded")).toBe(true);
+      expect(cursor.budgetWindows).toBeUndefined();
     } finally {
       cache.close();
     }

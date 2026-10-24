@@ -3,7 +3,7 @@ import fs from "node:fs";
 import { z } from "zod";
 
 import { accountEmailFor, accountIdentityFor } from "./accounts.ts";
-import { EventCache } from "./cache.ts";
+import { EventCache, type QuotaSnapshotRow } from "./cache.ts";
 import { loadConfig, type TokitokiConfig } from "./config.ts";
 import {
   appendBalanceOnlyAccounts,
@@ -19,7 +19,7 @@ import {
   type LimitWindow,
 } from "./limits.ts";
 import { vendorForProvider } from "./model-provider.ts";
-import { opencodeCredentials, opencodexAccountIdentities, opencodexQuotas, piCredentials, redactCredential } from "./poll.ts";
+import { opencodeCredentials, opencodexAccountIdentities, piCredentials, redactCredential } from "./poll.ts";
 import { providerInfo } from "./provider-registry.ts";
 import { AccountBalanceSchema, withUniqueWindowIds } from "./quota-windows.ts";
 import { resolveExtraFiles } from "./report.ts";
@@ -45,9 +45,88 @@ const parseCredits = (raw: string): z.infer<typeof CreditsSchema> | undefined =>
 const PolledAccountSchema = z.array(z.object({ provider: z.string(), accountKey: z.string() }));
 const OriginRowSchema = z.object({ origin: z.string().optional() }).nullable();
 
+const canonicalCodexAccounts = (input: {
+  limits: AccountLimits[];
+  cache: EventCache;
+  now: Date;
+  maxAgeMs: (eventId?: string) => number | undefined;
+}): AccountLimits[] => {
+  const groups = new Map<string, AccountLimits[]>();
+  const result: AccountLimits[] = [];
+  for (const limit of input.limits) {
+    if (limit.provider !== "codex" || limit.accountId === undefined) {
+      result.push(limit);
+      continue;
+    }
+    const group = groups.get(limit.accountId) ?? [];
+    group.push(limit);
+    groups.set(limit.accountId, group);
+  }
+  for (const [accountId, aliases] of groups) {
+    const keys = aliases.map((alias) => alias.accountKey);
+    const placeholders = keys.map(() => "?").join(", ");
+    const observations = input.cache.database.query<{
+      id: number; bucketId: string; capturedAt: string; accountKey: string;
+    }, string[]>(`SELECT id, bucket_id AS bucketId, captured_at AS capturedAt, account_key AS accountKey
+      FROM quota_observations WHERE provider = 'codex' AND account_id = ? AND complete = 1 AND account_key IN (${placeholders})
+      ORDER BY captured_at DESC, id DESC`).all(accountId, ...keys);
+    const full = observations.find((observation) => observation.bucketId === "*");
+    const buckets = new Map<string, typeof observations[number]>();
+    for (const observation of observations) {
+      if (full !== undefined && (observation.capturedAt < full.capturedAt ||
+        (observation.capturedAt === full.capturedAt && observation.id <= full.id))) continue;
+      if (!buckets.has(observation.bucketId)) buckets.set(observation.bucketId, observation);
+    }
+    const rows = input.cache.database.query<QuotaSnapshotRow & { observationId: number | null }, string[]>(`
+      SELECT account_key AS accountKey, account_id AS accountId, window_minutes AS windowMinutes,
+        label, used_pct AS usedPct, amount_usd AS amountUsd, NULLIF(model, '') AS model,
+        resets_at AS resetsAt, credits_json AS creditsJson, captured_at AS capturedAt, event_id AS eventId,
+        bucket_id AS bucketId, window_id AS windowId, scope, window_start AS windowStart,
+        window_end AS windowEnd, COALESCE(observed_at, captured_at) AS observedAt, observation_id AS observationId
+      FROM quota_snapshots WHERE provider = 'codex' AND account_id = ? AND account_key IN (${placeholders})
+      ORDER BY captured_at DESC, COALESCE(observation_id, 0) DESC
+    `).all(accountId, ...keys);
+    const legacyLatest = observations.length === 0 && rows.every((row) => row.observationId === null)
+      ? rows[0]?.capturedAt : undefined;
+    const snapshots = new Map<string, QuotaSnapshotRow>();
+    for (const row of rows) {
+      if (full !== undefined && (row.capturedAt < full.capturedAt ||
+        (row.capturedAt === full.capturedAt && (row.observationId ?? 0) < full.id))) continue;
+      if (legacyLatest !== undefined && row.capturedAt !== legacyLatest) continue;
+      const bucket = buckets.get(row.bucketId ?? "");
+      if (bucket !== undefined && (row.capturedAt < bucket.capturedAt ||
+        (row.capturedAt === bucket.capturedAt && (row.observationId ?? 0) < bucket.id))) continue;
+      const slot = JSON.stringify([row.bucketId ?? "", row.windowId || row.label || row.model || String(row.windowMinutes), row.model ?? ""]);
+      if (!snapshots.has(slot)) snapshots.set(slot, row);
+    }
+    const preferredKey = full?.accountKey ?? rows[0]?.accountKey;
+    const preferred = aliases.find((alias) => alias.accountKey === preferredKey) ?? aliases[0]!;
+    const budgets = new Map<string, LimitWindow>();
+    for (const alias of aliases) {
+      for (const window of alias.budgetWindows ?? []) {
+        const key = JSON.stringify([window.id ?? window.kind, window.windowStart, window.windowEnd]);
+        const previous = budgets.get(key);
+        budgets.set(key, previous === undefined ? { ...window } : {
+          ...previous, tokens: previous.tokens + window.tokens, cost: previous.cost + window.cost,
+          requests: previous.requests + window.requests,
+          usedPct: previous.usedPct !== undefined && window.usedPct !== undefined ? previous.usedPct + window.usedPct : undefined,
+        });
+      }
+    }
+    result.push({
+      ...preferred, accountKey: `openai:${accountId}`, accountId,
+      windows: withUniqueWindowIds([...snapshots.values()].map((snapshot) => embeddedLimitWindow({
+        snapshot, now: input.now, identityVerified: true, maxAgeMs: input.maxAgeMs(snapshot.eventId),
+      }))),
+      ...(budgets.size > 0 ? { budgetWindows: withUniqueWindowIds([...budgets.values()]) } : {}),
+    });
+  }
+  return result;
+};
+
 /**
- * Card-level account limits: provider-reported quotas merged with derived
- * usage windows, deduplicated across harness variants and shared credentials.
+ * Card-level account limits: provider-reported quotas and separate derived
+ * budgets, deduplicated across harness variants and shared credentials.
  * The one builder behind widget-payload `limits`, `limits --json`, `serve`,
  * web `/api/limits`, and MCP `get_limits`, so every surface agrees on what an
  * account is. Callers sync the cache first.
@@ -58,8 +137,10 @@ export const buildAccountLimits = (input: { cache: EventCache; config: TokitokiC
   const now = input.now ?? new Date();
   const limits = computeLimits(cache, config, now);
   const poolIdentities = opencodexAccountIdentities();
-  const poolQuotas = opencodexQuotas();
-  const localCodexAccountId = accountIdentityFor("codex")?.accountId;
+  const localCodexIdentity = accountIdentityFor("codex");
+  const maxAgeMs = (eventId?: string): number | undefined => eventId?.startsWith("poll:")
+    ? Math.max(10, (config.poll?.intervalMinutes ?? 15) * 2) * 60_000
+    : undefined;
   const limitsWithPoolEmails = attachCodexPoolEmails(
     limits,
     poolIdentities,
@@ -71,19 +152,10 @@ export const buildAccountLimits = (input: { cache: EventCache; config: TokitokiC
     const cursorRouted = limit.provider === "cursor" || (limit.provider === "t3code" && limit.accountKey === "cursor");
     return cursorRouted ? { ...limit, email: cursorEmail } : limit;
   });
-  const normalizedLimits = withHarnessEmails.filter((limit) => {
-    if (limit.provider !== "codex" || !limit.accountKey.startsWith("codex:")) return true;
-    const poolKey = limit.accountKey.slice("codex:".length);
-    if (poolQuotas[poolKey] === undefined) return true;
-    const poolId = poolIdentities[poolKey]?.accountId;
-    return poolId === undefined || cache.quotaAccountIds("codex", limit.accountKey).has(poolId);
-  });
-  const withoutLocalCodexAliases = normalizedLimits.filter((limit) => {
-    if (limit.provider !== "codex" || localCodexAccountId === undefined) return true;
-    if (limit.accountKey.startsWith("openai:")) return true;
-    return !cache.quotaAccountIds("codex", limit.accountKey).has(localCodexAccountId);
-  });
-  const merged = mergeAliasLimits(withoutLocalCodexAliases);
+  const merged = [
+    ...mergeAliasLimits(withHarnessEmails.filter((limit) => limit.provider !== "codex")),
+    ...withHarnessEmails.filter((limit) => limit.provider === "codex" && !limit.accountKey.startsWith("unidentified:")),
+  ];
   const opencodeCreds = opencodeCredentials();
   const piKeys = piCredentials();
   const withCreds = merged.map((limit) => {
@@ -141,7 +213,7 @@ export const buildAccountLimits = (input: { cache: EventCache; config: TokitokiC
       accountKey: manualKey.id,
       credential: redactCredential(manualKey.key),
       origin: "manual",
-      windows: cache.latestQuotaSnapshots(cardProvider, manualKey.id).map((snapshot) => embeddedLimitWindow({ snapshot, now })),
+      windows: cache.latestQuotaSnapshots(cardProvider, manualKey.id).map((snapshot) => embeddedLimitWindow({ snapshot, now, maxAgeMs: maxAgeMs(snapshot.eventId) })),
       ...labelFields,
     });
   }
@@ -149,20 +221,20 @@ export const buildAccountLimits = (input: { cache: EventCache; config: TokitokiC
   try {
     const polled = PolledAccountSchema.parse(
       cache.database
-        .query("SELECT DISTINCT provider, account_key AS accountKey FROM quota_snapshots WHERE event_id LIKE 'poll:%'")
+        .query(`SELECT DISTINCT provider, account_key AS accountKey FROM quota_snapshots
+          WHERE event_id LIKE 'poll:%' OR provider = 'codex'
+          UNION SELECT provider, account_key AS accountKey FROM quota_observations`)
         .all(),
     );
     const known = new Set(withOrigin.map((limit) => `${limit.provider}@${limit.accountKey}`));
     for (const polledAccount of polled) {
+      if (polledAccount.provider === "codex" && polledAccount.accountKey.startsWith("unidentified:")) continue;
       const id = `${polledAccount.provider}@${polledAccount.accountKey}`;
       const mirroredInSharedGateway =
         (polledAccount.provider === "pi" || polledAccount.provider === "opencode") &&
         (known.has(`pi@${polledAccount.accountKey}`) || known.has(`opencode@${polledAccount.accountKey}`));
       if (known.has(id)) {
-        const existingIndex = withOrigin.findIndex((limit) => `${limit.provider}@${limit.accountKey}` === id);
-        if (existingIndex < 0 || withOrigin[existingIndex]!.windows.length > 0) continue;
-        withOrigin.splice(existingIndex, 1);
-        known.delete(id);
+        continue;
       }
       if (mirroredInSharedGateway) continue;
       const snapshots = cache.latestQuotaSnapshots(polledAccount.provider, polledAccount.accountKey);
@@ -181,23 +253,15 @@ export const buildAccountLimits = (input: { cache: EventCache; config: TokitokiC
       const accountIds = cache.quotaAccountIds(polledAccount.provider, polledAccount.accountKey);
       const latestEpoch = (rows: typeof snapshots): number | undefined =>
         rows
-          .map((snapshot) => Date.parse(snapshot.capturedAt))
+          .map((snapshot) => Date.parse(snapshot.observedAt ?? snapshot.capturedAt))
           .filter((value) => Number.isFinite(value))
           .sort((a, b) => b - a)[0];
       const observedEpoch = latestEpoch(snapshots);
       const pollObservedEpoch = latestEpoch(snapshots.filter((snapshot) => snapshot.eventId?.startsWith("poll:") === true));
       const freshnessWindowMs = Math.max(10, (config.poll?.intervalMinutes ?? 15) * 2) * 60_000;
       const freshness: AccountLimits["freshness"] = pollObservedEpoch === undefined
-        ? "unknown"
+        ? observedEpoch === undefined ? "unknown" : now.getTime() - observedEpoch <= 6 * 60 * 60_000 ? "fresh" : "stale"
         : now.getTime() - pollObservedEpoch <= freshnessWindowMs ? "fresh" : "stale";
-      if (
-        polledAccount.provider === "codex" &&
-        localCodexAccountId !== undefined &&
-        !polledAccount.accountKey.startsWith("openai:") &&
-        accountIds.has(localCodexAccountId)
-      ) {
-        continue;
-      }
       const poolIdentity = polledAccount.provider === "codex"
         ? Object.values(poolIdentities).find((identity) => identity.accountId !== undefined && accountIds.has(identity.accountId))
         : undefined;
@@ -209,8 +273,12 @@ export const buildAccountLimits = (input: { cache: EventCache; config: TokitokiC
         ...(email !== undefined ? { email } : {}),
         ...(accountMeta?.plan !== undefined ? { plan: accountMeta.plan, planLabel: accountMeta.plan } : {}),
         ...(accountMeta?.extraUsage !== undefined ? { extraUsage: accountMeta.extraUsage } : {}),
-        origin: "polled",
-        windows: snapshots.map((snapshot) => embeddedLimitWindow({ snapshot, now })),
+        origin: snapshots.some((snapshot) => snapshot.eventId?.startsWith("poll:")) ? "polled" : "scan",
+        windows: snapshots.map((snapshot) => embeddedLimitWindow({
+          snapshot, now, maxAgeMs: maxAgeMs(snapshot.eventId),
+          identityVerified: polledAccount.provider !== "codex" ||
+            (snapshot.accountId !== null && snapshot.accountId.length > 0 && accountIds.has(snapshot.accountId)),
+        })),
         ...(observedEpoch !== undefined ? { observedAt: new Date(observedEpoch).toISOString() } : {}),
         freshness,
         ...(bankedResets !== undefined ? { bankedResets } : {}),
@@ -228,9 +296,19 @@ export const buildAccountLimits = (input: { cache: EventCache; config: TokitokiC
   };
   const withBalances = appendBalanceOnlyAccounts({ limits: withOrigin, cache, now });
   const cardLimits = config.ui?.showHarnessVariants === true ? withBalances : collapseHarnessVariants(withBalances);
-  return cardLimits
-    .sort((a, b) => rank(a) - rank(b))
-    .map((limit) => ({ ...limit, windows: withUniqueWindowIds(limit.windows) }));
+  const attributedLimits = cardLimits.map((limit) => {
+      const windows = withUniqueWindowIds(limit.windows);
+      const budgetWindows = limit.budgetWindows === undefined ? undefined : withUniqueWindowIds(limit.budgetWindows);
+      if (limit.provider !== "codex") return { ...limit, windows, budgetWindows };
+      const accountIds = cache.quotaAccountIds("codex", limit.accountKey);
+      const accountId = accountIds.size === 1 ? accountIds.values().next().value : undefined;
+      const poolIdentity = accountId === undefined ? undefined : Object.values(poolIdentities).find((identity) => identity.accountId === accountId);
+      const email = accountId === undefined ? undefined
+        : accountId === localCodexIdentity?.accountId ? localCodexIdentity.email
+        : poolIdentity?.email ?? cache.quotaAccountMeta("codex", limit.accountKey)?.email;
+      return { ...limit, windows, budgetWindows, accountId, email };
+    });
+  return canonicalCodexAccounts({ limits: attributedLimits, cache, now, maxAgeMs }).sort((a, b) => rank(a) - rank(b));
 };
 
 const PaceSchema = z.object({
@@ -246,7 +324,13 @@ const LimitsWindowSchema = z.object({
   scope: z.enum(["session", "daily", "weekly", "monthly", "model", "other"]),
   model: z.string().optional(),
   source: z.enum(["provider", "derived"]),
-  usedPercent: z.number().nullable(),
+  usedPercent: z.number().nullable().optional(),
+  status: z.enum(["current", "stale", "expired", "unknown"]).optional(),
+  observedAt: z.string().optional(),
+  bucketId: z.string().optional(),
+  windowId: z.string().optional(),
+  windowStart: z.string().optional(),
+  windowEnd: z.string().optional(),
   amountUsd: z.number().optional(),
   windowMinutes: z.number().optional(),
   resetsAt: z.string().optional(),
@@ -263,6 +347,7 @@ const LimitsAccountSchema = z.object({
   harness: z.string(),
   alsoOn: z.array(z.string()),
   accountKey: z.string(),
+  accountId: z.string().optional(),
   label: z.string().optional(),
   email: z.string().optional(),
   plan: z.string().optional(),
@@ -280,6 +365,7 @@ const LimitsAccountSchema = z.object({
   bankedResets: z.number().optional(),
   bankedExpiresAt: z.string().optional(),
   windows: z.array(LimitsWindowSchema),
+  budgetWindows: z.array(LimitsWindowSchema).optional(),
 });
 
 /** Stable `tokitoki limits --json` / `GET /v1/limits` / MCP `get_limits` contract. */
@@ -299,15 +385,21 @@ const DERIVED_WINDOWS: Readonly<Record<string, { label: string; scope: LimitsDoc
 };
 
 const documentWindow = (window: LimitWindow): LimitsDocumentWindow => {
-  const derived = DERIVED_WINDOWS[window.kind];
-  const usedPercent = window.usedPercent ?? window.usedPct;
+  const derived = window.source === "derived" ? DERIVED_WINDOWS[window.kind] : undefined;
+  const usedPercent = window.status === undefined || window.status === "current" ? window.usedPercent ?? window.usedPct : undefined;
   return {
     id: window.id ?? window.kind,
     label: window.label ?? derived?.label ?? window.kind,
-    scope: window.scope ?? derived?.scope ?? "monthly",
+    scope: window.scope ?? derived?.scope ?? "other",
     ...(window.model !== undefined ? { model: window.model } : {}),
     source: window.source === "embedded" ? "provider" : "derived",
-    usedPercent: usedPercent === undefined ? null : Math.round(usedPercent * 10) / 10,
+    ...(usedPercent !== undefined ? { usedPercent: Math.round(usedPercent * 10) / 10 } : {}),
+    ...(window.status !== undefined ? { status: window.status } : {}),
+    ...(window.observedAt !== undefined ? { observedAt: window.observedAt } : {}),
+    ...(window.bucketId !== undefined ? { bucketId: window.bucketId } : {}),
+    ...(window.windowId !== undefined ? { windowId: window.windowId } : {}),
+    ...(window.windowStart !== undefined ? { windowStart: window.windowStart } : {}),
+    ...(window.windowEnd !== undefined ? { windowEnd: window.windowEnd } : {}),
     ...(window.amountUsd !== undefined ? { amountUsd: window.amountUsd } : {}),
     ...(window.windowMinutes !== undefined ? { windowMinutes: window.windowMinutes } : {}),
     ...(window.resetsAt !== undefined ? { resetsAt: window.resetsAt } : {}),
@@ -337,6 +429,7 @@ export const limitsDocument = (input: { limits: AccountLimits[]; now?: Date; sho
       harness: limit.provider,
       alsoOn: limit.alsoOn ?? [],
       accountKey: limit.accountKey,
+      ...(limit.accountId !== undefined ? { accountId: limit.accountId } : {}),
       ...(limit.label !== undefined ? { label: limit.label } : {}),
       ...(limit.email !== undefined && input.showEmail === true ? { email: limit.email } : {}),
       ...(plan !== undefined ? { plan } : {}),
@@ -349,6 +442,7 @@ export const limitsDocument = (input: { limits: AccountLimits[]; now?: Date; sho
       ...(limit.bankedResets !== undefined ? { bankedResets: limit.bankedResets } : {}),
       ...(limit.bankedExpiresAt !== undefined ? { bankedExpiresAt: limit.bankedExpiresAt } : {}),
       windows: limit.windows.map(documentWindow),
+      ...(limit.budgetWindows !== undefined ? { budgetWindows: limit.budgetWindows.map(documentWindow) } : {}),
     };
   });
   // Stable sort keeps the user's saved card order within each vendor.

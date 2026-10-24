@@ -55,6 +55,10 @@ export interface LimitWindow extends Partial<QuotaWindowFields> {
   /** ISO-8601 calendar-window bounds (derived windows only). */
   windowStart?: string;
   windowEnd?: string;
+  status?: "current" | "stale" | "expired" | "unknown";
+  observedAt?: string;
+  bucketId?: string;
+  windowId?: string;
 }
 
 export interface AccountLimits {
@@ -75,6 +79,8 @@ export interface AccountLimits {
   /** Prepaid credit balance reported by the provider (DeepSeek, OpenRouter). */
   balance?: AccountBalance;
   windows: LimitWindow[];
+  /** Local calendar usage and configured budgets, never provider quotas. */
+  budgetWindows?: LimitWindow[];
   /** Redacted API-key / credential hint for key-based accounts (opencode…). */
   credential?: string;
   /** Other harnesses sharing this exact credential (credential-grouped cards). */
@@ -96,7 +102,7 @@ export function attachCodexPoolEmails(
   accountIdsFor: (accountKey: string) => Set<string>,
 ): AccountLimits[] {
   return limits.map((limit) => {
-    if (limit.provider !== "codex" || !limit.accountKey.startsWith("codex:")) return limit;
+    if (limit.provider !== "codex") return limit;
     const accountIds = accountIdsFor(limit.accountKey);
     const poolId = Object.entries(poolIdentities).find(([, identity]) =>
       identity.accountId !== undefined && accountIds.has(identity.accountId),
@@ -175,8 +181,8 @@ export function dedupeAccountLimits(limits: AccountLimits[]): AccountLimits[] {
     }
     const windows = new Map<string, LimitWindow>();
     for (const w of [...existing.windows, ...incoming.windows]) {
-      const previous = windows.get(w.kind);
-      if (previous === undefined || rank(w.source) >= rank(previous.source)) windows.set(w.kind, w);
+      const previous = windows.get(w.id ?? w.kind);
+      if (previous === undefined || rank(w.source) >= rank(previous.source)) windows.set(w.id ?? w.kind, w);
     }
     out.set(id, {
       ...existing,
@@ -191,6 +197,7 @@ export function dedupeAccountLimits(limits: AccountLimits[]): AccountLimits[] {
       credential: incoming.credential ?? existing.credential,
       origin: incoming.origin ?? existing.origin,
       windows: [...windows.values()],
+      budgetWindows: mergeLocalWindows([existing, incoming], false),
       alsoOn: [...new Set([...(existing.alsoOn ?? []), ...(incoming.alsoOn ?? [])])],
     });
   }
@@ -228,13 +235,19 @@ export const embeddedLimitWindow = (input: {
   snapshot: QuotaSnapshotRow;
   usage?: { tokens: number; cost: number; requests: number };
   now: Date;
+  maxAgeMs?: number;
+  identityVerified?: boolean;
 }): LimitWindow => {
   const snapshot = input.snapshot;
-  // A provider report describes the window that was current when it was
-  // captured. Once that window's reset instant passes, the reported
-  // utilization is obsolete: the window rolled over and started empty.
+  const observedAt = snapshot.observedAt ?? snapshot.capturedAt;
+  const observedMs = Date.parse(observedAt);
+  const age = input.now.getTime() - observedMs;
+  const maxAge = input.maxAgeMs ?? (snapshot.eventId?.startsWith("poll:") ? 30 * 60_000 : SCANNED_SNAPSHOT_FRESH_MS);
   const rolledOver = snapshot.resetsAt > 0 && snapshot.resetsAt * 1000 <= input.now.getTime();
-  const usedPct = rolledOver ? 0 : Math.max(0, Math.min(100, snapshot.usedPct));
+  const status = input.identityVerified === false || !Number.isFinite(snapshot.usedPct) ||
+      !Number.isFinite(observedMs) || age < -5 * 60_000
+    ? "unknown" : rolledOver ? "expired" : age > maxAge ? "stale" : "current";
+  const usedPct = Math.max(0, Math.min(100, snapshot.usedPct));
   // Command Code returns resetAt=0 when a rolling window has not started
   // yet; never render that sentinel as January 1970.
   const resetsAt = snapshot.resetsAt > 0 ? new Date(snapshot.resetsAt * 1000).toISOString() : undefined;
@@ -243,10 +256,13 @@ export const embeddedLimitWindow = (input: {
     usedPercent: usedPct,
     ...(snapshot.label.length > 0 ? { label: snapshot.label } : {}),
     ...(snapshot.model !== null && snapshot.model.length > 0 ? { model: snapshot.model } : {}),
+    scope: snapshot.scope ?? undefined,
+    bucketId: snapshot.bucketId,
+    windowId: snapshot.windowId,
   });
   const amountUsd = snapshot.amountUsd ?? undefined;
-  const pace = amountUsd === undefined
-    ? computePace({ usedPercent: usedPct, resetsAt, windowMinutes: snapshot.windowMinutes, now: input.now })
+  const pace = status === "current" && amountUsd === undefined
+    ? computePace({ usedPercent: usedPct, resetsAt, windowMinutes: snapshot.windowMinutes, windowStart: snapshot.windowStart, now: input.now })
     : undefined;
   return {
     // A label distinguishes same-duration windows on one account (Cursor's
@@ -256,16 +272,24 @@ export const embeddedLimitWindow = (input: {
     tokens: input.usage?.tokens ?? 0,
     cost: input.usage?.cost ?? 0,
     requests: input.usage?.requests ?? 0,
-    usedPct,
-    amountUsd,
     resetsAt,
     ...fields,
+    usedPct: status === "current" ? usedPct : undefined,
+    usedPercent: status === "current" ? usedPct : undefined,
+    amountUsd: status === "current" ? amountUsd : undefined,
+    status,
+    observedAt,
+    bucketId: snapshot.bucketId,
+    windowId: snapshot.windowId,
+    ...(snapshot.windowStart ? { windowStart: snapshot.windowStart } : {}),
+    ...(snapshot.windowEnd ? { windowEnd: snapshot.windowEnd } : {}),
     ...(pace !== undefined ? { pace } : {}),
   };
 };
 
 /** Plan badge from a codex-style account suffix ("codex:plus" → "Plus"). */
 const planFromAccountKey = (accountKey: string): string | undefined => {
+  if (/^(?:account|unidentified):/.test(accountKey)) return undefined;
   const colon = accountKey.lastIndexOf(":");
   return colon > 0 ? accountKey.slice(colon + 1).charAt(0).toUpperCase() + accountKey.slice(colon + 2) : undefined;
 };
@@ -284,40 +308,12 @@ const ZERO: UsageRow = { tokens: 0, cost: 0, requests: 0 };
  * day" row on it; scope/label on the window carry the accurate name.
  */
 export function embeddedKind(windowMinutes: number): string {
+  if (!Number.isFinite(windowMinutes) || windowMinutes <= 0) return "unknown";
   if (windowMinutes === 300 || windowMinutes === 1440) return "day";
   if (windowMinutes === 10080) return "week";
   if (windowMinutes === 43200) return "month";
   return `${windowMinutes}min`;
 }
-
-/**
- * Bucket a window length into an approximate calendar granularity — unlike
- * embeddedKind's exact match (which drives display naming for fixed-length
- * windows like codex's precise 300/10080/43200min), this is only for
- * deciding whether a real window already covers a calendar-row concept.
- * Needed because e.g. Cursor's billing cycle is anniversary-based (~31
- * days = 44640min, not exactly 43200) and would otherwise never match.
- */
-function roughCalendarKind(windowMinutes: number): WindowKind | undefined {
-  const days = windowMinutes / 1440;
-  if (days <= 1.5) return "day";
-  if (days <= 9) return "week";
-  if (days <= 35) return "month";
-  return undefined;
-}
-
-/**
- * Calendar granularities a provider structurally has no limit for —
- * verified against each provider's own quota API, not assumed. A derived
- * "Day"/"Weekly" estimate row under these providers would only mislead:
- * both only ever report one monthly-ish billing cycle, never a separate
- * day or week window (Cursor: GetCurrentPeriodUsage has a single
- * billingCycleStart/End; Copilot: one rolling ~monthly meter).
- */
-const NO_LIMIT_CONCEPT: Partial<Record<string, ReadonlySet<WindowKind>>> = {
-  cursor: new Set(["day", "week"]),
-  copilot: new Set(["day", "week"]),
-};
 
 /**
  * Foreign quota fingerprints: window resets reported by the opencodex
@@ -394,18 +390,19 @@ export function computeLimits(
 
   for (const { provider, accountKey } of list) {
     const windows: LimitWindow[] = [];
+    const budgetWindows: LimitWindow[] = [];
     let bankedResets: number | undefined;
     let bankedExpiresAt: string | undefined;
 
     // --- Embedded snapshots (real data wins) -----------------------------
     const snaps = cache.latestQuotaSnapshots(provider, accountKey);
     const observedAt = snaps
-      .map((s) => Date.parse(s.capturedAt))
+      .map((s) => Date.parse(s.observedAt ?? s.capturedAt))
       .filter((value) => Number.isFinite(value))
       .sort((a, b) => b - a)[0];
     const polledObservedAt = snaps
       .filter((s) => s.eventId?.startsWith("poll:") === true)
-      .map((s) => Date.parse(s.capturedAt))
+      .map((s) => Date.parse(s.observedAt ?? s.capturedAt))
       .filter((value) => Number.isFinite(value))
       .sort((a, b) => b - a)[0];
     const freshness = snaps.length === 0
@@ -419,22 +416,17 @@ export function computeLimits(
           : "stale" as const;
     const quotaAccountIds = cache.quotaAccountIds(provider, accountKey);
     const accountId = quotaAccountIds.size === 1 ? quotaAccountIds.values().next().value : undefined;
-    const embeddedKinds = new Set<string>();
-    // Duration-mapped coverage, independent of label — so Cursor's 3
-    // real, differently-labeled monthly-cycle buckets still suppress a
-    // redundant derived "month" estimate row below.
-    const embeddedCalendarKinds = new Set<WindowKind>();
     for (const s of snaps) {
-      const roughKind = roughCalendarKind(s.windowMinutes);
-      if (roughKind !== undefined) embeddedCalendarKinds.add(roughKind);
       const usage =
         cache.windowUsageForAccount(
           provider,
           accountKey,
-          new Date(Date.now() - s.windowMinutes * 60_000).toISOString(),
+          new Date(now.getTime() - s.windowMinutes * 60_000).toISOString(),
         ) ?? ZERO;
-      const w = embeddedLimitWindow({ snapshot: s, usage, now });
-      embeddedKinds.add(w.kind);
+      const w = embeddedLimitWindow({ snapshot: s, usage, now,
+        identityVerified: provider !== "codex" || Boolean(s.accountId),
+        maxAgeMs: s.eventId?.startsWith("poll:") ? Math.max(10, (config.poll?.intervalMinutes ?? 15) * 2) * 60_000 : SCANNED_SNAPSHOT_FRESH_MS,
+      });
       windows.push(w);
       if (s.creditsJson !== null) {
         try {
@@ -471,11 +463,9 @@ export function computeLimits(
       { kind: "month", start: monthStart, end: nextMonthStart(now) },
     ];
     for (const c of cal) {
-      if (embeddedKinds.has(c.kind)) continue; // real data already covers it
-      if (embeddedCalendarKinds.has(c.kind)) continue; // covered by a differently-labeled real window of the same duration
-      if (NO_LIMIT_CONCEPT[provider]?.has(c.kind) === true) continue; // no such limit exists for this provider
       const usage =
         cache.windowUsageForAccount(provider, accountKey, iso(c.start)) ?? ZERO;
+      if (usage.requests === 0 && caps === undefined) continue;
       const monthDurationMs = Math.max(1, nextMonthStart(now).getTime() - monthStart.getTime());
       let usedPct: number | undefined;
       if (c.kind === "month") {
@@ -502,9 +492,14 @@ export function computeLimits(
         const budgetSoFar = caps.monthlyCostCap * (elapsedMs / monthDurationMs);
         usedPct = (usage.cost / budgetSoFar) * 100;
       }
-      windows.push({
+      budgetWindows.push({
         kind: c.kind,
         source: "derived",
+        id: `local:${c.kind}`,
+        label: c.kind === "day" ? (usedPct === undefined ? "Today usage" : "Today budget pace")
+          : c.kind === "week" ? (usedPct === undefined ? "This week usage" : "This week budget pace")
+            : usedPct === undefined ? "This month usage" : "Monthly budget",
+        scope: c.kind === "day" ? "daily" : c.kind === "week" ? "weekly" : "monthly",
         tokens: usage.tokens,
         cost: usage.cost,
         requests: usage.requests,
@@ -555,9 +550,7 @@ export function computeLimits(
       // belongs to another login must never inherit the active JWT email.
       if (quotaAccountIds.size > 0 && (localId === undefined || !quotaAccountIds.has(localId))) {
         email = undefined;
-      } else if (quotaAccountIds.size === 0 && (!pairs.some((p) => own.has(p)) && !(own.size === 0 && !pairs.some((p) => foreign.has(p))))) {
-        // Compatibility for pre-account_id snapshots; this path disappears
-        // naturally after the next poll writes stable identity metadata.
+      } else if (quotaAccountIds.size === 0) {
         email = undefined;
       }
     } else if (!pairs.some((p) => own.has(p)) && !(own.size === 0 && !pairs.some((p) => foreign.has(p)))) {
@@ -574,6 +567,7 @@ export function computeLimits(
       ...(accountMeta?.extraUsage !== undefined ? { extraUsage: accountMeta.extraUsage } : {}),
       ...(accountMeta?.balance !== undefined ? { balance: accountMeta.balance } : {}),
       windows,
+      ...(budgetWindows.length > 0 ? { budgetWindows } : {}),
       bankedResets,
       bankedExpiresAt,
       ...(observedAt !== undefined ? { observedAt: new Date(observedAt).toISOString() } : {}),
@@ -595,6 +589,28 @@ export function computeLimits(
  * attribution comes from the CURRENT auth store, so it cannot distinguish
  * multiple logins on the same machine and must not drive grouping.
  */
+const mergeLocalWindows = (limits: AccountLimits[], sum: boolean): LimitWindow[] => {
+  const windows = new Map<string, LimitWindow>();
+  for (const limit of limits) {
+    for (const window of limit.budgetWindows ?? []) {
+      const key = JSON.stringify([window.id ?? window.kind, window.windowStart, window.windowEnd]);
+      const previous = windows.get(key);
+      if (previous === undefined || !sum) {
+        windows.set(key, { ...window });
+        continue;
+      }
+      windows.set(key, {
+        ...previous,
+        tokens: previous.tokens + window.tokens,
+        cost: previous.cost + window.cost,
+        requests: previous.requests + window.requests,
+        usedPct: previous.usedPct !== undefined && window.usedPct !== undefined ? previous.usedPct + window.usedPct : undefined,
+      });
+    }
+  }
+  return [...windows.values()];
+};
+
 export function mergeAliasLimits(limits: AccountLimits[]): AccountLimits[] {
   const out: AccountLimits[] = [];
   const bySignature = new Map<string, AccountLimits[]>();
@@ -627,15 +643,16 @@ export function mergeAliasLimits(limits: AccountLimits[]): AccountLimits[] {
     );
     for (const l of ordered) {
       for (const w of l.windows) {
-        const existing = byKind.get(w.kind);
+        const existing = byKind.get(w.id ?? w.kind);
         if (existing === undefined || (existing.source !== "embedded" && w.source === "embedded")) {
-          byKind.set(w.kind, w);
+          byKind.set(w.id ?? w.kind, w);
         }
       }
     }
     out.push({
       ...withPlan,
       windows: [...byKind.values()],
+      budgetWindows: mergeLocalWindows(group, false),
       bankedResets: group.map((l) => l.bankedResets).find((b) => b !== undefined),
       bankedExpiresAt: group.map((l) => l.bankedExpiresAt).find((b) => b !== undefined),
     });
@@ -695,7 +712,7 @@ export function groupBySharedCredential(limits: AccountLimits[]): AccountLimits[
     else g.push(l);
   }
 
-  const totalTokens = (l: AccountLimits) => l.windows.reduce((s, w) => s + w.tokens, 0);
+  const totalTokens = totalLimitTokens;
   const out: AccountLimits[] = [...unkeyed];
   for (const group of groups.values()) {
     if (group.length === 1) {
@@ -707,16 +724,16 @@ export function groupBySharedCredential(limits: AccountLimits[]): AccountLimits[
     const byKind = new Map<string, LimitWindow>();
     for (const l of sorted) {
       for (const w of l.windows) {
-        const existing = byKind.get(w.kind);
+        const existing = byKind.get(w.id ?? w.kind);
         if (existing === undefined) {
-          byKind.set(w.kind, { ...w });
+          byKind.set(w.id ?? w.kind, { ...w });
           continue;
         }
         const rank = (src: string) => (src === "embedded" || src === "polled" ? 1 : 0);
         if (rank(w.source) > rank(existing.source)) {
-          byKind.set(w.kind, { ...w });
+          byKind.set(w.id ?? w.kind, { ...w });
         } else if (rank(w.source) === rank(existing.source) && existing.source === "derived") {
-          byKind.set(w.kind, {
+          byKind.set(w.id ?? w.kind, {
             ...existing,
             tokens: existing.tokens + w.tokens,
             cost: existing.cost + w.cost,
@@ -731,6 +748,7 @@ export function groupBySharedCredential(limits: AccountLimits[]): AccountLimits[
     out.push({
       ...primary,
       windows: [...byKind.values()],
+      budgetWindows: mergeLocalWindows(group, true),
       alsoOn: sorted.slice(1).map((l) => l.provider),
       email: undefined,
     });
@@ -779,7 +797,7 @@ function cardProviderFor(limit: AccountLimits): string {
 }
 
 function totalLimitTokens(limit: AccountLimits): number {
-  return limit.windows.reduce((sum, window) => sum + window.tokens, 0);
+  return (limit.budgetWindows ?? limit.windows).reduce((sum, window) => sum + window.tokens, 0);
 }
 
 function mergeHarnessVariantGroup(group: AccountLimits[]): AccountLimits {
@@ -803,16 +821,16 @@ function mergeHarnessVariantGroup(group: AccountLimits[]): AccountLimits {
   const byKind = new Map<string, LimitWindow>();
   for (const limit of sorted) {
     for (const window of limit.windows) {
-      const existing = byKind.get(window.kind);
+      const existing = byKind.get(window.id ?? window.kind);
       if (existing === undefined) {
-        byKind.set(window.kind, { ...window });
+        byKind.set(window.id ?? window.kind, { ...window });
         continue;
       }
       const rank = (source: string) => (source === "embedded" || source === "polled" ? 1 : 0);
       if (rank(window.source) > rank(existing.source)) {
-        byKind.set(window.kind, { ...window });
+        byKind.set(window.id ?? window.kind, { ...window });
       } else if (rank(window.source) === rank(existing.source) && existing.source === "derived") {
-        byKind.set(window.kind, {
+        byKind.set(window.id ?? window.kind, {
           ...existing,
           tokens: existing.tokens + window.tokens,
           cost: existing.cost + window.cost,
@@ -841,6 +859,7 @@ function mergeHarnessVariantGroup(group: AccountLimits[]): AccountLimits {
   return {
     ...primary,
     windows: [...byKind.values()],
+    budgetWindows: mergeLocalWindows(group, true),
     ...(primary.accountId === undefined && accountId !== undefined ? { accountId } : {}),
     ...(primary.label === undefined && label !== undefined ? { label } : {}),
     ...(primary.planLabel === undefined && planLabel !== undefined ? { planLabel } : {}),

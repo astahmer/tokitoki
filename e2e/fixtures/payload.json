@@ -1,4 +1,43 @@
 {
+  "t3codeActivity": [
+    {
+      "key": "today",
+      "total": { "bucket": "TOTAL", "sessions": 3, "requests": 5, "inputTokens": 5000, "outputTokens": 1000, "cacheReadTokens": 1000, "cacheWriteTokens": 0, "costUsd": 0.42 },
+      "rows": [
+        { "bucket": "gpt-5", "sessions": 2, "requests": 3, "inputTokens": 3000, "outputTokens": 500, "cacheReadTokens": 500, "cacheWriteTokens": 0, "costUsd": 0.3 },
+        { "bucket": "claude-sonnet", "sessions": 2, "requests": 2, "inputTokens": 2000, "outputTokens": 500, "cacheReadTokens": 500, "cacheWriteTokens": 0, "costUsd": 0.12 }
+      ]
+    },
+    {
+      "key": "yesterday",
+      "total": { "bucket": "TOTAL", "sessions": 0, "requests": 0, "inputTokens": 0, "outputTokens": 0, "cacheReadTokens": 0, "cacheWriteTokens": 0, "costUsd": 0 },
+      "rows": []
+    },
+    {
+      "key": "week",
+      "total": { "bucket": "TOTAL", "sessions": 3, "requests": 5, "inputTokens": 5000, "outputTokens": 1000, "cacheReadTokens": 1000, "cacheWriteTokens": 0, "costUsd": 0.42 },
+      "rows": [
+        { "bucket": "gpt-5", "sessions": 2, "requests": 3, "inputTokens": 3000, "outputTokens": 500, "cacheReadTokens": 500, "cacheWriteTokens": 0, "costUsd": 0.3 },
+        { "bucket": "claude-sonnet", "sessions": 2, "requests": 2, "inputTokens": 2000, "outputTokens": 500, "cacheReadTokens": 500, "cacheWriteTokens": 0, "costUsd": 0.12 }
+      ]
+    },
+    {
+      "key": "month",
+      "total": { "bucket": "TOTAL", "sessions": 3, "requests": 5, "inputTokens": 5000, "outputTokens": 1000, "cacheReadTokens": 1000, "cacheWriteTokens": 0, "costUsd": 0.42 },
+      "rows": [
+        { "bucket": "gpt-5", "sessions": 2, "requests": 3, "inputTokens": 3000, "outputTokens": 500, "cacheReadTokens": 500, "cacheWriteTokens": 0, "costUsd": 0.3 },
+        { "bucket": "claude-sonnet", "sessions": 2, "requests": 2, "inputTokens": 2000, "outputTokens": 500, "cacheReadTokens": 500, "cacheWriteTokens": 0, "costUsd": 0.12 }
+      ]
+    },
+    {
+      "key": "year",
+      "total": { "bucket": "TOTAL", "sessions": 3, "requests": 5, "inputTokens": 5000, "outputTokens": 1000, "cacheReadTokens": 1000, "cacheWriteTokens": 0, "costUsd": 0.42 },
+      "rows": [
+        { "bucket": "gpt-5", "sessions": 2, "requests": 3, "inputTokens": 3000, "outputTokens": 500, "cacheReadTokens": 500, "cacheWriteTokens": 0, "costUsd": 0.3 },
+        { "bucket": "claude-sonnet", "sessions": 2, "requests": 2, "inputTokens": 2000, "outputTokens": 500, "cacheReadTokens": 500, "cacheWriteTokens": 0, "costUsd": 0.12 }
+      ]
+    }
+  ],
   "activityGrid": {
     "cells": [
       {
@@ -1438,42 +1477,64 @@
     {
       "provider": "codex",
       "accountKey": "openai:plus",
-      "email": "dev@example.com",
-      "freshness": "fresh",
-      "observedAt": "2026-07-25T21:23:38.601Z",
+      "freshness": "stale",
+      "observedAt": "2026-09-09T12:00:00Z",
       "origin": "scan",
       "planLabel": "Plus",
       "windows": [
         {
-          "cost": 0,
           "kind": "day",
-          "requests": 0,
-          "resetsAt": "2026-07-12T22:55:26.000Z",
+          "label": "Session",
+          "scope": "session",
           "source": "embedded",
+          "status": "expired",
+          "observedAt": "2026-09-09T12:00:00Z",
+          "windowMinutes": 300,
+          "resetsAt": "2026-09-09T17:00:00Z",
           "tokens": 0,
-          "usedPct": 31
+          "cost": 0,
+          "requests": 0
         },
         {
-          "cost": 0,
-          "kind": "week",
-          "requests": 0,
-          "resetsAt": "2026-07-25T00:11:34.000Z",
+          "kind": "unknown",
+          "label": "Review limit",
+          "scope": "other",
           "source": "embedded",
+          "status": "unknown",
+          "observedAt": "2026-09-09T12:00:00Z",
           "tokens": 0,
-          "usedPct": 10
-        },
-        {
           "cost": 0,
-          "kind": "month",
-          "requests": 0,
-          "resetsAt": "2026-09-30T22:00:00.000Z",
-          "source": "derived",
-          "tokens": 0,
-          "windowEnd": "2026-09-30T22:00:00.000Z",
-          "windowStart": "2026-08-31T22:00:00.000Z"
+          "requests": 0
         }
       ],
-      "vendor": "openai"
+      "vendor": "openai",
+      "budgetWindows": [
+        {
+          "kind": "day",
+          "label": "Daily",
+          "scope": "daily",
+          "source": "derived",
+          "status": "current",
+          "tokens": 12500,
+          "cost": 2.5,
+          "requests": 7,
+          "windowStart": "2026-09-10T00:00:00Z",
+          "windowEnd": "2026-09-11T00:00:00Z"
+        },
+        {
+          "kind": "month",
+          "label": "Monthly",
+          "scope": "monthly",
+          "source": "derived",
+          "status": "current",
+          "tokens": 125000,
+          "cost": 25,
+          "requests": 70,
+          "usedPct": 25,
+          "windowStart": "2026-09-01T00:00:00Z",
+          "windowEnd": "2026-10-01T00:00:00Z"
+        }
+      ]
     }
   ],
   "modelPeriods": [

@@ -22,7 +22,8 @@ it("widget-payload yesterday excludes today for harness, provider and model brea
       costUsd: index === 0 ? 1 : 9,
       sessionId: `session-${index}`,
     }));
-    writeFileSync(join(directory, "events.jsonl"), events.map((event) => JSON.stringify(event)).join("\n") + "\n");
+    const t3Events = events.map(event => ({ ...event, id: `t3-${event.id}`, provider: "t3code", costUsd: 100, inputTokens: 10000 }));
+    writeFileSync(join(directory, "events.jsonl"), [...events, ...t3Events].map((event) => JSON.stringify(event)).join("\n") + "\n");
     writeFileSync(join(directory, "config.json"), "{}");
     const script = `
       const { EventCache } = await import(${JSON.stringify(new URL("../src/cache.ts", import.meta.url).pathname)});
@@ -51,6 +52,10 @@ it("widget-payload yesterday excludes today for harness, provider and model brea
       expect(period.rows[0].inputTokens).toBe(100);
       expect(period.rows[0].costUsd).toBe(1);
     }
+    expect(payload.today.total.costUsd).toBe(9);
+    expect(payload.t3codeActivity.find((item: { key: string }) => item.key === "yesterday").total.costUsd).toBe(100);
+    expect(payload.t3codeActivity.find((item: { key: string }) => item.key === "today").total.inputTokens).toBe(10000);
+    expect(payload.activityGrid.cells.reduce((sum: number, cell: { costUsd: number }) => sum + cell.costUsd, 0)).toBe(10);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

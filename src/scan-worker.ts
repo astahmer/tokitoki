@@ -30,6 +30,7 @@ workerSelf.onmessage = (ev: MessageEvent<ScanRequest>) => {
   try {
     const result = scanProviderCore(provider, msg.machineId, {
       onEvents: (events) => workerSelf.postMessage({ type: "events", events }),
+      onQuotas: (quotas) => workerSelf.postMessage({ type: "quotas", quotas }),
       onSaveCursors: (cursors) => saveProviderCursors(provider.id, cursors),
     });
     workerSelf.postMessage({ type: "done", result });

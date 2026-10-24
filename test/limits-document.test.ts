@@ -39,7 +39,8 @@ const piGateway: AccountLimits = {
   provider: "pi",
   accountKey: "openrouter",
   alsoOn: ["opencode"],
-  windows: [{ kind: "month", source: "derived", tokens: 5, cost: 0.5, requests: 1 }],
+  windows: [],
+  budgetWindows: [{ kind: "month", source: "derived", tokens: 5, cost: 0.5, requests: 1 }],
 };
 
 const codex: AccountLimits = {
@@ -83,7 +84,9 @@ describe("limitsDocument", () => {
     });
     expect(openai!.plan).toBe("Plus");
     expect(openrouter!.alsoOn).toEqual(["opencode"]);
-    expect(openrouter!.windows[0]).toMatchObject({ id: "month", label: "This month", scope: "monthly", source: "derived", usedPercent: null });
+    expect(openrouter!.windows).toEqual([]);
+    expect(openrouter!.budgetWindows?.[0]).toMatchObject({ id: "month", label: "This month", scope: "monthly", source: "derived" });
+    expect(openrouter!.budgetWindows?.[0]?.usedPercent).toBeUndefined();
   });
 });
 

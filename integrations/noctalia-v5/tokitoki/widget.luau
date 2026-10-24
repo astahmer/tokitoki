@@ -1,88 +1,83 @@
+local model = require("./lib/model.luau")
 local payload = {}
 local refreshing = false
 local lastError = nil
+local lastRefresh = 0
 
-local function formatTokens(value)
-  local number = tonumber(value or 0) or 0
-  if number >= 1000000 then
-    return string.format("%.1fM", number / 1000000)
-  end
-  if number >= 1000 then
-    return string.format("%.1fk", number / 1000)
-  end
-  return tostring(math.floor(number))
-end
-
-local function stats()
-  return payload.stats or {}
+local function accounts()
+  return model.accounts(payload, noctalia.getConfig("accounts"), noctalia.getConfig("hide_identities") or (payload.uiPreview or {}).privacyHideIdentities)
 end
 
 local function render()
-  local current = stats()
-  local cost = tonumber(current.costUsd or 0) or 0
-  local tokens = tonumber(current.tokens or 0) or 0
-  local requests = tonumber(current.requests or 0) or 0
-  local sessions = tonumber(current.sessions or 0) or 0
-  local cache = tonumber(current.cachePct or 0) or 0
-  local label = payload.window and payload.window.label or "today"
-
-  barWidget.setGlyph("chart-bar")
-  if lastError ~= nil then
-    barWidget.setText("tokitoki ?")
-    barWidget.setTooltip(lastError)
-    return
+  local now = noctalia.nowMs()
+  local mode = noctalia.getConfig("display_mode")
+  local children = {ui.glyph({name = "chart-bar", size = 16, color = "primary"})}
+  local tooltip = {}
+  local all = accounts()
+  local counts = {}
+  for _, a in ipairs(all) do counts[model.vendor(a)] = (counts[model.vendor(a)] or 0) + 1 end
+  if lastError then table.insert(children, ui.label({text = "?", color = "error"})) end
+  for _, a in ipairs(all) do
+    if #tooltip > 0 then table.insert(tooltip, {key = "────────", value = "────────────"}) end
+    table.insert(tooltip, {key = "◈ " .. model.vendorName(a), value = a.name})
+    for _, w in ipairs(model.rows(a, false, now)) do
+      local countdown = model.countdown(w, now)
+      table.insert(tooltip, {key = "◷ " .. model.windowLabel(w), value = model.value(w, now) .. (if countdown ~= "" then " · " .. countdown else "")})
+    end
+    if #(a.windows or {}) == 0 then table.insert(tooltip, {key = "Quota", value = "No provider quota"}) end
+    if mode == "quotas" or mode == "shortest" then
+      local parts = {}
+      for _, w in ipairs(model.rows(a, mode == "shortest", now)) do table.insert(parts, model.windowLabel(w) .. " " .. model.value(w, now)) end
+      local prefix = if counts[model.vendor(a)] > 1 then string.upper(string.sub(a.name, 1, 2)) .. ": " else ""
+      table.insert(children, ui.separator({orientation = "vertical", spacing = 4, height = 18}))
+      local logo = model.logo(a)
+      if logo then table.insert(children, ui.image({path = "assets/" .. logo .. ".svg", width = 16, height = 16}))
+      else prefix = model.vendor(a) .. " " .. prefix end
+      table.insert(children, ui.label({text = prefix .. (if #parts > 0 then table.concat(parts, " · ") else "—")}))
+    end
   end
-
-  barWidget.setText(string.format("$%.2f · %s", cost, formatTokens(tokens)))
-  barWidget.setTooltip(string.format(
-    "%s · %s tokens · %d requests · %d sessions · %d%% cache",
-    label,
-    formatTokens(tokens),
-    requests,
-    sessions,
-    math.floor(cache)
-  ))
+  local stats = payload.stats or {}
+  if mode == "total" then table.insert(children, ui.label({text = string.format("$%.2f · %s", stats.costUsd or 0, model.compact(stats.tokens))})) end
+  if #all == 0 and mode ~= "icon" and mode ~= "total" then table.insert(children, ui.label({text = if lastError then "Unavailable" else "No provider quotas"})) end
+  if #tooltip > 0 then table.insert(tooltip, {key = "────────", value = "────────────"}) end
+  table.insert(tooltip, {key = (payload.window or {}).label or "Usage", value = string.format("$%.2f · %s", stats.costUsd or 0, model.compact(stats.tokens))})
+  if lastError then table.insert(tooltip, {key = "Refresh failed", value = lastError}) end
+  -- The native tooltip anchors to this row's bounds; leave a little clearance below the capsule.
+  barWidget.render(ui.row({gap = 6, paddingH = 10, paddingV = 4, align = "center"}, children))
+  barWidget.setTooltip(tooltip)
 end
 
 local function refresh()
-  if refreshing then
-    return
-  end
+  if refreshing then return end
   refreshing = true
-
-  local accepted = noctalia.runAsync("tokitoki widget-payload --cached --notify --json", function(result)
+  lastRefresh = noctalia.nowMs()
+  local accepted = noctalia.runAsync({noctalia.getConfig("executable"), "widget-payload", "--cached", "--json"}, function(result)
     refreshing = false
     if result.exitCode ~= 0 then
-      lastError = result.stderr ~= "" and result.stderr or "tokitoki widget payload failed"
-      render()
-      return
+      lastError = if result.stderr ~= "" then result.stderr else "Tokitoki could not refresh"
+    else
+      local nextPayload = noctalia.json.decode(result.stdout)
+      if type(nextPayload) == "table" and nextPayload.schema == 1 and nextPayload.app == "tokitoki" then
+        payload, lastError = nextPayload, nil
+        noctalia.state.set("payload", payload)
+      else lastError = "Unsupported Tokitoki payload" end
     end
-
-    local nextPayload, decodeError = noctalia.json.decode(result.stdout)
-    if nextPayload == nil or nextPayload.schema ~= 1 or nextPayload.app ~= "tokitoki" then
-      lastError = decodeError or "unsupported tokitoki widget payload"
-      render()
-      return
-    end
-
-    payload = nextPayload
-    lastError = nil
+    noctalia.state.set("error", lastError or "")
     render()
   end)
-
   if not accepted then
-    refreshing = false
-    lastError = "could not start tokitoki"
+    refreshing, lastError = false, "Could not start Tokitoki"
+    noctalia.state.set("error", lastError)
     render()
   end
 end
 
 function update()
-  noctalia.setUpdateInterval(30000)
+  noctalia.setUpdateInterval(1000)
   render()
-  refresh()
+  if noctalia.nowMs() - lastRefresh >= 30000 then refresh() end
 end
 
-function onClick()
-  refresh()
-end
+function onClick() noctalia.togglePanel("tokitoki/usage:details") end
+function onRightClick() noctalia.openSettings() end
+function onMiddleClick() refresh() end

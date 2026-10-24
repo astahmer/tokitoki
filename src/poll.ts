@@ -71,6 +71,12 @@ export interface PolledWindow {
   amountUsd?: number;
   /** Model family for per-model limits (Claude's weekly Opus/Sonnet caps). */
   model?: string;
+  bucketId?: string;
+  windowId?: string;
+  scope?: "session" | "daily" | "weekly" | "monthly" | "model" | "other";
+  windowStart?: string;
+  windowEnd?: string;
+  observedAt?: string;
 }
 
 export interface PollAccountResult {
@@ -220,23 +226,33 @@ function decodeJwtPayload(jwt: string): Record<string, unknown> | null {
   }
 }
 
-interface WhamWindow {
-  used_percent?: number;
-  reset_at?: number;
-  resets_at?: number;
-  limit_window_seconds?: number;
-}
-
-interface WhamUsageResponse {
-  account_id?: string;
-  accountId?: string;
-  plan_type?: string;
-  rate_limit?: {
-    primary_window?: WhamWindow;
-    secondary_window?: WhamWindow;
-    credits?: Record<string, unknown>;
-  };
-}
+const whamWindowSchema = z.object({
+  used_percent: z.number().finite().optional(),
+  reset_at: z.number().finite().optional(),
+  resets_at: z.number().finite().optional(),
+  limit_window_seconds: z.number().finite().optional(),
+});
+const whamRateLimitSchema = z.object({
+  primary_window: whamWindowSchema.nullish(),
+  secondary_window: whamWindowSchema.nullish(),
+  tertiary_window: whamWindowSchema.nullish(),
+  credits: z.unknown().optional(),
+});
+const whamUsageSchema = z.object({
+  account_id: z.string().optional(),
+  accountId: z.string().optional(),
+  plan_type: z.string().nullish(),
+  rate_limit: whamRateLimitSchema.nullish(),
+  credits: z.unknown().optional(),
+  code_review_rate_limit: whamRateLimitSchema.nullish(),
+  additional_rate_limits: z.array(z.object({
+    limit_id: z.string().optional(),
+    limit_name: z.string().optional(),
+    metered_feature: z.string().optional(),
+    rate_limit: whamRateLimitSchema.nullish(),
+  })).nullish(),
+});
+type WhamUsageResponse = z.infer<typeof whamUsageSchema>;
 
 function parsePolledCredits(raw: unknown): { hasCredits: boolean; unlimited: boolean; balance: string; expiresAt?: string } | undefined {
   if (raw === null || typeof raw !== "object") return undefined;
@@ -253,28 +269,40 @@ function parsePolledCredits(raw: unknown): { hasCredits: boolean; unlimited: boo
   return { hasCredits, unlimited, balance, ...(expiresAt !== undefined ? { expiresAt } : {}) };
 }
 
-function parseWindows(rateLimit: WhamUsageResponse["rate_limit"]): PolledWindow[] {
+const codexWindowScope = (minutes: number): PolledWindow["scope"] => {
+  if (minutes === 300) return "session";
+  if (minutes === 1440) return "daily";
+  if (minutes === 10080) return "weekly";
+  return "other";
+};
+
+function parseWindows(body: WhamUsageResponse, observedAt: string): PolledWindow[] {
   const out: PolledWindow[] = [];
-  for (const w of [rateLimit?.primary_window, rateLimit?.secondary_window]) {
-    // JSON null passes an undefined-check; both must be skipped.
-    if (w === null || w === undefined || typeof w !== "object") continue;
-    const usedPct = w.used_percent;
-    // wham/usage spells it `reset_at`; other shapes use `resets_at`.
-    const resetsAtEpoch = w.reset_at ?? w.resets_at;
-    const seconds = w.limit_window_seconds;
-    if (
-      typeof usedPct !== "number" ||
-      typeof resetsAtEpoch !== "number" ||
-      typeof seconds !== "number" ||
-      seconds <= 0
-    )
-      continue;
-    // Every other provider parser clamps usedPct to [0,100] before pushing
-    // a PolledWindow — this one didn't, so a reported burst-overage percent
-    // (>100) flowed straight into the immediate CLI output while limits.ts
-    // clamps on read, making the same window show two different numbers
-    // depending which view you looked at.
-    out.push({ windowMinutes: Math.round(seconds / 60), usedPct: Math.max(0, Math.min(100, usedPct)), resetsAtEpoch });
+  const buckets = [
+    { bucketId: "codex", rateLimit: body.rate_limit, label: undefined },
+    { bucketId: "code-review", rateLimit: body.code_review_rate_limit, label: "Code review" },
+    ...(body.additional_rate_limits ?? []).map((bucket, index) => ({
+      bucketId: bucket.metered_feature ?? bucket.limit_id ?? bucket.limit_name ?? `additional:${index}`,
+      label: bucket.limit_name ?? bucket.metered_feature,
+      rateLimit: bucket.rate_limit,
+    })),
+  ];
+  for (const bucket of buckets) {
+    for (const windowId of ["primary", "secondary", "tertiary"] as const) {
+      const w = bucket.rateLimit?.[`${windowId}_window`];
+      if (w?.used_percent === undefined) continue;
+      const seconds = w.limit_window_seconds;
+      const windowMinutes = seconds !== undefined && seconds > 0 ? seconds / 60 : 0;
+      const reset = w.reset_at ?? w.resets_at;
+      const resetsAtEpoch = reset !== undefined && reset > 0 && reset < 8.64e12 ? reset : 0;
+      out.push({
+        bucketId: bucket.bucketId, windowId, observedAt,
+        ...(bucket.label !== undefined ? { label: bucket.label } : {}),
+        scope: codexWindowScope(windowMinutes), windowMinutes,
+        usedPct: Math.max(0, Math.min(100, w.used_percent)), resetsAtEpoch,
+        ...(resetsAtEpoch > 0 ? { windowEnd: new Date(resetsAtEpoch * 1000).toISOString() } : {}),
+      });
+    }
   }
   return out;
 }
@@ -353,7 +381,8 @@ async function fetchUsage(
   });
   let body: WhamUsageResponse | null = null;
   try {
-    body = (await res.json()) as WhamUsageResponse;
+    const parsed = whamUsageSchema.safeParse(await res.json());
+    body = parsed.success ? parsed.data : null;
   } catch {
     // non-JSON error body — status code carries the signal
   }
@@ -437,8 +466,9 @@ async function pollOpenRouter(key: string, fetcher: typeof fetch): Promise<{ win
   }
   const used = Math.max(0, d.limit - Math.max(0, d.limit_remaining));
   const pct = Math.min(100, (used / d.limit) * 100);
-  const minutes = d.limit_reset === "daily" ? 1440 : d.limit_reset === "weekly" ? 10_080 : 43_200;
-  return { windows: [{ windowMinutes: minutes, usedPct: pct, resetsAtEpoch: 0 }], ...(balance !== undefined ? { balance } : {}) };
+  const scope = d.limit_reset === "daily" ? "daily" : d.limit_reset === "weekly" ? "weekly" : d.limit_reset === "monthly" ? "monthly" : "other";
+  const minutes = scope === "daily" ? 1440 : scope === "weekly" ? 10_080 : 0;
+  return { windows: [{ windowMinutes: minutes, usedPct: pct, resetsAtEpoch: 0, bucketId: "key-credit-limit", windowId: "limit", scope, label: "Key credit limit" }], ...(balance !== undefined ? { balance } : {}) };
 }
 
 interface OpencodeUsageResponse {
@@ -664,11 +694,11 @@ export const parseClaudeUsage = (body: unknown): { windows: PolledWindow[]; extr
   const parsed = ClaudeUsageSchema.safeParse(body);
   if (!parsed.success) return undefined;
   const usage = parsed.data;
-  const spec: Array<{ window: z.infer<typeof ClaudeUsageWindowSchema>; minutes: number; model?: string }> = [
-    { window: usage.five_hour, minutes: 300 },
-    { window: usage.seven_day, minutes: 10_080 },
-    { window: usage.seven_day_opus, minutes: 10_080, model: "opus" },
-    { window: usage.seven_day_sonnet, minutes: 10_080, model: "sonnet" },
+  const spec: Array<{ window: z.infer<typeof ClaudeUsageWindowSchema>; minutes: number; windowId: string; scope: "session" | "weekly" | "model"; model?: string }> = [
+    { window: usage.five_hour, minutes: 300, windowId: "five_hour", scope: "session" },
+    { window: usage.seven_day, minutes: 10_080, windowId: "seven_day", scope: "weekly" },
+    { window: usage.seven_day_opus, minutes: 10_080, windowId: "seven_day", scope: "model", model: "opus" },
+    { window: usage.seven_day_sonnet, minutes: 10_080, windowId: "seven_day", scope: "model", model: "sonnet" },
   ];
   const windows: PolledWindow[] = [];
   for (const entry of spec) {
@@ -679,6 +709,10 @@ export const parseClaudeUsage = (body: unknown): { windows: PolledWindow[]; extr
       windowMinutes: entry.minutes,
       usedPct: Math.max(0, Math.min(100, utilization)),
       resetsAtEpoch: Number.isFinite(resets) ? Math.round(resets / 1000) : 0,
+      bucketId: entry.model ?? "claude",
+      windowId: entry.windowId,
+      scope: entry.scope,
+      ...(Number.isFinite(resets) ? { windowEnd: new Date(resets).toISOString() } : {}),
       ...(entry.model !== undefined
         ? { model: entry.model, label: `${entry.model.charAt(0).toUpperCase()}${entry.model.slice(1)} weekly` }
         : {}),
@@ -815,6 +849,8 @@ async function pollClaudeQuotas(opts: PollOptions, fetcher: typeof fetch): Promi
   }
   const usage = parseClaudeUsage(res.body);
   if (usage === undefined) return "usage response shape unrecognized";
+  const capturedAtIso = new Date(opts.now ?? Date.now()).toISOString();
+  for (const window of usage.windows) window.observedAt = capturedAtIso;
   const identity = await resolveClaudeIdentity(opts, creds, accessToken, fetcher);
   const accountKey = "default";
   const result: PollAccountResult = {
@@ -827,8 +863,6 @@ async function pollClaudeQuotas(opts: PollOptions, fetcher: typeof fetch): Promi
     windows: usage.windows,
     inserted: 0,
   };
-  if (usage.windows.length === 0) return { ...result, error: "no usable windows in response" };
-  const capturedAtIso = new Date(opts.now ?? Date.now()).toISOString();
   opts.cache?.setQuotaAccountMeta("claude-code", accountKey, {
     ...(identity.plan !== undefined ? { plan: identity.plan } : {}),
     ...(identity.email !== undefined ? { email: identity.email } : {}),
@@ -843,7 +877,7 @@ async function pollClaudeQuotas(opts: PollOptions, fetcher: typeof fetch): Promi
     capturedAtIso,
     eventId: `poll:${capturedAtIso}:claude`,
   }) ?? 0;
-  return result;
+  return usage.windows.length === 0 ? { ...result, error: "no usable windows in response" } : result;
 }
 
 /** github.com oauth_token from ~/.config/github-copilot/apps.json (newer) or hosts.json. */
@@ -893,6 +927,11 @@ export function copilotToken(path?: string): string | null {
 
 interface CopilotUserResponse {
   quota_reset_date?: string;
+  quota_reset_date_utc?: string;
+  limited_user_reset_date?: string;
+  token_based_billing?: boolean;
+  monthly_quotas?: Record<string, number>;
+  limited_user_quotas?: Record<string, number>;
   quota_snapshots?: Record<string, Record<string, unknown>>;
 }
 
@@ -932,7 +971,7 @@ interface CommandCodeSummary {
 }
 
 interface CommandCodeSubscription {
-  data?: { currentPeriodEnd?: string };
+  data?: { currentPeriodStart?: string; currentPeriodEnd?: string };
 }
 
 /** Command Code's own billing API powers the same meters shown by `/usage`. */
@@ -980,6 +1019,10 @@ async function pollCommandCodeQuotas(
     const reset = number(value?.resetAt);
     windows.push({
       windowMinutes: minutes,
+      bucketId: "included",
+      windowId: minutes === 300 ? "fiveHour" : "weekly",
+      scope: minutes === 300 ? "session" : "weekly",
+      observedAt: new Date(now).toISOString(),
       usedPct: Math.max(0, Math.min(100, (used / cap) * 100)),
       resetsAtEpoch: reset !== undefined && reset > 0 ? Math.round(reset) : 0,
     });
@@ -994,13 +1037,21 @@ async function pollCommandCodeQuotas(
   if (monthCap > 0) {
     const periodEnd = (subscriptionRaw as unknown as CommandCodeSubscription).data?.currentPeriodEnd;
     const resetMs = typeof periodEnd === "string" ? Date.parse(periodEnd) : NaN;
+    const periodStart = (subscriptionRaw as unknown as CommandCodeSubscription).data?.currentPeriodStart;
+    const startMs = typeof periodStart === "string" ? Date.parse(periodStart) : NaN;
+    const hasBounds = Number.isFinite(startMs) && Number.isFinite(resetMs) && resetMs > startMs;
     windows.push({
-      windowMinutes: 43_200,
+      windowMinutes: hasBounds ? (resetMs - startMs) / 60_000 : 0,
+      bucketId: "monthly-credits",
+      windowId: "billing-cycle",
+      scope: "monthly",
+      observedAt: new Date(now).toISOString(),
+      ...(hasBounds ? { windowStart: new Date(startMs).toISOString() } : {}),
+      ...(Number.isFinite(resetMs) ? { windowEnd: new Date(resetMs).toISOString() } : {}),
       usedPct: Math.max(0, Math.min(100, (spent / monthCap) * 100)),
       resetsAtEpoch: Number.isFinite(resetMs) ? Math.round(resetMs / 1000) : 0,
     });
   }
-  if (windows.length === 0) return { accountKey: "default", windows, inserted: 0, error: "no usable usage windows in response" };
   const capturedAtIso = new Date(now).toISOString();
   const inserted = opts.cache?.insertPolledSnapshots({
     provider: "commandcode",
@@ -1015,6 +1066,7 @@ async function pollCommandCodeQuotas(
     planType: typeof (subscriptionRaw as unknown as CommandCodeSubscription).data === "object" ? "commandcode" : undefined,
     windows,
     inserted,
+    ...(windows.length === 0 ? { error: "no usable usage windows in response" } : {}),
   };
 }
 
@@ -1041,19 +1093,25 @@ async function pollCopilotQuotas(opts: PollOptions, fetcher: typeof fetch, now: 
     return String(e);
   }
 
-  const resetMs = typeof body.quota_reset_date === "string" ? Date.parse(body.quota_reset_date) : NaN;
-  const resetsAtEpoch = Number.isFinite(resetMs) ? Math.round(resetMs / 1000) : 0;
-  // Copilot exposes one rolling quota bucket, but its reset timestamp changes
-  // every poll. Keep the storage key stable or every poll becomes a new
-  // `NNNNMin` row in the popover (and old rows never age out of the view).
-  const windowMinutes = 43_200;
-
+  const resetDate = body.quota_reset_date_utc ?? body.quota_reset_date ?? body.limited_user_reset_date;
+  const accountResetMs = typeof resetDate === "string" ? Date.parse(resetDate) : NaN;
+  const snapshots = { ...body.quota_snapshots };
+  for (const bucket of ["chat", "completions"]) {
+    if (snapshots[bucket] !== undefined) continue;
+    const entitlement = body.monthly_quotas?.[bucket];
+    const remaining = body.limited_user_quotas?.[bucket];
+    if (entitlement !== undefined && remaining !== undefined) snapshots[bucket] = { entitlement, quota_remaining: remaining };
+  }
   const windows: PolledWindow[] = [];
-  for (const [label, snapshot] of Object.entries(body.quota_snapshots ?? {})) {
+  const numberLike = z.union([z.number(), z.string().trim().min(1).transform(Number)]).pipe(z.number().finite());
+  const num = (value: unknown): number | null => {
+    const parsed = numberLike.safeParse(value);
+    return parsed.success ? parsed.data : null;
+  };
+  for (const [bucket, snapshot] of Object.entries(snapshots)) {
     if (snapshot === null || typeof snapshot !== "object") continue;
-    const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
     const entitlement = num(snapshot["entitlement"]);
-    const remaining = num(snapshot["remaining"]);
+    const remaining = num(snapshot["quota_remaining"] ?? snapshot["remaining"]);
     const percentRemaining = num(snapshot["percent_remaining"]);
     // Unlimited (-1 sentinels / explicit flag) or zero entitlement = no real meter.
     if (snapshot["unlimited"] === true || entitlement === -1 || remaining === -1 || entitlement === 0) continue;
@@ -1063,12 +1121,27 @@ async function pollCopilotQuotas(opts: PollOptions, fetcher: typeof fetch, now: 
       usedPct = Math.max(0, Math.min(100, 100 - (remaining / entitlement) * 100));
     }
     if (usedPct === null) continue;
-    windows.push({ windowMinutes, usedPct, resetsAtEpoch });
-    void label; // bucket names (chat/completions/...) are not stable enough to surface
-    break; // one representative meter per account keeps the card compact
-  }
-  if (windows.length === 0) {
-    return { accountKey: "default", windows, inserted: 0, error: "no bounded quota buckets in response" };
+    const bucketReset = num(snapshot["quota_reset_at"]);
+    const resetMs = bucketReset !== null && bucketReset > 0 ? bucketReset * 1000 : accountResetMs;
+    const end = new Date(resetMs);
+    const calendarReset = Number.isFinite(resetMs) && end.getUTCDate() === 1 &&
+      end.getUTCHours() === 0 && end.getUTCMinutes() === 0 && end.getUTCSeconds() === 0 && end.getUTCMilliseconds() === 0;
+    const startMs = calendarReset ? Date.UTC(end.getUTCFullYear(), end.getUTCMonth() - 1, 1) : NaN;
+    const label = bucket === "premium_interactions"
+      ? body.token_based_billing === true ? "AI Credits" : "Premium requests"
+      : bucket === "chat" ? "Chat" : bucket === "completions" ? "Completions" : bucket;
+    windows.push({
+      windowMinutes: calendarReset ? (resetMs - startMs) / 60_000 : 0,
+      usedPct,
+      resetsAtEpoch: Number.isFinite(resetMs) ? Math.round(resetMs / 1000) : 0,
+      bucketId: bucket,
+      windowId: "monthly",
+      scope: "monthly",
+      label,
+      observedAt: new Date(now).toISOString(),
+      ...(calendarReset ? { windowStart: new Date(startMs).toISOString() } : {}),
+      ...(Number.isFinite(resetMs) ? { windowEnd: end.toISOString() } : {}),
+    });
   }
   const capturedAtIso = new Date(now).toISOString();
   const inserted = opts.cache?.insertPolledSnapshots({
@@ -1078,7 +1151,7 @@ async function pollCopilotQuotas(opts: PollOptions, fetcher: typeof fetch, now: 
     capturedAtIso,
     eventId: `poll:${capturedAtIso}:copilot`,
   }) ?? 0;
-  return { accountKey: "default", harnesses: ["copilot"], windows, inserted };
+  return { accountKey: "default", harnesses: ["copilot"], windows, inserted, ...(windows.length === 0 ? { error: "no bounded quota buckets in response" } : {}) };
 }
 
 /** cursor-agent CLI's login file — present when the user ran `cursor-agent login`. */
@@ -1150,13 +1223,6 @@ function cursorAccessToken(opts: PollOptions): string | null {
  * tracker beyond the included plan — absent entirely on accounts with no
  * team pool or on-demand spending enabled, so it's optional here too.
  */
-interface CursorUsageResult {
-  billingCycleStart?: string;
-  billingCycleEnd?: string;
-  planUsage?: { autoPercentUsed?: number; apiPercentUsed?: number };
-  spendLimitUsage?: { pooledUsed?: number; pooledLimit?: number };
-}
-
 async function pollCursorQuotas(opts: PollOptions, fetcher: typeof fetch, now: number): Promise<PollAccountResult | string> {
   const token = cursorAccessToken(opts);
   if (token === null) return "cursor auth not found (no cursor-agent CLI login and no Cursor IDE login)";
@@ -1187,17 +1253,34 @@ async function pollCursorQuotas(opts: PollOptions, fetcher: typeof fetch, now: n
     return String(e);
   }
 
-  const root = body as CursorUsageResult;
-  const startMs = Number(root.billingCycleStart);
-  const endMs = Number(root.billingCycleEnd);
+  const parsed = z.object({
+    billingCycleStart: z.string().or(z.number()).optional(),
+    billingCycleEnd: z.string().or(z.number()).optional(),
+    planUsage: z.object({ autoPercentUsed: z.number().optional(), apiPercentUsed: z.number().optional() }).optional(),
+    spendLimitUsage: z.object({ pooledUsed: z.number().optional(), pooledLimit: z.number().optional() }).optional(),
+  }).safeParse(body);
+  if (!parsed.success) return "cursor quota unavailable: unsupported response; current weekly plan schema is unverified";
+  const root = parsed.data;
+  if (root.planUsage !== undefined && root.planUsage.autoPercentUsed === undefined && root.planUsage.apiPercentUsed === undefined) {
+    return "cursor quota unavailable: unsupported response; current weekly plan schema is unverified";
+  }
+  const startMs = root.billingCycleStart === undefined || root.billingCycleStart === "" ? NaN : Number(root.billingCycleStart);
+  const endMs = root.billingCycleEnd === undefined || root.billingCycleEnd === "" ? NaN : Number(root.billingCycleEnd);
   const hasCycle = Number.isFinite(startMs) && Number.isFinite(endMs) && endMs > startMs;
-  const resetsAtEpoch = hasCycle ? Math.round(endMs / 1000) : 0;
-  const windowMinutes = hasCycle ? Math.max(60, Math.round((endMs - startMs) / 60_000)) : 43_200;
+  const resetsAtEpoch = Number.isFinite(endMs) && endMs > 0 ? Math.round(endMs / 1000) : 0;
+  const windowMinutes = hasCycle ? (endMs - startMs) / 60_000 : 0;
+  const cycle: Pick<PolledWindow, "scope" | "windowId" | "observedAt" | "windowStart" | "windowEnd"> = {
+    scope: "monthly",
+    windowId: "billing-cycle",
+    observedAt: new Date(now).toISOString(),
+    ...(hasCycle ? { windowStart: new Date(startMs).toISOString() } : {}),
+    ...(resetsAtEpoch > 0 ? { windowEnd: new Date(endMs).toISOString() } : {}),
+  };
 
   const windows: PolledWindow[] = [];
   const pushPct = (label: string, pct: number | undefined): void => {
     if (typeof pct !== "number" || !Number.isFinite(pct)) return;
-    windows.push({ windowMinutes, usedPct: Math.max(0, Math.min(100, pct)), resetsAtEpoch, label });
+    windows.push({ windowMinutes, usedPct: Math.max(0, Math.min(100, pct)), resetsAtEpoch, label, bucketId: label === "Cursor Models" ? "cursor-models" : "other-models", ...cycle });
   };
   pushPct("Cursor Models", root.planUsage?.autoPercentUsed);
   pushPct("Other Models", root.planUsage?.apiPercentUsed);
@@ -1214,9 +1297,11 @@ async function pollCursorQuotas(opts: PollOptions, fetcher: typeof fetch, now: n
       resetsAtEpoch,
       label: "On-Demand",
       amountUsd: pooledUsed / 100,
+      bucketId: "on-demand",
+      ...cycle,
     });
   }
-  if (windows.length === 0) return "cursor response shape unrecognized";
+  if (windows.length === 0) return "cursor quota unavailable: unsupported response; current weekly plan schema is unverified";
 
   const capturedAtIso = new Date(now).toISOString();
   const inserted = opts.cache?.insertPolledSnapshots({
@@ -1285,29 +1370,74 @@ export function opencodexAccountEmails(
   );
 }
 
-/** opencodex pooled-account quotas → {key: {weeklyPercent, weeklyResetAt}}. */
-export function opencodexQuotas(path: string = OPENCODEX_QUOTA_CACHE): Record<string, {
-  weeklyPercent?: number;
-  weeklyResetAt?: number;
-  shortPercent?: number;
-  shortResetAt?: number;
-  shortWindowSeconds?: number;
-}> {
+const opencodexQuotaSchema = z.object({
+  updatedAt: z.number().finite().min(0).max(8.64e15),
+  weeklyPercent: z.number().finite().optional(),
+  weeklyResetAt: z.number().finite().optional(),
+  monthlyPercent: z.number().finite().optional(),
+  monthlyResetAt: z.number().finite().optional(),
+  monthlyIsPrimaryWindow: z.boolean().optional(),
+  shortPercent: z.number().finite().optional(),
+  shortResetAt: z.number().finite().optional(),
+  shortObservedAt: z.number().finite().min(0).max(8.64e15).optional(),
+  shortWindowSeconds: z.number().finite().optional(),
+  customWindows: z.array(z.object({
+    label: z.string(), percent: z.number().finite(), resetAt: z.number().finite().optional(),
+  })).optional(),
+});
+type OpencodexQuota = z.infer<typeof opencodexQuotaSchema>;
+const OPENCODEX_CACHE_TTL_MS = 6 * 60 * 60_000;
+
+export function opencodexQuotas(path: string = OPENCODEX_QUOTA_CACHE): Record<string, OpencodexQuota> {
   try {
-    const parsed = JSON.parse(fs.readFileSync(path, "utf8")) as {
-      quotas?: Record<string, {
-        weeklyPercent?: number;
-        weeklyResetAt?: number;
-        shortPercent?: number;
-        shortResetAt?: number;
-        shortWindowSeconds?: number;
-      }>;
-    };
-    return parsed.quotas ?? {};
+    const parsed = z.object({ quotas: z.record(z.string(), z.unknown()) }).parse(JSON.parse(fs.readFileSync(path, "utf8")));
+    const quotas: Record<string, OpencodexQuota> = {};
+    for (const [key, value] of Object.entries(parsed.quotas)) {
+      const quota = opencodexQuotaSchema.safeParse(value);
+      if (quota.success) quotas[key] = quota.data;
+    }
+    return quotas;
   } catch {
     return {}; // not installed / not started — fine, nothing to do
   }
 }
+
+const opencodexCachedWindows = (input: {
+  quota: OpencodexQuota;
+  now: number;
+  previousWindows: Array<{ windowId?: string; windowMinutes: number; scope?: PolledWindow["scope"] }>;
+}): PolledWindow[] => {
+  const { quota, now } = input;
+  const windows: PolledWindow[] = [];
+  const add = (window: { windowId: string; percent?: number; reset?: number; minutes: number; observed: number; scope: PolledWindow["scope"]; label?: string }) => {
+    if (window.percent === undefined || now < window.observed || now - window.observed > OPENCODEX_CACHE_TTL_MS) return;
+    const resetSeconds = window.reset !== undefined && window.reset > 0
+      ? window.reset >= 10_000_000_000 ? window.reset / 1000 : window.reset
+      : 0;
+    const resetsAtEpoch = resetSeconds < 8.64e12 ? resetSeconds : 0;
+    windows.push({
+      bucketId: "codex", windowId: window.windowId, scope: window.scope,
+      windowMinutes: window.minutes, usedPct: Math.max(0, Math.min(100, window.percent)),
+      resetsAtEpoch, observedAt: new Date(window.observed).toISOString(),
+      ...(window.label !== undefined ? { label: window.label } : {}),
+      ...(resetsAtEpoch > 0 ? { windowEnd: new Date(resetsAtEpoch * 1000).toISOString() } : {}),
+    });
+  };
+  const weeklySlot = quota.shortPercent !== undefined ? "secondary" : input.previousWindows.find((window) =>
+    (window.scope === "weekly" || window.windowMinutes === 10080) &&
+    (window.windowId === "primary" || window.windowId === "secondary"),
+  )?.windowId ?? "secondary";
+  add({ windowId: weeklySlot, percent: quota.weeklyPercent, reset: quota.weeklyResetAt, minutes: 10080, observed: quota.updatedAt, scope: "weekly" });
+  add({ windowId: quota.monthlyIsPrimaryWindow === true ? "primary" : "tertiary", percent: quota.monthlyPercent, reset: quota.monthlyResetAt, minutes: 0, observed: quota.updatedAt, scope: "monthly" });
+  const shortMinutes = quota.shortWindowSeconds !== undefined && quota.shortWindowSeconds > 0 ? quota.shortWindowSeconds / 60 : 0;
+  if (quota.monthlyIsPrimaryWindow !== true) {
+    add({ windowId: "primary", percent: quota.shortPercent, reset: quota.shortResetAt, minutes: shortMinutes, observed: quota.shortObservedAt ?? quota.updatedAt, scope: codexWindowScope(shortMinutes) });
+  }
+  for (const window of quota.customWindows ?? []) {
+    add({ windowId: `custom:${window.label}`, percent: window.percent, reset: window.resetAt, minutes: 0, observed: quota.updatedAt, scope: "other", label: window.label });
+  }
+  return windows;
+};
 
 /** Redact a credential for display: first 4 + … + last 4 of the full value. */
 export function redactCredential(secret: string): string {
@@ -1566,14 +1696,7 @@ async function pollQuotasLocked(opts: PollOptions = {}): Promise<PollResult> {
       } else if (r.skip !== undefined) {
         addReason("openrouter", r.skip);
       } else {
-        // OpenRouter's /key endpoint has no reset timestamp, only a period
-        // string — fall back to "now" so a real reset isn't rendered as a
-        // sentinel 0 ("no reset"/epoch). Compute the patched windows once
-        // and persist that SAME array; persisting the raw, unpatched
-        // r.windows here previously stored resets_at=0 while the returned
-        // account object showed the patched value — the poll's own
-        // immediate output disagreed with what was actually saved.
-        const windows = r.windows.map((w) => ({ ...w, resetsAtEpoch: w.resetsAtEpoch || Math.round(now / 1000) }));
+        const windows = r.windows;
         if (r.balance !== undefined) storeAccountMeta({ cache, provider: "pi", accountKey: "openrouter", meta: { balance: r.balance } });
         accounts.push({
           accountKey: "openrouter",
@@ -1720,10 +1843,7 @@ async function pollQuotasLocked(opts: PollOptions = {}): Promise<PollResult> {
   // that is not represented by ~/.codex/auth.json. The old fallback skipped
   // the pool whenever the personal login succeeded, leaving that account
   // stale forever.
-  const ownCodex = accounts.find((a) => a.accountKey.startsWith("openai:") && a.windows.length > 0);
-  const ownWeeklyResets = new Set(
-    ownCodex?.windows.filter((w) => w.windowMinutes === 10_080).map((w) => w.resetsAtEpoch) ?? [],
-  );
+  const ownCodex = accounts.find((a) => a.accountKey.startsWith("openai:"));
   const pooled = opencodexQuotas(opts.opencodexCachePath);
   const poolIdentities = opencodexAccountIdentities(opts.opencodexAccountsPath);
   const poolCredentials = opencodexAccountCredentials(opts.opencodexAccountsPath);
@@ -1737,6 +1857,7 @@ async function pollQuotasLocked(opts: PollOptions = {}): Promise<PollResult> {
       if (poolAccountId !== undefined && poolAccountId === ownCodex?.accountId) continue;
       if (credential.accessToken === undefined || poolAccountId === undefined) continue;
       const accountKey = poolKey === "__main__" ? "codex" : `codex:${poolKey}`;
+      freshPoolKeys.add(poolKey);
       const result = await pollCodexCredential(
         opts,
         {
@@ -1749,80 +1870,42 @@ async function pollQuotasLocked(opts: PollOptions = {}): Promise<PollResult> {
         accountKey,
         poolIdentities[poolKey]?.email ?? credential.email,
         `:opencodex:${poolKey}`,
-      );
+        false,
+      ).catch(() => "usage fetch failed; temporarily unavailable");
       if (typeof result === "string") {
         addReason("codex", `${accountKey}: ${result}`);
-      } else if (result.windows.length > 0) {
+      } else {
         accounts.push({ ...result, harnesses: ["opencodex"] });
-        freshPoolKeys.add(poolKey);
       }
     }
   }
-  const seenResets = new Set<number>();
   const seenPoolIds = new Set<string>();
   for (const [poolKey, q] of providerEnabled("codex") ? Object.entries(pooled) : []) {
     if (freshPoolKeys.has(poolKey)) continue;
-    if (typeof q.weeklyPercent !== "number" || typeof q.weeklyResetAt !== "number") continue;
-    const weeklyResetAt = q.weeklyResetAt;
-    const weeklyPercent = q.weeklyPercent;
-    const poolAccountId = poolIdentities[poolKey]?.accountId ?? (poolKey === "__main__" ? ownCodex?.accountId : undefined);
+    if (now < q.updatedAt || now - q.updatedAt > OPENCODEX_CACHE_TTL_MS) continue;
+    const poolAccountId = poolIdentities[poolKey]?.accountId;
     // The live OAuth poll is the canonical source for the active login.
     // Never materialize the same account a second time through __main__.
     if (poolAccountId !== undefined && poolAccountId === ownCodex?.accountId) continue;
-    // Reset epochs are quota data, not identity. Two real accounts can reset
-    // at the same instant, so stable pool account IDs always win. Legacy
-    // pool entries without IDs retain the old reset-based mirror guard.
     if (poolAccountId !== undefined) {
       if (seenPoolIds.has(poolAccountId)) continue;
       seenPoolIds.add(poolAccountId);
-    } else {
-      if (seenResets.has(weeklyResetAt)) continue;
-      if ([...ownWeeklyResets].some((reset) => Math.abs(reset - weeklyResetAt) <= 15 * 60)) continue;
-      seenResets.add(weeklyResetAt);
     }
-    let accountKey = poolKey === "__main__" ? "codex" : `codex:${poolKey}`;
-    // Reuse the scan-era account key when its embedded weekly reset matches
-    // this pool entry. This is what keeps an existing work-account card
-    // (usually `codex`) fresh instead of creating an opaque new card.
-    if (cache !== undefined) {
-      const shortMinutes = typeof q.shortWindowSeconds === "number" && q.shortWindowSeconds > 0
-        ? Math.round(q.shortWindowSeconds / 60)
-        : 300;
-      for (const existing of cache.detectedAccounts().filter((a) => a.provider === "codex")) {
-        const snapshots = cache.latestQuotaSnapshots("codex", existing.accountKey);
-        const resetMatches = snapshots.some((w) =>
-          (w.windowMinutes === 10_080 && w.resetsAt === weeklyResetAt) ||
-          (w.windowMinutes === shortMinutes && w.resetsAt === q.shortResetAt)
-        );
-        if (!resetMatches) continue;
-        // Same "reset epochs are quota data, not identity" principle as
-        // above: a reset-time collision alone isn't proof of identity. If
-        // this existing card already has a KNOWN stable account id and it's
-        // not this pool entry's id, it's a different account that merely
-        // resets at the same second — don't merge. Legacy entries with no
-        // known id yet keep the old reset-based match (nothing better to go on).
-        if (poolAccountId !== undefined) {
-          const knownIds = cache.quotaAccountIds("codex", existing.accountKey);
-          if (knownIds.size > 0 && !knownIds.has(poolAccountId)) continue;
-        }
-        accountKey = existing.accountKey;
-        break;
-      }
-    }
-    const windows: PolledWindow[] = [{
-      windowMinutes: 10_080,
-      usedPct: Math.max(0, Math.min(100, weeklyPercent)),
-      resetsAtEpoch: weeklyResetAt,
-    }];
-    if (typeof q.shortPercent === "number" && typeof q.shortResetAt === "number") {
-      windows.unshift({
-        windowMinutes: typeof q.shortWindowSeconds === "number" && q.shortWindowSeconds > 0
-          ? Math.round(q.shortWindowSeconds / 60)
-          : 300,
-        usedPct: Math.max(0, Math.min(100, q.shortPercent)),
-        resetsAtEpoch: q.shortResetAt,
-      });
-    }
+    const accountKey = poolKey === "__main__" ? "codex" : `codex:${poolKey}`;
+    const priorKeys = cache !== undefined && poolAccountId !== undefined
+      ? cache.quotaAccountKeys({ provider: "codex", accountId: poolAccountId }) : [];
+    const previousWindows = [...new Set([accountKey, ...priorKeys])]
+      .flatMap(key => cache?.latestQuotaSnapshots("codex", key) ?? [])
+      .filter(window => window.bucketId === "codex")
+      .sort((a, b) => Date.parse(b.observedAt ?? b.capturedAt) - Date.parse(a.observedAt ?? a.capturedAt));
+    const windows = opencodexCachedWindows({ quota: q, now, previousWindows });
+    if (windows.length === 0) continue;
+    const snapshot = {
+      provider: "codex", accountKey, accountId: poolAccountId, windows,
+      complete: false,
+      capturedAtIso: new Date(q.updatedAt).toISOString(),
+      eventId: `poll:${new Date(q.updatedAt).toISOString()}:opencodex:${poolKey}`,
+    };
     accounts.push({
       accountKey,
       ...(poolAccountId !== undefined
@@ -1830,14 +1913,7 @@ async function pollQuotasLocked(opts: PollOptions = {}): Promise<PollResult> {
         : {}),
       harnesses: ["opencodex"],
       windows,
-      inserted: cache?.insertPolledSnapshots({
-        provider: "codex",
-        accountKey,
-        accountId: poolAccountId,
-        windows,
-        capturedAtIso,
-        eventId: `poll:${capturedAtIso}:opencodex:${poolKey}`,
-      }) ?? 0,
+      inserted: cache?.insertPolledSnapshots(snapshot) ?? 0,
     });
   }
 
@@ -1870,6 +1946,7 @@ async function pollCodexCredential(
   accountKeyOverride?: string,
   fallbackEmail?: string,
   eventIdSuffix?: string,
+  allowRefresh = true,
 ): Promise<PollAccountResult | string> {
   const fetcher = opts.fetcher ?? globalThis.fetch;
   const token = auth.tokens?.access_token;
@@ -1893,6 +1970,7 @@ async function pollCodexCredential(
   let access = token;
   let res = await fetchUsage(access, accountId, fetcher);
   if (res.status === 401 || res.status === 403) {
+    if (!allowRefresh) return `unauthorized (${res.status}); renew this credential in OpenCodex`;
     const refresh = auth.tokens?.refresh_token;
     if (refresh === undefined || refresh.length === 0) {
       return `unauthorized (${res.status}) and no refresh token available`;
@@ -1908,12 +1986,13 @@ async function pollCodexCredential(
   if (res.status < 200 || res.status >= 300 || res.body === null) {
     return `usage endpoint returned HTTP ${res.status}`;
   }
+  const reportedId = res.body.account_id ?? res.body.accountId;
+  if (reportedId !== undefined && reportedId !== accountId) return "usage response account identity does not match credential";
 
   const planType = typeof res.body.plan_type === "string" ? res.body.plan_type : "unknown";
-  // Scan-era account keys are "<model_provider>:<plan_type>"; the ChatGPT
-  // login maps to model_provider "openai".
-  const accountKey = accountKeyOverride ?? `openai:${planType}`;
-  const windows = parseWindows(res.body.rate_limit);
+  const accountKey = accountKeyOverride ?? `openai:${accountId}`;
+  const capturedAtIso = new Date(opts.now ?? Date.now()).toISOString();
+  const windows = parseWindows(res.body, capturedAtIso);
   let credits = parsePolledCredits(res.body.rate_limit?.credits);
   if (credits === undefined || !credits.hasCredits || Number(credits.balance) <= 0) {
     credits = await fetchCodexResetCredits(access, accountId, fetcher) ?? credits;
@@ -1928,13 +2007,15 @@ async function pollCodexCredential(
     ...(credits !== undefined ? { credits } : {}),
     inserted: 0,
   };
-  if (windows.length === 0) {
-    result.error = "response carried no usable rate-limit windows";
-  }
-
-  const capturedAtIso = new Date(opts.now ?? Date.now()).toISOString();
   const cache = opts.cache;
-  if (cache !== undefined && windows.length > 0) {
+  if (cache !== undefined) {
+    storeAccountMeta({
+      cache, provider: "codex", accountKey,
+      meta: {
+        ...(email !== undefined ? { email } : {}),
+        ...(typeof res.body.plan_type === "string" && res.body.plan_type.length > 0 ? { plan: res.body.plan_type } : {}),
+      },
+    });
     result.inserted = cache.insertPolledSnapshots({
       provider: "codex",
       accountKey,
