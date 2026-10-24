@@ -19,6 +19,7 @@ multiple agents, accounts, machines, or all three.
 <p align="center">
   <a href="#quick-start">Quick start</a> ·
   <a href="#what-you-get">What you get</a> ·
+  <a href="#linux-desktop-gallery">Linux widgets</a> ·
   <a href="#supported-harnesses">Supported harnesses</a> ·
   <a href="#privacy-and-data">Privacy and data</a>
 </p>
@@ -197,6 +198,43 @@ are documented in [`integrations/README.md`](integrations/README.md). The
 adapter source is intentionally kept separate from the host-neutral contract,
 so the same data can be reused by DMS, Noctalia, Quickshell, Plasma, Waybar,
 GNOME, and COSMIC.
+
+### Linux desktop gallery
+
+Keep usage a glance away, then open the menu for the details. These four
+integrations use the same local Tokitoki data, with controls and styling
+adapted to each desktop shell.
+
+**DMS and Quickshell** bring the full dashboard to your bar: quota cards,
+usage charts, searchable sessions, reports and settings. Use the plugin in
+an existing DMS setup, or run the standalone Quickshell widget.
+
+<p align="center">
+  <a href="docs/screenshots/linux-shells.png"><img src="docs/screenshots/linux-shells.png" alt="DMS overview menu and Quickshell token breakdown menu, both open beneath their usage bars" width="920" /></a>
+</p>
+
+<p align="center">
+  <a href="integrations/README.md#home-manager-one-input-one-host-option">Install DMS or Quickshell with Home Manager</a> ·
+  <a href="integrations/README.md#standalone-quickshell">Standalone Quickshell setup</a>
+</p>
+
+**Noctalia and KDE Plasma** offer a compact quota bar with a complete account
+menu. Keep the shortest window for each selected account in the bar, inspect
+all windows in the menu, and keep local budget usage separate from provider
+capacity.
+
+<table>
+  <tr>
+    <td width="50%" valign="top"><a href="docs/screenshots/linux-noctalia.png"><img src="docs/screenshots/linux-noctalia.png" alt="Noctalia compact bar and open native quota menu with multiple OpenAI profiles and Cursor usage" width="100%" /></a></td>
+    <td width="50%" valign="top"><a href="docs/screenshots/linux-plasma.png"><img src="docs/screenshots/linux-plasma.png" alt="KDE Plasma compact bar and open quota menu with account cards, countdowns and separate local budgets" width="100%" /></a></td>
+  </tr>
+  <tr>
+    <td><strong>Noctalia 5</strong><br />Native Luau widget and quota panel.<br /><a href="integrations/noctalia-v5/tokitoki/README.md">Installation and settings →</a></td>
+    <td><strong>KDE Plasma 6</strong><br />Plasmoid for your panel or desktop.<br /><a href="integrations/kde-plasma/tokitoki/README.md">Installation and settings →</a></td>
+  </tr>
+</table>
+
+<p align="center"><sub>Native host captures with sample data. Click an image for full size. <a href="e2e/README.md">Screenshot and interaction tests</a> · <a href="docs/screenshots/README.md">Capture notes</a></sub></p>
 
 ## Publishing
 

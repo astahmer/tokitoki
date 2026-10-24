@@ -16,13 +16,17 @@ capture_plasma() {
 wait_for test -S "$XDG_RUNTIME_DIR/noctalia-$WAYLAND_DISPLAY.sock"
 wait_for sh -c 'grep -q "IPC socket" /out/noctalia.log'
 sleep 1
+"$NOCTALIA_BIN" msg panel-close setup-wizard
 state shortest
 capture noctalia-shortest
 wlrctl pointer move -10000 -10000
 wlrctl pointer move 120 20
 sleep 0.2
 wlrctl pointer click left
+wait_for sh -c '"$NOCTALIA_BIN" msg status | jq -e '\''.panelOpen and (.activePanelId | endswith(":details"))'\'' >/dev/null'
 capture noctalia-details
+grim -g '0,0 580x44' /out/noctalia-readme-bar.png
+grim -g '540,48 520x720' /out/noctalia-readme-menu.png
 wlrctl pointer move -10000 -10000
 wlrctl pointer move 700 450
 sleep 0.3
@@ -76,6 +80,7 @@ sleep 0.5
 wait_for test -f /out/plasma-states.jsonl
 sleep 1
 capture_plasma plasma-details
+grim -g '218,270 464x640' /out/plasma-readme-menu.png
 node /repo/e2e/native/control.mjs '{"mode":"shortest","accounts":"codex@work,cursor@personal"}'
 sleep 1
 capture_plasma plasma-selected
@@ -92,6 +97,7 @@ sleep 1
 node /repo/e2e/native/control.mjs '{"mode":"shortest","accounts":"","expanded":false}'
 sleep 1
 capture_plasma plasma-shortest
+grim -g '1098,46 464x80' /out/plasma-readme-bar.png
 node /repo/e2e/native/control.mjs '{"mode":"quotas"}'
 sleep 1
 capture_plasma plasma-all-windows
