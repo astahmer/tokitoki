@@ -1,11 +1,11 @@
-import fs from "node:fs";
-
 import type { TokitokiConfig } from "./config.ts";
 import type { EventCache, QuotaSnapshotRow } from "./cache.ts";
-import { accountEmailFor, accountIdentityFor } from "./accounts.ts";
+import { accountEmailFor, nativeCodexIdentities } from "./accounts.ts";
 import { modelProvider } from "./model-provider.ts";
 import { balanceAccounts } from "./quota/shared.ts";
 import {
+  AccountCreditsSchema,
+  type AccountCredits,
   computePace,
   describeQuotaWindow,
   type AccountBalance,
@@ -62,6 +62,8 @@ export interface LimitWindow extends Partial<QuotaWindowFields> {
 }
 
 export interface AccountLimits {
+  /** Native credential home for login actions; never a display label. */
+  codexHome?: string;
   provider: string;
   accountKey: string;
   /** User-facing label for configured synthetic accounts (never a secret). */
@@ -85,32 +87,18 @@ export interface AccountLimits {
   credential?: string;
   /** Other harnesses sharing this exact credential (credential-grouped cards). */
   alsoOn?: string[];
-  /** Where this account's quota data comes from: polled | opencodex | manual | scan. */
+  /** Where this account's quota data comes from: polled | manual | scan. */
   origin?: string;
   /** Most recent quota observation used to render this card. */
   observedAt?: string;
   /** Freshness of provider-reported data; never confuse stale data with zero. */
   freshness?: "fresh" | "stale" | "unknown";
   refreshError?: string;
-  /** Banked rate-limit resets (codex credits analog). */
+  /** Provider workspace credits, separate from available rate-limit resets. */
+  credits?: AccountCredits;
+  /** Banked rate-limit resets. */
   bankedResets?: number;
   bankedExpiresAt?: string;
-}
-
-export function attachCodexPoolEmails(
-  limits: AccountLimits[],
-  poolIdentities: Record<string, { accountId?: string; email?: string }>,
-  accountIdsFor: (accountKey: string) => Set<string>,
-): AccountLimits[] {
-  return limits.map((limit) => {
-    if (limit.provider !== "codex") return limit;
-    const accountIds = accountIdsFor(limit.accountKey);
-    const poolId = Object.entries(poolIdentities).find(([, identity]) =>
-      identity.accountId !== undefined && accountIds.has(identity.accountId),
-    )?.[0];
-    const email = poolId !== undefined ? poolIdentities[poolId]?.email : undefined;
-    return email !== undefined ? { ...limit, email } : limit;
-  });
 }
 
 type ExtraKey = NonNullable<NonNullable<TokitokiConfig["poll"]>["extraKeys"]>[number];
@@ -150,6 +138,7 @@ export const appendBalanceOnlyAccounts = (input: { limits: AccountLimits[]; cach
   const limits = input.limits.map((limit) => withAccountBalance({ limit, cache: input.cache }));
   const known = new Set(limits.map((limit) => `${limit.provider}@${limit.accountKey}`));
   for (const account of balanceAccounts(input.cache)) {
+    if (input.cache.isRetiredQuotaProvider(account.provider)) continue;
     if (known.has(`${account.provider}@${account.accountKey}`)) continue;
     const meta = input.cache.quotaAccountMeta(account.provider, account.accountKey);
     if (meta?.balance === undefined) continue;
@@ -167,6 +156,18 @@ export const appendBalanceOnlyAccounts = (input: { limits: AccountLimits[]; cach
   }
   return limits;
 };
+
+/** Newest native workspace-credit payload, without interpreting it as reset credits. */
+export function snapshotAccountCredits(snapshots: QuotaSnapshotRow[]): AccountCredits | undefined {
+  for (const snapshot of [...snapshots].sort((a, b) => b.capturedAt.localeCompare(a.capturedAt))) {
+    if (snapshot.creditsJson === null) continue;
+    try {
+      const parsed = AccountCreditsSchema.safeParse(JSON.parse(snapshot.creditsJson));
+      if (parsed.success) return parsed.data;
+    } catch { /* Try the next independently valid native observation. */ }
+  }
+  return undefined;
+}
 
 /** Keep the payload invariant: one visible card per provider/account identity. */
 export function dedupeAccountLimits(limits: AccountLimits[]): AccountLimits[] {
@@ -189,12 +190,14 @@ export function dedupeAccountLimits(limits: AccountLimits[]): AccountLimits[] {
       ...existing,
       ...incoming,
       accountId: incoming.accountId ?? existing.accountId,
+      codexHome: incoming.codexHome ?? existing.codexHome,
       label: incoming.label ?? existing.label,
       email: incoming.email ?? existing.email,
       planLabel: incoming.planLabel ?? existing.planLabel,
       plan: incoming.plan ?? existing.plan,
       extraUsage: incoming.extraUsage ?? existing.extraUsage,
       balance: incoming.balance ?? existing.balance,
+      credits: incoming.credits ?? existing.credits,
       credential: incoming.credential ?? existing.credential,
       origin: incoming.origin ?? existing.origin,
       windows: [...windows.values()],
@@ -317,33 +320,10 @@ export function embeddedKind(windowMinutes: number): string {
 }
 
 /**
- * Foreign quota fingerprints: window resets reported by the opencodex
- * account pool (~/.opencodex/codex-quota-cache.json), i.e. OTHER ChatGPT
- * logins that ran through the proxy on this machine. An account whose
- * embedded weekly window matches one of these is provably NOT the locally
- * authenticated codex login — never stamp our email on it.
- */
-export function foreignQuotaFingerprints(provider: string): Set<string> {
-  const out = new Set<string>();
-  if (provider !== "codex") return out;
-  try {
-    const raw = JSON.parse(
-      fs.readFileSync(`${process.env.HOME ?? "~"}/.opencodex/codex-quota-cache.json`, "utf8"),
-    ) as { quotas?: Record<string, { weeklyResetAt?: number }> };
-    for (const q of Object.values(raw.quotas ?? {})) {
-      if (typeof q.weeklyResetAt === "number") out.add(`10080:${q.weeklyResetAt}`);
-    }
-  } catch {
-    // no opencodex pool on this machine — nothing foreign known
-  }
-  return out;
-}
-
-/**
  * Match config [plans] caps for an account key: exact match first, then
  * trailing-`*` prefix patterns (longest pattern wins).
  */
-function planCapsFor(
+export function planCapsFor(
   plans: TokitokiConfig["plans"],
   accountKey: string,
 ): { monthlyCostCap?: number; monthlyRequestCap?: number } | undefined {
@@ -375,6 +355,7 @@ export function computeLimits(
     accounts ?? cache.detectedAccounts().map((a) => ({ provider: a.provider, accountKey: a.accountKey }));
   const seen = new Set<string>();
   const list = rawList.filter(({ provider, accountKey }) => {
+    if (cache.isRetiredQuotaProvider(provider)) return false;
     const id = `${provider}@${accountKey}`;
     if (seen.has(id)) return false;
     seen.add(id);
@@ -384,10 +365,8 @@ export function computeLimits(
   // These values are provider-scoped, but the original per-account loop
   // reread large quota stores and auth files for every card.
   const ownFingerprintsByProvider = new Map<string, Set<string>>();
-  const foreignFingerprintsByProvider = new Map<string, Set<string>>();
   const emailsByProvider = new Map<string, string | null>();
-  let codexIdentityResolved = false;
-  let codexIdentity: ReturnType<typeof accountIdentityFor> = null;
+  const codexIdentities = nativeCodexIdentities({ config });
 
   for (const { provider, accountKey } of list) {
     const windows: LimitWindow[] = [];
@@ -429,7 +408,7 @@ export function computeLimits(
         maxAgeMs: s.eventId?.startsWith("poll:") ? Math.max(10, (config.poll?.intervalMinutes ?? 15) * 2) * 60_000 : SCANNED_SNAPSHOT_FRESH_MS,
       });
       windows.push(w);
-      if (s.creditsJson !== null) {
+      if (provider !== "codex" && s.creditsJson !== null) {
         try {
           const c = JSON.parse(s.creditsJson) as {
             hasCredits: boolean;
@@ -517,56 +496,36 @@ export function computeLimits(
     const order: Record<string, number> = { day: 0, week: 1, month: 2 };
     windows.sort((a, b) => (order[a.kind] ?? 99) - (order[b.kind] ?? 99));
 
-    // Email attribution (the CodexBar trick): the provider-level email comes
-    // from the CURRENT auth store, so it may not belong to every account
-    // sharing this machine. Keep it only when the account is provably the
-    // local login — its embedded windows match polled quota fingerprints —
-    // or when nothing contradicts it (never polled + no foreign pool data).
-    const pairs = snaps.map((s) => `${Math.round(s.windowMinutes)}:${Math.round(s.resetsAt)}`);
-    let own = ownFingerprintsByProvider.get(provider);
-    if (own === undefined) {
-      own = cache.ownLoginFingerprints(provider);
-      ownFingerprintsByProvider.set(provider, own);
-    }
-    let foreign = foreignFingerprintsByProvider.get(provider);
-    if (foreign === undefined) {
-      foreign = foreignQuotaFingerprints(provider);
-      foreignFingerprintsByProvider.set(provider, foreign);
-    }
-    let resolvedEmail: string | null;
-    if (emailsByProvider.has(provider)) {
-      resolvedEmail = emailsByProvider.get(provider) ?? null;
-    } else {
-      resolvedEmail = accountEmailFor(provider);
-      emailsByProvider.set(provider, resolvedEmail);
-    }
-    let email = resolvedEmail ?? accountMeta?.email;
+    // A stable native account ID is the bridge from historical sessions to
+    // current credentials; matching plan/reset schedules are not identity.
+    let email: string | undefined;
     if (provider === "codex") {
-      if (!codexIdentityResolved) {
-        codexIdentity = accountIdentityFor(provider);
-        codexIdentityResolved = true;
+      email = accountId === undefined ? undefined : codexIdentities.get(accountId)?.email ?? accountMeta?.email;
+      bankedResets = accountMeta?.bankedResets;
+      bankedExpiresAt = accountMeta?.bankedExpiresAt;
+    } else {
+      let own = ownFingerprintsByProvider.get(provider);
+      if (own === undefined) {
+        own = cache.ownLoginFingerprints(provider);
+        ownFingerprintsByProvider.set(provider, own);
       }
-      const localId = codexIdentity?.accountId;
-      // Account IDs are authoritative. A card with polled identity data that
-      // belongs to another login must never inherit the active JWT email.
-      if (quotaAccountIds.size > 0 && (localId === undefined || !quotaAccountIds.has(localId))) {
-        email = undefined;
-      } else if (quotaAccountIds.size === 0) {
-        email = undefined;
-      }
-    } else if (!pairs.some((p) => own.has(p)) && !(own.size === 0 && !pairs.some((p) => foreign.has(p)))) {
-      email = undefined;
+      if (!emailsByProvider.has(provider)) emailsByProvider.set(provider, accountEmailFor(provider));
+      const pairs = snaps.map(snapshot => `${Math.round(snapshot.windowMinutes)}:${Math.round(snapshot.resetsAt)}`);
+      email = own.size === 0 || pairs.some(pair => own.has(pair))
+        ? emailsByProvider.get(provider) ?? accountMeta?.email : undefined;
     }
 
     out.push({
       provider,
       accountKey,
       ...(accountId !== undefined ? { accountId } : {}),
+      ...(provider === "codex" && (accountMeta?.codexHome ?? accountMeta?.reauthHome) !== undefined ? { codexHome: accountMeta?.codexHome ?? accountMeta?.reauthHome } : {}),
       email,
       planLabel: plan,
       ...(plan !== undefined ? { plan } : {}),
       ...(accountMeta?.extraUsage !== undefined ? { extraUsage: accountMeta.extraUsage } : {}),
       ...(accountMeta?.balance !== undefined ? { balance: accountMeta.balance } : {}),
+      ...(provider === "codex" ? { credits: accountMeta?.credits ?? snapshotAccountCredits(snaps) } : {}),
       windows,
       ...(budgetWindows.length > 0 ? { budgetWindows } : {}),
       bankedResets,

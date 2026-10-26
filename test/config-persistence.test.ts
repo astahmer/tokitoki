@@ -10,7 +10,7 @@ const configs: string[] = [];
 
 function run(args: string[], configPath: string): { status: number; stdout: string; stderr: string } {
   const result = Bun.spawnSync(["bun", cli, ...args], {
-    env: { ...process.env, TOKITOKI_CONFIG: configPath },
+    env: { ...process.env, TOKITOKI_CONFIG: configPath, TOKITOKI_DATA_DIR: path.dirname(configPath) },
     stdout: "pipe",
     stderr: "pipe",
   });

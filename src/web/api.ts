@@ -1,8 +1,9 @@
-import { DIMENSION_NAMES, EventCache, parseDimension, type AggRow, type Dimension } from "../cache.ts";
+import { DIMENSION_NAMES, EventCache, parseDimension, type AggRow, type Dimension, type TrackingSummary } from "../cache.ts";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { loadConfig, type TokitokiConfig } from "../config.ts";
+import { readAccountUiPreferences } from "../uiToggles.ts";
 import { accountEmailMap } from "../accounts.ts";
 import type { BudgetsConfig } from "../budgets.ts";
 import {
@@ -27,6 +28,8 @@ import {
 import {
   resolveCalendarWindow,
   resolveTimeWindow,
+  calendarDayWindow,
+  rollingWindow,
   type Period,
   type TimeWindow,
 } from "../period.ts";
@@ -72,6 +75,34 @@ function withCache<T>(fn: (cache: EventCache) => T): T {
   }
 }
 
+export type TrackingPeriod = "day" | "today" | "yesterday" | "week" | "month" | "year";
+export type TrackingPeriods = Record<TrackingPeriod, TrackingSummary>;
+export type TrackingPayload = { window: ApiWindow } & TrackingSummary;
+
+/** Widget ranges: day is rolling 24h; today/yesterday are isolated local days. */
+export function trackingPeriods(cache: EventCache, now: Date = new Date()): TrackingPeriods {
+  const today = calendarDayWindow(now);
+  const yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
+  const windows: Record<TrackingPeriod, TimeWindow> = {
+    day: rollingWindow("day", now),
+    today,
+    yesterday: { sinceIso: yesterday.toISOString(), untilIso: today.sinceIso, label: "yesterday" },
+    week: rollingWindow("week", now),
+    month: rollingWindow("month", now),
+    year: rollingWindow("year", now),
+  };
+  return Object.fromEntries(Object.entries(windows).map(([key, window]) =>
+    [key, cache.trackingSummary(window)],
+  )) as TrackingPeriods;
+}
+
+/** Same validated last/from/to contract as /api/summary; no account/provider filters. */
+export function apiTracking(wp: WindowParams = {}): TrackingPayload {
+  // Validate before opening the cache so invalid input has no storage side effects.
+  const window = resolveTimeWindow({ ...wp, fallbackPeriod: "week" });
+  return withCache(cache => ({ window: toApiWindow(window), ...cache.trackingSummary(window) }));
+}
+
 export interface SummaryPayload {
   window: ApiWindow;
   cost: number;
@@ -107,7 +138,7 @@ export function apiSummary(wp: WindowParams = {}): SummaryPayload {
 }
 
 /** Small, host-neutral projection for shell widgets and status bars. */
-export function apiWidgetStatus(wp: WindowParams = {}): WidgetStatusPayload {
+export function apiWidgetStatus(wp: WindowParams = {}): WidgetStatusPayload & { tracking: TrackingSummary; trackingPeriods: TrackingPeriods } {
   return withCache((cache) => {
     const w = resolveTimeWindow({ ...wp, fallbackPeriod: "day" });
     const total = cache.totals(w.sinceIso, undefined, w.untilIso);
@@ -129,6 +160,8 @@ export function apiWidgetStatus(wp: WindowParams = {}): WidgetStatusPayload {
       app: "tokitoki",
       generatedAt: new Date().toISOString(),
       window: toApiWindow(w),
+      tracking: cache.trackingSummary(w),
+      trackingPeriods: trackingPeriods(cache),
       stats: {
         costUsd: round2(total.costUsd),
         requests: total.requests,
@@ -139,11 +172,7 @@ export function apiWidgetStatus(wp: WindowParams = {}): WidgetStatusPayload {
       providers,
       t3codeActivity: cache.t3codeActivity({ sinceIso: w.sinceIso, untilIso: w.untilIso }).total,
       uiPreview: {
-        accountOrder: config.ui?.menubarAccountOrder ?? [],
-        barAccountOrder: config.ui?.previewAccountOrder ?? config.ui?.menubarAccountOrder ?? [],
-        barHiddenAccounts: config.ui?.previewHiddenAccounts ?? [],
-        menubarHidden: config.ui?.hidden?.widget ?? config.ui?.hidden?.menubar ?? config.ui?.hidden?.bar ?? [],
-        previewHidden: config.ui?.previewHidden ?? [],
+        ...readAccountUiPreferences({ config, cache }),
         privacyHideIdentities: config.privacy?.hideIdentities === true,
       },
       budgets: gaugesForMenubar(budgetPayload).map((gauge) => ({

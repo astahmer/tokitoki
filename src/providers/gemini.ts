@@ -4,7 +4,7 @@ import path from "node:path";
 import type { UsageEvent } from "../types.ts";
 import { providerConfig } from "../config.ts";
 import { eventId } from "../machine.ts";
-import { estimateCost } from "../pricing.ts";
+import { resolveUsageCost } from "../pricing.ts";
 import { sessionMessage } from "../sessionText.ts";
 import { homePath, type EntryContext, type Provider, type SessionDoc } from "./types.ts";
 
@@ -109,12 +109,12 @@ export const geminiCliProvider: Provider = {
         inputTokens,
         outputTokens,
         cacheReadTokens: cachedInput,
-        costUsd: estimateCost(model, {
+        ...resolveUsageCost({ model, tokens: {
           inputTokens,
           outputTokens,
           cacheReadTokens: cachedInput,
           cacheWriteTokens: 0,
-        }),
+        } }),
         projectDir: typeof rec.projectHash === "string" ? rec.projectHash : path.basename(path.dirname(path.dirname(ctx.path))),
         sessionId,
       });

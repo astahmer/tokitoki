@@ -26,6 +26,7 @@ import { applyMode, effectiveMode, persistMode, resolveInitialMode, watchSystemM
 // are loaded only when their route or panel is rendered, which keeps the
 // menubar-compatible dashboard bundle comfortably below Vite's warning size.
 const SummaryCards = lazy(() => import("./components/SummaryCards").then((m) => ({ default: m.SummaryCards })));
+const TrackingQuality = lazy(() => import("./components/TrackingQuality").then((m) => ({ default: m.TrackingQuality })));
 const UsageTable = lazy(() => import("./components/UsageTable").then((m) => ({ default: m.UsageTable })));
 const TimeseriesChart = lazy(() => import("./components/TimeseriesChart").then((m) => ({ default: m.TimeseriesChart })));
 const SpendDistribution = lazy(() => import("./components/SpendDistribution").then((m) => ({ default: m.SpendDistribution })));
@@ -338,6 +339,8 @@ export function App() {
             accounts={table.state === "ok" ? table.data.accounts.map((a) => a.key) : []}
             setAccount={(a) => patch({ account: a })}
           />
+
+          <TrackingQuality key={`${rangeKey}:${refreshTick}`} win={win} />
 
           {/* Hero charts side by side, directly under filters. */}
           <div className="mb-4 grid gap-4 lg:grid-cols-2">

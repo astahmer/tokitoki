@@ -23,7 +23,9 @@
       "cacheWriteTokens": 0,
       "costUsd": 0.08,
       "description": "Synthetic e2e request one",
-      "runningTokens": 1600
+      "runningTokens": 1600,
+      "tokenSource": "estimated",
+      "tokenEstimationMethod": "characters/4"
     },
     {
       "n": 2,
@@ -35,7 +37,8 @@
       "cacheWriteTokens": 0,
       "costUsd": 0.04,
       "description": "Synthetic e2e request two",
-      "runningTokens": 3500
+      "runningTokens": 3500,
+      "tokenSource": "reported"
     },
     {
       "n": 3,
@@ -47,7 +50,8 @@
       "cacheWriteTokens": 0,
       "costUsd": 0.05,
       "description": "Synthetic e2e request three",
-      "runningTokens": 5300
+      "runningTokens": 5300,
+      "tokenSource": "reported"
     }
   ],
   "eventsTotal": 3,

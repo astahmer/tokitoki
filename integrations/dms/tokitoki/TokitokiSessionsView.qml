@@ -212,6 +212,11 @@ Item {
             safeNumber(event.cacheReadTokens) + safeNumber(event.cacheWriteTokens)
     }
 
+    function eventTokenLabel(event) {
+        return (event.tokenSource === "estimated" ? "≈" : "") + root.compactNumber(root.eventTokens(event)) +
+            (event.tokenSource === "estimated" ? " tokens estimated" : " tokens")
+    }
+
     function maximumEventTokens() {
         var maximum = 1
         for (var i = 0; i < root.events.length; i++)
@@ -918,7 +923,7 @@ Item {
 
                                 anchors.right: parent.right
                                 anchors.verticalCenter: parent.verticalCenter
-                                text: root.compactNumber(root.eventTokens(modelData)) + " tok · " +
+                                text: root.eventTokenLabel(modelData) + " · " +
                                     root.formatMoney(modelData.costUsd)
                                 color: Theme.surfaceVariantText
                                 font.pixelSize: Theme.fontSizeSmall

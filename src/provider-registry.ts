@@ -84,7 +84,6 @@ export const PROVIDER_REGISTRY: Readonly<Record<string, ProviderInfo>> = {
   // Harnesses
   "claude-code": { displayName: "Claude Code", shortName: "Claude", vendor: "anthropic", icon: "psychology", logo: "claude-code" },
   codex: { displayName: "Codex", shortName: "Codex", vendor: "openai", icon: "smart_toy", logo: "codex" },
-  opencodex: { displayName: "opencodex", shortName: "Codex", vendor: "openai", icon: "smart_toy", logo: "codex" },
   "gemini-cli": { displayName: "Gemini CLI", shortName: "Gemini", vendor: "google", icon: "auto_awesome", logo: "gemini-cli" },
   "antigravity-cli": { displayName: "Antigravity", shortName: "Antigravity", vendor: "google", icon: "rocket_launch", logo: "gemini-cli" },
   copilot: { displayName: "GitHub Copilot", shortName: "Copilot", vendor: "github", icon: "assistant", logo: "copilot" },

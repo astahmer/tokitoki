@@ -4,16 +4,62 @@ import { z } from "zod";
 
 import type { QuotaSnapshot, QuotaWindow, UsageEvent } from "../types.ts";
 import { providerConfig } from "../config.ts";
+import { codexHomes } from "../codex-homes.ts";
 import { eventId } from "../machine.ts";
-import { estimateCost } from "../pricing.ts";
+import { resolveUsageCost } from "../pricing.ts";
 import { extractCodexToolName, shellToolName } from "../tools.ts";
 import { cleanSessionText, sessionMessage, sessionTitle, summarizeToolCall } from "../sessionText.ts";
-import { homePath, type EntryContext, type Provider, type SessionDoc } from "./types.ts";
+import { type EntryContext, type Provider, type SessionDoc } from "./types.ts";
+import { codexForkParentId, codexThreadId, isCodexOriginalLine, isCodexReplayLine } from "./codex-replay.ts";
 
-interface CodexTokenUsage {
-  input_tokens?: number;
-  cached_input_tokens?: number;
-  output_tokens?: number;
+const tokenUsageSchema = z.object({
+  input_tokens: z.number().finite().nonnegative(),
+  cached_input_tokens: z.number().finite().nonnegative().default(0),
+  output_tokens: z.number().finite().nonnegative(),
+});
+type CodexTokenUsage = z.infer<typeof tokenUsageSchema>;
+
+function tokenUsage(value: unknown): CodexTokenUsage | undefined {
+  const parsed = tokenUsageSchema.safeParse(value);
+  if (!parsed.success) return undefined;
+  return {
+    ...parsed.data,
+    cached_input_tokens: Math.min(parsed.data.cached_input_tokens, parsed.data.input_tokens),
+  };
+}
+
+/** Reconcile cumulative snapshots before treating last usage as a new request.
+ * Mirrors the cumulative gate / baseline advancement in ccusage's pinned
+ * e351d846 Codex parser; resets establish a new baseline without billing it.
+ */
+function usageDelta(info: Record<string, unknown>, state: EntryContext["state"]): CodexTokenUsage | undefined {
+  const total = tokenUsage(info.total_token_usage);
+  const last = tokenUsage(info.last_token_usage);
+  const previous = tokenUsage(state.codexCumulativeUsage);
+  if (total === undefined) {
+    if (last !== undefined) state.codexCumulativeGap = true;
+    return last;
+  }
+  const gap = state.codexCumulativeGap === true;
+  state.codexCumulativeUsage = total; // Always advance, including the last-usage path.
+  delete state.codexCumulativeGap;
+  if (previous !== undefined && !gap) {
+    if (total.input_tokens === previous.input_tokens && total.output_tokens === previous.output_tokens &&
+      total.cached_input_tokens === previous.cached_input_tokens) return undefined;
+    // A reset/decrease is not a negative request or a whole new cumulative bill.
+    if (total.input_tokens < previous.input_tokens || total.output_tokens < previous.output_tokens ||
+      total.cached_input_tokens < previous.cached_input_tokens) return last;
+  }
+  if (last !== undefined) return last;
+  // A last-only interval cannot be recovered from the next cumulative total
+  // without counting those requests twice. Re-anchor instead.
+  if (gap) return undefined;
+  const input = total.input_tokens - (previous?.input_tokens ?? 0);
+  return {
+    input_tokens: input,
+    output_tokens: total.output_tokens - (previous?.output_tokens ?? 0),
+    cached_input_tokens: Math.min(input, total.cached_input_tokens - (previous?.cached_input_tokens ?? 0)),
+  };
 }
 
 const quotaWindowSchema = z.object({
@@ -92,14 +138,14 @@ function creditExpiry(value: unknown): string | undefined {
 /**
  * Codex CLI/Desktop rollouts live under ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl.
  * Relevant lines:
- *   {"type":"session_meta","payload":{"session_id",cwd,model_provider,...}}
+ *   {"type":"session_meta","payload":{"id","session_id",cwd,model_provider,...}}
  *   {"type":"turn_context","payload":{"model",...}}           (current model)
  *   {"type":"event_msg","payload":{"type":"token_count",
  *     "info":{"total_token_usage"(cumulative),"last_token_usage"(delta),
  *             ...},"rate_limits":{"limit_id","plan_type"...}}}
  *
- * We emit events from last_token_usage (the per-turn delta) to avoid double
- * counting; cumulative totals are ignored. Entry ids derive from the line
+ * Cumulative advancement guards last_token_usage against repeated snapshots;
+ * totals-only observations use differences from the saved baseline. Entry ids derive from the line
  * index within the rollout (files are append-only), tracked across scans in
  * cursor state.
  *
@@ -114,7 +160,7 @@ export const codexProvider: Provider = {
   discoverRoots(): string[] {
     const override = providerConfig(this.id)?.paths;
     if (override !== undefined && override.length > 0) return override;
-    return [homePath("CODEX_HOME", "/.codex/sessions")];
+    return codexHomes().flatMap(home => [path.join(home, "sessions"), path.join(home, "archived_sessions")]);
   },
 
   listFiles(root: string): string[] {
@@ -135,6 +181,25 @@ export const codexProvider: Provider = {
 
     const payload = entry.payload as Record<string, unknown> | undefined;
     if (entry.type === "session_meta" && payload !== undefined) {
+      // Preserve the old fresh-scan ID namespace even when a copied header
+      // belongs to the parent; ownership itself stays with the first header.
+      if (ctx.freshFile || typeof state.codexLegacySessionId !== "string") {
+        state.codexLegacySessionId = typeof payload.session_id === "string" ? payload.session_id
+          : path.basename(ctx.path).replace(/^rollout-|\.jsonl$/g, "").split("-").slice(-1)[0] ?? "unknown";
+      }
+      if (typeof payload.model_provider === "string") state.codexLegacyProviderLabel = payload.model_provider;
+      // Later metadata can be inherited from a fork's copied parent history.
+      // Only the first header owns identity, attribution and cumulative reset.
+      if (state.codexMetadataSeen === true || (!ctx.freshFile && typeof state.sessionId === "string")) return [];
+      state.codexMetadataSeen = true;
+      // Keep the historical sessionId namespace below for existing event IDs.
+      // Stock metadata.id is the thread; session_id can be the shared root.
+      state.codexThreadId = codexThreadId(payload);
+      state.codexForkedFromId = codexForkParentId(payload);
+      if (ctx.freshFile) {
+        delete state.codexCumulativeUsage;
+        delete state.codexCumulativeGap;
+      }
       if (ctx.freshFile || typeof state.sessionId !== "string") {
         state.sessionId =
           typeof payload.session_id === "string"
@@ -191,9 +256,13 @@ export const codexProvider: Provider = {
       account = `${account}:${planType}`;
     }
     // Historical usage IDs included the meter fallback. Preserve them on replay.
+    const legacyProvider = typeof state.codexLegacyProviderLabel === "string" ? state.codexLegacyProviderLabel
+      : typeof state.providerLabel === "string" ? state.providerLabel : "default";
+    const legacyAccount = typeof planType === "string" ? `${legacyProvider}:${planType}` : legacyProvider;
     const idAccount = typeof planType !== "string" && typeof rateLimits?.limit_id === "string"
-      ? rateLimits.limit_id : account;
-    const id = eventId("codex", idAccount, sessionId, `line-${lineIndex}`);
+      ? rateLimits.limit_id : legacyAccount;
+    const idSession = typeof state.codexLegacySessionId === "string" ? state.codexLegacySessionId : sessionId;
+    const id = eventId("codex", idAccount, idSession, `line-${lineIndex}`);
     const ts = typeof entry.timestamp === "string" ? entry.timestamp : new Date().toISOString();
     const quota = parseCodexQuotaSnapshot({
       rateLimits,
@@ -204,15 +273,27 @@ export const codexProvider: Provider = {
 
     const info = payload.info as Record<string, unknown> | undefined;
     if (info === undefined || info === null) return [];
-    const delta = info.last_token_usage as CodexTokenUsage | undefined;
+    const delta = usageDelta(info, state);
+    // Replay still advances cumulative accounting and delivers quota above.
+    // The scanner supplies a verified plan; lineage alone is insufficient.
+    if (isCodexReplayLine({ path: ctx.path, state, lineIndex })) {
+      ctx.onReplayedUsage?.(id);
+      delete state.lastTool;
+      return [];
+    }
     if (delta === undefined || delta === null) return [];
-    const inputTokens = delta.input_tokens ?? 0;
+    const totalInput = delta.input_tokens ?? 0;
     const outputTokens = delta.output_tokens ?? 0;
-    if (inputTokens === 0 && outputTokens === 0) return [];
-
     const cachedInput = delta.cached_input_tokens ?? 0;
+    // Codex input includes cache hits. Normalize once at the adapter boundary
+    // so totals and pricing both consume disjoint token buckets.
+    if (![totalInput, outputTokens, cachedInput].every(value =>
+      typeof value === "number" && Number.isFinite(value) && value >= 0) || cachedInput > totalInput) return [];
+    if (totalInput === 0 && outputTokens === 0) return [];
+    const inputTokens = totalInput - cachedInput;
 
     const event: UsageEvent = {
+      ...(isCodexOriginalLine({ path: ctx.path, state, lineIndex }) ? { originalUsage: true } : {}),
       id,
       ts,
       machineId: ctx.machineId,
@@ -222,12 +303,12 @@ export const codexProvider: Provider = {
       inputTokens,
       outputTokens,
       cacheReadTokens: cachedInput,
-      costUsd: estimateCost(model, {
+      ...resolveUsageCost({ model, tokens: {
         inputTokens,
         outputTokens,
         cacheReadTokens: cachedInput,
         cacheWriteTokens: 0,
-      }),
+      } }),
       projectDir: typeof state.cwd === "string" ? state.cwd : undefined,
       sessionId,
       tool: typeof state.lastTool === "string" ? state.lastTool : undefined,

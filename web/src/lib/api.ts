@@ -46,6 +46,34 @@ export interface ApiWindow {
   label: string;
 }
 
+export interface TrackingSummary {
+  reportedTokenRequests?: number;
+  estimatedTokenRequests?: number;
+  unknownTokenRequests?: number;
+  reportedTokens?: number;
+  estimatedTokens?: number;
+  unknownTokens?: number;
+  requests: number;
+  totalTokens: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  costUsd: number;
+  reportedRequests: number;
+  estimatedRequests: number;
+  unpricedRequests: number;
+  unknownRequests: number;
+  pricedRequests: number;
+  pricingCoveragePercent: number | null;
+  cachedInputPercent: number | null;
+  unpricedModels: string[];
+}
+
+export interface TrackingPayload extends TrackingSummary {
+  window: ApiWindow;
+}
+
 export interface SummaryPayload {
   window: ApiWindow;
   cost: number;
@@ -110,6 +138,12 @@ async function get<T>(path: string): Promise<T> {
 export function fetchSummary(win?: WindowSelection): Promise<SummaryPayload> {
   const q = win !== undefined ? windowQuery(win).toString() : "";
   return get<SummaryPayload>(`/api/summary${q.length > 0 ? `?${q}` : ""}`);
+}
+
+/** Tracking is period-wide; account/provider filters are not supported. */
+export function fetchTracking(win: WindowSelection): Promise<TrackingPayload> {
+  const q = windowQuery(win).toString();
+  return get<TrackingPayload>(`/api/tracking${q.length > 0 ? `?${q}` : ""}`);
 }
 
 export function fetchTable(params: {
@@ -182,6 +216,8 @@ export interface SessionsPayload {
 }
 
 export interface SessionEvent {
+  tokenSource?: "reported" | "estimated" | "unknown";
+  tokenEstimationMethod?: "characters/4";
   ts: string;
   model: string;
   inputTokens: number;
@@ -241,7 +277,7 @@ export function fetchSessionDetail(
     const numberOrZero = (value: unknown): number =>
       typeof value === "number" && Number.isFinite(value) ? value : 0;
     const events = Array.isArray(raw.events)
-      ? raw.events.map((event) => ({
+      ? raw.events.map((event): SessionEvent => ({
           ts: typeof event.ts === "string" ? event.ts : "",
           model: typeof event.model === "string" ? event.model : "unknown",
           inputTokens: numberOrZero(event.inputTokens),
@@ -249,6 +285,8 @@ export function fetchSessionDetail(
           cacheReadTokens: numberOrZero(event.cacheReadTokens),
           cacheWriteTokens: numberOrZero(event.cacheWriteTokens),
           costUsd: numberOrZero(event.costUsd),
+          tokenSource: event.tokenSource === "reported" || event.tokenSource === "estimated" ? event.tokenSource : "unknown",
+          tokenEstimationMethod: event.tokenEstimationMethod === "characters/4" ? event.tokenEstimationMethod : undefined,
           tool: typeof event.tool === "string" ? event.tool : undefined,
           description: typeof event.description === "string" ? event.description : "",
         }))
@@ -421,6 +459,7 @@ export interface LimitsAccount {
   observedAt?: string;
   extraUsage?: { enabled: boolean; usedUsd?: number; limitUsd?: number; usedPercent?: number };
   balance?: { currency: string; remaining: number; total?: number; used?: number; granted?: number; paid?: number; available?: boolean };
+  credits?: { hasCredits: boolean; unlimited: boolean; balance?: string | null };
   bankedResets?: number;
   bankedExpiresAt?: string;
   windows: LimitsWindow[];

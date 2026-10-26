@@ -5,7 +5,7 @@ import { Database } from "bun:sqlite";
 
 import type { UsageEvent } from "../types.ts";
 import { eventId } from "../machine.ts";
-import { estimateCost, estimateTokensFromChars } from "../pricing.ts";
+import { resolveUsageCost, estimateTokensFromChars } from "../pricing.ts";
 import { providerConfig } from "../config.ts";
 import { homePath, type DbScanContext, type EntryContext, type Provider, type SessionDoc } from "./types.ts";
 
@@ -261,7 +261,7 @@ function scanCursorBubbleUsage(storePath: string, ctx: DbScanContext): UsageEven
       delete lastUserChars[composerId];
       const outputTokens = estimateTokensFromChars(text.length);
       const model = row.model ?? "cursor-auto";
-      const costUsd = estimateCost(model, { inputTokens, outputTokens, cacheReadTokens: 0, cacheWriteTokens: 0 });
+      const cost = resolveUsageCost({ model, tokens: { inputTokens, outputTokens, cacheReadTokens: 0, cacheWriteTokens: 0 } });
       events.push({
         id: eventId("cursor", "default", composerId, row.key),
         ts: row.createdAt ?? new Date(0).toISOString(),
@@ -271,7 +271,9 @@ function scanCursorBubbleUsage(storePath: string, ctx: DbScanContext): UsageEven
         model,
         inputTokens,
         outputTokens,
-        costUsd,
+        tokenSource: "estimated",
+        tokenEstimationMethod: "characters/4",
+        ...cost,
         sessionId: composerId,
       });
     }

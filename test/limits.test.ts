@@ -7,7 +7,6 @@ import { describe, expect, it } from "bun:test";
 import { EventCache } from "../src/cache.ts";
 import type { UsageEvent } from "../src/types.ts";
 import {
-  attachCodexPoolEmails,
   collapseHarnessVariants,
   computeLimits,
   dedupeAccountLimits,
@@ -145,22 +144,6 @@ function limitsCache(): EventCache {
 }
 
 describe("computeLimits", () => {
-  it("only attaches pool emails when the cached stable account identity matches", () => {
-    const limits = attachCodexPoolEmails(
-      [
-        { provider: "codex", accountKey: "codex", windows: [] },
-        { provider: "codex", accountKey: "codex:work", windows: [] },
-        { provider: "codex", accountKey: "account:work-account", windows: [] },
-      ],
-      { work: { accountId: "work-account", email: "work@example.com" } },
-      (accountKey) => new Set(accountKey === "codex:work" || accountKey === "account:work-account" ? ["work-account"] : []),
-    );
-
-    expect(limits[0]?.email).toBeUndefined();
-    expect(limits[1]?.email).toBe("work@example.com");
-    expect(limits[2]?.email).toBe("work@example.com");
-  });
-
   it("never merges distinct stable Codex accounts with identical quota windows", () => {
     const reset = new Date("2026-08-31T12:00:00.000Z").toISOString();
     const base = {
@@ -332,9 +315,9 @@ describe("computeLimits", () => {
       expect(codex.windows).toHaveLength(1);
       expect(codex.budgetWindows?.map((w) => w.kind)).toEqual(["day", "week", "month"]);
       expect(codex.budgetWindows?.every((w) => w.source === "derived" && w.usedPct === undefined)).toBe(true);
-      // credits surface as banked resets
-      expect(codex.bankedResets).toBe(2);
-      expect(codex.bankedExpiresAt).toBe("2026-08-30T12:00:00.000Z");
+      // Monetary workspace credits do not imply available rate-limit resets.
+      expect(codex.bankedResets).toBeUndefined();
+      expect(codex.bankedExpiresAt).toBeUndefined();
     } finally {
       cache.close();
     }
@@ -548,7 +531,10 @@ describe("ui toggles", () => {
 
   it("setSurfaceVisibility writes canonical json config", () => {
     const dir = mkdtempSync(path.join(os.tmpdir(), "tk-ui-"));
+    const previousConfig = process.env.TOKITOKI_CONFIG;
+    const previousData = process.env.TOKITOKI_DATA_DIR;
     process.env.TOKITOKI_CONFIG = path.join(dir, "config.json");
+    process.env.TOKITOKI_DATA_DIR = dir;
     try {
       // eslint-disable-next-line @typescript-eslint/no-var-requires
       require("node:fs").writeFileSync(process.env.TOKITOKI_CONFIG, JSON.stringify({ ui: { hidden: { menubar: ["stale"] } } }));
@@ -562,7 +548,10 @@ describe("ui toggles", () => {
       expect(cfg.ui.hidden.menubar).toBeUndefined();
       expect(cfg.ui.hidden.dashboard).toEqual(["pi"]);
     } finally {
-      delete process.env.TOKITOKI_CONFIG;
+      if (previousConfig === undefined) delete process.env.TOKITOKI_CONFIG;
+      else process.env.TOKITOKI_CONFIG = previousConfig;
+      if (previousData === undefined) delete process.env.TOKITOKI_DATA_DIR;
+      else process.env.TOKITOKI_DATA_DIR = previousData;
     }
   });
 });

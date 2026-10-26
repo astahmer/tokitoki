@@ -488,6 +488,17 @@ else
   capture tokens-lower.png
   scroll_down 4
   capture tokens-models.png
+  scroll_up 30
+  click_at 250 157
+  wtype -s 200 tracking
+  sleep 0.5
+  capture tracking-quality.png
+  record_interaction tracking-quality
+  if [ "$E2E_SHELL" = dms ]; then
+    click_dms_control clearSearch
+  else
+    click_at 487 157
+  fi
   select_tab reports
   scroll_down 5
   capture reports-lower.png

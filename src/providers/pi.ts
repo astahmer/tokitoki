@@ -3,7 +3,7 @@ import fs from "node:fs";
 import type { UsageEvent } from "../types.ts";
 import { providerConfig } from "../config.ts";
 import { eventId } from "../machine.ts";
-import { estimateCost } from "../pricing.ts";
+import { resolveUsageCost } from "../pricing.ts";
 import { shellToolName } from "../tools.ts";
 import { cleanSessionText, sessionMessage, sessionTitle } from "../sessionText.ts";
 import { homePath, type EntryContext, type Provider, type SessionDoc } from "./types.ts";
@@ -95,10 +95,11 @@ export const piProvider: Provider = {
     const reportedCost = costObj?.total;
     const cacheRead = toNum(usage.cacheRead);
     const cacheWrite = toNum(usage.cacheWrite);
-    const costUsd =
-      typeof reportedCost === "number"
-        ? reportedCost
-        : estimateCost(model, { inputTokens, outputTokens, cacheReadTokens: cacheRead, cacheWriteTokens: cacheWrite });
+    const cost = resolveUsageCost({
+      model,
+      tokens: { inputTokens, outputTokens, cacheReadTokens: cacheRead, cacheWriteTokens: cacheWrite },
+      reportedCost,
+    });
 
     const entryId = typeof entry.id === "string" ? entry.id : `line-${hashLine(line)}`;
     const ts = typeof entry.timestamp === "string" ? entry.timestamp : new Date().toISOString();
@@ -114,7 +115,7 @@ export const piProvider: Provider = {
       outputTokens,
       cacheReadTokens: cacheRead,
       cacheWriteTokens: cacheWrite,
-      costUsd,
+      ...cost,
       projectDir: typeof state.cwd === "string" ? state.cwd : undefined,
       sessionId,
       tool,

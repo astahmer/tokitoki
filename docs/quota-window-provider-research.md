@@ -1,106 +1,66 @@
-# Provider quota windows: documentation versus Tokitoki
+# Native provider quota semantics
 
-Research date: **2026-10-24**. Scope: Codex/OpenCodex, Claude/Anthropic, Cursor, GitHub Copilot, and shared window handling. File references describe the working tree inspected on this date.
+Updated **2026-10-26**. This note replaces the historical 2026-10-24
+implementation audit. It describes the native integration contract and its
+remaining boundaries; the earlier audit's local observations and line numbers
+are not evidence about the current implementation. No authenticated requests or
+live account inspection were performed for this replacement.
 
-## Implementation follow-up
+## Codex
 
-The findings below describe the pre-fix implementation; their line references
-are historical. The repair replaces duration-based history unions with complete
-account/bucket observations, preserves independent partial meters, and gives
-each meter/slot/model its own identity. Expired, stale and unverified observations
-no longer supply capacity or pace. Local calendar usage and configured budgets
-are exposed separately from provider quotas in `budgetWindows`.
+Use the installed stock `codex app-server` for each configured native home.
+`account/read` supplies the signed-in account and optional email/plan;
+`account/rateLimits/read` supplies quota observations. Authentication and renewal
+belong to that home’s Codex CLI, including its configured credential store.
+Tokitoki does not own a second account pool or copy credentials into a default
+home. See the [official app-server contract](https://learn.chatgpt.com/docs/app-server)
+and [native account setup](native-harness-migration.md).
 
-Codex scans persist quota-only messages without manufacturing usage events and
-preserve legacy usage IDs during replay. Source account IDs establish identity;
-meter IDs and plan names do not. OpenCodex fallback preserves source observation
-times, and credential renewal stays with OpenCodex rather than writing native
-Codex credentials. Copilot uses actual calendar bounds; Cursor preserves supplied
-billing-cycle bounds. Missing duration or reset metadata remains unknown.
-Shared QML and macOS render these statuses and local budgets separately.
+The multi-bucket response is `rateLimitsByLimitId`; the legacy `rateLimits`
+field is a single-bucket view. A metered bucket ID is not an account ID. Keep
+account, bucket and window-slot identity separate, retaining every returned
+bucket and its optional windows. Do not infer identity from a plan name, or
+assume every account has a five-hour and a weekly window. Returned durations
+and reset timestamps determine the presentation; missing metadata stays unknown.
 
-Current Cursor weekly wire-schema support remains unverified and unavailable
-for unrecognized responses; see [adapter limits](provider-quota-adapter-limits.md).
+Earned resets are separate from usage percentages and workspace credit
+balances. `rateLimitResetCredits.availableCount` is the authoritative inventory
+when returned; missing inventory is unknown. A successful reset requires a new
+quota read before displaying updated usage. See the
+[rate-limit and reset contract](https://learn.chatgpt.com/docs/app-server#6-rate-limits-chatgpt).
 
-Method: current first-party documentation and client source; static inspection of Tokitoki; existing SQLite snapshots opened read-only. The Claude/Cursor/Copilot pass used no credentials or authenticated requests. The Codex addendum used read-only authenticated GETs of the same usage endpoint Tokitoki reads, with existing credentials held in memory. No refresh-token requests, account/config/cache writes, implementation edits, commits, or pushes were performed. Secrets and complete account responses were not logged or saved. Cached observations establish what Tokitoki stored, not a public endpoint contract. Existing unrelated working-tree edits were left alone.
+## Shared observation rules
 
-## Provider comparison
+- A complete account observation replaces that account’s current topology;
+  historical durations must not accumulate into extra current windows.
+- Partial observations update only their identified bucket/slot. A metered ID
+  shared by different accounts must never merge those accounts.
+- Preserve observation time per window. Cache reads are not new observations.
+  An elapsed reset does not establish zero usage in the next cycle.
+- Distinguish current, stale, expired, unknown and unavailable states. Only a
+  current observed percentage can establish remaining capacity or pace.
+- Keep local calendar usage and configured budgets in `budgetWindows`, separate
+  from provider-reported quotas. Paid usage and balances are separate again.
+- Preserve provider labels, calendar/cycle boundaries and optional model scope.
+  Missing duration or reset information must not acquire a guessed default.
 
-| Provider/product | Real quota or budget | Reset semantics | Tokitoki assessment |
-| --- | --- | --- | --- |
-| Codex ChatGPT account | Server-supplied primary/secondary windows and potentially separate metered buckets | Duration, utilization and next reset are supplied independently; a plan name is not a universal window list | Live local Plus response has 300/10080-minute windows; the parser/cache lose bucket identity and historical topology. [Official app-server contract](https://learn.chatgpt.com/docs/app-server#6-rate-limits-chatgpt) |
-| Claude Pro/Max subscription | Five-hour session plus weekly account allowance; additional model limits can exist | Weekly reset is account-assigned, independent of subscription date and first use; five-hour session is not a calendar day | `src/poll.ts:667` correctly maps the named five-hour/seven-day fields to 300/10080 minutes. Missing reset remains unknown. [Claude Pro](https://support.claude.com/en/articles/8325606-what-is-the-pro-plan) |
-| Claude usage credits / extra usage | Consumption-based paid usage after included limits; a spending cap and credit balance are separate controls | Does not replace the session/weekly reset | `src/poll.ts:687` keeps extra usage separate from quota windows, appropriately. [Usage credits](https://support.claude.com/en/articles/12429409-manage-usage-credits-for-paid-claude-plans) |
-| Anthropic direct API | Continuously replenished token-bucket rate limits; separate calendar-month spend cap | Rate reset headers describe replenishment; spend-cap access resumes at next month's first day, 00:00 UTC | Must not inherit Claude subscription session/weekly semantics. [API rate limits](https://platform.claude.com/docs/en/api/rate-limits) |
-| Cursor legacy plans | Cursor Models and Other Models monthly included pools; separately billed on-demand usage | Pools reset with monthly billing cycle, including on annually paid plans | Parser's two included pools and supplied cycle boundaries fit this product generation. [Legacy plans](https://cursor.com/docs/account/pricing/legacy-cursor-plans) |
-| Cursor current subscription | One weekly included pool shared with Grok; third-party usage and top-up balance are separate | Weekly pool reset; prepaid credits do not reset with that pool | Legacy dashboard parser cannot establish support for this product generation. [Current usage and limits](https://cursor.com/help/models-and-usage/usage-limits) |
-| Copilot current plans | Monthly GitHub AI Credits; additional-usage budgets separate | First day of calendar month at 00:00 UTC, independent of subscription billing date | A calendar month is not a rolling 30-day duration. [Current billing](https://docs.github.com/en/copilot/concepts/billing-and-usage/individuals/billing) |
-| Copilot legacy annual plans | Premium requests remain for eligible existing Pro/Pro+ annual subscribers | First day of month, 00:00 UTC; no rollover | Do not universally name the meter premium requests. [Legacy eligibility](https://docs.github.com/en/copilot/reference/copilot-billing/request-based-billing-legacy/what-changed-with-billing), [legacy reset](https://docs.github.com/en/copilot/reference/copilot-billing/request-based-billing-legacy/copilot-requests) |
-| Copilot CLI session budget | User-configured soft AI Credit cap for an individual task | Session ends/stops at cap; no documented fixed five-hour refresh | A local session budget is not an account quota window. [CLI session limits](https://docs.github.com/en/copilot/how-tos/copilot-cli/use-copilot-cli/set-session-limit) |
+## Other provider boundaries
 
-## Confirmed findings
+Claude subscription windows, Anthropic API rate limits, Cursor subscription
+pools and Copilot allowances describe different products. Do not infer one
+provider’s reset schedule or quota topology from another provider’s duration.
+Provider adapters must preserve the fields they actually receive; consumer
+pricing descriptions do not establish undocumented wire keys.
 
-1. **Cursor historical cycles remain current-looking duplicate pools.** `src/cache.ts:723` selects the latest observation **per duration**, and `src/limits.ts:427` renders every selected row. Changing from a 30-day to 31-day billing cycle retains both sets. Existing cache confirms 43200-minute rows ending October 23 and 44640-minute rows ending November 23, each containing Cursor Models, Other Models, and On-Demand. These represent successive cycles of the same pools, not six independent quotas. The resulting generic IDs also repeat within the card. [Cursor cycle semantics](https://cursor.com/docs/account/pricing/legacy-cursor-plans)
+Copilot calendar allowances use actual calendar boundaries rather than a fixed
+30-day approximation. Cursor’s supplied billing boundaries remain authoritative;
+unrecognized current-plan wire shapes must not be represented as a fabricated
+weekly pool. Claude extra usage remains distinct from included quota windows.
+See [adapter support limits](provider-quota-adapter-limits.md) for the scope and
+uncertainty of those integrations.
 
-2. **An expired observation is changed into invented zero usage.** `src/limits.ts:236`–237 forces usage to zero after a stored reset passes, while retaining that past reset. Without a fresh observation, usage in the successor cycle is unknown. This makes expired Cursor duplicates look empty and can falsely imply full capacity on any provider. The actual reset rules establish cycle rollover, not the current balance after subsequent activity. [Cursor usage](https://cursor.com/help/models-and-usage/usage-limits), [Copilot billing](https://docs.github.com/en/copilot/concepts/billing-and-usage/individuals/billing)
-
-3. **Copilot duration and pace are false outside a 30-day calendar month.** `src/poll.ts:1046`–1049 calls the bucket rolling and forces 43200 minutes. `src/quota-windows.ts:114`–119 reconstructs its start from reset minus duration. October is 31 days; November is 30; February differs again. Percentage received from provider can remain correct while elapsed-window pace and exhaustion forecasts are wrong. The current cached reset is November 1 at 00:00 UTC, consistent with a calendar allowance. [GitHub's explicit reset rule](https://docs.github.com/en/copilot/concepts/billing-and-usage/individuals/billing)
-
-4. **Copilot drops bucket identity, other bounded meters, and reset variants.** `src/poll.ts:1052`–1068 takes the first bounded bucket, discards its name, and breaks; `src/cache.ts:699` further restricts reads to one row. `src/poll.ts:1044` reads only `quota_reset_date`. Microsoft's current `parseQuotas` keeps chat/completions/premium buckets, prefers `quota_reset_date_utc`, supports legacy `limited_user_reset_date`, preserves per-bucket `quota_reset_at`, and records `token_based_billing`. Tokitoki also reads `remaining` rather than the source's `quota_remaining`, so its fallback fails if percentages are absent. Practical effects: a Free account's second bounded feature is hidden, an available reset can disappear, and AI Credits cannot be distinguished from legacy requests. [First-party parser, lines 959–1028](https://github.com/microsoft/vscode/blob/main/src/vs/workbench/services/chat/common/chatEntitlementService.ts#L959)
-
-5. **Cursor's provider-wide no-weekly-limit claim is obsolete.** `src/limits.ts:309`–319 says Cursor only has a monthly cycle. Current docs distinguish weekly new subscriptions from monthly legacy plans. `src/poll.ts:1153`–1157 and `:1202`–1203 support the legacy dashboard shape only. This confirms a coverage gap and invalid comment, not that the current endpoint secretly returns weekly fields. Removing suppression would merely add a local estimate, not retrieve the missing weekly quota. [Current Cursor pricing](https://cursor.com/docs/models-and-pricing)
-
-6. **Missing Cursor boundaries fabricate a duration.** `src/poll.ts:1193`–1195 substitutes 43200 minutes when cycle dates are absent; a reported percentage can therefore acquire an unsupported monthly duration. Reset correctly remains unknown, so pace currently stays absent, but downstream code still receives invented duration metadata. Billing-cycle semantics do not prove a universal 30-day length. [Legacy cycle rules](https://cursor.com/docs/account/pricing/legacy-cursor-plans)
-
-7. **Duration alone does not establish scope or identity.** `src/quota-windows.ts:39`–44 calls every positive window of at most 12 hours a session, up to nine days weekly, and everything longer monthly. A one-minute API limiter is not a session quota; a 14-day or annual window is not monthly. `src/limits.ts:286`–290 also emits `0min` for unknown duration, although `describeQuotaWindow` correctly omits duration and labels it `Limit`. Provider-supplied scope should take precedence, and unknown duration must remain unknown. [Anthropic continuously replenishing API rate limits](https://platform.claude.com/docs/en/api/rate-limits)
-
-8. **Derived calendar budgets can be mislabeled as provider sessions.** `src/limits.ts:459`–515 creates local day/week/month usage rows; monthly config caps provide local budget denominators, while daily/weekly percentages can mean prorated budget pace. These are not reported quotas. Swift `main.swift:2618` and `:10329`–10330 name any `day` row under Claude/Codex/Command Code “Session,” including derived calendar days. QML `integrations/dms/tokitoki/TokitokiWidget.qml:904` and Swift `:10322` do correctly prefer supplied labels for modern embedded rows. Legacy kind-based hover text at Swift `:2617` bypasses that label and can still expose raw `0min`/`44640min`. [Claude session semantics](https://support.claude.com/en/articles/8325606-what-is-the-pro-plan)
-
-9. **Latest-per-duration does not preserve each model bucket independently.** `src/cache.ts:723`–729 groups by duration without label/model; it preserves same-duration buckets only when their capture timestamp equals the duration's maximum. Complete Claude polls currently share a timestamp, so no model-row loss was observed locally. Partial/asynchronous bucket updates can hide another bucket rather than select its own latest observation. `src/limits.ts:178` also deduplicates on legacy kind instead of generic window ID, allowing duration-derived kind collisions. Model caps are separate quota concepts. [Claude's model/feature limit qualification](https://support.claude.com/en/articles/8325606-what-is-the-pro-plan)
-
-## Local observations and limits of certainty
-
-1. Latest stored Claude observation, October 24 at 14:51:09 UTC: session duration **300 minutes**, utilization 0%, reset sentinel **0**; weekly duration 10080 minutes, utilization 8%, reset October 26 at 11:00 UTC. This supports “known session length, unknown reset,” not “zero-minute session.” No Opus/Sonnet model rows were present.
-2. Latest stored Copilot observation, October 24 at 14:51:08 UTC: 43200-minute stored duration, about 8.1% used, reset November 1 at 00:00 UTC. Stored rows omit raw bucket identity, billing mode, and alternate reset fields, preventing retrospective verification of those details.
-3. Latest Cursor observation at the same time: 44640 minutes, reset November 23 at 07:24:56 UTC, with three legacy-shape rows. Previous 43200-minute rows remain selectable. This is a concrete local reproduction of finding 1, not evidence that this account has moved to weekly current plans.
-4. Claude OAuth `/api/oauth/usage` and Cursor `DashboardService/GetCurrentPeriodUsage` do not have a public schema contract established by this research. Consumer help confirms product semantics, not the complete field set. Claude currently documents an additional Fable weekly limit on Max; the parser only recognizes Opus/Sonnet named model fields. The missing feature is a coverage concern, but a specific `seven_day_fable` wire key is **unverified**. [Claude Code plan limits](https://support.claude.com/en/articles/11145838-use-claude-code-with-your-pro-or-max-plan)
-5. Microsoft's source provides first-party compatibility evidence for Copilot's internal endpoint, not a promise of a stable public REST contract. No credentials were used to test live responses. No claim here establishes exact Claude session-start anchoring or Cursor weekly reset anchoring beyond their published reset rules. Documentation and public `main` branches may change after this date.
-6. This audit changed only this note. No automated test suite was run for read-only research and a Markdown addition.
-
-## Codex/OpenCodex: provider reality and direct observations
-
-The official account API exposes `limitId`, optional `limitName`, optional primary/secondary windows, `usedPercent`, `windowDurationMins`, and `resetsAt`. `rateLimitsByLimitId` is the multi-bucket view: a metered bucket ID is not a login/account ID. The service can change the topology, including absent secondary windows. Refreshing after a redeemed reset is explicitly required; a reset's mere passage does not report current usage. [Official app-server documentation](https://learn.chatgpt.com/docs/app-server#6-rate-limits-chatgpt)
-
-OpenAI's pricing documentation describes five-hour periods for Plus/Standard Business, currently no five-hour limit on Pro, and plan-dependent additional limits. Therefore neither "all Codex accounts have exactly two windows" nor "all accounts with the same harness share a calendar schedule" is a sound rule. The response for the actual account is authoritative. [Current pricing and usage limits](https://learn.chatgpt.com/docs/pricing#what-are-the-usage-limits-for-my-plan)
-
-OpenAI's client parser preserves the metered family and optional duration/reset metadata. This corroborates the need to retain uncertainty rather than manufacturing window metadata. [OpenAI client source](https://github.com/openai/codex/blob/main/codex-rs/codex-api/src/rate_limits.rs)
-
-OpenCodex's own source separately stores short, weekly, monthly and custom windows, original observation times, and reset timestamps. It recognizes monthly-primary observations by their duration, and contains Go/Free-specific handling. These are OpenCodex compatibility rules, not a stable OpenAI API guarantee for every plan. [Quota parser](https://github.com/lidge-jun/opencodex/blob/main/src/codex/quota.ts#L945), [wire/storage types](https://github.com/lidge-jun/opencodex/blob/main/src/codex/quota-types.ts), [plan compatibility helper](https://github.com/lidge-jun/opencodex/blob/main/src/codex/plan.ts)
-
-Direct checks on 2026-10-24, with identities redacted:
-
-1. Existing local-login credential: HTTP 200 from WHAM usage. `plan_type=plus`; primary duration **18000 seconds / 5 hours**, 10% consumed; secondary **604800 seconds / 7 days**, 6% consumed. No monthly window in the main quota. The response's additional-bucket array was empty. These utilization values are a point-in-time observation, not constants or a promise for another account.
-2. Existing pooled-work credential: HTTP 401. No refresh was attempted. Its current plan/window topology could not be verified directly; the cached 5-hour/weekly pair is not a fresh account read.
-3. Pooled-work OpenCodex cache: `updatedAt` and short-usage observation **2026-10-23T10:53:56.018Z**; short reset **2026-10-23T11:56:19Z**, with 90% consumed. At inspection it was about 28 hours old. Tokitoki nevertheless held this pair under poll captures dated **2026-10-24T14:35:27.432Z**. This demonstrates re-dating old cache content as a new observation.
-4. Legacy generic `codex` alias: 0-minute row from July 24, 300/10080-minute rows from October 19, and 43200-minute row from October 22. Calling the real `latestQuotaSnapshots` and `embeddedLimitWindow` implementations against a read-only connection reproduced all four screenshot rows, including manufactured 100% remaining after expired resets.
-5. The October 22 rollout itself contains a primary window of **43200 minutes**, 15% consumed, null plan type and null secondary. The monthly number was present in an actual stored Codex message. The missing stable account identity prevents proving that it belongs to the currently displayed login; combining it with old weekly/session rows is also unsupported.
-
-## Additional confirmed Codex defects
-
-1. **Historical topology is assembled from incompatible observations.** `src/cache.ts:723` groups by duration and retains one maximum timestamp for each duration indefinitely. No snapshot-group identity or replacement/tombstone semantics exist. A newer single monthly response cannot retire an older 5-hour/weekly pair. A full account poll needs atomic topology replacement; partial header updates need explicit bucket semantics rather than global timestamp selection. This is the main cause of the four-window legacy card.
-2. **Meter identity is mistaken for account identity.** `src/providers/codex.ts:134`–141 uses `rate_limits.limit_id` as an account key when plan type is absent. Officially this is a metered bucket ID. Conversely, the `openai:<plan>` fallback can group different logins sharing a plan. Neither is a stable account identity. Old unbound snapshots cannot safely inherit a current login's email simply because the harness matches.
-3. **OpenCodex fallback discards meaningful fields and freshness.** `src/poll.ts:1289`–1304 omits monthly/custom fields and original observation times; `:1765` requires a weekly pair, so a monthly-only cache is skipped. `:1813` assumes seven days and `:1821` supplies five hours when short duration is absent. The fallback persists using the current poll timestamp, overstating freshness. OpenCodex itself applies a six-hour disk-hydration horizon; this importer does not. [Upstream persistence/read semantics](https://github.com/lidge-jun/opencodex/blob/main/src/codex/quota.ts#L755)
-4. **Several real counters are not represented.** `src/poll.ts:224`–238 models only the main primary/secondary pair; `:1916` reads only that pair. Additional metered/model/review counters and optional tertiary windows are not preserved. The live local response had no populated additional bucket, so this is a confirmed structural coverage gap rather than an observed missing model counter on that account. [Official multi-bucket account contract](https://learn.chatgpt.com/docs/app-server#6-rate-limits-chatgpt), [OpenCodex observed WHAM shape](https://github.com/lidge-jun/opencodex/blob/main/src/codex/quota-types.ts)
-5. **Expired quota is optimistically rewritten.** `src/limits.ts:236`–237 sets utilization to zero after a reset while preserving `source=embedded`. QML `TokitokiWidget.qml:1030`–1039 labels that value Reported, with no expiry check. A new cycle may already have usage; the correct current balance is unknown until observed. This also affects Swift because the transformation is upstream of both views.
-6. **Unknown/invalid duration survives the scanner.** `src/providers/codex.ts:178` checks numeric type but not positive finite values. Old 0-minute rows remain readable, and `src/quota-windows.ts:39` classifies arbitrary positive durations into broad session/daily/weekly/monthly buckets. Provider scope, duration and unknown metadata should be preserved separately.
-7. **Local budget pace is mixed with account quota.** `src/limits.ts:459`–515 appends day/week/month usage windows even without corresponding provider limits. With configured monthly caps, day/week `usedPct` is spending pace against a prorated budget, not percentage of a provider quota. Rendering `100-usedPct` as capacity left is semantically wrong even if marked Estimated. Keep these rows in a separate budget/usage surface.
-8. **Pooled token refresh can target the wrong credential store.** `src/poll.ts:1740` calls the shared credential poller for pool accounts using unchanged `opts`. Its 401 branch at `:1904` calls `persistCodexCredentials(opts, ...)`, whose destination at `:324` is `opts.authPath` or the native Codex auth file, not the pool entry. If a refresh token rotates, it can overwrite local-login tokens with pooled-account tokens while retaining the old account/id-token fields. This is a confirmed write-path defect from static inspection; the audit did not execute it or establish that a user's file was already changed.
-
-## Correction contract for the follow-up
-
-1. Preserve provider account identity, metered bucket identity, slot/scope, supplied duration, source, original observation time and snapshot completeness as different facts.
-2. Replace a bucket's topology from a successful complete account response; retain archive history outside the current quota view. Treat partial updates explicitly, including unavailable/removed windows.
-3. Separate known-zero usage from unknown, expired, unauthenticated and stale data. A missing duration or elapsed reset does not create a 100%-available window.
-4. Keep provider quota, local budgets, paid usage/credit balances and redeemable reset inventory distinct. Use the provider's actual calendar/cycle boundaries for pace.
-5. Make pooled credential renewal write to its owning store, or delegate renewal to that owner; preserve stable identity and source timestamps through fallback paths.
-6. Add regressions for topology transitions, same-plan different logins, two metered buckets sharing a duration, 30/31-day calendars, expired resets, stale fallback, and credential-store routing. Exercise the resulting shared payload in QML and Swift rather than correcting percentages separately in each UI.
+T3 Code remains a session/activity harness. Its usage can contribute to reports
+without creating an independent subscription quota account. Native account
+emails, multiple profiles, presentation preferences, refresh/login actions and
+banked reset inventory are tracked in the
+[migration feature mapping](native-harness-migration.md).

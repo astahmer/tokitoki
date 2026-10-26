@@ -77,6 +77,8 @@ export interface TokitokiConfig {
    * runs only when enabled; intervalMinutes controls its cadence.
    */
   poll?: {
+    /** Additional native Codex homes, each with its own harness-managed login. */
+    codexHomes?: string[];
     /** Menubar app runs `tokitoki poll` every ~15 minutes when true. */
     enabled?: boolean;
     /** Menubar background poll cadence in minutes (minimum 1; default 15). */
@@ -241,7 +243,11 @@ function normalize(value: unknown): TokitokiConfig {
   if (cfg.notifications !== undefined && typeof cfg.notifications !== "object") delete cfg.notifications;
   if (cfg.privacy !== undefined && typeof cfg.privacy !== "object") delete cfg.privacy;
   if (cfg.statusIncidents !== undefined && typeof cfg.statusIncidents !== "object") delete cfg.statusIncidents;
-  if (cfg.poll !== undefined && typeof cfg.poll !== "object") delete cfg.poll;
+  if (cfg.poll !== undefined && (cfg.poll === null || typeof cfg.poll !== "object")) delete cfg.poll;
+  if (cfg.poll?.codexHomes !== undefined) {
+    if (!Array.isArray(cfg.poll.codexHomes)) delete cfg.poll.codexHomes;
+    else cfg.poll.codexHomes = cfg.poll.codexHomes.filter((home): home is string => typeof home === "string" && home.length > 0);
+  }
   return cfg;
 }
 

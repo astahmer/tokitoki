@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { codexReplayScanner } from "./codex-replay-scan.ts";
 
 import type { QuotaObservationEvent, UsageEvent } from "./types.ts";
 import type { FileScanState, Provider } from "./providers/types.ts";
@@ -19,6 +20,7 @@ export interface ScanHooks {
   /** Called with batches of extracted events as they are produced. */
   onEvents?: (events: UsageEvent[]) => void;
   onQuotas?: (reports: QuotaObservationEvent[]) => void;
+  onReplayedUsage?: (ids: string[]) => void;
   /**
    * Persist the provider's cursor entries. Called periodically (byte-budgeted)
    * and once at the end, so an interrupted scan resumes where it stopped
@@ -41,10 +43,10 @@ const CHUNK_SIZE = 8 * 1024 * 1024;
  * already-scanned events (e.g. adding the `tool` field). Re-emitted events
  * keep their stable ids, so cache/log dedupe makes replays idempotent.
  */
-export const EXTRACTION_VERSION = 3; // v3: codex quota snapshots extracted
+export const EXTRACTION_VERSION = 5; // Explicit token provenance on native usage events.
 
 export const extractionVersionFor = (providerId: string): number =>
-  providerId === "codex" ? 5 : EXTRACTION_VERSION;
+  providerId === "codex" ? 8 : EXTRACTION_VERSION;
 
 /**
  * Incrementally scan one provider's session stores.
@@ -65,7 +67,9 @@ export function scanProviderCore(provider: Provider, machineId: string, hooks: S
   const extractionVersion = extractionVersionFor(provider.id);
   const cursors = loadProviderCursors(provider.id);
   const roots = provider.discoverRoots();
-  const files = roots.flatMap((r) => provider.listFiles(r));
+  const discovered = roots.flatMap((r) => provider.listFiles(r));
+  const replayScanner = provider.id === "codex" ? codexReplayScanner({ files: discovered, roots }) : undefined;
+  const files = replayScanner?.files ?? [...new Set(discovered)];
   // Shard writes are restricted to this provider's own files: the merged
   // cursor view also carries legacy entries from other providers, and letting
   // those leak into the shard would let stale copies win the shard merge.
@@ -76,12 +80,17 @@ export function scanProviderCore(provider: Provider, machineId: string, hooks: S
   let bytesSinceSave = 0;
   let pendingBatch: UsageEvent[] = [];
   let pendingQuotas: QuotaObservationEvent[] = [];
+  let pendingReplays: string[] = [];
 
   const flushBatch = () => {
-    if (pendingBatch.length > 0) hooks.onEvents?.(pendingBatch);
+    if (pendingBatch.length > 0) hooks.onEvents?.(pendingBatch.map((event): UsageEvent =>
+      event.tokenSource !== undefined || !["codex", "claude-code", "opencode", "pi", "gemini", "grok", "commandcode"].includes(provider.id)
+        ? event : { ...event, tokenSource: "reported" }));
     pendingBatch = [];
     if (pendingQuotas.length > 0) hooks.onQuotas?.(pendingQuotas);
     pendingQuotas = [];
+    if (pendingReplays.length > 0) hooks.onReplayedUsage?.(pendingReplays);
+    pendingReplays = [];
   };
   const maybeSaveCursors = (force = false) => {
     if (!force && bytesSinceSave < CURSOR_SAVE_INTERVAL_BYTES) return;
@@ -143,6 +152,16 @@ export function scanProviderCore(provider: Provider, machineId: string, hooks: S
       offset = 0;
       for (const k of Object.keys(state)) delete state[k];
     }
+    if (replayScanner?.prepare(file, state)) {
+      const plan = state.codexReplayPlan;
+      const stamp = state.codexReplayStamp;
+      for (const key of Object.keys(state)) delete state[key];
+      state.codexReplayPlan = plan;
+      state.codexReplayStamp = stamp;
+      state.extractionVersion = extractionVersion;
+      offset = 0;
+      replayed = true;
+    }
     if (offset >= size) continue;
 
     let fd: number;
@@ -157,6 +176,11 @@ export function scanProviderCore(provider: Provider, machineId: string, hooks: S
       const ctxBase = { path: file, state, freshFile: (fresh && offset === 0) || replayed, machineId };
       const ctx = {
         ...ctxBase,
+        onReplayedUsage: (id: string) => {
+          touched = true;
+          pendingReplays.push(id);
+          if (pendingReplays.length >= EVENT_BATCH_SIZE) flushBatch();
+        },
         onQuota: (report: QuotaObservationEvent) => {
           touched = true;
           pendingQuotas.push(report);
@@ -245,15 +269,21 @@ export function scanProviderCore(provider: Provider, machineId: string, hooks: S
  */
 export function scanProvider(provider: Provider, machineId: string): ScanResult {
   let cache: import("./cache.ts").EventCache | undefined;
+  const getCache = () => {
+    const cacheModule: typeof import("./cache.ts") = require("./cache.ts");
+    fs.mkdirSync(dataDir(), { recursive: true });
+    cache ??= new cacheModule.EventCache();
+    return cache;
+  };
   try {
     return scanProviderCore(provider, machineId, {
-      onEvents: (events) => appendEvents(events),
+      onEvents: (events) => {
+        appendEvents(events);
+        if (provider.id === "codex") getCache().restoreReplayedUsage(events.map(event => event.id));
+      },
+      onReplayedUsage: (ids) => getCache().excludeReplayedUsage(ids),
       onQuotas: (reports) => {
-        // Cache imports extraction metadata from this module; load it only at scan time.
-        const cacheModule: typeof import("./cache.ts") = require("./cache.ts");
-        fs.mkdirSync(dataDir(), { recursive: true });
-        cache ??= new cacheModule.EventCache();
-        cache.insertQuotaObservations(reports);
+        getCache().insertQuotaObservations(reports);
       },
       onSaveCursors: (cursors) => saveProviderCursors(provider.id, cursors),
     });

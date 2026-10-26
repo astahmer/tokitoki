@@ -16,6 +16,7 @@ import { gatewayExtraKeys, providerPollKeys } from "./limits.ts";
 import { pollQuotas } from "./poll.ts";
 import {
   assertValidSurface,
+  readAccountUiPreferences,
   isCardVisibleOn,
   setMenubarProviders,
   setMenubarCards,
@@ -62,6 +63,7 @@ import {
 import { getSyncBackend, runSync } from "./sync/index.ts";
 import type { SyncConfig } from "./sync/types.ts";
 import { startWebServer } from "./web/server.ts";
+import { trackingPeriods } from "./web/api.ts";
 import { UserError } from "./errors.ts";
 import {
   calendarDayWindow,
@@ -629,6 +631,7 @@ interface ScanOutcome {
   result: ScanResult;
   events: UsageEvent[];
   quotas: QuotaObservationEvent[];
+  replayedUsage: string[];
 }
 
 /** Whether a provider has any discovered file that has never been scanned. */
@@ -636,7 +639,13 @@ export function scanNeedsInitialPass(providers = PROVIDERS): boolean {
   const cursors = loadCursors();
   return providers.some((provider) => {
     const files = provider.discoverRoots().flatMap((root) => provider.listFiles(root));
-    return files.some((file) => cursors[file]?.state?.extractionVersion !== extractionVersionFor(provider.id));
+    return files.some((file) => {
+      let key = file;
+      if (provider.id === "codex") {
+        try { key = fs.realpathSync(file); } catch { /* Unreadable stores remain pending. */ }
+      }
+      return cursors[key]?.state?.extractionVersion !== extractionVersionFor(provider.id);
+    });
   });
 }
 
@@ -650,23 +659,28 @@ function scanInWorker(input: {
   machineId: string;
   events: UsageEvent[];
   quotas: QuotaObservationEvent[];
+  replayedUsage: string[];
 }): Promise<ScanOutcome> {
   return new Promise((resolve, reject) => {
     const worker = new Worker(new URL("./scan-worker.ts", import.meta.url));
     const { events, quotas } = input;
+    const replayedUsage = input.replayedUsage;
     const onMessage = (ev: MessageEvent) => {
       const msg = ev.data as
         | { type: "events"; events: UsageEvent[] }
         | { type: "quotas"; quotas: QuotaObservationEvent[] }
+        | { type: "replayed-usage"; ids: string[] }
         | { type: "done"; result: ScanResult }
         | { type: "error"; message: string };
       if (msg.type === "events") {
         events.push(...msg.events);
       } else if (msg.type === "quotas") {
         quotas.push(...msg.quotas);
+      } else if (msg.type === "replayed-usage") {
+        replayedUsage.push(...msg.ids);
       } else if (msg.type === "done") {
         cleanup();
-        resolve({ result: msg.result, events, quotas });
+        resolve({ result: msg.result, events, quotas, replayedUsage });
       } else {
         cleanup();
         reject(new Error(msg.message));
@@ -720,8 +734,10 @@ async function runScan(parsed: ParsedInvocation): Promise<void> {
           outcomes.push(outcome);
           // Single writer: batches are appended by this process only.
           appendEvents(outcome.events);
+          cache.restoreReplayedUsage(outcome.events.map(event => event.id));
           cache.insert(outcome.events);
           cache.insertQuotaObservations(outcome.quotas);
+          cache.excludeReplayedUsage(outcome.replayedUsage);
           const { provider, eventsEmitted, filesScanned } = outcome.result;
           if (eventsEmitted === 0 && filesScanned === 0) {
             // Nothing new on disk — one quiet italic line instead of a zero row.
@@ -755,16 +771,18 @@ async function runScan(parsed: ParsedInvocation): Promise<void> {
 async function runWithWorkerFallback(providerId: string, machineId: string): Promise<ScanOutcome> {
   const events: UsageEvent[] = [];
   const quotas: QuotaObservationEvent[] = [];
+  const replayedUsage: string[] = [];
   try {
-    return await scanInWorker({ providerId, machineId, events, quotas });
+    return await scanInWorker({ providerId, machineId, events, quotas, replayedUsage });
   } catch {
     const provider = getProvider(providerId)!;
     const result = scanProviderCore(provider, machineId, {
       onEvents: (batch) => events.push(...batch),
       onQuotas: (batch) => quotas.push(...batch),
+      onReplayedUsage: (batch) => replayedUsage.push(...batch),
       onSaveCursors: (cursors) => saveProviderCursors(provider.id, cursors),
     });
-    return { result, events, quotas };
+    return { result, events, quotas, replayedUsage };
   }
 }
 
@@ -2419,9 +2437,11 @@ async function runWidgetPayload(parsed: ParsedInvocation): Promise<void> {
       scanProviderCore(provider, machineId, {
         onEvents: (events) => {
           appendEvents(events);
+          payloadCache.restoreReplayedUsage(events.map(event => event.id));
           payloadCache.insert(events);
         },
         onQuotas: (reports) => payloadCache.insertQuotaObservations(reports),
+        onReplayedUsage: (ids) => payloadCache.excludeReplayedUsage(ids),
         onSaveCursors: (cursors) => saveProviderCursors(provider.id, cursors),
       });
     }
@@ -2610,11 +2630,7 @@ async function runWidgetPayload(parsed: ParsedInvocation): Promise<void> {
             // without token rows, so providerStats() alone would hide it.
             ...PROVIDERS.filter((provider) => provider.id === "cursor" && provider.discoverRoots().some((root) => provider.listFiles(root).length > 0)).map((provider) => provider.id),
           ])].sort(),
-          menubarHidden: config.ui?.hidden?.widget ?? config.ui?.hidden?.menubar ?? config.ui?.hidden?.bar ?? [],
-          accountOrder: config.ui?.menubarAccountOrder ?? [],
-          barAccountOrder: config.ui?.previewAccountOrder ?? config.ui?.menubarAccountOrder ?? [],
-          barHiddenAccounts: config.ui?.previewHiddenAccounts ?? [],
-          previewHidden: config.ui?.previewHidden ?? [],
+          ...readAccountUiPreferences({ config, cache }),
           stripMetric: config.ui?.stripMetric ?? "percent",
           stripExhausted: config.ui?.stripExhausted ?? "reset",
           cards: menubarCardLayout(config),
@@ -2708,6 +2724,7 @@ async function runWidgetPayload(parsed: ParsedInvocation): Promise<void> {
         modelPeriods: collect("model", {}),
         providerPeriods,
         t3codeActivity,
+        trackingPeriods: trackingPeriods(cache),
       }));
     });
   });
@@ -2716,12 +2733,14 @@ async function runWidgetPayload(parsed: ParsedInvocation): Promise<void> {
     modelPeriods?: unknown;
     providerPeriods?: unknown;
     t3codeActivity?: unknown;
+    trackingPeriods?: unknown;
   } | undefined;
   if (tokenBreakdowns !== undefined && !Array.isArray(tokenBreakdowns)) {
     parts["spendPeriods"] = tokenBreakdowns.harnessPeriods ?? [];
     parts["modelPeriods"] = tokenBreakdowns.modelPeriods ?? [];
     parts["providerPeriods"] = tokenBreakdowns.providerPeriods ?? [];
     parts["t3codeActivity"] = tokenBreakdowns.t3codeActivity ?? [];
+    parts["trackingPeriods"] = tokenBreakdowns.trackingPeriods ?? {};
   }
   const report = parts["rollingDay"] as WidgetPayloadReport | undefined;
   const total = report?.total ?? {};

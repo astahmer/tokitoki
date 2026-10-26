@@ -149,6 +149,10 @@ void (async () => {
         assert.ok(e.inputTokens > 0, "estimated input tokens from the paired user message");
         assert.ok(e.outputTokens > 0, "estimated output tokens from real assistant text");
         assert.equal(e.provider, "t3code");
+        assert.equal(e.tokenSource, "estimated");
+        assert.equal(e.tokenEstimationMethod, "characters/4");
+        assert.equal(e.costSource, "unpriced");
+        assert.equal(e.costUsd, undefined);
       }
       const aEvent = usageEvents.find((e) => e.sessionId === THREAD_A);
       assert.ok(aEvent);
@@ -210,7 +214,7 @@ void (async () => {
       JSON.stringify({
         status: "completed",
         turnTokenUsage: {
-          usageStatus: "complete",
+          usageStatus: "complete", usageScope: "main_agent", hasSubagents: false,
           inputTokens: 1000,
           outputTokens: 40,
           cachedInputTokens: 200,
@@ -232,7 +236,7 @@ void (async () => {
       null,
       JSON.stringify({
         status: "completed",
-        turnTokenUsage: { usageStatus: "complete", inputTokens: 5, outputTokens: 5, cachedInputTokens: 0, cacheCreationTokens: 0 },
+        turnTokenUsage: { usageStatus: "complete", usageScope: "main_agent", hasSubagents: false, inputTokens: 5, outputTokens: 5, cachedInputTokens: 0, cacheCreationTokens: 0 },
       }),
     );
     db.close();
@@ -248,8 +252,12 @@ void (async () => {
       assert.equal(events[0]!.provider, "t3code");
       assert.equal(events[0]!.accountKey, "cursor");
       assert.equal(events[0]!.sessionId, "thread-cursor");
-      assert.equal(events[0]!.inputTokens, 1000);
+      assert.equal(events[0]!.inputTokens, 800);
+      assert.equal(events[0]!.tokenSource, "reported");
       assert.equal(events[0]!.cacheReadTokens, 200);
+      assert.equal(events[0]!.costSource, "unpriced");
+      assert.equal(events[0]!.costUsd, undefined);
+      assert.equal(events[1]!.costSource, "estimated");
       assert.equal(events[1]!.accountKey, "codex");
       assert.equal(events[1]!.sessionId, "thread-codex");
       assert.deepEqual(t3CodeProvider.scanDb!(dbPath, ctx), []);

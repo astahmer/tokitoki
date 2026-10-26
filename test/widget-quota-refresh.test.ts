@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseClaudeUsage } from "../src/poll.ts";
+import { nativeCodexFixture } from "./support/quota-poll.ts";
 
 it("distinguishes missing Claude usage from explicit empty quota windows", () => {
   expect(parseClaudeUsage({})).toBeUndefined();
@@ -14,6 +15,7 @@ it("distinguishes missing Claude usage from explicit empty quota windows", () =>
 
 it("CLI quota refresh preserves failed observations, honors cadence, and accepts verified empty topology", () => {
   const directory = mkdtempSync(join(tmpdir(), "tokitoki-widget-quota-"));
+  const server = nativeCodexFixture(directory);
   try {
     mkdirSync(join(directory, ".codex"));
     writeFileSync(join(directory, ".codex", "auth.json"), JSON.stringify({ tokens: { access_token: "fixture", account_id: "fixture-account" } }));
@@ -23,23 +25,23 @@ it("CLI quota refresh preserves failed observations, honors cadence, and accepts
     }));
     const script = `
       import assert from "node:assert/strict";
-      import { writeFileSync } from "node:fs";
+      import { readFileSync, writeFileSync } from "node:fs";
       const { main } = await import(${JSON.stringify(new URL("../src/cli.ts", import.meta.url).pathname)});
       const { EventCache } = await import(${JSON.stringify(new URL("../src/cache.ts", import.meta.url).pathname)});
       let used = 33;
       let secondaryExpired = true;
       let status = 200;
       let body;
-      let calls = 0;
-      const usage = () => ({ account_id: "fixture-account", rate_limit: {
-        primary_window: { used_percent: used, reset_at: Math.floor(Date.now()/1000) + 18000, limit_window_seconds: 18000 },
-        secondary_window: { used_percent: 71, reset_at: Math.floor(Date.now()/1000) + (secondaryExpired ? -60 : 86400), limit_window_seconds: 604800 },
-      }, credits: { has_credits: true, balance: "1" } });
-      globalThis.fetch = async (url) => {
-        assert.ok(String(url).startsWith("https://chatgpt.com/backend-api/wham/"), "unexpected fixture request: " + url);
-        if (String(url).endsWith("rate-limit-reset-credits")) return Response.json({});
-        calls++;
-        return Response.json(body ?? usage(), { status });
+      const usage = () => ({ accountId: "fixture-account", rateLimits: {
+        primary: { usedPercent: used, resetsAt: Math.floor(Date.now()/1000) + 18000, windowDurationMins: 300 },
+        secondary: { usedPercent: 71, resetsAt: Math.floor(Date.now()/1000) + (secondaryExpired ? -60 : 86400), windowDurationMins: 10080 },
+      } });
+      globalThis.fetch = async (url) => { throw new Error("unexpected fixture request: " + url); };
+      const syncNative = () => writeFileSync(${JSON.stringify(server.scenarioPath)}, JSON.stringify(status === 200
+        ? { limits: body ?? usage() } : { error: { code: status, message: "HTTP " + status } }));
+      const countCalls = () => {
+        try { return readFileSync(${JSON.stringify(server.logPath)}, "utf8").split("\\n").filter(line => line.includes('"method":"account/rateLimits/read"')).length; }
+        catch { return 0; }
       };
       const run = async (args) => {
         const lines = [];
@@ -49,8 +51,8 @@ it("CLI quota refresh preserves failed observations, honors cadence, and accepts
         assert.equal(lines.length, 1);
         return JSON.parse(lines[0]);
       };
-      const poll = () => run(["poll", "--provider", "codex", "--json"]);
-      const payload = (cached) => run(["widget-payload", cached ? "--cached" : "--skip-scan", "--json"]);
+      const poll = () => { syncNative(); return run(["poll", "--provider", "codex", "--json"]); };
+      const payload = (cached) => { syncNative(); return run(["widget-payload", cached ? "--cached" : "--skip-scan", "--json"]); };
       const card = (value) => value.limits.find(account => account.accountId === "fixture-account");
       assert.equal((await poll()).ok, true);
       let first = card(await payload(true));
@@ -58,16 +60,16 @@ it("CLI quota refresh preserves failed observations, honors cadence, and accepts
       const expired = first.windows.find(w => w.windowId === "secondary");
       assert.equal(expired.status, "expired");
       assert.equal(expired.usedPct, undefined);
-      assert.equal(calls, 1);
+      assert.equal(countCalls(), 1);
       used = 44;
       first = card(await payload(false));
       assert.equal(first.windows.find(w => w.windowId === "primary").usedPct, 44);
-      assert.equal(calls, 2);
+      assert.equal(countCalls(), 2);
       await payload(false);
-      assert.equal(calls, 2, "live widget must honor polling cadence");
-      for (const failure of [{ body: {}, status: 200 }, { body: { account_id: "fixture-account", rate_limit: {} }, status: 200 },
-        { body: { account_id: "fixture-account", additional_rate_limits: [] }, status: 200 },
-        { body: { rate_limit: { primary_window: {} } }, status: 200 }, { body: {}, status: 401 }]) {
+      assert.equal(countCalls(), 2, "live widget must honor polling cadence");
+      for (const failure of [{ body: {}, status: 200 }, { body: { rateLimits: null }, status: 200 },
+        { body: { rateLimitsByLimitId: {} }, status: 200 },
+        { body: { rateLimits: { primary: {} } }, status: 200 }, { body: {}, status: 401 }]) {
         await new Promise(resolve => setTimeout(resolve, 3));
         body = failure.body; status = failure.status;
         assert.equal((await poll()).ok, false);
@@ -82,7 +84,7 @@ it("CLI quota refresh preserves failed observations, honors cadence, and accepts
       await new Promise(resolve => setTimeout(resolve, 3));
       assert.equal((await poll()).ok, true);
       assert.equal(card(await payload(true)).windows.find(w => w.windowId === "primary").usedPct, 44);
-      body = { rate_limit: { primary_window: { used_percent: 45 } } };
+      body = { rateLimits: { primary: { usedPercent: 45 } } };
       await new Promise(resolve => setTimeout(resolve, 3));
       assert.equal((await poll()).ok, true);
       const partial = card(await payload(true));
@@ -107,7 +109,7 @@ it("CLI quota refresh preserves failed observations, honors cadence, and accepts
       assert.equal(stale.status, "stale");
       assert.equal(stale.usedPct, undefined);
       assert.equal(stale.observedAt, observedAt);
-      body = { account_id: "fixture-account", rate_limit: null };
+      body = { rateLimits: { primary: null, secondary: null } };
       assert.equal((await poll()).ok, true);
       assert.deepEqual(card(await payload(true)).windows, []);
       assert.deepEqual(card(await payload(false)).windows, []);
@@ -163,7 +165,7 @@ it("CLI quota refresh preserves failed observations, honors cadence, and accepts
       console.log("fixture checks passed");
     `;
     const result = Bun.spawnSync([process.execPath, "--eval", script], {
-      env: { ...process.env, HOME: directory, CODEX_HOME: join(directory, ".codex"),
+      env: { ...process.env, PATH: directory + ":" + process.env.PATH, HOME: directory, CODEX_HOME: join(directory, ".codex"),
         XDG_CONFIG_HOME: join(directory, ".config"), XDG_DATA_HOME: join(directory, ".local/share"),
         TOKITOKI_DATA_DIR: directory, TOKITOKI_CONFIG: join(directory, "config.json"),
         DEEPSEEK_API_KEY: "", ZAI_API_KEY: "", KIMI_API_KEY: "" },

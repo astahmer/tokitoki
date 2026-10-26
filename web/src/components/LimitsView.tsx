@@ -5,6 +5,7 @@ import { Badge, Button, Surface } from "@cloudflare/kumo";
 import { fetchLimits, saveAccountOrder, saveAccountVisibility, type LimitsAccount, type LimitsWindow } from "../lib/api";
 import { completeAccountOrder, moveAccountOrder } from "../../../src/account-order";
 import { formatCost, humanCount } from "../lib/fmt";
+import { workspaceCreditsLabel } from "../lib/workspace-credits";
 import { useAsyncStaleWhileRevalidate } from "../lib/useAsync";
 import { EmptyState, Heading, SkeletonBlock } from "../ui";
 
@@ -96,6 +97,7 @@ function WindowRow({ window, now }: { window: LimitsWindow; now: number }) {
 function AccountCard({ account, now, moveUp, moveDown }: {
   account: LimitsAccount; now: number; moveUp?: () => void; moveDown?: () => void;
 }) {
+  const creditsLabel = workspaceCreditsLabel(account.credits);
   const title = account.label ?? account.email ?? account.accountKey;
   const harnesses = [account.harness, ...account.alsoOn].join(" · ");
   const extra = account.extraUsage;
@@ -116,6 +118,11 @@ function AccountCard({ account, now, moveUp, moveDown }: {
         <Button size="sm" variant="secondary" aria-label={`Move ${title} up`} title="Move account up" disabled={!moveUp} onClick={moveUp}>↑</Button>
         <Button size="sm" variant="secondary" aria-label={`Move ${title} down`} title="Move account down" disabled={!moveDown} onClick={moveDown}>↓</Button>
       </div>
+      {creditsLabel.length > 0 && (
+        <p className="text-xs text-kumo-subtle">
+          {creditsLabel}
+        </p>
+      )}
       {account.balance !== undefined && (
         <div className="flex justify-between text-xs">
           <span className="font-medium">Balance</span>
@@ -127,7 +134,7 @@ function AccountCard({ account, now, moveUp, moveDown }: {
       )}
       {account.windows.length > 0
         ? account.windows.map((window) => <WindowRow key={window.id} window={window} now={now} />)
-        : account.balance === undefined && <p className="text-[11px] text-kumo-subtle">no quota windows yet — run `tokitoki poll`</p>}
+        : account.balance === undefined && account.credits === undefined && <p className="text-[11px] text-kumo-subtle">no quota windows yet — run `tokitoki poll`</p>}
       {extra !== undefined && extra.enabled && (
         <div className="space-y-1 border-t border-kumo-border pt-2">
           <div className="flex justify-between text-xs">

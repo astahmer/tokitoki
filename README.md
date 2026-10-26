@@ -427,14 +427,15 @@ so re-pulling identical lines is always a no-op.
 themselves. A provider is polled only when its credentials are present. If
 they are missing, the provider is skipped without an error. tokitoki never
 stores secrets of its own; refreshed OAuth tokens are written back only to
-the CLI's own credential file.
+the owning harness credential store. Codex authentication and token renewal are
+handled by the installed Codex CLI through its native app-server.
 
 #### Supported providers / quotas
 
 | Provider (card id) | Vendor | Quota source | What you get | Credential used |
 | --- | --- | --- | --- | --- |
 | Claude (`claude-code`) | anthropic | `api.anthropic.com/api/oauth/usage` (+ `/profile`) | 5h session, weekly, weekly Opus/Sonnet, extra usage, plan | Claude Code OAuth: `~/.claude/.credentials.json` or macOS Keychain |
-| Codex / ChatGPT (`codex`) | openai | `chatgpt.com/backend-api/wham/usage` (+ reset credits) | 5h + weekly windows, banked resets, plan | `~/.codex/auth.json`; opencodex pool `~/.opencodex/codex-accounts.json` |
+| Codex / ChatGPT (`codex`) | openai | Native `codex app-server`: `account/read` + `account/rateLimits/read` | Account email, plan, all returned metered windows, banked resets | Installed Codex CLI login in `CODEX_HOME` (default `~/.codex`); additional homes via `poll.codexHomes` |
 | Gemini (`gemini-cli`) | google | `cloudcode-pa.googleapis.com/v1internal:loadCodeAssist` + `:retrieveUserQuota` | daily Pro / Flash / Flash Lite model buckets, plan | Gemini CLI OAuth: `~/.gemini/oauth_creds.json`. Expired tokens are refreshed with the client id from the installed Gemini CLI, or `GEMINI_OAUTH_CLIENT_ID`/`_SECRET` |
 | GitHub Copilot (`copilot`) | github | `api.github.com/copilot_internal/user` | monthly premium-request meter | `~/.config/github-copilot/{apps,hosts}.json` or `gh` Keychain entry |
 | Cursor (`cursor`) | cursor | `api2.cursor.sh` `GetCurrentPeriodUsage` | Cursor / other models, on-demand spend | `~/.cursor/cli-auth.json` or the Cursor IDE `state.vscdb` login |
@@ -444,6 +445,52 @@ the CLI's own credential file.
 | OpenRouter (`pi@openrouter`, extra keys) | openrouter | `openrouter.ai/api/v1/key` + `/api/v1/credits` | key spend-limit window, credit balance | pi auth store `~/.pi/agent/auth.json` or `poll.extraKeys` |
 | OpenCode Go (`opencode`) | opencode | `opencode.ai/zen/go/v1/usage` | rolling 5h, weekly, monthly | pi or opencode auth store, or `poll.extraKeys` |
 | Command Code (`commandcode`) | commandcode | `api.commandcode.ai` billing API | 5h, weekly, monthly credits | `~/.commandcode/auth.json` |
+
+#### Native Codex account setup
+
+Install the stock Codex CLI and ensure `codex` is on the PATH used by Tokitoki
+(including a launcher or background service). Its app-server must support
+`account/read` and `account/rateLimits/read`. Sign in with a ChatGPT account;
+an API-key-only login does not provide ChatGPT subscription quotas.
+
+```sh
+codex login
+codex login status
+```
+
+The default native home is `$CODEX_HOME`, or `~/.codex` when unset. For separate
+personal and work profiles, sign into each native home with the stock CLI:
+
+```sh
+CODEX_HOME="$HOME/.codex-personal" codex login
+CODEX_HOME="$HOME/.codex-work" codex login
+# A headless setup can use: CODEX_HOME="$HOME/.codex-work" codex login --device-auth
+```
+
+Merge these settings into `~/.config/tokitoki/config.json`, using your actual
+absolute paths. Poll homes identify native logins; provider paths identify
+session scan roots. Configure both when using nondefault homes:
+
+```json
+{
+  "poll": {
+    "codexHomes": ["/home/you/.codex-personal", "/home/you/.codex-work"]
+  },
+  "providers": {
+    "codex": {
+      "paths": ["/home/you/.codex-personal/sessions", "/home/you/.codex-work/sessions"]
+    }
+  }
+}
+```
+
+Then run `tokitoki poll --provider codex` and `tokitoki scan --provider codex`.
+Tokitoki delegates authentication to each home’s native CLI; it does not import
+credentials from an old account pool. Additional profiles require native login
+setup. The quota response determines which windows exist, so a fixed session +
+weekly pair is not assumed. See the [native harness migration guide](docs/native-harness-migration.md)
+and [official app-server contract](https://learn.chatgpt.com/docs/app-server).
+Stock login options are documented in the [CLI reference](https://learn.chatgpt.com/docs/cli/reference).
 
 Vendor status pages are checked too, with results cached for 5 minutes in
 the cache meta table. The sources are Statuspage summaries for Anthropic,
@@ -515,7 +562,7 @@ src/web/api.ts ◀── same aggregation as the CLI (EventCache) ── /api/* 
   grid exists on the CLI as `tokitoki grid`).
 - Account emails: providers expose the logged-in address read live from
   local harness stores (claude-code → ~/.claude.json oauthAccount;
-  codex → JWT payload in ~/.codex/auth.json; pi/opencode are key-only →
+  codex → native app-server `account/read` for each configured home; pi/opencode are key-only →
   null). Toggle "show emails" in the web UI (persisted to localStorage) or
   pass `--show-email` to `report`.
 
@@ -848,8 +895,41 @@ use Preferences → Detailed harness cards) when per-harness cards are useful.
 
 Model prices auto-sync from [Models.dev](https://models.dev), falling back to
 LiteLLM's community pricing JSON, into `<data-dir>/pricing.json` (7-day TTL, 1h retry throttle when offline). The
-embedded snapshot is the offline fallback. Unknown models estimate as $0 with
-a one-time stderr note.
+embedded snapshot is the offline fallback. Unknown models and missing rates for
+consumed token classes remain **unpriced**, rather than being treated as free.
+Harness-reported costs (including zero) take precedence over estimates. Model
+variants require their own rates; a dated snapshot may inherit its base rate.
+
+The Tokens view includes **Tracking quality** in QML and macOS; the web dashboard
+shows it for the selected date range. It reports pricing coverage, reported vs
+estimated costs, unpriced and legacy-unknown requests, and the cached-input
+percentage. Dollar totals represent known usage value and API-rate estimates,
+not subscription bills. Historical events without provenance remain unknown
+until a native rescan enriches them. The JSON payload exposes `trackingPeriods`,
+and the web API exposes `/api/tracking` with the usual `last`/`from`/`to` filters.
+
+Token measurement has its own provenance, independent of price estimation.
+Cursor account totals use reported dashboard events; local IDE message-length
+estimates remain session activity and are excluded from account totals. T3 V2
+uses provider turn counters when present, normalizing inclusive input/cache;
+T3 V1 visible-text estimates are labelled separately. All T3 activity stays
+outside global totals. The legacy `characters ÷ 4` fallback is a rough English
+text heuristic, not a measurement of hidden context or billed model usage.
+[Cursor/T3 source contracts and limitations](docs/cursor-t3-token-sources.md).
+
+Codex input tokens are normalized into uncached input and cache reads. Repeated
+cumulative snapshots do not create new requests; totals-only observations use
+the saved baseline. Parser revisions trigger incremental-store replay with
+stable event IDs. [Tracker comparison and sources](docs/usage-tracking-benchmarks.md).
+
+Fork history is excluded only when explicit native lineage and an exact ordered
+prefix with a copied turn ID prove replay against a discovered parent in the
+same Codex home (including archives). New child turns remain counted. Existing
+copied event IDs are excluded from aggregates without deleting raw history;
+replay decisions are logged alongside usage and survive cache rebuilds and
+raw-log sync. Fresh scans can restore them when replay proof no longer holds. Verification
+is bounded to 64 MiB per source and 8 MiB per line; unavailable parents,
+unverified lineage, and oversized records conservatively retain usage.
 
 ## Supported harnesses
 
@@ -861,7 +941,7 @@ a one-time stderr note.
 | opencode | `opencode` | ✅ working | `$XDG_DATA_HOME/opencode/opencode*.db` SQLite | request-level tokens+cost from assistant messages; watermark cursor on `message.time_updated`; legacy WAL stores opened via immutable fallback; sessions searchable (title + text parts) |
 | T3 Code | `t3code` | ✅ separate activity | `~/.t3/userdata/statev2.sqlite` (V1: `state.sqlite`) | searchable threads and observed turn usage; excluded from shared totals to avoid counting underlying harness usage twice |
 | Antigravity CLI | `antigravity-cli` | ◐ provenance only | `~/.gemini/antigravity-cli/conversations/*.db` | protobuf blobs; no usage exposed |
-| Cursor | `cursor` | ◐ indexed only | `state.vscdb` + `ai-tracking/ai-code-tracking.db` | transcripts/summaries searchable; **no token counts in any inspected store** (199k activity-hash rows verified) |
+| Cursor | `cursor` | ✅ reported usage + indexed history | dashboard usage events + IDE SQLite stores | account totals use reported dashboard counters; local conversations remain searchable, with visible-text token estimates labelled and excluded from account totals |
 | Grok CLI | `grok` | ✅ working | `$GROK_HOME/sessions/**/*.jsonl` | tolerant codex-family parser (`last_token_usage` deltas preferred, flat `usage` spellings accepted) |
 | Command Code | `commandcode` | ✅ working | `~/.commandcode/sessions/*.jsonl` | pi-like JSONL; usage on the entry, model on `model_change` |
 | Gemini CLI | `gemini-cli` | ✅ working | `~/.gemini/tmp/<hash>/chats/session-*.json` | per-message `tokens` objects when stats are recorded; sessions without them stay search-only |

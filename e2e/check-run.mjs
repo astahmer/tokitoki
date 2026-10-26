@@ -7,7 +7,7 @@ const out = path.resolve(process.argv[2] ?? "");
 if (!process.argv[2]) throw new Error("usage: node e2e/check-run.mjs <output-directory>");
 
 const tabs = ["overview", "quotas", "tokens", "reports", "sessions", "sources", "mcp", "settings"];
-const interactions = ["search", "session-detail", "session-back", "next-page", "previous-page", "settings-config", "settings-notifications"];
+const interactions = ["tracking-quality", "search", "session-detail", "session-back", "next-page", "previous-page", "settings-config", "settings-notifications"];
 const index = JSON.parse(fs.readFileSync(path.join(out, "index.json"), "utf8"));
 assert.ok(["dms", "quickshell"].includes(index.shell), "the run must identify its shell");
 assert.equal(index.mode, "all", "expected the autonomous all-tabs scenario");
@@ -15,6 +15,7 @@ assert.deepEqual(index.tabs, tabs, "the run must visit every tab in order");
 for (const interaction of interactions) {
   assert.ok(index.interactions.includes(interaction), `missing interaction marker: ${interaction}`);
 }
+assert.ok(fs.existsSync(path.join(out, "tracking-quality.png")), "the tracking quality view must be captured");
 
 if (index.shell === "dms") {
   assert.ok(index.interactions.includes("hover-countdown"), "hover must remain open across a countdown update");

@@ -1,10 +1,10 @@
 import fs from "node:fs";
 import { loadConfig } from "../config.ts";
-import { accountUiPreferences } from "../uiToggles.ts";
+import { readAccountUiPreferences } from "../uiToggles.ts";
 import { handleAccountOrderRequest } from "../account-order-api.ts";
 import path from "node:path";
 
-import { apiAnomalies, apiBreakdown, apiBudgets, apiExport, apiGrid, apiNotificationHistory, apiSessionDetail, apiSessionSearch, apiSessions, apiSources, apiSummary, apiTable, apiTimeseries, apiWidgetStatus, type WindowParams } from "./api.ts";
+import { apiAnomalies, apiBreakdown, apiBudgets, apiExport, apiGrid, apiNotificationHistory, apiSessionDetail, apiSessionSearch, apiSessions, apiSources, apiSummary, apiTracking, apiTable, apiTimeseries, apiWidgetStatus, type WindowParams } from "./api.ts";
 import { atprotoConfig, buildSharePayload, describePayload, publishShare, readShareState, writeShareState } from "../share.ts";
 import { readLimitsDocument } from "../limits-document.ts";
 
@@ -146,6 +146,8 @@ export function startWebServer(options: WebServerOptions = {}): Bun.Server<undef
       to: url.searchParams.get("to") ?? undefined,
     });
     switch (pathname) {
+      case "/api/tracking":
+        return json(apiTracking(win()));
       case "/api/summary":
         return json(apiSummary(win()));
       case "/api/usage":
@@ -201,7 +203,7 @@ export function startWebServer(options: WebServerOptions = {}): Bun.Server<undef
       }
       case "/api/limits":
       case "/v1/limits":
-        return json({ ...readLimitsDocument({ showEmail: url.searchParams.get("showEmail") === "1" }), uiPreview: accountUiPreferences(loadConfig()) });
+        return json({ ...readLimitsDocument({ showEmail: url.searchParams.get("showEmail") === "1" }), uiPreview: readAccountUiPreferences({ config: loadConfig() }) });
       case "/v1/ui/bar-account-order":
       case "/v1/ui/account-visibility":
       case "/v1/ui/account-order":

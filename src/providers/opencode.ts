@@ -5,7 +5,7 @@ import { Database } from "bun:sqlite";
 
 import type { UsageEvent } from "../types.ts";
 import { eventId } from "../machine.ts";
-import { estimateCost } from "../pricing.ts";
+import { resolveUsageCost } from "../pricing.ts";
 import { providerConfig } from "../config.ts";
 import type { DbScanContext, Provider, SessionDoc } from "./types.ts";
 
@@ -93,7 +93,7 @@ export const opencodeProvider: Provider = {
         if (row.time_updated > watermark) ctx.state.watermark = row.time_updated;
         const parsed = parseMessageData(row.data);
         if (parsed === null) continue;
-        const { role, inputTokens, outputTokens, cacheRead, cacheWrite, costUsd, model, account, completed } = parsed;
+        const { role, inputTokens, outputTokens, cacheRead, cacheWrite, costUsd, costSource, model, account, completed } = parsed;
         if (role !== "assistant") continue;
         // A streaming response keeps bumping time_updated with growing
         // partial token counts. Downstream dedupe is first-write-wins
@@ -117,6 +117,7 @@ export const opencodeProvider: Provider = {
           cacheReadTokens: cacheRead,
           cacheWriteTokens: cacheWrite,
           costUsd,
+          costSource,
           projectDir: row.directory ?? undefined,
           sessionId: row.session_id,
         });
@@ -223,7 +224,8 @@ interface ParsedMessage {
   outputTokens: number;
   cacheRead: number;
   cacheWrite: number;
-  costUsd: number;
+  costUsd?: number;
+  costSource: NonNullable<UsageEvent["costSource"]>;
   model: string;
   account: string;
   /** True once opencode has finalized this message (time.completed is set). */
@@ -251,15 +253,12 @@ function parseMessageData(raw: string): ParsedMessage | null {
   const model = typeof data.modelID === "string" && data.modelID.length > 0 ? data.modelID : "unknown";
   const account =
     typeof data.providerID === "string" && data.providerID.length > 0 ? data.providerID : "default";
-  // A harness-reported cost of exactly $0 (e.g. a fully cached turn) is real
-  // and must be trusted, not treated as "absent" and overwritten with an
-  // estimate — only fall back when cost genuinely isn't a number at all.
-  const costUsd =
-    typeof data.cost === "number" && Number.isFinite(data.cost)
-      ? data.cost
-      : estimateCost(model, { inputTokens, outputTokens, cacheReadTokens: cacheRead, cacheWriteTokens: cacheWrite }) ||
-        0;
+  const cost = resolveUsageCost({
+    model,
+    tokens: { inputTokens, outputTokens, cacheReadTokens: cacheRead, cacheWriteTokens: cacheWrite },
+    reportedCost: data.cost,
+  });
   const time = (data.time ?? {}) as Record<string, unknown>;
   const completed = typeof time.completed === "number" && Number.isFinite(time.completed);
-  return { role, inputTokens, outputTokens, cacheRead, cacheWrite, costUsd, model, account, completed };
+  return { role, inputTokens, outputTokens, cacheRead, cacheWrite, ...cost, model, account, completed };
 }

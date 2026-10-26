@@ -1,4 +1,7 @@
 import fs from "node:fs";
+import path from "node:path";
+import { codexHomes } from "./codex-homes.ts";
+import type { TokitokiConfig } from "./config.ts";
 
 import { z } from "zod";
 
@@ -39,31 +42,44 @@ export interface AccountIdentity {
 /** Resolve the stable identity behind a local provider login. */
 export function accountIdentityFor(providerId: string): AccountIdentity | null {
   if (providerId !== "codex") return null;
-  const home = process.env.CODEX_HOME ?? `${process.env.HOME ?? "~"}/.codex`;
+  return nativeCodexIdentity(codexHomes()[0]!);
+}
+
+/** Read identity claims only; credential refresh belongs to the native harness. */
+const nativeAuthSchema = z.object({
+  tokens: z.object({ id_token: z.string().optional(), account_id: z.string().optional() }).nullish(),
+});
+const nativeClaimsSchema = z.object({
+  email: z.unknown().optional(),
+  "https://api.openai.com/auth": z.object({ chatgpt_account_id: z.unknown().optional() }).nullish(),
+  "https://api.openai.com/profile": z.object({ email: z.unknown().optional() }).nullish(),
+});
+export function nativeCodexIdentity(home: string, explicitAuthPath?: string): AccountIdentity | null {
   try {
-    const auth = JSON.parse(fs.readFileSync(`${home}/auth.json`, "utf8")) as {
-      tokens?: { id_token?: string; account_id?: string };
-    };
-    const jwt = auth.tokens?.id_token;
-    if (typeof jwt !== "string") return null;
-    const payloadPart = jwt.split(".")[1];
-    if (payloadPart === undefined) return null;
-    const b64 = payloadPart.replaceAll("-", "+").replaceAll("_", "/");
-    const payload = JSON.parse(
-      Buffer.from(b64 + "=".repeat((4 - (b64.length % 4)) % 4), "base64").toString("utf8"),
-    ) as Record<string, unknown>;
-    const authClaims = payload["https://api.openai.com/auth"];
-    const authRecord = authClaims !== null && typeof authClaims === "object"
-      ? authClaims as Record<string, unknown>
-      : {};
-    const email = typeof payload.email === "string" && payload.email.includes("@") ? payload.email : undefined;
-    const accountId = auth.tokens?.account_id
-      ?? (typeof authRecord.chatgpt_account_id === "string" ? authRecord.chatgpt_account_id : undefined);
-    if (email === undefined && accountId === undefined) return null;
-    return { ...(email !== undefined ? { email } : {}), ...(accountId !== undefined ? { accountId } : {}) };
-  } catch {
-    return null;
+    const auth = nativeAuthSchema.parse(JSON.parse(fs.readFileSync(explicitAuthPath ?? path.join(home, "auth.json"), "utf8")));
+    let payload: z.infer<typeof nativeClaimsSchema> = {};
+    const part = auth.tokens?.id_token?.split(".")[1];
+    if (part !== undefined) {
+      try { payload = nativeClaimsSchema.parse(JSON.parse(Buffer.from(part, "base64url").toString("utf8"))); } catch { /* account_id can stand alone */ }
+    }
+    const claims = payload["https://api.openai.com/auth"];
+    const profile = payload["https://api.openai.com/profile"];
+    const rawEmail = payload.email ?? profile?.email;
+    const email = typeof rawEmail === "string" && rawEmail.includes("@") ? rawEmail : undefined;
+    const rawId = auth.tokens?.account_id ?? claims?.chatgpt_account_id;
+    const accountId = typeof rawId === "string" && rawId.length > 0 ? rawId : undefined;
+    return accountId === undefined && email === undefined ? null : { ...(email ? { email } : {}), ...(accountId ? { accountId } : {}) };
+  } catch { return null; }
+}
+
+/** Stable ids from native homes, for joining scanner aliases. Never joins by email. */
+export function nativeCodexIdentities(options: { config?: TokitokiConfig } = {}): Map<string, AccountIdentity> {
+  const identities = new Map<string, AccountIdentity>();
+  for (const home of codexHomes(options)) {
+    const identity = nativeCodexIdentity(home);
+    if (identity?.accountId !== undefined) identities.set(identity.accountId, identity);
   }
+  return identities;
 }
 
 const ClaudeOauthAccountSchema = z.object({
@@ -120,26 +136,7 @@ function claudeEmail(): string | null {
 }
 
 function codexEmail(): string | null {
-  const home = process.env.CODEX_HOME ?? `${process.env.HOME ?? "~"}/.codex`;
-  try {
-    const auth = JSON.parse(fs.readFileSync(`${home}/auth.json`, "utf8")) as {
-      tokens?: { id_token?: string };
-    };
-    const jwt = auth.tokens?.id_token;
-    if (typeof jwt !== "string") return null;
-    const payloadPart = jwt.split(".")[1];
-    if (payloadPart === undefined) return null;
-    const b64 = payloadPart.replaceAll("-", "+").replaceAll("_", "/");
-    const padded = b64 + "=".repeat((4 - (b64.length % 4)) % 4);
-    const payload = JSON.parse(Buffer.from(padded, "base64").toString("utf8")) as Record<
-      string,
-      unknown
-    >;
-    const email = payload.email;
-    return typeof email === "string" && email.includes("@") ? email : null;
-  } catch {
-    return null;
-  }
+  return accountIdentityFor("codex")?.email ?? null;
 }
 
 function cursorEmail(): string | null {

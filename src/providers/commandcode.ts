@@ -3,7 +3,7 @@ import fs from "node:fs";
 import type { UsageEvent } from "../types.ts";
 import { providerConfig } from "../config.ts";
 import { eventId } from "../machine.ts";
-import { estimateCost } from "../pricing.ts";
+import { resolveUsageCost } from "../pricing.ts";
 import { sessionMessage, summarizeToolCall } from "../sessionText.ts";
 import { shellToolName } from "../tools.ts";
 import { homePath, type EntryContext, type Provider, type SessionDoc } from "./types.ts";
@@ -68,13 +68,6 @@ export const commandcodeProvider: Provider = {
 
     const cacheRead = toNum(usage?.cacheReadTokens);
     const cacheWrite = toNum(usage?.cacheWriteTokens);
-    // toNum() collapses "absent" and "reported as exactly 0" into the same
-    // 0 — fine for token counts, wrong for cost: a fully cached turn can
-    // honestly report costUsd: 0, which must be trusted, not treated as
-    // "no data" and replaced with a fabricated non-zero estimate.
-    const reportedCostRaw = usage?.costUsd;
-    const hasReportedCost = typeof reportedCostRaw === "number" && Number.isFinite(reportedCostRaw);
-
     const sessionId = typeof state.sessionId === "string" ? state.sessionId : "unknown-session";
     const model =
       typeof entry.model === "string" && entry.model.length > 0
@@ -86,9 +79,11 @@ export const commandcodeProvider: Provider = {
     // comes from auth.json, not the transcript.
     const accountKey = "default";
 
-    const costUsd = hasReportedCost
-      ? reportedCostRaw
-      : estimateCost(model, { inputTokens, outputTokens, cacheReadTokens: cacheRead, cacheWriteTokens: cacheWrite });
+    const cost = resolveUsageCost({
+      model,
+      tokens: { inputTokens, outputTokens, cacheReadTokens: cacheRead, cacheWriteTokens: cacheWrite },
+      reportedCost: usage?.costUsd,
+    });
 
     const message = entry.message as Record<string, unknown> | undefined;
     const tool = toolNameFromContent(message?.content);
@@ -107,7 +102,7 @@ export const commandcodeProvider: Provider = {
       outputTokens,
       cacheReadTokens: cacheRead,
       cacheWriteTokens: cacheWrite,
-      costUsd,
+      ...cost,
       projectDir: typeof state.cwd === "string" ? state.cwd : undefined,
       sessionId,
       ...(tool !== undefined ? { tool } : {}),

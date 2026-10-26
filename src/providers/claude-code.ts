@@ -4,7 +4,7 @@ import path from "node:path";
 import type { UsageEvent } from "../types.ts";
 import { providerConfig } from "../config.ts";
 import { eventId } from "../machine.ts";
-import { estimateCost } from "../pricing.ts";
+import { resolveUsageCost } from "../pricing.ts";
 import { shellToolName } from "../tools.ts";
 import { cleanSessionText, sessionMessage, sessionTitle } from "../sessionText.ts";
 import { homePath, type EntryContext, type Provider, type SessionDoc } from "./types.ts";
@@ -90,12 +90,12 @@ export const claudeCodeProvider: Provider = {
     const projectDir = typeof entry.cwd === "string" ? entry.cwd : undefined;
 
     const costRaw = entry.costUSD ?? entry.costUsd;
-    const costUsd = typeof costRaw === "number" ? costRaw : estimateCost(model, {
+    const cost = resolveUsageCost({ model, reportedCost: costRaw, tokens: {
       inputTokens,
       outputTokens,
       cacheReadTokens: usage.cache_read_input_tokens ?? 0,
       cacheWriteTokens: usage.cache_creation_input_tokens ?? 0,
-    });
+    } });
 
     const event: UsageEvent = {
       id: eventId("claude-code", "default", sessionId, entryId),
@@ -108,7 +108,7 @@ export const claudeCodeProvider: Provider = {
       outputTokens,
       cacheReadTokens: usage.cache_read_input_tokens,
       cacheWriteTokens: usage.cache_creation_input_tokens,
-      costUsd,
+      ...cost,
       projectDir,
       sessionId,
       tool: toolUseName(message?.content),

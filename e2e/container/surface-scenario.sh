@@ -34,15 +34,15 @@ wait_for 10 'bar-only restore payload readback' surface_matches '.ui.barHiddenAc
 surface_save bar-restored
 record_interaction account-bar-restore
 surface_click 'Move down in Quotas' 'claude-code@default'
-wait_for 10 'quota order payload readback' surface_matches '.ui.accountOrder[0] == "codex@codex" and .quotaOverride == null'
+wait_for 10 'quota order payload readback' surface_matches '.ui.accountOrder[0] == "codex@openai:personal" and .quotaOverride == null'
 surface_save quota-order
 record_interaction account-quota-order
-surface_click 'Move later in the bar' 'codex@codex'
-wait_for 10 'bar order payload readback' surface_matches '.ui.barAccountOrder[1] == "codex@base_model_inference" and .barOverride == null'
+surface_click 'Move later in the bar' 'codex@openai:personal'
+wait_for 10 'bar order payload readback' surface_matches '.ui.barAccountOrder[1] == "codex@openai:work" and .barOverride == null'
 surface_save bar-order
 record_interaction account-bar-order
-surface_click 'Hide this account everywhere' 'codex@codex'
-wait_for 10 'global hide payload readback' surface_matches '.ui.menubarHidden == ["codex:codex"]'
+surface_click 'Hide this account everywhere' 'codex@openai:personal'
+wait_for 10 'global hide payload readback' surface_matches '.ui.menubarHidden == ["codex:openai:personal"]'
 surface_save globally-hidden
 record_interaction account-global-hide
 scroll_down 30
@@ -67,7 +67,7 @@ for mode in failed null empty valid; do
     failed) wait_for 10 'failed refresh preserved quotas' surface_matches '.busy == false and (.error | contains("e2e injected failed refresh"))' ;;
     null) wait_for 10 'missing quotas retained as stale' surface_matches '.busy == false and (.error | contains("incomplete"))' ;;
     empty) wait_for 10 'true empty quotas accepted' surface_matches '.busy == false and .limits == []' ;;
-    valid) wait_for 10 'refresh recovered' surface_matches '.busy == false and (.limits | length) == 7 and .error == ""' ;;
+    valid) wait_for 10 'refresh recovered' surface_matches '.busy == false and (.limits | length) == 4 and .error == ""' ;;
   esac
   surface_save "refresh-$mode"
   record_interaction "refresh-$mode"

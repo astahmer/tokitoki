@@ -144,15 +144,16 @@ describe("limits builder provenance", () => {
     } finally { context.close(); }
   });
 
-  it("resolves a pooled scan account by verified identity without using the current local email", () => {
+  it("resolves a native home scan account by verified identity without using the current local email", () => {
     const context = fixture();
     try {
-      const poolDir = path.join(context.dir, ".opencodex");
-      mkdirSync(poolDir);
-      writeFileSync(path.join(poolDir, "codex-accounts.json"), JSON.stringify({ work: { credential: { chatgptAccountId: "work", email: "work@example.com" } } }));
+      const workHome = path.join(context.dir, "work-codex");
+      mkdirSync(workHome);
+      const payload = Buffer.from(JSON.stringify({ email: "work@example.com", "https://api.openai.com/auth": { chatgpt_account_id: "work" } })).toString("base64url");
+      writeFileSync(path.join(workHome, "auth.json"), JSON.stringify({ tokens: { id_token: `header.${payload}.signature`, account_id: "work" } }));
       context.cache.insertPolledSnapshots({ provider: "codex", accountKey: "account:work", accountId: "work", capturedAtIso: now.toISOString(), eventId: "scan:work",
         windows: [{ windowMinutes: 10080, usedPct: 25, resetsAtEpoch: 0 }] });
-      const cards = buildAccountLimits({ cache: context.cache, config: { experimental: { zeroStateCards: false } }, now });
+      const cards = buildAccountLimits({ cache: context.cache, config: { poll: { codexHomes: [workHome] }, experimental: { zeroStateCards: false } }, now });
       const work = cards.find((card) => card.accountKey === "openai:work");
       expect(work).toMatchObject({ email: "work@example.com", accountId: "work" });
       const document = LimitsDocumentSchema.parse(limitsDocument({ limits: cards, now, showEmail: true }));

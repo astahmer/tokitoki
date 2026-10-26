@@ -4,6 +4,44 @@ import Testing
 @testable import tokitoki_menubar
 
 @Suite struct AccountPresentationTests {
+    @Test func workspaceCreditsRemainSeparateFromBankedResetsAndMoney() throws {
+        let credits = try JSONDecoder().decode(AccountCredits.self, from: Data("""
+        {"hasCredits":true,"unlimited":false,"balance":"123.45"}
+        """.utf8))
+        #expect(credits.displayLabel == "Workspace credits 123.45")
+        #expect(AccountCredits(hasCredits: true, unlimited: true, balance: nil).displayLabel == "Unlimited workspace credits")
+        #expect(AccountCredits(hasCredits: false, unlimited: false, balance: "0").displayLabel == "Workspace credits 0")
+        #expect(AccountCredits(hasCredits: false, unlimited: false, balance: nil).displayLabel == nil)
+    }
+
+    @Test func nativeProfilesKeepEmailsHomesAndIndependentWindowStatus() throws {
+        let decoded = try JSONDecoder().decode(AccountLimits.self, from: Data("""
+        {"provider":"codex","accountKey":"openai:work","accountId":"work",
+         "email":"work@example.com","origin":"polled","codexHome":"/tmp/work profile",
+         "bankedResets":2,"windows":[
+           {"kind":"day","source":"polled","tokens":0,"cost":0,"requests":0,
+            "id":"codex:primary","status":"expired","observedAt":"2026-09-09T12:00:00Z"},
+           {"kind":"week","source":"polled","tokens":0,"cost":0,"requests":0,
+            "id":"codex:secondary","status":"current","usedPct":35,
+            "observedAt":"2026-09-10T15:18:00Z"}]}
+        """.utf8))
+        #expect(decoded.id == "codex@openai:work")
+        #expect(decoded.email == "work@example.com")
+        #expect(decoded.codexHome == "/tmp/work profile")
+        #expect(decoded.bankedResets == 2)
+        #expect(decoded.sourceDescription == "read from the native Codex CLI")
+        #expect(decoded.quotaWindows.map(\.quotaStatus) == ["expired", "current"])
+        #expect(decoded.quotaWindows[0].usedPct == nil)
+        #expect(decoded.quotaWindows[1].usedPct == 35)
+    }
+
+    @Test func nativeLoginTargetsOwningHomeAndQuotesShellData() {
+        #expect(AccountLimits.codexLoginCommand(home: nil) == "codex login")
+        #expect(AccountLimits.codexLoginCommand(home: "") == "codex login")
+        #expect(AccountLimits.codexLoginCommand(home: "/tmp/work profile") == "CODEX_HOME='/tmp/work profile' codex login")
+        #expect(AccountLimits.codexLoginCommand(home: "/tmp/user's $(touch nope)") == "CODEX_HOME='/tmp/user'\"'\"'s $(touch nope)' codex login")
+    }
+
     private func account(_ key: String, provider: String = "codex") -> AccountLimits {
         AccountLimits(provider: provider, accountKey: key, email: nil, credential: nil,
                       alsoOn: nil, planLabel: nil, windows: [], origin: nil,

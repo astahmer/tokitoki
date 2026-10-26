@@ -760,9 +760,9 @@ function Timeline({ payload }: { payload: SessionDetailPayload }) {
               <Table.Row key={i}>
                 <Table.Cell>{i + 1}</Table.Cell>
                 <Table.Cell className="whitespace-nowrap">{r.ts.slice(11, 19)}</Table.Cell>
-                <Table.Cell className="max-w-52 truncate">{r.model}</Table.Cell>
-                <Table.Cell className="text-right">{humanCount(r.inputTokens)}</Table.Cell>
-                <Table.Cell className="text-right">{humanCount(r.outputTokens)}</Table.Cell>
+                <Table.Cell className="max-w-52 truncate">{r.model}{r.tokenSource === "estimated" && <span className="ml-1 text-[10px] text-kumo-subtle" title="Tokens estimated from visible text; hidden context is not counted">Estimated tokens</span>}</Table.Cell>
+                <Table.Cell className="text-right">{r.tokenSource === "estimated" ? "≈" : ""}{humanCount(r.inputTokens)}</Table.Cell>
+                <Table.Cell className="text-right">{r.tokenSource === "estimated" ? "≈" : ""}{humanCount(r.outputTokens)}</Table.Cell>
                 <Table.Cell className="text-right">{humanCount(r.cacheReadTokens)}</Table.Cell>
                 <Table.Cell className="text-right">{cachePct(r.inputTokens, r.cacheReadTokens)}%</Table.Cell>
                 <Table.Cell className="text-right">{formatCost(r.costUsd)}</Table.Cell>

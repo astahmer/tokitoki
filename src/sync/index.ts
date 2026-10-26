@@ -7,6 +7,7 @@ import { localMachineId } from "../machine.ts";
 import { UserError } from "../cli.ts";
 import { dataDir, ensureDataDir, eventsFile } from "../store.ts";
 import { lineToEvent, type SyncAdapter, type SyncConfig } from "./types.ts";
+import { usageReplaySchema } from "../usage-replays.ts";
 import { DirAdapter } from "./dir.ts";
 import { GitAdapter } from "./git.ts";
 import { AtprotoAdapter } from "./atproto.ts";
@@ -89,7 +90,9 @@ export async function runSync(adapter: SyncAdapter, mode: "push" | "pull" | "bot
     const valid: string[] = [];
     for await (const line of adapter.pull()) {
       if (line.trim().length === 0) continue;
-      if (lineToEvent(line) !== null) valid.push(line);
+      let replay = false;
+      try { replay = usageReplaySchema.safeParse(JSON.parse(line)).success; } catch { /* Invalid lines remain rejected. */ }
+      if (lineToEvent(line) !== null || replay) valid.push(line);
       else result.pulledInvalid += 1;
     }
     result.pulledValid = valid.length;

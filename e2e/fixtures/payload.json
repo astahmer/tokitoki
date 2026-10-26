@@ -2,39 +2,234 @@
   "t3codeActivity": [
     {
       "key": "today",
-      "total": { "bucket": "TOTAL", "sessions": 3, "requests": 5, "inputTokens": 5000, "outputTokens": 1000, "cacheReadTokens": 1000, "cacheWriteTokens": 0, "costUsd": 0.42 },
+      "total": {
+        "bucket": "TOTAL",
+        "sessions": 3,
+        "requests": 5,
+        "inputTokens": 5000,
+        "outputTokens": 1000,
+        "cacheReadTokens": 1000,
+        "cacheWriteTokens": 0,
+        "costUsd": 0.42,
+        "reportedTokens": 5600,
+        "estimatedTokens": 1050,
+        "unknownTokens": 350,
+        "reportedTokenRequests": 4,
+        "estimatedTokenRequests": 0,
+        "unknownTokenRequests": 1
+      },
       "rows": [
-        { "bucket": "gpt-5", "sessions": 2, "requests": 3, "inputTokens": 3000, "outputTokens": 500, "cacheReadTokens": 500, "cacheWriteTokens": 0, "costUsd": 0.3 },
-        { "bucket": "claude-sonnet", "sessions": 2, "requests": 2, "inputTokens": 2000, "outputTokens": 500, "cacheReadTokens": 500, "cacheWriteTokens": 0, "costUsd": 0.12 }
+        {
+          "bucket": "gpt-5",
+          "sessions": 2,
+          "requests": 3,
+          "inputTokens": 3000,
+          "outputTokens": 500,
+          "cacheReadTokens": 500,
+          "cacheWriteTokens": 0,
+          "costUsd": 0.3,
+          "reportedTokens": 3200,
+          "estimatedTokens": 600,
+          "unknownTokens": 200,
+          "reportedTokenRequests": 2,
+          "estimatedTokenRequests": 0,
+          "unknownTokenRequests": 1
+        },
+        {
+          "bucket": "claude-sonnet",
+          "sessions": 2,
+          "requests": 2,
+          "inputTokens": 2000,
+          "outputTokens": 500,
+          "cacheReadTokens": 500,
+          "cacheWriteTokens": 0,
+          "costUsd": 0.12,
+          "reportedTokens": 2400,
+          "estimatedTokens": 450,
+          "unknownTokens": 150,
+          "reportedTokenRequests": 1,
+          "estimatedTokenRequests": 0,
+          "unknownTokenRequests": 1
+        }
       ]
     },
     {
       "key": "yesterday",
-      "total": { "bucket": "TOTAL", "sessions": 0, "requests": 0, "inputTokens": 0, "outputTokens": 0, "cacheReadTokens": 0, "cacheWriteTokens": 0, "costUsd": 0 },
+      "total": {
+        "bucket": "TOTAL",
+        "sessions": 0,
+        "requests": 0,
+        "inputTokens": 0,
+        "outputTokens": 0,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
+        "costUsd": 0,
+        "reportedTokens": 0,
+        "estimatedTokens": 0,
+        "unknownTokens": 0,
+        "reportedTokenRequests": 0,
+        "estimatedTokenRequests": 0,
+        "unknownTokenRequests": 0
+      },
       "rows": []
     },
     {
       "key": "week",
-      "total": { "bucket": "TOTAL", "sessions": 3, "requests": 5, "inputTokens": 5000, "outputTokens": 1000, "cacheReadTokens": 1000, "cacheWriteTokens": 0, "costUsd": 0.42 },
+      "total": {
+        "bucket": "TOTAL",
+        "sessions": 3,
+        "requests": 5,
+        "inputTokens": 5000,
+        "outputTokens": 1000,
+        "cacheReadTokens": 1000,
+        "cacheWriteTokens": 0,
+        "costUsd": 0.42,
+        "reportedTokens": 5600,
+        "estimatedTokens": 1050,
+        "unknownTokens": 350,
+        "reportedTokenRequests": 4,
+        "estimatedTokenRequests": 0,
+        "unknownTokenRequests": 1
+      },
       "rows": [
-        { "bucket": "gpt-5", "sessions": 2, "requests": 3, "inputTokens": 3000, "outputTokens": 500, "cacheReadTokens": 500, "cacheWriteTokens": 0, "costUsd": 0.3 },
-        { "bucket": "claude-sonnet", "sessions": 2, "requests": 2, "inputTokens": 2000, "outputTokens": 500, "cacheReadTokens": 500, "cacheWriteTokens": 0, "costUsd": 0.12 }
+        {
+          "bucket": "gpt-5",
+          "sessions": 2,
+          "requests": 3,
+          "inputTokens": 3000,
+          "outputTokens": 500,
+          "cacheReadTokens": 500,
+          "cacheWriteTokens": 0,
+          "costUsd": 0.3,
+          "reportedTokens": 3200,
+          "estimatedTokens": 600,
+          "unknownTokens": 200,
+          "reportedTokenRequests": 2,
+          "estimatedTokenRequests": 0,
+          "unknownTokenRequests": 1
+        },
+        {
+          "bucket": "claude-sonnet",
+          "sessions": 2,
+          "requests": 2,
+          "inputTokens": 2000,
+          "outputTokens": 500,
+          "cacheReadTokens": 500,
+          "cacheWriteTokens": 0,
+          "costUsd": 0.12,
+          "reportedTokens": 2400,
+          "estimatedTokens": 450,
+          "unknownTokens": 150,
+          "reportedTokenRequests": 1,
+          "estimatedTokenRequests": 0,
+          "unknownTokenRequests": 1
+        }
       ]
     },
     {
       "key": "month",
-      "total": { "bucket": "TOTAL", "sessions": 3, "requests": 5, "inputTokens": 5000, "outputTokens": 1000, "cacheReadTokens": 1000, "cacheWriteTokens": 0, "costUsd": 0.42 },
+      "total": {
+        "bucket": "TOTAL",
+        "sessions": 3,
+        "requests": 5,
+        "inputTokens": 5000,
+        "outputTokens": 1000,
+        "cacheReadTokens": 1000,
+        "cacheWriteTokens": 0,
+        "costUsd": 0.42,
+        "reportedTokens": 5600,
+        "estimatedTokens": 1050,
+        "unknownTokens": 350,
+        "reportedTokenRequests": 4,
+        "estimatedTokenRequests": 0,
+        "unknownTokenRequests": 1
+      },
       "rows": [
-        { "bucket": "gpt-5", "sessions": 2, "requests": 3, "inputTokens": 3000, "outputTokens": 500, "cacheReadTokens": 500, "cacheWriteTokens": 0, "costUsd": 0.3 },
-        { "bucket": "claude-sonnet", "sessions": 2, "requests": 2, "inputTokens": 2000, "outputTokens": 500, "cacheReadTokens": 500, "cacheWriteTokens": 0, "costUsd": 0.12 }
+        {
+          "bucket": "gpt-5",
+          "sessions": 2,
+          "requests": 3,
+          "inputTokens": 3000,
+          "outputTokens": 500,
+          "cacheReadTokens": 500,
+          "cacheWriteTokens": 0,
+          "costUsd": 0.3,
+          "reportedTokens": 3200,
+          "estimatedTokens": 600,
+          "unknownTokens": 200,
+          "reportedTokenRequests": 2,
+          "estimatedTokenRequests": 0,
+          "unknownTokenRequests": 1
+        },
+        {
+          "bucket": "claude-sonnet",
+          "sessions": 2,
+          "requests": 2,
+          "inputTokens": 2000,
+          "outputTokens": 500,
+          "cacheReadTokens": 500,
+          "cacheWriteTokens": 0,
+          "costUsd": 0.12,
+          "reportedTokens": 2400,
+          "estimatedTokens": 450,
+          "unknownTokens": 150,
+          "reportedTokenRequests": 1,
+          "estimatedTokenRequests": 0,
+          "unknownTokenRequests": 1
+        }
       ]
     },
     {
       "key": "year",
-      "total": { "bucket": "TOTAL", "sessions": 3, "requests": 5, "inputTokens": 5000, "outputTokens": 1000, "cacheReadTokens": 1000, "cacheWriteTokens": 0, "costUsd": 0.42 },
+      "total": {
+        "bucket": "TOTAL",
+        "sessions": 3,
+        "requests": 5,
+        "inputTokens": 5000,
+        "outputTokens": 1000,
+        "cacheReadTokens": 1000,
+        "cacheWriteTokens": 0,
+        "costUsd": 0.42,
+        "reportedTokens": 5600,
+        "estimatedTokens": 1050,
+        "unknownTokens": 350,
+        "reportedTokenRequests": 4,
+        "estimatedTokenRequests": 0,
+        "unknownTokenRequests": 1
+      },
       "rows": [
-        { "bucket": "gpt-5", "sessions": 2, "requests": 3, "inputTokens": 3000, "outputTokens": 500, "cacheReadTokens": 500, "cacheWriteTokens": 0, "costUsd": 0.3 },
-        { "bucket": "claude-sonnet", "sessions": 2, "requests": 2, "inputTokens": 2000, "outputTokens": 500, "cacheReadTokens": 500, "cacheWriteTokens": 0, "costUsd": 0.12 }
+        {
+          "bucket": "gpt-5",
+          "sessions": 2,
+          "requests": 3,
+          "inputTokens": 3000,
+          "outputTokens": 500,
+          "cacheReadTokens": 500,
+          "cacheWriteTokens": 0,
+          "costUsd": 0.3,
+          "reportedTokens": 3200,
+          "estimatedTokens": 600,
+          "unknownTokens": 200,
+          "reportedTokenRequests": 2,
+          "estimatedTokenRequests": 0,
+          "unknownTokenRequests": 1
+        },
+        {
+          "bucket": "claude-sonnet",
+          "sessions": 2,
+          "requests": 2,
+          "inputTokens": 2000,
+          "outputTokens": 500,
+          "cacheReadTokens": 500,
+          "cacheWriteTokens": 0,
+          "costUsd": 0.12,
+          "reportedTokens": 2400,
+          "estimatedTokens": 450,
+          "unknownTokens": 150,
+          "reportedTokenRequests": 1,
+          "estimatedTokenRequests": 0,
+          "unknownTokenRequests": 1
+        }
       ]
     }
   ],
@@ -1246,7 +1441,9 @@
           "tokens": 0,
           "usedPct": 80,
           "usedPercent": 80,
-          "windowMinutes": 300
+          "windowMinutes": 300,
+          "observedAt": "2026-09-10T15:18:00.000Z",
+          "status": "current"
         },
         {
           "cost": 0,
@@ -1265,7 +1462,9 @@
           "tokens": 0,
           "usedPct": 42,
           "usedPercent": 42,
-          "windowMinutes": 10080
+          "windowMinutes": 10080,
+          "observedAt": "2026-09-10T15:18:00.000Z",
+          "status": "current"
         },
         {
           "cost": 0,
@@ -1285,223 +1484,119 @@
           "tokens": 0,
           "usedPct": 12,
           "usedPercent": 12,
-          "windowMinutes": 10080
+          "windowMinutes": 10080,
+          "observedAt": "2026-09-10T15:18:00.000Z",
+          "status": "current"
         }
       ],
       "vendor": "anthropic"
     },
     {
       "provider": "codex",
-      "accountKey": "codex",
+      "accountKey": "openai:personal",
       "freshness": "fresh",
-      "observedAt": "2026-09-10T13:10:26.696Z",
-      "origin": "scan",
+      "observedAt": "2026-09-10T15:18:00.000Z",
+      "origin": "polled",
       "windows": [
         {
           "cost": 0,
           "kind": "day",
           "requests": 0,
-          "resetsAt": "2026-09-10T13:22:19.000Z",
-          "source": "embedded",
+          "resetsAt": "2026-09-10T18:22:19.000Z",
+          "source": "polled",
           "tokens": 0,
-          "usedPct": 20
+          "usedPct": 20,
+          "id": "codex:primary",
+          "bucketId": "codex",
+          "windowId": "primary",
+          "label": "Session",
+          "scope": "session",
+          "windowMinutes": 300,
+          "observedAt": "2026-09-10T15:18:00.000Z",
+          "status": "current"
         },
         {
-          "cost": 386.513001724,
+          "cost": 0,
           "kind": "week",
-          "requests": 3079,
+          "requests": 0,
           "resetsAt": "2026-09-15T08:52:15.000Z",
-          "source": "embedded",
-          "tokens": 370963707,
-          "usedPct": 37
-        },
-        {
-          "cost": 3043.562923804,
-          "kind": "month",
-          "requests": 15535,
-          "resetsAt": "2026-10-04T21:03:19.000Z",
-          "source": "embedded",
-          "tokens": 2259836229,
-          "usedPct": 94
-        },
-        {
-          "cost": 0,
-          "kind": "0min",
-          "requests": 0,
-          "resetsAt": "2026-07-24T09:05:49.000Z",
-          "source": "embedded",
+          "source": "polled",
           "tokens": 0,
-          "usedPct": 0
+          "usedPct": 37,
+          "id": "codex:secondary",
+          "bucketId": "codex",
+          "windowId": "secondary",
+          "label": "Weekly",
+          "scope": "weekly",
+          "windowMinutes": 10080,
+          "observedAt": "2026-09-10T15:18:00.000Z",
+          "status": "current"
         }
       ],
-      "vendor": "openai"
-    },
-    {
-      "provider": "codex",
-      "accountKey": "base_model_inference",
-      "email": "dev@example.com",
-      "freshness": "fresh",
-      "observedAt": "2026-09-04T20:41:41.134Z",
-      "origin": "scan",
-      "windows": [
-        {
-          "cost": 0,
-          "kind": "day",
-          "requests": 0,
-          "resetsAt": "2026-09-10T22:00:00.000Z",
-          "source": "derived",
-          "tokens": 0,
-          "windowEnd": "2026-09-10T22:00:00.000Z",
-          "windowStart": "2026-09-09T22:00:00.000Z"
-        },
-        {
-          "cost": 9.6506056,
-          "kind": "week",
-          "requests": 78,
-          "resetsAt": "2026-09-11T20:41:27.000Z",
-          "source": "embedded",
-          "tokens": 8653658,
-          "usedPct": 0
-        },
-        {
-          "cost": 214.1928188,
-          "kind": "month",
-          "requests": 1561,
-          "resetsAt": "2026-09-30T22:00:00.000Z",
-          "source": "derived",
-          "tokens": 191960181,
-          "windowEnd": "2026-09-30T22:00:00.000Z",
-          "windowStart": "2026-08-31T22:00:00.000Z"
-        }
-      ],
-      "vendor": "openai"
-    },
-    {
-      "provider": "cursor",
-      "accountKey": "default",
-      "freshness": "unknown",
-      "origin": "scan",
-      "windows": [
-        {
-          "cost": 0.10832125000000001,
-          "kind": "month",
-          "requests": 469,
-          "resetsAt": "2026-09-30T22:00:00.000Z",
-          "source": "derived",
-          "tokens": 84283,
-          "windowEnd": "2026-09-30T22:00:00.000Z",
-          "windowStart": "2026-08-31T22:00:00.000Z"
-        }
-      ],
-      "vendor": "cursor"
-    },
-    {
-      "provider": "t3code",
-      "accountKey": "cursor",
-      "freshness": "unknown",
-      "origin": "scan",
-      "windows": [
-        {
-          "cost": 0,
-          "kind": "day",
-          "requests": 0,
-          "resetsAt": "2026-09-10T22:00:00.000Z",
-          "source": "derived",
-          "tokens": 0,
-          "windowEnd": "2026-09-10T22:00:00.000Z",
-          "windowStart": "2026-09-09T22:00:00.000Z"
-        },
-        {
-          "cost": 0,
-          "kind": "week",
-          "requests": 0,
-          "resetsAt": "2026-09-13T22:00:00.000Z",
-          "source": "derived",
-          "tokens": 0,
-          "windowEnd": "2026-09-13T22:00:00.000Z",
-          "windowStart": "2026-09-06T22:00:00.000Z"
-        },
-        {
-          "cost": 0,
-          "kind": "month",
-          "requests": 0,
-          "resetsAt": "2026-09-30T22:00:00.000Z",
-          "source": "derived",
-          "tokens": 0,
-          "windowEnd": "2026-09-30T22:00:00.000Z",
-          "windowStart": "2026-08-31T22:00:00.000Z"
-        }
-      ],
-      "vendor": "cursor"
-    },
-    {
-      "provider": "codex",
-      "accountKey": "codex-lb:plus",
-      "email": "dev@example.com",
-      "freshness": "fresh",
-      "observedAt": "2026-08-02T22:21:23.333Z",
-      "origin": "scan",
+      "vendor": "openai",
+      "accountId": "personal",
+      "email": "personal@example.com",
       "planLabel": "Plus",
-      "windows": [
-        {
-          "cost": 0,
-          "kind": "day",
-          "requests": 0,
-          "resetsAt": "2026-07-12T21:17:06.000Z",
-          "source": "embedded",
-          "tokens": 0,
-          "usedPct": 100
-        },
-        {
-          "cost": 0,
-          "kind": "week",
-          "requests": 0,
-          "resetsAt": "2026-07-25T00:11:34.000Z",
-          "source": "embedded",
-          "tokens": 0,
-          "usedPct": 10
-        },
-        {
-          "cost": 0,
-          "kind": "month",
-          "requests": 0,
-          "resetsAt": "2026-09-30T22:00:00.000Z",
-          "source": "derived",
-          "tokens": 0,
-          "windowEnd": "2026-09-30T22:00:00.000Z",
-          "windowStart": "2026-08-31T22:00:00.000Z"
-        }
-      ],
-      "vendor": "openai"
+      "codexHome": "/home/fixture/.codex-personal",
+      "bankedResets": 2,
+      "bankedExpiresAt": "2026-10-01T00:00:00.000Z",
+      "credits": {
+        "hasCredits": true,
+        "unlimited": false,
+        "balance": "123.45"
+      }
     },
     {
       "provider": "codex",
-      "accountKey": "openai:plus",
-      "freshness": "stale",
-      "observedAt": "2026-09-09T12:00:00Z",
-      "origin": "scan",
+      "accountKey": "openai:work",
+      "freshness": "fresh",
+      "observedAt": "2026-09-10T15:18:00.000Z",
+      "origin": "polled",
       "planLabel": "Plus",
       "windows": [
         {
           "kind": "day",
           "label": "Session",
           "scope": "session",
-          "source": "embedded",
+          "source": "polled",
           "status": "expired",
           "observedAt": "2026-09-09T12:00:00Z",
           "windowMinutes": 300,
           "resetsAt": "2026-09-09T17:00:00Z",
           "tokens": 0,
           "cost": 0,
-          "requests": 0
+          "requests": 0,
+          "id": "codex:primary",
+          "bucketId": "codex",
+          "windowId": "primary"
         },
         {
           "kind": "unknown",
           "label": "Review limit",
           "scope": "other",
-          "source": "embedded",
+          "source": "polled",
           "status": "unknown",
           "observedAt": "2026-09-09T12:00:00Z",
+          "tokens": 0,
+          "cost": 0,
+          "requests": 0,
+          "id": "review:primary",
+          "bucketId": "review",
+          "windowId": "primary"
+        },
+        {
+          "kind": "week",
+          "id": "codex:secondary",
+          "bucketId": "codex",
+          "windowId": "secondary",
+          "label": "Weekly",
+          "scope": "weekly",
+          "source": "polled",
+          "status": "current",
+          "observedAt": "2026-09-10T15:18:00.000Z",
+          "windowMinutes": 10080,
+          "resetsAt": "2026-09-15T08:52:15.000Z",
+          "usedPct": 35,
           "tokens": 0,
           "cost": 0,
           "requests": 0
@@ -1533,6 +1628,50 @@
           "usedPct": 25,
           "windowStart": "2026-09-01T00:00:00Z",
           "windowEnd": "2026-10-01T00:00:00Z"
+        }
+      ],
+      "accountId": "work",
+      "email": "work@example.com",
+      "codexHome": "/home/fixture/.codex-work"
+    },
+    {
+      "provider": "cursor",
+      "accountKey": "default",
+      "freshness": "fresh",
+      "origin": "polled",
+      "windows": [
+        {
+          "kind": "month",
+          "id": "cursor-models",
+          "bucketId": "cursor-models",
+          "windowId": "billing-cycle",
+          "label": "Cursor Models",
+          "scope": "monthly",
+          "source": "polled",
+          "status": "current",
+          "observedAt": "2026-09-10T15:18:00.000Z",
+          "windowMinutes": 43200,
+          "windowStart": "2026-09-01T00:00:00.000Z",
+          "windowEnd": "2026-10-01T00:00:00.000Z",
+          "resetsAt": "2026-10-01T00:00:00.000Z",
+          "usedPct": 30,
+          "tokens": 0,
+          "cost": 0,
+          "requests": 0
+        }
+      ],
+      "vendor": "cursor",
+      "observedAt": "2026-09-10T15:18:00.000Z",
+      "budgetWindows": [
+        {
+          "cost": 0.10832125000000001,
+          "kind": "month",
+          "requests": 469,
+          "resetsAt": "2026-09-30T22:00:00.000Z",
+          "source": "derived",
+          "tokens": 84283,
+          "windowEnd": "2026-09-30T22:00:00.000Z",
+          "windowStart": "2026-08-31T22:00:00.000Z"
         }
       ]
     }
@@ -4044,6 +4183,7 @@
       "displayName": "OpenRouter",
       "shortName": "OpenRouter",
       "vendor": "openrouter",
+      "gateway": true,
       "icon": "alt_route",
       "logo": "openrouter"
     },
@@ -4051,6 +4191,7 @@
       "displayName": "OpenCode",
       "shortName": "OpenCode",
       "vendor": "opencode",
+      "gateway": true,
       "icon": "code",
       "logo": "opencode"
     },
@@ -4118,6 +4259,7 @@
       "displayName": "Command Code",
       "shortName": "Command Code",
       "vendor": "commandcode",
+      "gateway": true,
       "icon": "code"
     },
     "claude-code": {
@@ -4129,13 +4271,6 @@
     },
     "codex": {
       "displayName": "Codex",
-      "shortName": "Codex",
-      "vendor": "openai",
-      "icon": "smart_toy",
-      "logo": "codex"
-    },
-    "opencodex": {
-      "displayName": "opencodex",
       "shortName": "Codex",
       "vendor": "openai",
       "icon": "smart_toy",
@@ -4173,6 +4308,7 @@
       "displayName": "OpenCode Go",
       "shortName": "OpenCode",
       "vendor": "opencode",
+      "gateway": true,
       "icon": "code",
       "logo": "opencode"
     },
@@ -4235,6 +4371,158 @@
       "indicator": "none",
       "description": "All Systems Operational",
       "url": "https://status.openai.com"
+    }
+  },
+  "trackingPeriods": {
+    "day": {
+      "requests": 745,
+      "totalTokens": 154686297,
+      "inputTokens": 78429577,
+      "outputTokens": 323664,
+      "cacheReadTokens": 75933056,
+      "cacheWriteTokens": 0,
+      "costUsd": 21.921266214,
+      "reportedRequests": 223,
+      "estimatedRequests": 372,
+      "unpricedRequests": 74,
+      "unknownRequests": 76,
+      "pricedRequests": 595,
+      "pricingCoveragePercent": 79.86577181208054,
+      "cachedInputPercent": 49.19134542101261,
+      "unpricedModels": [
+        "fixture-unpriced-model"
+      ],
+      "reportedTokens": 123749037,
+      "estimatedTokens": 23202944,
+      "unknownTokens": 7734316,
+      "reportedTokenRequests": 596,
+      "estimatedTokenRequests": 111,
+      "unknownTokenRequests": 38
+    },
+    "today": {
+      "requests": 745,
+      "totalTokens": 154686297,
+      "inputTokens": 78429577,
+      "outputTokens": 323664,
+      "cacheReadTokens": 75933056,
+      "cacheWriteTokens": 0,
+      "costUsd": 21.921266214,
+      "reportedRequests": 223,
+      "estimatedRequests": 372,
+      "unpricedRequests": 74,
+      "unknownRequests": 76,
+      "pricedRequests": 595,
+      "pricingCoveragePercent": 79.86577181208054,
+      "cachedInputPercent": 49.19134542101261,
+      "unpricedModels": [
+        "fixture-unpriced-model"
+      ],
+      "reportedTokens": 123749037,
+      "estimatedTokens": 23202944,
+      "unknownTokens": 7734316,
+      "reportedTokenRequests": 596,
+      "estimatedTokenRequests": 111,
+      "unknownTokenRequests": 38
+    },
+    "week": {
+      "requests": 3365,
+      "totalTokens": 741957248,
+      "inputTokens": 378185901,
+      "outputTokens": 1460179,
+      "cacheReadTokens": 362311168,
+      "cacheWriteTokens": 0,
+      "costUsd": 396.202413374,
+      "reportedRequests": 1009,
+      "estimatedRequests": 1682,
+      "unpricedRequests": 336,
+      "unknownRequests": 338,
+      "pricedRequests": 2691,
+      "pricingCoveragePercent": 79.9702823179792,
+      "cachedInputPercent": 48.928102914611266,
+      "unpricedModels": [
+        "fixture-unpriced-model"
+      ],
+      "reportedTokens": 593565798,
+      "estimatedTokens": 111293587,
+      "unknownTokens": 37097863,
+      "reportedTokenRequests": 2692,
+      "estimatedTokenRequests": 504,
+      "unknownTokenRequests": 169
+    },
+    "yesterday": {
+      "requests": 802,
+      "inputTokens": 79861685,
+      "outputTokens": 331523,
+      "cacheReadTokens": 77265024,
+      "cacheWriteTokens": 0,
+      "costUsd": 25.110704813999998,
+      "totalTokens": 157458232,
+      "reportedRequests": 240,
+      "estimatedRequests": 401,
+      "unpricedRequests": 80,
+      "unknownRequests": 81,
+      "pricedRequests": 641,
+      "pricingCoveragePercent": 79.92518703241896,
+      "cachedInputPercent": 49.173704770969266,
+      "unpricedModels": [
+        "fixture-unpriced-model"
+      ],
+      "reportedTokens": 125966585,
+      "estimatedTokens": 23618734,
+      "unknownTokens": 7872913,
+      "reportedTokenRequests": 641,
+      "estimatedTokenRequests": 120,
+      "unknownTokenRequests": 41
+    },
+    "month": {
+      "requests": 21099,
+      "inputTokens": 2443634482,
+      "outputTokens": 8745772,
+      "cacheReadTokens": 2349925760,
+      "cacheWriteTokens": 0,
+      "costUsd": 3258.564368904,
+      "totalTokens": 4802306014,
+      "reportedRequests": 6329,
+      "estimatedRequests": 10549,
+      "unpricedRequests": 2109,
+      "unknownRequests": 2112,
+      "pricedRequests": 16878,
+      "pricingCoveragePercent": 79.99431252666002,
+      "cachedInputPercent": 49.02255612457994,
+      "unpricedModels": [
+        "fixture-unpriced-model"
+      ],
+      "reportedTokens": 3841844811,
+      "estimatedTokens": 720345902,
+      "unknownTokens": 240115301,
+      "reportedTokenRequests": 16879,
+      "estimatedTokenRequests": 3164,
+      "unknownTokenRequests": 1056
+    },
+    "year": {
+      "requests": 42604,
+      "inputTokens": 4471792811,
+      "outputTokens": 16646920,
+      "cacheReadTokens": 4203958528,
+      "cacheWriteTokens": 0,
+      "costUsd": 10507.563144243999,
+      "totalTokens": 8692398259,
+      "reportedRequests": 12781,
+      "estimatedRequests": 21302,
+      "unpricedRequests": 4260,
+      "unknownRequests": 4261,
+      "pricedRequests": 34083,
+      "pricingCoveragePercent": 79.99953056051075,
+      "cachedInputPercent": 48.45642024226762,
+      "unpricedModels": [
+        "fixture-unpriced-model"
+      ],
+      "reportedTokens": 6953918607,
+      "estimatedTokens": 1303859738,
+      "unknownTokens": 434619914,
+      "reportedTokenRequests": 34083,
+      "estimatedTokenRequests": 6390,
+      "unknownTokenRequests": 2131
     }
   }
 }

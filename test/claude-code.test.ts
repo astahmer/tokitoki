@@ -56,8 +56,9 @@ describe("claude-code provider", () => {
     expect(e.cacheWriteTokens).toBe(500);
     expect(e!.projectDir).toBe("/Users/me/dev/proj");
     expect(e!.sessionId).toBe("sess-1");
-    // cost estimated (no costUSD on the line) and positive
-    expect(e!.costUsd).toBeGreaterThan(0);
+    // A future generation has no verified offline price.
+    expect(e!.costUsd).toBeUndefined();
+    expect(e!.costSource).toBe("unpriced");
   });
 
   it("prefers reported costUSD over estimation", () => {

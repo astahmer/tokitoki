@@ -31,6 +31,7 @@ workerSelf.onmessage = (ev: MessageEvent<ScanRequest>) => {
     const result = scanProviderCore(provider, msg.machineId, {
       onEvents: (events) => workerSelf.postMessage({ type: "events", events }),
       onQuotas: (quotas) => workerSelf.postMessage({ type: "quotas", quotas }),
+      onReplayedUsage: (ids) => workerSelf.postMessage({ type: "replayed-usage", ids }),
       onSaveCursors: (cursors) => saveProviderCursors(provider.id, cursors),
     });
     workerSelf.postMessage({ type: "done", result });

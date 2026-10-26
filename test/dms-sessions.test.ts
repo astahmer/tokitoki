@@ -37,6 +37,13 @@ const qmlFunctions = (names: string[], root: unknown = {}) => {
 };
 
 describe("DMS sessions QML helpers", () => {
+  it("labels estimated request counters independently of price estimates", () => {
+    const root = {};
+    const helpers = qmlFunctions(["eventTokens", "eventTokenLabel", "compactNumber", "safeNumber", "trimDecimal"], root);
+    Object.assign(root, helpers);
+    expect(helpers.eventTokenLabel({ inputTokens: 10, outputTokens: 2, tokenSource: "estimated" })).toBe("≈12 tokens estimated");
+    expect(helpers.eventTokenLabel({ inputTokens: 10, outputTokens: 2, tokenSource: "reported" })).toBe("12 tokens");
+  });
   it("does not start background searches when its tab is hidden", () => {
     const root = { active: false, pendingSearch: false };
     qmlFunctions(["runSearch"], root).runSearch();

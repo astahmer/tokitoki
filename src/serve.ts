@@ -2,6 +2,7 @@ import { z } from "zod";
 import { handleAccountOrderRequest } from "./account-order-api.ts";
 
 import { EventCache, dimensionLabel, parseDimension, type AggRow } from "./cache.ts";
+import { readAccountUiPreferences } from "./uiToggles.ts";
 import { loadConfig } from "./config.ts";
 import { readLimitsDocument } from "./limits-document.ts";
 import { calendarDayWindow, rollingWindow, type TimeWindow } from "./period.ts";
@@ -111,7 +112,7 @@ export const handleLocalApiRequest = async (request: Request, options: { loopbac
           endpoints: ["/v1/health", "/v1/status", "/v1/limits", "/v1/usage"],
         })));
       case "/v1/limits":
-        return json(readLimitsDocument({ showEmail: url.searchParams.get("showEmail") === "1" }));
+        return json({ ...readLimitsDocument({ showEmail: url.searchParams.get("showEmail") === "1" }), uiPreview: readAccountUiPreferences() });
       case "/v1/usage": {
         const query = UsageQuerySchema.safeParse(Object.fromEntries(url.searchParams));
         if (!query.success) return error(400, "invalid query", z.treeifyError(query.error));

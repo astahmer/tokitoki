@@ -8,16 +8,20 @@ import { loadConfig } from "../src/config.ts";
 import { accountUiPreferences, isCardVisibleOn, setPreviewAccountVisibility, setSurfaceVisibility } from "../src/uiToggles.ts";
 
 const originalConfig = process.env.TOKITOKI_CONFIG;
+const originalData = process.env.TOKITOKI_DATA_DIR;
 const directories: string[] = [];
 afterEach(() => {
   if (originalConfig === undefined) delete process.env.TOKITOKI_CONFIG;
   else process.env.TOKITOKI_CONFIG = originalConfig;
+  if (originalData === undefined) delete process.env.TOKITOKI_DATA_DIR;
+  else process.env.TOKITOKI_DATA_DIR = originalData;
   for (const dir of directories.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 const fixture = () => {
   const directory = mkdtempSync(join(tmpdir(), "tokitoki-presentation-"));
   directories.push(directory);
   process.env.TOKITOKI_CONFIG = join(directory, "config.json");
+  process.env.TOKITOKI_DATA_DIR = directory;
   writeFileSync(process.env.TOKITOKI_CONFIG, JSON.stringify({ ui: { menubarAccountOrder: ["codex@work", "codex@personal"] } }));
 };
 const request = (path: string, body: unknown, origin = "http://localhost:6736") => handleAccountOrderRequest(new Request("http://localhost:6736/v1/ui/" + path, {

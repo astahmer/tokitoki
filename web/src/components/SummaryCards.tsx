@@ -9,7 +9,7 @@ export function SummaryCards({ summary }: { summary: SummaryPayload }) {
   const since = new Date(w.since).toLocaleString([], { dateStyle: "short", timeStyle: "short" });
   // Cost label tracks the actual window ("week cost", "30d cost", …) instead
   // of a hardcoded name that drifts from the selected range.
-  const costLabel = `${w.label} cost`;
+  const costLabel = `${w.label} known / estimated API usage value`;
   return (
     <div className="mb-4">
       <div className="mb-2 text-xs text-kumo-subtle">
@@ -20,6 +20,7 @@ export function SummaryCards({ summary }: { summary: SummaryPayload }) {
         <Surface as="div" className="px-4 py-3 lg:col-span-2">
           <div className="text-[10px] tracking-wider text-kumo-subtle uppercase">{costLabel}</div>
           <div className="mt-1 text-3xl font-semibold whitespace-nowrap tabular-nums">{formatCost(summary.cost)}</div>
+          <p className="text-[10px] text-kumo-subtle">API-rate estimate; not a subscription bill. Unknown pricing is not free.</p>
           <div className="mt-0.5 whitespace-nowrap">
             {summary.prevWeekCost !== null && (
               <Badge variant={summary.cost >= summary.prevWeekCost ? "error" : "success"}>

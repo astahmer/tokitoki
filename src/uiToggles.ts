@@ -1,5 +1,6 @@
 import { loadConfig, writeConfig, type TokitokiConfig } from "./config.ts";
 import { UserError } from "./errors.ts";
+import { EventCache } from "./cache.ts";
 
 /**
  * [ui] visibility toggles: which providers/accounts appear on which surface.
@@ -92,7 +93,15 @@ export function isPreviewVisible(config: TokitokiConfig, upstreamProvider: strin
 }
 
 function saveUiMutator(mutate: (cfg: TokitokiConfig) => void): void {
-  const cfg = loadConfig();
+  // Explicit saves must operate on the same identities shown by read projections,
+  // so restoring a migrated account also removes its saved legacy hide entry.
+  const cache = new EventCache();
+  let cfg: TokitokiConfig;
+  try {
+    const config = loadConfig();
+    cfg = projectAccountUiConfig(config, cache.nativeAccountAliases(config));
+  }
+  finally { cache.close(); }
   mutate(cfg);
   writeConfig(cfg);
 }
@@ -234,15 +243,68 @@ export function assertValidSurface(surface: string | undefined): Surface {
   return normalized;
 }
 
+/** Remap only identities proven by the native cache. Preserve order and absent slots. */
+export function normalizeAccountOrder(ids: string[], aliases: ReadonlyMap<string, string>): string[] {
+  return [...new Set(ids.map((id) => aliases.get(id) ?? id))];
+}
+
+/** Legacy hidden entries use provider:account suffixes; resolve only a unique destination. */
+export function normalizeHiddenAccounts(targets: string[], aliases: ReadonlyMap<string, string>): string[] {
+  return [...new Set(targets.map((raw) => {
+    const at = raw.indexOf("@");
+    const colon = raw.indexOf(":");
+    if (at > 0 && (colon < 0 || at < colon)) {
+      const id = aliases.get(raw) ?? raw;
+      const separator = id.indexOf("@");
+      return id.slice(0, separator) + ":" + id.slice(separator + 1);
+    }
+    const target = parseToggleTarget(raw);
+    if (target.accountKey === undefined) return raw;
+    const exact = aliases.get(target.provider + "@" + target.accountKey);
+    const destinations = new Set(exact !== undefined ? [exact] : [...aliases].flatMap(([old, canonical]) => {
+      const separator = old.indexOf("@");
+      return old.slice(0, separator) === target.provider && old.slice(separator + 1).endsWith(target.accountKey!) ? [canonical] : [];
+    }));
+    if (destinations.size !== 1) return raw;
+    const id = [...destinations][0]!;
+    const separator = id.indexOf("@");
+    return id.slice(0, separator) + ":" + id.slice(separator + 1);
+  }))];
+}
+
+/** Immutable projection also used before an explicit UI preference save. */
+export function projectAccountUiConfig(config: TokitokiConfig, aliases: ReadonlyMap<string, string>): TokitokiConfig {
+  const ui = config.ui;
+  if (ui === undefined) return config;
+  return { ...config, ui: {
+    ...ui,
+    ...(ui.menubarAccountOrder !== undefined ? { menubarAccountOrder: normalizeAccountOrder(ui.menubarAccountOrder, aliases) } : {}),
+    ...(ui.previewAccountOrder !== undefined ? { previewAccountOrder: normalizeAccountOrder(ui.previewAccountOrder, aliases) } : {}),
+    ...(ui.previewHiddenAccounts !== undefined ? { previewHiddenAccounts: normalizeAccountOrder(ui.previewHiddenAccounts, aliases) } : {}),
+    ...(ui.hidden !== undefined ? { hidden: Object.fromEntries(Object.entries(ui.hidden).map(([surface, targets]) => [surface, normalizeHiddenAccounts(targets ?? [], aliases)])) } : {}),
+  } };
+}
+
 /** Quota-card and bar preferences share stable provider@accountKey account ids. */
-export function accountUiPreferences(config: TokitokiConfig) {
+export function accountUiPreferences(config: TokitokiConfig, aliases: ReadonlyMap<string, string> = new Map()) {
   return {
-    accountOrder: config.ui?.menubarAccountOrder ?? [],
-    barAccountOrder: config.ui?.previewAccountOrder ?? config.ui?.menubarAccountOrder ?? [],
-    barHiddenAccounts: config.ui?.previewHiddenAccounts ?? [],
-    menubarHidden: hiddenTargets(config, "widget"),
+    accountOrder: normalizeAccountOrder(config.ui?.menubarAccountOrder ?? [], aliases),
+    barAccountOrder: normalizeAccountOrder(config.ui?.previewAccountOrder ?? config.ui?.menubarAccountOrder ?? [], aliases),
+    barHiddenAccounts: normalizeAccountOrder(config.ui?.previewHiddenAccounts ?? [], aliases),
+    menubarHidden: normalizeHiddenAccounts(hiddenTargets(config, "widget"), aliases),
     previewHidden: config.ui?.previewHidden ?? [],
   };
+}
+
+/** Shared read projection for CLI and HTTP surfaces. Never writes user configuration. */
+export function readAccountUiPreferences(input: { config?: TokitokiConfig; cache?: EventCache } = {}) {
+  const cache = input.cache ?? new EventCache();
+  try {
+    const config = input.config ?? loadConfig();
+    return accountUiPreferences(config, cache.nativeAccountAliases(config));
+  } finally {
+    if (input.cache === undefined) cache.close();
+  }
 }
 
 export function setPreviewAccountOrder(ids: string[]): void {

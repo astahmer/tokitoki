@@ -5,6 +5,7 @@ import { gunzipSync } from "node:zlib";
 
 import type { UsageEvent } from "./types.ts";
 import { isValidUsageEvent } from "./types.ts";
+import { usageReplaySchema, type UsageReplayDecision } from "./usage-replays.ts";
 
 /** Data dir for the local append-log + sqlite cache. */
 export function dataDir(): string {
@@ -98,6 +99,12 @@ export function appendEvents(events: UsageEvent[]): number {
   return events.length;
 }
 
+export const appendUsageReplayDecisions = (decisions: UsageReplayDecision[]): void => {
+  if (decisions.length === 0) return;
+  ensureDataDir();
+  fs.appendFileSync(eventsFile(), decisions.map(decision => JSON.stringify(decision)).join("\n") + "\n");
+};
+
 /**
  * Read only the events appended after `fromOffset`. Returns the parsed events
  * plus the new safe consumption point: the offset clamped back to the last
@@ -107,6 +114,7 @@ export function appendEvents(events: UsageEvent[]): number {
 export function readEventsTail(
   file: string,
   fromOffset: number,
+  onReplay?: (decision: UsageReplayDecision) => void,
 ): { events: UsageEvent[]; newSize: number } {
   let size = 0;
   try {
@@ -146,6 +154,10 @@ export function readEventsTail(
     try {
       const parsed: unknown = JSON.parse(trimmed);
       if (isValidUsageEvent(parsed)) events.push(parsed);
+      else if (onReplay !== undefined) {
+        const decision = usageReplaySchema.safeParse(parsed);
+        if (decision.success) onReplay(decision.data);
+      }
     } catch {
       // skip corrupt line
     }
@@ -169,7 +181,7 @@ function readLogText(file: string): string | null {
  * Read all usage events from a JSONL log file (.jsonl or .jsonl.gz).
  * Tolerates trailing partial lines and corrupt lines (skipped).
  */
-export function readEventsFile(file: string): UsageEvent[] {
+export function readEventsFile(file: string, onReplay?: (decision: UsageReplayDecision) => void): UsageEvent[] {
   const raw = readLogText(file);
   if (raw === null) return [];
   const events: UsageEvent[] = [];
@@ -179,6 +191,10 @@ export function readEventsFile(file: string): UsageEvent[] {
     try {
       const parsed: unknown = JSON.parse(trimmed);
       if (isValidUsageEvent(parsed)) events.push(parsed);
+      else if (onReplay !== undefined) {
+        const decision = usageReplaySchema.safeParse(parsed);
+        if (decision.success) onReplay(decision.data);
+      }
     } catch {
       // skip corrupt line
     }

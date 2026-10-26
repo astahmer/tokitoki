@@ -155,7 +155,24 @@ export const AccountBalanceSchema = z.object({
 
 export type AccountBalance = z.infer<typeof AccountBalanceSchema>;
 
+export const AccountCreditsSchema = z.object({
+  hasCredits: z.boolean(),
+  unlimited: z.boolean(),
+  balance: z.string().nullable().optional(),
+});
+
+export type AccountCredits = z.infer<typeof AccountCreditsSchema>;
+
 export const QuotaAccountMetaSchema = z.object({
+  /** Workspace monetary credits, independent of reset-credit counts. */
+  credits: AccountCreditsSchema.optional(),
+  /** Native credential home, used only to target account login actions. */
+  codexHome: z.string().optional(),
+  /** Login target retained after logout; never used as an identity binding. */
+  reauthHome: z.string().optional(),
+  /** Explicit reset credits, independent of workspace monetary credits. */
+  bankedResets: z.number().int().nonnegative().optional(),
+  bankedExpiresAt: z.string().optional(),
   plan: z.string().optional(),
   email: z.string().optional(),
   organization: z.string().optional(),

@@ -4,7 +4,7 @@ import path from "node:path";
 
 import type { EventCache } from "../cache.ts";
 import { eventId, localMachineId } from "../machine.ts";
-import { estimateCost } from "../pricing.ts";
+import { resolveUsageCost } from "../pricing.ts";
 import { appendEvents, dataDir } from "../store.ts";
 import type { UsageEvent } from "../types.ts";
 
@@ -68,11 +68,15 @@ export function cursorDashboardUsageEvents(input: {
     if (event.tokenUsage === undefined || event.tokenUsage === null) continue;
     if (typeof event.tokenUsage !== "object") continue;
     const usage = event.tokenUsage as Record<string, unknown>;
+    // An empty/partial usage object is not a measured zero-token request.
+    if (usage.inputTokens === undefined || usage.inputTokens === null ||
+      usage.outputTokens === undefined || usage.outputTokens === null) continue;
     const inputTokens = countOrZero(usage.inputTokens);
     const outputTokens = countOrZero(usage.outputTokens);
     const cacheReadTokens = countOrZero(usage.cacheReadTokens);
     const cacheWriteTokens = countOrZero(usage.cacheWriteTokens);
-    const totalCents = usage.totalCents === undefined || usage.totalCents === null ? null : countOrZero(usage.totalCents);
+    const totalCents = typeof usage.totalCents === "number" && Number.isFinite(usage.totalCents) && usage.totalCents >= 0
+      ? usage.totalCents : null;
     if (inputTokens === null || outputTokens === null || cacheReadTokens === null || cacheWriteTokens === null) continue;
     if (typeof event.model !== "string" || event.model.length === 0) continue;
     const timestampMs = typeof event.timestamp === "string" ? Number(event.timestamp) : event.timestamp;
@@ -85,7 +89,10 @@ export function cursorDashboardUsageEvents(input: {
       cacheWriteTokens,
     };
     const reported = totalCents === null ? null : totalCents / 100;
-    const identity = JSON.stringify([timestampMs, event.model, sessionId, counts, reported]);
+    // Older IDs used whole cents. Preserve their namespace while retaining
+    // fractional cents in the recorded amount, so an overlap poll cannot duplicate history.
+    const identity = JSON.stringify([timestampMs, event.model, sessionId, counts,
+      totalCents === null ? null : Math.trunc(totalCents) / 100]);
     const occurrence = seen.get(identity) ?? 0;
     seen.set(identity, occurrence + 1);
     events.push({
@@ -96,7 +103,8 @@ export function cursorDashboardUsageEvents(input: {
       accountKey,
       model: event.model,
       ...counts,
-      costUsd: reported ?? estimateCost(event.model, counts),
+      tokenSource: "reported",
+      ...resolveUsageCost({ model: event.model, tokens: counts, reportedCost: reported }),
       ...(sessionId.length > 0 ? { sessionId } : {}),
     });
   }

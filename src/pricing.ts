@@ -1,6 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
+import { z } from "zod";
 
+import type { UsageEvent } from "./types.ts";
 import { dataDir } from "./store.ts";
 
 /**
@@ -13,10 +15,10 @@ import { dataDir } from "./store.ts";
  * The embedded snapshot below is the offline fallback.
  */
 export interface ModelPrice {
-  inputPerMtok: number;
-  outputPerMtok: number;
-  cacheReadPerMtok: number;
-  cacheWritePerMtok: number;
+  inputPerMtok?: number;
+  outputPerMtok?: number;
+  cacheReadPerMtok?: number;
+  cacheWritePerMtok?: number;
 }
 
 export type PricingTable = Record<string, ModelPrice>;
@@ -43,12 +45,17 @@ function pricingCachePath(): string {
   return path.join(dataDir(), "pricing.json");
 }
 
-interface CacheFile {
-  fetchedAt: number;
-  /** model name → per-Mtok prices */
-  models: PricingTable;
-  source?: string;
-}
+const cachedRate = z.number().finite().nonnegative().optional();
+const pricingCacheSchema = z.object({
+  formatVersion: z.literal(2),
+  fetchedAt: z.number().finite().nonnegative(),
+  models: z.record(z.string(), z.object({
+    inputPerMtok: cachedRate, outputPerMtok: cachedRate,
+    cacheReadPerMtok: cachedRate, cacheWritePerMtok: cachedRate,
+  })),
+  source: z.string().optional(),
+});
+type CacheFile = z.infer<typeof pricingCacheSchema>;
 
 function finiteCost(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
@@ -76,7 +83,7 @@ export function buildModelsDevTable(raw: unknown): PricingTable {
     const previous = out[normalized];
     // Keep the first priced entry for a bare alias. Provider-qualified keys
     // remain available when two providers publish different prices.
-    if (previous === undefined || (previous.inputPerMtok === 0 && previous.outputPerMtok === 0)) {
+    if (previous === undefined) {
       out[normalized] = price;
     }
   };
@@ -90,14 +97,16 @@ export function buildModelsDevTable(raw: unknown): PricingTable {
       const cost = (modelValue as Record<string, unknown>).cost;
       if (typeof cost !== "object" || cost === null) continue;
       const c = cost as Record<string, unknown>;
+      if ([c.input, c.output, c.cache_read, c.cache_write].some(value =>
+        value !== undefined && finiteCost(value) === undefined)) continue;
       const input = finiteCost(c.input);
       const output = finiteCost(c.output);
       if (input === undefined && output === undefined) continue;
       const price: ModelPrice = {
-        inputPerMtok: input ?? 0,
-        outputPerMtok: output ?? 0,
-        cacheReadPerMtok: finiteCost(c.cache_read) ?? 0,
-        cacheWritePerMtok: finiteCost(c.cache_write) ?? 0,
+        inputPerMtok: input,
+        outputPerMtok: output,
+        cacheReadPerMtok: finiteCost(c.cache_read),
+        cacheWritePerMtok: finiteCost(c.cache_write),
       };
       add(`${provider}/${modelId}`, price);
       add(modelId, price);
@@ -126,59 +135,58 @@ export function buildLiteLlmTable(raw: unknown): PricingTable {
     const e = entry as Record<string, unknown>;
     // Skip non-completion rows (embeddings/search return no token pricing we use)
     if (e.input_cost_per_token === undefined && e.output_cost_per_token === undefined) continue;
-    const num = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+    const fields = [e.input_cost_per_token, e.output_cost_per_token,
+      e.cache_read_input_token_cost, e.cache_creation_input_token_cost];
+    if (fields.some(value => value !== undefined && finiteCost(value) === undefined)) continue;
+    const perMillion = (v: unknown): number | undefined => {
+      const value = finiteCost(v);
+      return value === undefined ? undefined : finiteCost(value * 1_000_000);
+    };
     out[name.toLowerCase()] = {
-      inputPerMtok: num(e.input_cost_per_token) * 1_000_000,
-      outputPerMtok: num(e.output_cost_per_token) * 1_000_000,
-      cacheReadPerMtok: num(e.cache_read_input_token_cost) * 1_000_000,
-      cacheWritePerMtok: num(e.cache_creation_input_token_cost) * 1_000_000,
+      inputPerMtok: perMillion(e.input_cost_per_token),
+      outputPerMtok: perMillion(e.output_cost_per_token),
+      cacheReadPerMtok: perMillion(e.cache_read_input_token_cost),
+      cacheWritePerMtok: perMillion(e.cache_creation_input_token_cost),
     };
   }
   return out;
 }
 
-/**
- * A prefix match is only safe when the leftover suffix looks like
- * version/date metadata (an optional separator then a digit, e.g.
- * "-20250929" or "-4-5"), not a letter — a letter starts a genuinely
- * different model-tier name ("o3" + "-mini" is a distinct, separately
- * priced model, not "o3 plus some suffix"), which a plain
- * `str.startsWith(key)` can't otherwise distinguish from a dated snapshot.
- */
+/** Only a calendar-date snapshot suffix may extend an explicitly priced name. */
 function isSafeVersionSuffix(rest: string): boolean {
-  return rest.length === 0 || /^[-._]?\d/.test(rest);
+  if (rest.length === 0) return true;
+  const date = /^-(20\d{2})-?(\d{2})-?(\d{2})$/.exec(rest);
+  if (date === null) return false;
+  const iso = date[1] + "-" + date[2] + "-" + date[3];
+  const parsed = new Date(iso);
+  return Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === iso;
 }
 
-/** Exact → longest-prefix → substring match on the lowercased model name. */
+/** Exact names win; strip provider paths, then allow calendar-date snapshots. */
 export function matchPrice(table: PricingTable, model: string): ModelPrice | undefined {
-  const lower = model.toLowerCase();
-  if (table[lower] !== undefined) return table[lower]!;
-  const canonical = canonicalModelName(model);
-  for (const alias of canonicalModelAliases(model)) {
-    if (table[alias] !== undefined) return table[alias]!;
+  const lower = model.trim().toLowerCase();
+  // Keep provider-qualified prices ahead of bare aliases.
+  const segments = lower.split("/");
+  const candidates = segments.map((_, index) => segments.slice(index).join("/"));
+  for (const candidate of candidates) {
+    if (Object.hasOwn(table, candidate) && table[candidate] !== undefined) return table[candidate];
   }
-  let bestKey: string | undefined;
-  for (const key of Object.keys(table)) {
-    if (!lower.startsWith(key) || !isSafeVersionSuffix(lower.slice(key.length))) continue;
-    if (bestKey === undefined || key.length > bestKey.length) bestKey = key;
-  }
-  if (bestKey !== undefined) return table[bestKey]!;
-  let bestCanonicalKey: string | undefined;
-  let bestCanonicalLength = 0;
-  for (const key of Object.keys(table)) {
-    for (const normalizedKey of canonicalModelAliases(key)) {
-      if (!canonical.startsWith(normalizedKey) || !isSafeVersionSuffix(canonical.slice(normalizedKey.length))) continue;
-      if (normalizedKey.length > bestCanonicalLength) {
-        bestCanonicalKey = key;
-        bestCanonicalLength = normalizedKey.length;
+  for (const candidate of candidates) {
+    const aliases = canonicalModelAliases(candidate);
+    let best: ModelPrice | undefined;
+    let bestLength = -1;
+    for (const [key, price] of Object.entries(table)) {
+      // Qualified keys must match their provider, never become bare aliases.
+      if (key.includes("/") && !candidate.includes("/")) continue;
+      for (const normalizedKey of canonicalModelAliases(key)) {
+        if (aliases.some(alias => alias.startsWith(normalizedKey) &&
+          isSafeVersionSuffix(alias.slice(normalizedKey.length))) && normalizedKey.length > bestLength) {
+          best = price;
+          bestLength = normalizedKey.length;
+        }
       }
     }
-  }
-  if (bestCanonicalKey !== undefined) return table[bestCanonicalKey]!;
-  // Substring fallback so things like "accounts/.../gemini-2.5-pro" or
-  // "openrouter/gpt-4o" still resolve.
-  for (const key of Object.keys(table)) {
-    if (key.length >= 3 && lower.includes(key)) return table[key]!;
+    if (best !== undefined) return best;
   }
   return undefined;
 }
@@ -195,12 +203,13 @@ let refreshStarted = false;
 /** Sync-load cached pricing at startup; async refresh only when stale. */
 function initFromCache(): void {
   try {
-    const parsed = JSON.parse(fs.readFileSync(pricingCachePath(), "utf8")) as CacheFile;
-    if (parsed.models !== undefined && typeof parsed.models === "object") {
-      loadedTable = parsed.models;
+    // Older caches filled missing rates with zero, losing the free/unknown distinction.
+    const parsed = pricingCacheSchema.safeParse(JSON.parse(fs.readFileSync(pricingCachePath(), "utf8")));
+    if (parsed.success) {
+      loadedTable = parsed.data.models;
       // Migrate older LiteLLM caches to Models.dev immediately; otherwise a
       // still-fresh cache would hide the new source until the normal TTL.
-      if (parsed.source !== MODELS_DEV_URL || Date.now() - parsed.fetchedAt > TTL_MS) void refreshPricing();
+      if (parsed.data.source !== MODELS_DEV_URL || Date.now() - parsed.data.fetchedAt > TTL_MS) void refreshPricing();
       return;
     }
   } catch {
@@ -246,7 +255,7 @@ export async function refreshPricing(force = false): Promise<boolean> {
       if (Object.keys(table).length < 50) continue; // implausible payload
       loadedTable = table;
       fs.mkdirSync(path.dirname(pricingCachePath()), { recursive: true });
-      const payload: CacheFile = { fetchedAt: Date.now(), models: table, source: url };
+      const payload: CacheFile = { formatVersion: 2, fetchedAt: Date.now(), models: table, source: url };
       fs.writeFileSync(pricingCachePath(), JSON.stringify(payload));
       return true;
     } catch {
@@ -256,19 +265,12 @@ export async function refreshPricing(force = false): Promise<boolean> {
   return false; // offline: keep whatever we had (cache → embedded)
 }
 
-const ZERO: ModelPrice = {
-  inputPerMtok: 0,
-  outputPerMtok: 0,
-  cacheReadPerMtok: 0,
-  cacheWritePerMtok: 0,
-};
-
 /** Test seam: force a table without touching the filesystem/network. */
-export function setTableForTests(table: PricingTable): void {
+export function setTableForTests(table: PricingTable | null): void {
   loadedTable = table;
 }
 
-export function priceForModel(model: string): ModelPrice {
+export function priceForModel(model: string): ModelPrice | undefined {
   const price = matchPrice(activeTable(), model);
   if (price !== undefined) return price;
   // Fallback to embedded even when a live table is loaded — it may know
@@ -276,9 +278,9 @@ export function priceForModel(model: string): ModelPrice {
   const embedded = matchPrice(EMBEDDED, model);
   if (embedded === undefined && !warnedUnmatched.has(model)) {
     warnedUnmatched.add(model);
-    console.error(`\x1b[2mtokitoki: no pricing data for '${model}' — estimating as $0\x1b[0m`);
+    console.error(`\x1b[2mtokitoki: no pricing data for '${model}' — cost unavailable\x1b[0m`);
   }
-  return embedded ?? ZERO;
+  return embedded;
 }
 
 export interface TokenCounts {
@@ -288,14 +290,43 @@ export interface TokenCounts {
   cacheWriteTokens: number;
 }
 
-export function estimateCost(model: string, tokens: TokenCounts): number {
+/** Token buckets are disjoint: inputTokens is uncached input for pricing. */
+export function estimateCost(model: string, tokens: TokenCounts): number | undefined {
+  // Runtime validation matters: provider payloads are not guaranteed by TS.
+  const counts = [tokens.inputTokens, tokens.outputTokens, tokens.cacheReadTokens, tokens.cacheWriteTokens];
+  if (!counts.every(value => typeof value === "number" && Number.isFinite(value) && value >= 0)) return undefined;
   const p = priceForModel(model);
-  return (
-    (tokens.inputTokens / 1e6) * p.inputPerMtok +
-    (tokens.outputTokens / 1e6) * p.outputPerMtok +
-    (tokens.cacheReadTokens / 1e6) * p.cacheReadPerMtok +
-    (tokens.cacheWriteTokens / 1e6) * p.cacheWritePerMtok
-  );
+  if (p === undefined) return undefined;
+  const rates = [p.inputPerMtok, p.outputPerMtok, p.cacheReadPerMtok, p.cacheWritePerMtok];
+  let cost = 0;
+  for (let index = 0; index < counts.length; index++) {
+    const count = counts[index]!;
+    if (count === 0) continue;
+    const rate = finiteCost(rates[index]);
+    // Missing consumed classes are unknown, not free.
+    if (rate === undefined) return undefined;
+    cost += (count / 1e6) * rate;
+  }
+  return finiteCost(cost);
+}
+
+export interface UsageCost {
+  costUsd?: number;
+  costSource: NonNullable<UsageEvent["costSource"]>;
+}
+
+/** A valid harness-reported amount, including zero, takes precedence. */
+export function resolveUsageCost(input: {
+  model: string;
+  tokens: TokenCounts;
+  reportedCost?: unknown;
+}): UsageCost {
+  const reported = finiteCost(input.reportedCost);
+  if (reported !== undefined) return { costUsd: reported, costSource: "reported" };
+  const estimated = estimateCost(input.model, input.tokens);
+  return estimated === undefined
+    ? { costSource: "unpriced" }
+    : { costUsd: estimated, costSource: "estimated" };
 }
 
 /** Chars-per-token used only where a store never records real counts (Cursor, T3 Code). */

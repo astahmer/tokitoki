@@ -47,6 +47,40 @@ const makeWidget = () => {
 
 afterEach(() => setSystemTime());
 
+it("tracking quality preserves unknown coverage and follows the exact composition period", () => {
+  const ui = makeWidget();
+  expect(ui.trackingForPeriod("day")).toBeNull();
+  ui.payload.trackingPeriods = {
+    today: { requests: 1, totalTokens: 10 },
+    day: { requests: 10, totalTokens: 1200, reportedRequests: 4, estimatedRequests: 4, unpricedRequests: 1, unknownRequests: 1 },
+    week: { requests: 20, totalTokens: 2400 },
+  };
+  expect(ui.trackingForPeriod("day").requests).toBe(10);
+  expect(ui.trackingForPeriod("week").requests).toBe(20);
+  expect(ui.trackingForPeriod("month")).toBeNull();
+  expect(ui.trackingPercent(null)).toBe("Unavailable");
+  expect(ui.trackingPercent(undefined)).toBe("Unavailable");
+  expect(ui.trackingPercent(-1)).toBe("Unavailable");
+  expect(ui.trackingPercent(101)).toBe("Unavailable");
+  expect(ui.trackingPercent(0)).toBe("0%");
+  expect(ui.trackingPercent(80)).toBe("80%");
+  expect(ui.trackingPercent(12.34)).toBe("12.3%");
+  expect(ui.trackingSources(ui.trackingForPeriod("day"))).toBe("Cost sources: 4 reported · 4 estimated · 1 unpriced · 1 unknown");
+  expect(ui.trackingTokenSummary({ reportedTokens: 100, estimatedTokens: 40, unknownTokens: 10 })).toBe("Token counts: 100 reported · 40 estimated · 10 source unknown");
+  expect(ui.trackingTokenSummary({ reportedTokens: 100, estimatedTokens: 0, unknownTokens: 0 })).toBe("Token counts: 100 reported · 0 estimated");
+  expect(ui.trackingTokenSummary({})).toBe("");
+  const unpriced = { unpricedModels: ["new-model", "/home/person/private", "name@example.com", "sk-token", "fifth"] };
+  expect(ui.trackingMissingPrices(unpriced)).toBe("Missing prices: new-model, other model identifier, other model identifier, other model identifier (+1 more)");
+  expect(ui.trackingModelLabel("a".repeat(60))).toHaveLength(38);
+  ui.privacyHideIdentities = true;
+  expect(ui.trackingMissingPrices(unpriced)).toBe("Unpriced models hidden for privacy");
+  ui.privacyHideIdentities = false;
+  ui.privacyHideRepoSessionNames = true;
+  expect(ui.trackingMissingPrices(unpriced)).toBe("Unpriced models hidden for privacy");
+  ui.searchText = "coverage";
+  expect(ui.cardSurvives("tracking")).toBe(true);
+});
+
 describe("DMS widget uses the existing payload without distorting totals", () => {
   it("keeps T3code activity separate, period-aware, and searchable with privacy enabled", () => {
     const ui = makeWidget();
@@ -369,6 +403,27 @@ it("keeps bar order and visibility independent of Quotas and exposes hidden acco
   expect(ui.buildStatusStripGroups()[0].accounts.map((a: { accountKey: string }) => a.accountKey)).toEqual(["b"]);
   expect(ui.shiftedAccountOrder(account("a"), -1)).toEqual(["codex@a", "codex@b", "codex@c"]);
   expect(ui.shiftedAccountOrder(account("b"), -1, "bar")).toBeNull();
+});
+
+it("recovers a stuck refresh without replacing observations with late output", () => {
+  const ui = makeWidget();
+  const previous = ui.payload;
+  ui.refresh(true);
+  ui.refresh(false);
+  ui.statusTimedOut();
+  expect(ui.statusProcess.running).toBe(false);
+  expect(ui.refreshActive).toBe(false);
+  expect(ui.lastError).toContain("timed out");
+  ui.statusExited = true;
+  ui.statusStdoutDone = true;
+  ui.statusStderrDone = true;
+  ui.statusStdout = JSON.stringify({ schema: 1, app: "tokitoki", limits: [] });
+  ui.finishStatus();
+  expect(ui.payload).toBe(previous);
+  ui.refresh(false);
+  expect(ui.statusProcess.running).toBe(true);
+  expect(ui.refreshActive).toBe(true);
+  expect(ui.statusExited).toBe(false);
 });
 
 it("waits for exit and both streams before accepting or starting a queued refresh", () => {

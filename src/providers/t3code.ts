@@ -6,7 +6,7 @@ import { Database } from "bun:sqlite";
 import type { UsageEvent } from "../types.ts";
 import type { DbScanContext, SessionDoc } from "./types.ts";
 import { eventId } from "../machine.ts";
-import { estimateCost, estimateTokensFromChars } from "../pricing.ts";
+import { resolveUsageCost, estimateTokensFromChars } from "../pricing.ts";
 import { providerConfig } from "../config.ts";
 import { homePath, type EntryContext, type Provider } from "./types.ts";
 
@@ -172,18 +172,17 @@ function extractV2SessionDocs(db: Database): SessionDoc[] {
 /** Observed per-turn activity; underlying harnesses supply account totals. */
 function scanV2Turns(db: Database, ctx: DbScanContext): UsageEvent[] {
   if (!hasTables(db, ["orchestration_v2_projection_provider_turns"])) return [];
-  const watermark = ctx.state.turnUsageVersion === 1 && typeof ctx.state.turnRowid === "number" ? ctx.state.turnRowid : 0;
-  ctx.state.turnUsageVersion = 1;
-  const rows = db
-    .prepare(
-      `SELECT t.rowid, t.provider_turn_id, t.thread_id, t.completed_at, t.started_at, t.payload_json,
+  // Turns are inserted while running, then updated in place. Revisit rows
+  // without usable terminal usage independently of the append-only watermark.
+  const watermark = ctx.state.turnUsageVersion === 2 && typeof ctx.state.turnRowid === "number" ? ctx.state.turnRowid : 0;
+  const pending = ctx.state.turnUsageVersion === 2 && Array.isArray(ctx.state.pendingTurnRowids)
+    ? ctx.state.pendingTurnRowids.filter((value): value is number => typeof value === "number" && Number.isSafeInteger(value)) : [];
+  ctx.state.turnUsageVersion = 2;
+  const select = `SELECT t.rowid AS rowid, t.provider_turn_id, t.thread_id, t.completed_at, t.started_at, t.payload_json,
               th.provider_instance_id, th.payload_json AS thread_payload
        FROM orchestration_v2_projection_provider_turns t
-       JOIN orchestration_v2_projection_threads th ON th.thread_id = t.thread_id
-       WHERE t.rowid > ?
-       ORDER BY t.rowid ASC LIMIT 5000`,
-    )
-    .all(watermark) as Array<{
+       JOIN orchestration_v2_projection_threads th ON th.thread_id = t.thread_id`;
+  interface TurnRow {
     rowid: number;
     provider_turn_id: string;
     thread_id: string;
@@ -192,34 +191,52 @@ function scanV2Turns(db: Database, ctx: DbScanContext): UsageEvent[] {
     payload_json: string;
     provider_instance_id: string | null;
     thread_payload: string;
-  }>;
+  }
+  const rows = db.query<TurnRow, [number]>(`${select} WHERE t.rowid > ? ORDER BY t.rowid ASC LIMIT 5000`).all(watermark);
+  const nextWatermark = rows.at(-1)?.rowid ?? watermark;
+  for (let offset = 0; offset < pending.length; offset += 500) {
+    const chunk = pending.slice(offset, offset + 500);
+    rows.push(...db.query<TurnRow, number[]>(`${select} WHERE t.rowid IN (${chunk.map(() => "?").join(",")})`).all(...chunk));
+  }
+  const nextPending = new Set<number>();
   const events: UsageEvent[] = [];
   for (const row of rows) {
-    ctx.state.turnRowid = row.rowid;
+    nextPending.add(row.rowid);
     const routed = modelFromThreadPayload(row.thread_payload);
     const instanceId = routed?.instanceId ?? row.provider_instance_id ?? "";
     if (instanceId.length === 0) continue;
     let usage: Record<string, unknown> | undefined;
     try {
       const parsed = JSON.parse(row.payload_json) as { turnTokenUsage?: unknown; status?: unknown };
-      if (parsed.status !== "completed" || typeof parsed.turnTokenUsage !== "object" || parsed.turnTokenUsage === null) continue;
+      if (!["completed", "failed", "interrupted", "cancelled", "aborted"].includes(String(parsed.status)) ||
+        typeof parsed.turnTokenUsage !== "object" || parsed.turnTokenUsage === null) continue;
       usage = parsed.turnTokenUsage as Record<string, unknown>;
     } catch {
       continue;
     }
-    if (usage.usageStatus === "unavailable") continue;
-    const count = (key: string): number => {
+    // Public TurnTokenUsage contract: input includes cache reads/creation;
+    // output already includes reasoning. Partial means incomplete coverage,
+    // not a character estimate. Unknown statuses/scopes are not evidence.
+    if (usage.usageScope !== "main_agent" || !["complete", "partial"].includes(String(usage.usageStatus))) continue;
+    const count = (key: string): number | undefined => {
       const value = usage?.[key];
-      return typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.round(value) : 0;
+      return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
     };
-    const inputTokens = count("inputTokens");
+    const inclusiveInput = count("inputTokens");
     const outputTokens = count("outputTokens");
     const cacheReadTokens = count("cachedInputTokens");
     const cacheWriteTokens = count("cacheCreationTokens");
-    if (inputTokens === 0 && outputTokens === 0) continue;
+    // Required normalized input/output cannot represent missing core usage.
+    // Leave such turns pending rather than manufacture observed zeroes.
+    if (inclusiveInput === undefined || outputTokens === undefined) continue;
+    if (["cachedInputTokens", "cacheCreationTokens", "reasoningTokens"].some(key => usage[key] !== undefined && count(key) === undefined)) continue;
+    if ((count("reasoningTokens") ?? 0) > outputTokens) continue;
+    const inputTokens = inclusiveInput - (cacheReadTokens ?? 0) - (cacheWriteTokens ?? 0);
+    if (inputTokens < 0) continue;
     const model = routed?.model ?? "unknown";
     const ts = row.completed_at ?? row.started_at;
     if (ts === null) continue;
+    nextPending.delete(row.rowid);
     events.push({
       id: eventId("t3code", instanceId, row.thread_id, row.provider_turn_id),
       ts,
@@ -229,12 +246,19 @@ function scanV2Turns(db: Database, ctx: DbScanContext): UsageEvent[] {
       model,
       inputTokens,
       outputTokens,
-      cacheReadTokens,
-      cacheWriteTokens,
-      costUsd: estimateCost(model, { inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens }),
+      ...(cacheReadTokens !== undefined ? { cacheReadTokens } : {}),
+      ...(cacheWriteTokens !== undefined ? { cacheWriteTokens } : {}),
+      tokenSource: "reported",
+      // Unknown cache allocation preserves the inclusive total, but cannot
+      // support a model-price estimate of uncached versus cached input.
+      ...(cacheReadTokens !== undefined && cacheWriteTokens !== undefined
+        ? resolveUsageCost({ model, tokens: { inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens } })
+        : { costSource: "unpriced" as const }),
       sessionId: row.thread_id,
     });
   }
+  ctx.state.turnRowid = nextWatermark;
+  ctx.state.pendingTurnRowids = [...nextPending];
   return events;
 }
 
@@ -359,7 +383,9 @@ function scanT3CodeUsageEvents(storePath: string, ctx: DbScanContext): UsageEven
         model,
         inputTokens,
         outputTokens,
-        costUsd: estimateCost(model, { inputTokens, outputTokens, cacheReadTokens: 0, cacheWriteTokens: 0 }),
+        tokenSource: "estimated",
+        tokenEstimationMethod: "characters/4",
+        ...resolveUsageCost({ model, tokens: { inputTokens, outputTokens, cacheReadTokens: 0, cacheWriteTokens: 0 } }),
         sessionId: row.thread_id,
       });
     }

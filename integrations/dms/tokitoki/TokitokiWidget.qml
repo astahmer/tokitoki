@@ -92,6 +92,7 @@ PluginComponent {
     readonly property string command: commandOverride.length > 0 ? commandOverride : "tokitoki"
     readonly property var distributionSlices: root.buildSlices(root.selectedPeriod, root.selectedMetric)
     readonly property var tokenMixSlices: root.buildTokenMixSlices(root.compositionPeriod)
+    readonly property var trackingReport: root.trackingForPeriod(root.compositionPeriod)
     readonly property var providerSlices: root.buildPeriodSlices(root.payload.providerPeriods, root.selectedPeriod, root.selectedMetric)
     readonly property var modelSlices: root.buildPeriodSlices(root.payload.modelPeriods, root.selectedPeriod, root.selectedMetric)
     readonly property var t3codeReport: root.t3codeActivityForPeriod(root.selectedPeriod)
@@ -548,6 +549,52 @@ PluginComponent {
         return Boolean(report && report.total)
     }
 
+    function trackingForPeriod(period) {
+        var periods = payload.trackingPeriods
+        var report = periods && periods[period]
+        return report && typeof report.requests === "number" ? report : null
+    }
+
+    function trackingPercent(value) {
+        return typeof value === "number" && isFinite(value) && value >= 0 && value <= 100
+            ? value.toFixed(1).replace(/\.0$/, "") + "%" : "Unavailable"
+    }
+
+    function trackingSources(report) {
+        if (!report)
+            return ""
+        return "Cost sources: " + compactNumber(safeNumber(report.reportedRequests)) + " reported" +
+            " · " + compactNumber(safeNumber(report.estimatedRequests)) + " estimated" +
+            " · " + compactNumber(safeNumber(report.unpricedRequests)) + " unpriced" +
+            " · " + compactNumber(safeNumber(report.unknownRequests)) + " unknown"
+    }
+
+    function trackingTokenSummary(report) {
+        if (!report || typeof report.reportedTokens !== "number" ||
+                typeof report.estimatedTokens !== "number" || typeof report.unknownTokens !== "number")
+            return ""
+        return "Token counts: " + compactNumber(report.reportedTokens) + " reported · " +
+            compactNumber(report.estimatedTokens) + " estimated" +
+            (report.unknownTokens > 0 ? " · " + compactNumber(report.unknownTokens) + " source unknown" : "")
+    }
+
+    function trackingModelLabel(value) {
+        var name = String(value || "")
+        if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/.test(name) || /^sk-/i.test(name))
+            return "other model identifier"
+        return name.length > 40 ? name.slice(0, 37) + "…" : name
+    }
+
+    function trackingMissingPrices(report) {
+        if (!report || !Array.isArray(report.unpricedModels) || report.unpricedModels.length === 0)
+            return ""
+        if (privacyHideIdentities || privacyHideRepoSessionNames)
+            return "Unpriced models hidden for privacy"
+        var models = report.unpricedModels
+        return "Missing prices: " + models.slice(0, 4).map(trackingModelLabel).join(", ") +
+            (models.length > 4 ? " (+" + (models.length - 4) + " more)" : "")
+    }
+
     function buildTokenMixSlices(period) {
         if (!hasPayload)
             return []
@@ -985,6 +1032,8 @@ PluginComponent {
             return searchMatches(root.shellName + " integration settings executable configuration")
         if (id === "notifications")
             return searchMatches("notifications alerts quota spend burn budget settings")
+        if (id === "tracking")
+            return searchMatches("tracking quality pricing cost tokens cache reported estimated unpriced coverage legacy unknown")
         if (id === "pulse" || id === "composition" || id === "history")
             return query === "tokens" || query === "cost" || searchMatches(id)
         return false
@@ -1099,6 +1148,16 @@ PluginComponent {
     function balanceAmount(value, currency) {
         var code = String(currency || "USD").toUpperCase()
         return code === "USD" ? formatMoney(value) : safeNumber(value).toFixed(2) + " " + code
+    }
+
+    function workspaceCreditsLabel(credits) {
+        if (!credits)
+            return ""
+        if (credits.unlimited === true)
+            return "Unlimited workspace credits"
+        if (credits.balance === undefined || credits.balance === null)
+            return ""
+        return "Workspace credits " + String(credits.balance)
     }
 
     function balanceLabel(balance) {
@@ -1476,6 +1535,18 @@ PluginComponent {
         statusStdout = ""
         statusStderr = ""
         statusProcess.running = true
+    }
+
+    function statusTimedOut() {
+        refreshActive = false
+        statusProcess.running = false
+        scanNextRefresh = false
+        pendingRefresh = false
+        pendingScan = false
+        var message = "Quota refresh timed out; retrying on next automatic refresh"
+        if (hasPayload) lastError = message
+        else errorText = message
+        console.warn("[Tokitoki] " + message)
     }
 
     function statusStartFailed() {
@@ -2574,10 +2645,7 @@ PluginComponent {
                                                 RowLayout {
                                                     width: parent.width
                                                     spacing: Theme.spacingXS
-                                                    StyledText {
-                                                        text: "Bar"
-                                                        color: Theme.surfaceVariantText
-                                                        font.pixelSize: Theme.fontSizeSmall
+                                                    Item {
                                                         Layout.fillWidth: true
                                                     }
                                                     DActionButton {
@@ -2713,6 +2781,13 @@ PluginComponent {
 
                                                 StyledText {
                                                     text: root.extraUsageLabel(accountCard.account.extraUsage)
+                                                    color: Theme.surfaceVariantText
+                                                    font.pixelSize: Theme.fontSizeSmall + 1
+                                                    visible: text.length > 0
+                                                }
+
+                                                StyledText {
+                                                    text: root.workspaceCreditsLabel(accountCard.account.credits)
                                                     color: Theme.surfaceVariantText
                                                     font.pixelSize: Theme.fontSizeSmall + 1
                                                     visible: text.length > 0
@@ -2931,6 +3006,79 @@ PluginComponent {
                         }
 
                         TokitokiCard {
+                            title: "Tracking quality · " + root.compositionRangeLabel(root.compositionPeriod)
+                            iconName: "fact_check"
+                            visible: root.tabIs("tokens") && root.cardSurvives("tracking") && root.trackingReport !== null
+                            contentComponent: Component {
+                                Column {
+                                    width: parent ? parent.width : 0
+                                    spacing: Theme.spacingS
+
+                                    StyledText {
+                                        width: parent.width
+                                        text: root.trackingReport ? root.compactNumber(root.trackingReport.totalTokens) + " tokens · " +
+                                            root.compactNumber(root.trackingReport.requests) + " requests" : ""
+                                        color: Theme.surfaceText
+                                        font.pixelSize: Theme.fontSizeMedium
+                                        wrapMode: Text.WordWrap
+                                    }
+                                    StyledText {
+                                        width: parent.width
+                                        text: root.trackingReport ? "Pricing coverage: " + root.trackingPercent(root.trackingReport.pricingCoveragePercent) +
+                                            " · Cached input: " + root.trackingPercent(root.trackingReport.cachedInputPercent) : ""
+                                        color: Theme.surfaceText
+                                        font.pixelSize: Theme.fontSizeSmall + 1
+                                        wrapMode: Text.WordWrap
+                                    }
+                                    StyledText {
+                                        width: parent.width
+                                        text: root.trackingSources(root.trackingReport)
+                                        color: Theme.surfaceVariantText
+                                        font.pixelSize: Theme.fontSizeSmall + 1
+                                        wrapMode: Text.WordWrap
+                                    }
+                                    StyledText {
+                                        width: parent.width
+                                        text: root.trackingTokenSummary(root.trackingReport)
+                                        visible: text.length > 0
+                                        color: Theme.surfaceText
+                                        font.pixelSize: Theme.fontSizeSmall + 1
+                                        wrapMode: Text.WordWrap
+                                    }
+                                    StyledText {
+                                        width: parent.width
+                                        text: "Estimated from visible text (characters ÷ 4); hidden context is not counted."
+                                        visible: Boolean(root.trackingReport && root.trackingReport.estimatedTokens > 0)
+                                        color: Theme.surfaceVariantText
+                                        font.pixelSize: Theme.fontSizeSmall
+                                        wrapMode: Text.WordWrap
+                                    }
+                                    StyledText {
+                                        width: parent.width
+                                        text: root.trackingReport ? "Known usage value: " + root.formatMoney(root.trackingReport.costUsd) : ""
+                                        color: Theme.surfaceText
+                                        font.pixelSize: Theme.fontSizeMedium
+                                    }
+                                    StyledText {
+                                        width: parent.width
+                                        text: "Harness costs and API-rate estimates, not a subscription bill. Unpriced usage is excluded."
+                                        color: Theme.surfaceVariantText
+                                        font.pixelSize: Theme.fontSizeSmall
+                                        wrapMode: Text.WordWrap
+                                    }
+                                    StyledText {
+                                        width: parent.width
+                                        text: root.trackingMissingPrices(root.trackingReport)
+                                        visible: text.length > 0
+                                        color: Theme.warning
+                                        font.pixelSize: Theme.fontSizeSmall + 1
+                                        wrapMode: Text.WrapAnywhere
+                                    }
+                                }
+                            }
+                        }
+
+                        TokitokiCard {
                             title: "Usage history · " + root.historyRangeLabel(root.historyPeriod)
                             iconName: "analytics"
                             visible: root.tabIs("tokens") && root.hasHistoryData && root.cardSurvives("history")
@@ -3136,6 +3284,14 @@ PluginComponent {
                                         wrapMode: Text.WordWrap
                                     }
 
+                                    StyledText {
+                                        width: parent.width
+                                        text: root.trackingTokenSummary(root.t3codeReport ? root.t3codeReport.total : null)
+                                        visible: text.length > 0
+                                        color: Theme.surfaceVariantText
+                                        font.pixelSize: Theme.fontSizeSmall + 1
+                                        wrapMode: Text.WordWrap
+                                    }
                                     StyledText {
                                         width: parent.width
                                         text: "Observed application activity. Excluded from totals; may already be included in harnesses. Costs are estimated."
@@ -3854,6 +4010,12 @@ PluginComponent {
         onRunningChanged: {
             if (!running && !root.statusExited) statusFailureTimer.restart()
         }
+    }
+
+    Timer {
+        interval: 180000
+        running: root.refreshActive
+        onTriggered: root.statusTimedOut()
     }
 
     Timer {

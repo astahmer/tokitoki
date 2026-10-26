@@ -17,7 +17,7 @@ function tokenCount(last: Record<string, number>, planType = "plus"): string {
     payload: {
       type: "token_count",
       info: {
-        total_token_usage: { input_tokens: 999999, cached_input_tokens: 1, output_tokens: 9999 },
+        total_token_usage: { input_tokens: 999999 + (last.input_tokens ?? 0), cached_input_tokens: 1 + (last.cached_input_tokens ?? 0), output_tokens: 9999 + (last.output_tokens ?? 0) },
         last_token_usage: last,
         model_context_window: 258400,
       },
@@ -151,7 +151,7 @@ describe("codex provider", () => {
     );
     expect(events).toHaveLength(1);
     const e = events[0]!;
-    expect(e!.inputTokens).toBe(20244);
+    expect(e!.inputTokens).toBe(8724);
     expect(e!.outputTokens).toBe(316);
     expect(e!.cacheReadTokens).toBe(11520);
     expect(e!.model).toBe("gpt-5.6-terra");

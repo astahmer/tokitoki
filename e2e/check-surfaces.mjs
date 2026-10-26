@@ -10,9 +10,9 @@ export function checkSurfaces(out, invocations, interactions) {
   assert.ok(payloadCalls.some(args => !args.includes('--skip-scan') && !args.includes('--cached')), 'Refresh & scan must request a full refresh');
   const baseline = read('baseline');
   const account = 'claude-code@default';
-  const globalAccount = 'codex@codex';
+  const globalAccount = 'codex@openai:personal';
   const without = (ids, id) => ids.filter(value => value !== id);
-  assert.equal(baseline.limits.length, 7);
+  assert.equal(baseline.limits.length, 4);
   const hidden = read('bar-hidden');
   assert.deepEqual(hidden.quotas, baseline.quotas, 'bar-only hiding must preserve quota cards');
   assert.deepEqual(hidden.bar, without(baseline.bar, account), 'bar-only hiding must remove just its strip account');

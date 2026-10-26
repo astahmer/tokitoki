@@ -1,5 +1,7 @@
 /** Normalized usage event — the single currency of tokitoki. */
 export interface UsageEvent {
+  /** Native lineage proves this is an original request, not copied history. */
+  originalUsage?: true;
   /** Stable cross-machine dedupe key: `${provider}:${accountKey}:${sessionId}:${entryId}` */
   id: string;
   /** ISO-8601 timestamp */
@@ -12,12 +14,18 @@ export interface UsageEvent {
    */
   accountKey: string;
   model: string;
+  /** Uncached input; cache read/write buckets are separate and additive. */
   inputTokens: number;
   outputTokens: number;
   cacheReadTokens?: number;
   cacheWriteTokens?: number;
+  /** Token counters from the provider, or estimates of visible text. Absent on legacy events. */
+  tokenSource?: "reported" | "estimated";
+  tokenEstimationMethod?: "characters/4";
   /** Cost in USD when reported by the harness, else estimated. */
   costUsd?: number;
+  /** Absent on legacy events; unpriced means no reliable amount is available. */
+  costSource?: "reported" | "estimated" | "unpriced";
   projectDir?: string;
   sessionId?: string;
   /**

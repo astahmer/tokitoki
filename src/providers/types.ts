@@ -21,6 +21,8 @@ export interface EntryContext {
   machineId: string;
   /** Provider quota observations must not manufacture usage requests. */
   onQuota?: (report: QuotaObservationEvent) => void;
+  /** A copied request proven by native fork lineage and ordered replay. */
+  onReplayedUsage?: (id: string) => void;
 }
 
 /** Context handed to DB-backed providers (see Provider.scanDb). */

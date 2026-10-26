@@ -52,7 +52,7 @@ import Testing
 
     @Test func harnessesMapToUpstreamProviders() {
         #expect(Model.upstreamProvider(account(provider: "codex", accountKey: "codex", windows: [])) == "openai")
-        #expect(Model.upstreamProvider(account(provider: "codex", accountKey: "openai:plus", windows: [])) == "openai")
+        #expect(Model.upstreamProvider(account(provider: "codex", accountKey: "openai:personal", windows: [])) == "openai")
         #expect(Model.upstreamProvider(account(provider: "claude-code", accountKey: "default", windows: [])) == "claude")
         #expect(Model.upstreamProvider(account(provider: "pi", accountKey: "openrouter", windows: [])) == "openrouter")
         #expect(Model.upstreamProvider(account(provider: "pi", accountKey: "opencode-go", windows: [])) == "opencode")
@@ -266,7 +266,7 @@ import Testing
             account(provider: "codex", accountKey: "codex", windows: [
                 window(kind: "week", source: "embedded", tokens: 1, usedPct: 6),
             ]),
-            account(provider: "codex", accountKey: "openai:plus", windows: [
+            account(provider: "codex", accountKey: "openai:personal", windows: [
                 window(kind: "week", source: "polled", tokens: 1, usedPct: 0),
             ]),
         ]
@@ -333,7 +333,7 @@ import Testing
     @Test func zeroUsagePercentGroupStillRendersItsRealNumber() {
         // A polled 0%-used window IS real data — it must show as 100% left.
         let limits = [
-            account(provider: "codex", accountKey: "openai:plus", windows: [
+            account(provider: "codex", accountKey: "openai:personal", windows: [
                 window(kind: "week", source: "polled", tokens: 0, usedPct: 0),
             ]),
         ]
@@ -434,7 +434,7 @@ import Testing
 
     @Test func hoverPreviewLabelsQuotaWindows() {
         let limits = [
-            account(provider: "codex", accountKey: "openai:plus", windows: [
+            account(provider: "codex", accountKey: "openai:personal", windows: [
                 window(kind: "day", source: "polled", tokens: 0, usedPct: 40),
                 window(kind: "week", source: "polled", tokens: 0, usedPct: 0),
                 window(kind: "month", source: "polled", tokens: 0, usedPct: 12),

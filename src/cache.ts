@@ -1,10 +1,13 @@
 import path from "node:path";
+import { nativeCodexIdentities } from "./accounts.ts";
+import type { TokitokiConfig } from "./config.ts";
 
 import fs from "node:fs";
 import { Database, type SQLQueryBindings } from "bun:sqlite";
 
 import type { QuotaSnapshot, UsageEvent } from "./types.ts";
-import { dataDir, eventsFile, readEventsFile, readEventsTail } from "./store.ts";
+import { appendUsageReplayDecisions, dataDir, eventsFile, readEventsFile, readEventsTail } from "./store.ts";
+import type { UsageReplayDecision } from "./usage-replays.ts";
 import { partitionBlocks, type BlockRow } from "./blocks.ts";import { resolveRepo } from "./repos.ts";
 import { ensureSessionFts, sessionConversation } from "./sessionIndex.ts";
 import { describeSessionEvent, estimateCacheDuration, type CacheDurationEstimate } from "./session-insights.ts";
@@ -36,10 +39,18 @@ function sqliteRetry<T>(operation: () => T): T {
  * T3 Code records application activity that overlaps its underlying harnesses.
  * Keep its events for activity/session views, outside account totals.
  */
-const COUNTED_USAGE_SQL = "provider <> 't3code'";
+function countedUsageSql(prefix = ""): string {
+  // Bubble IDs identify historical local estimates too, without guessing coverage
+  // from amounts or timestamps. Cursor account totals come from its dashboard.
+  return `(NOT EXISTS (SELECT 1 FROM replayed_usage WHERE event_id = ${prefix}id) AND ${prefix}provider <> 't3code' AND NOT (${prefix}provider = 'cursor' AND
+    (${prefix}token_source = 'estimated' OR instr(${prefix}id, ':bubbleId:') > 0)))`;
+}
+const COUNTED_USAGE_SQL = countedUsageSql();
+const ORIGINAL_USAGE_SQL = "NOT EXISTS (SELECT 1 FROM replayed_usage WHERE event_id = id)";
 
 function countsTowardTotals(event: UsageEvent): boolean {
-  return event.provider !== "t3code";
+  return event.provider !== "t3code" && !(event.provider === "cursor" &&
+    (event.tokenSource === "estimated" || event.id.includes(":bubbleId:")));
 }
 
 /**
@@ -118,12 +129,20 @@ export class EventCache {
     // connection so a refresh does not spill them to disk.
     sqliteRetry(() => this.db.exec("PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 10000; PRAGMA temp_store = MEMORY;"));
     this.repoNameFor = repoNameFor ?? ((dir: string) => resolveRepo(dir).name);
-    this.migrate();
+    sqliteRetry(() => this.db.transaction(() => this.migrate()).immediate());
     // Upgrade historical rollups even on cached-only reads; raw activity stays intact.
     this.db.exec("DELETE FROM daily_rollups WHERE provider = 't3code'");
     this.repoStmtInsert = this.db.prepare(
       "INSERT OR REPLACE INTO repo_dirs (dir, name) VALUES (?, ?)",
     );
+    if (this.metaValue("cursor-local-activity-v1") !== "1") {
+      sqliteRetry(() => this.db.transaction(() => {
+        if (this.metaValue("cursor-local-activity-v1") === "1") return;
+        this.rebuildRollups();
+        this.db.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)").run("cursor-local-activity-v1", "1");
+      })());
+    }
+
     // One row per event added to events, upserting its daily aggregate.
     this.rollupStmtUpsert = this.db.prepare(`
       INSERT INTO daily_rollups (
@@ -155,6 +174,8 @@ export class EventCache {
         cache_read_tokens INTEGER NOT NULL DEFAULT 0,
         cache_write_tokens INTEGER NOT NULL DEFAULT 0,
         cost_usd REAL NOT NULL DEFAULT 0,
+        cost_source TEXT NOT NULL DEFAULT 'unknown',
+        token_source TEXT NOT NULL DEFAULT 'unknown',
         project_dir TEXT,
         session_id TEXT,
         tool TEXT,
@@ -165,6 +186,11 @@ export class EventCache {
       CREATE INDEX IF NOT EXISTS idx_events_provider_account_ts
         ON events(provider, account_key, ts);
       CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id);
+      CREATE TABLE IF NOT EXISTS replayed_usage (event_id TEXT PRIMARY KEY);
+      CREATE TABLE IF NOT EXISTS original_usage (event_id TEXT PRIMARY KEY);
+      CREATE TABLE IF NOT EXISTS usage_replay_decisions (
+        event_id TEXT PRIMARY KEY, at INTEGER NOT NULL, replayed INTEGER NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS repo_dirs (
         dir TEXT PRIMARY KEY,
         name TEXT NOT NULL
@@ -172,6 +198,13 @@ export class EventCache {
     `);
     // Older caches predate the tool column; ALTER is idempotent-guarded.
     const cols = this.db.query("PRAGMA table_info(events)").all() as Array<{ name: string }>;
+    if (!cols.some((c) => c.name === "cost_source")) {
+      // Historical dollar amounts cannot establish their pricing provenance.
+      this.db.exec("ALTER TABLE events ADD COLUMN cost_source TEXT NOT NULL DEFAULT 'unknown'");
+    }
+    if (!cols.some((c) => c.name === "token_source")) {
+      this.db.exec("ALTER TABLE events ADD COLUMN token_source TEXT NOT NULL DEFAULT 'unknown'");
+    }
     if (!cols.some((c) => c.name === "tool")) {
       this.db.exec("ALTER TABLE events ADD COLUMN tool TEXT");
     }
@@ -296,6 +329,77 @@ export class EventCache {
     if (!observationCols.some(column => column.name === "complete")) {
       this.db.exec("ALTER TABLE quota_observations ADD COLUMN complete INTEGER NOT NULL DEFAULT 1");
     }
+    // One-time provenance migration. Retain retired history, excluding it from
+    // native identity and current quota projections. Financial events stay intact.
+    for (const table of ["quota_snapshots", "quota_observations"]) {
+      const columns = this.db.query(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+      if (!columns.some(column => column.name === "retired")) {
+        this.db.exec(`ALTER TABLE ${table} ADD COLUMN retired INTEGER NOT NULL DEFAULT 0`);
+      }
+    }
+    if (this.metaValue("native-quota-provenance-v1") === undefined) {
+      this.db.transaction(() => {
+        for (const table of ["quota_snapshots", "quota_observations"]) {
+          this.db.exec(`UPDATE ${table} SET retired = 1
+            WHERE provider = 'opencodex' OR event_id LIKE '%:opencodex%';`);
+        }
+        // Old account metadata has no source timestamp. Keep its value but
+        // quarantine attribution until a native poll writes fresh facts.
+        this.db.exec(`INSERT OR IGNORE INTO meta (key, value)
+          SELECT 'quota-account-retired:' || provider || '@' || account_key, '1'
+          FROM quota_snapshots WHERE retired = 1
+          UNION SELECT 'quota-account-retired:' || provider || '@' || account_key, '1'
+          FROM quota_observations WHERE retired = 1;`);
+        this.db.exec(`INSERT OR IGNORE INTO meta (key, value)
+          SELECT 'retired-quota-provider:' || provider, '1' FROM quota_snapshots
+          WHERE provider = 'opencodex'
+          UNION SELECT 'retired-quota-provider:' || provider, '1' FROM events
+          WHERE provider = 'opencodex'
+          UNION SELECT 'retired-quota-provider:opencodex', '1' FROM meta
+          WHERE key LIKE 'quota-account:opencodex@%';`);
+        this.setMetaValue("native-quota-provenance-v1", "1");
+      })();
+    }
+    // Keep compatibility with history replay and older binaries sharing this
+    // cache: source retirement is enforced at the database write boundary too.
+    for (const table of ["quota_snapshots", "quota_observations"]) {
+      this.db.exec(`CREATE TRIGGER IF NOT EXISTS ${table}_retired_source
+        AFTER INSERT ON ${table}
+        WHEN NEW.provider = 'opencodex' OR NEW.event_id LIKE '%:opencodex%'
+        BEGIN
+          UPDATE ${table} SET retired = 1 WHERE rowid = NEW.rowid;
+          INSERT OR IGNORE INTO meta (key, value)
+            SELECT 'quota-account-retired:' || NEW.provider || '@' || NEW.account_key, '1'
+            WHERE NOT EXISTS (SELECT 1 FROM meta
+              WHERE key = 'quota-account-native:' || NEW.provider || '@' || NEW.account_key);
+          INSERT OR IGNORE INTO meta (key, value)
+            SELECT 'retired-quota-provider:' || NEW.provider, '1' WHERE NEW.provider = 'opencodex';
+        END;`);
+    }
+    sqliteRetry(() => this.db.transaction(() => {
+      if (this.metaValue("quota-retirement-views-v1") === "1") return;
+      this.db.exec(`
+      CREATE TABLE IF NOT EXISTS quota_window_retirements (
+        provider TEXT NOT NULL, account_key TEXT NOT NULL, account_id TEXT,
+        bucket_id TEXT NOT NULL, window_id TEXT NOT NULL, model TEXT NOT NULL DEFAULT '',
+        captured_at TEXT NOT NULL, event_id TEXT NOT NULL,
+        PRIMARY KEY (provider, account_key, bucket_id, window_id, model, captured_at, event_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_quota_retired_identity
+        ON quota_window_retirements(provider, account_id, bucket_id, window_id, captured_at);
+      CREATE INDEX IF NOT EXISTS idx_quota_retired_key
+        ON quota_window_retirements(provider, account_key, bucket_id, window_id, captured_at);
+      DROP VIEW IF EXISTS active_quota_snapshots;
+      CREATE VIEW IF NOT EXISTS active_quota_snapshots AS SELECT s.* FROM quota_snapshots s WHERE retired = 0
+        AND NOT EXISTS (SELECT 1 FROM quota_window_retirements r
+          WHERE r.provider = s.provider
+          AND ((r.account_id IS NOT NULL AND r.account_id = s.account_id) OR r.account_key = s.account_key)
+          AND r.bucket_id = s.bucket_id AND r.window_id = s.window_id
+          AND (r.model = '' OR r.model = s.model) AND s.captured_at <= r.captured_at);
+      CREATE VIEW IF NOT EXISTS active_quota_observations AS SELECT * FROM quota_observations WHERE retired = 0;
+      `);
+      this.setMetaValue("quota-retirement-views-v1", "1");
+    })());
     // Limits are rendered for every detected account. These targeted lookups
     // keep per-account usage and identity attribution bounded by the account's
     // rows instead of rescanning every provider's history.
@@ -325,6 +429,39 @@ export class EventCache {
     return row?.value;
   }
 
+  /** Preference aliases require stable IDs independently proven by native data.
+   * This is a display join only: financial events and stored preferences retain
+   * their original keys. Ambiguous/reused legacy keys are never guessed. */
+  nativeAccountAliases(config?: TokitokiConfig): Map<string, string> {
+    const provenIds = new Set(nativeCodexIdentities({ config }).keys());
+    const native = this.db.query<{ accountId: string }, []>(`SELECT DISTINCT account_id AS accountId
+      FROM active_quota_observations WHERE provider = 'codex' AND account_id IS NOT NULL AND account_id <> ''`).all();
+    for (const row of native) provenIds.add(row.accountId);
+    const retired = this.db.query<{ provider: string; accountKey: string; accountId: string }, []>(`
+      SELECT provider, account_key AS accountKey, account_id AS accountId
+      FROM quota_snapshots WHERE retired = 1 AND account_id IS NOT NULL AND account_id <> ''
+      UNION SELECT provider, account_key AS accountKey, account_id AS accountId
+      FROM quota_observations WHERE retired = 1 AND account_id IS NOT NULL AND account_id <> ''`).all();
+    const candidates = new Map<string, Set<string>>();
+    for (const row of retired) {
+      const key = `${row.provider}@${row.accountKey}`;
+      const ids = candidates.get(key) ?? new Set<string>();
+      ids.add(row.accountId);
+      candidates.set(key, ids);
+    }
+    const aliases = new Map<string, string>();
+    for (const [key, ids] of candidates) {
+      const accountId = ids.size === 1 ? [...ids][0] : undefined;
+      if (accountId !== undefined && provenIds.has(accountId)) aliases.set(key, `codex@openai:${accountId}`);
+    }
+    return aliases;
+  }
+
+  /** Retired harness records remain reportable, but cannot create live cards. */
+  isRetiredQuotaProvider(provider: string): boolean {
+    return this.metaValue(`retired-quota-provider:${provider}`) !== undefined;
+  }
+
   /** Persist a small cache marker atomically alongside the projection. */
   setMetaValue(key: string, value: string): void {
     this.db
@@ -351,19 +488,73 @@ export class EventCache {
   }
 
   /** Insert events, ignoring duplicates (dedupe on the stable id). */
+  excludeReplayedUsage(ids: string[]): void {
+    this.recordReplayDecisions(ids, true);
+  }
+
+  /** A fresh native scan can restore a request if its former replay proof no longer holds. */
+  restoreReplayedUsage(ids: string[]): void {
+    this.recordReplayDecisions(ids, false);
+  }
+
+  private recordReplayDecisions(ids: string[], replayed: boolean): void {
+    if (ids.length === 0) return;
+    sqliteRetry(() => this.db.transaction(() => {
+      const latest = this.db.query<{ at: number }, []>("SELECT COALESCE(MAX(at), 0) AS at FROM usage_replay_decisions").get()?.at ?? 0;
+      const at = Math.max(Date.now(), latest + 1);
+      const decisions: UsageReplayDecision[] = [];
+      for (const eventId of new Set(ids)) {
+        if (!eventId.startsWith("codex:")) continue;
+        if (replayed && this.db.query("SELECT 1 FROM original_usage WHERE event_id = ?").get(eventId) !== null) continue;
+        const previous = this.db.query<{ replayed: number }, [string]>("SELECT replayed FROM usage_replay_decisions WHERE event_id = ?").get(eventId);
+        const excluded = this.db.query("SELECT 1 FROM replayed_usage WHERE event_id = ?").get(eventId) !== null;
+        if (previous?.replayed === Number(replayed) || (!replayed && !excluded)) continue;
+        decisions.push({ type: "usage-replay", eventId, at, replayed });
+      }
+      appendUsageReplayDecisions(decisions);
+      this.applyReplayDecisions(decisions);
+    }).immediate());
+  }
+
+  private applyReplayDecisions(decisions: UsageReplayDecision[]): void {
+    if (decisions.length === 0) return;
+    const upsert = this.db.prepare(`INSERT INTO usage_replay_decisions(event_id, at, replayed) VALUES (?, ?, ?)
+      ON CONFLICT(event_id) DO UPDATE SET at=excluded.at, replayed=excluded.replayed
+      WHERE excluded.at > usage_replay_decisions.at OR
+        (excluded.at = usage_replay_decisions.at AND excluded.replayed < usage_replay_decisions.replayed)`);
+    sqliteRetry(() => this.db.transaction(() => {
+      let changed = false;
+      for (const decision of decisions) {
+        if (upsert.run(decision.eventId, decision.at, Number(decision.replayed)).changes === 0) continue;
+        const protectedOriginal = this.db.query("SELECT 1 FROM original_usage WHERE event_id = ?").get(decision.eventId) !== null;
+        const result = decision.replayed && !protectedOriginal
+          ? this.db.query("INSERT OR IGNORE INTO replayed_usage(event_id) VALUES (?)").run(decision.eventId)
+          : this.db.query("DELETE FROM replayed_usage WHERE event_id = ?").run(decision.eventId);
+        changed = result.changes > 0 || changed;
+      }
+      if (changed) this.rebuildRollups();
+    })());
+  }
+
+  /** Insert events, ignoring duplicates (dedupe on the stable id). */
   insert(events: UsageEvent[]): number {
     if (events.length === 0) return 0;
     const stmt = this.db.prepare(`
       INSERT OR IGNORE INTO events (
         id, ts, machine_id, provider, account_key, model,
         input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
-        cost_usd, project_dir, session_id, tool, description
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        cost_usd, cost_source, token_source, project_dir, session_id, tool, description
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const tx = this.db.transaction((rows: UsageEvent[]) => {
       let inserted = 0;
+      let restoredOriginal = false;
       const newRows: UsageEvent[] = [];
       for (const e of rows) {
+        if (e.provider === "codex" && e.originalUsage === true) {
+          this.db.query("INSERT OR IGNORE INTO original_usage(event_id) VALUES (?)").run(e.id);
+          restoredOriginal = this.db.query("DELETE FROM replayed_usage WHERE event_id = ?").run(e.id).changes > 0 || restoredOriginal;
+        }
         const changes = stmt.run(
           e.id,
           e.ts,
@@ -376,6 +567,8 @@ export class EventCache {
           Math.round(e.cacheReadTokens ?? 0),
           Math.round(e.cacheWriteTokens ?? 0),
           e.costUsd ?? 0,
+          e.costSource ?? "unknown",
+          e.tokenSource ?? "unknown",
           e.projectDir ?? null,
           e.sessionId ?? null,
           e.tool ?? null,
@@ -387,11 +580,85 @@ export class EventCache {
       // Same transaction as the event inserts so daily_rollups can never
       // drift from events mid-batch.
       if (newRows.length > 0) this.applyRollups(newRows);
+      // Scans replay stable ids directly here, including legacy unknown rows.
+      this.enrichAccounting(rows);
+      if (restoredOriginal) this.rebuildRollups();
       return inserted;
     });
     const n = sqliteRetry(() => tx(events)) as number;
     this.insertQuotaSnapshots(events);
     return n;
+  }
+
+  /** Provenance moves toward authority; a reported zero is authoritative too. */
+  private enrichAccounting(events: UsageEvent[]): void {
+    const current = this.db.query<StoredAccounting, [string]>(
+      "SELECT cost_usd, cost_source, token_source, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens FROM events WHERE id = ?",
+    );
+    const update = this.db.prepare("UPDATE events SET cost_usd = ?, cost_source = ? WHERE id = ?");
+    const updateTokens = this.db.prepare(`UPDATE events SET input_tokens = ?, output_tokens = ?,
+      cache_read_tokens = ?, cache_write_tokens = ?, token_source = ?, session_id = COALESCE(?, session_id) WHERE id = ?`);
+    let sumsChanged = false;
+    for (const event of events) {
+      const kept = current.get(event.id);
+      if (kept === null) continue;
+      const costUpgrade = costAuthority(event.costSource) > costAuthority(kept.cost_source);
+      const tokenUpgrade = tokenAuthority(event.tokenSource) > tokenAuthority(kept.token_source);
+      if (costUpgrade) {
+        const cost = event.costUsd ?? 0;
+        update.run(cost, event.costSource!, event.id);
+        if (kept.cost_usd !== cost && countsTowardTotals(event)) sumsChanged = true;
+      }
+      // Keep compatibility with the earlier normalized-cost extractor, while
+      // allowing token provenance to enrich independently of pricing authority.
+      if (tokenUpgrade || (costUpgrade && kept.cost_source === "unknown" && kept.token_source === "unknown")) {
+        const tokens = [Math.round(event.inputTokens), Math.round(event.outputTokens),
+          Math.round(event.cacheReadTokens ?? 0), Math.round(event.cacheWriteTokens ?? 0)];
+        updateTokens.run(...tokens, tokenUpgrade ? event.tokenSource! : kept.token_source,
+          event.provider === "codex" ? event.sessionId ?? null : null, event.id);
+        if (kept.input_tokens !== tokens[0] || kept.output_tokens !== tokens[1] ||
+          kept.cache_read_tokens !== tokens[2] || kept.cache_write_tokens !== tokens[3] ||
+          (event.provider === "cursor" && tokenUpgrade)) sumsChanged = true;
+      }
+    }
+    // Provenance-only enrichment leaves the existing rollups untouched.
+    if (sumsChanged) this.rebuildRollups();
+  }
+
+  /** Counted usage over [sinceIso, untilIso); all four token fields are normalized. */
+  trackingSummary(opts: { sinceIso: string; untilIso?: string }): TrackingSummary {
+    const conditions = [COUNTED_USAGE_SQL, "ts >= ?"];
+    const params: SQLQueryBindings[] = [opts.sinceIso];
+    if (opts.untilIso !== undefined) {
+      conditions.push("ts < ?");
+      params.push(opts.untilIso);
+    }
+    const where = conditions.join(" AND ");
+    const row = this.db.query(`SELECT COUNT(*) AS requests,
+      COALESCE(SUM(input_tokens), 0) AS inputTokens,
+      COALESCE(SUM(output_tokens), 0) AS outputTokens,
+      COALESCE(SUM(cache_read_tokens), 0) AS cacheReadTokens,
+      COALESCE(SUM(cache_write_tokens), 0) AS cacheWriteTokens,
+      COALESCE(SUM(cost_usd), 0) AS costUsd,
+      COALESCE(SUM(cost_source = 'reported'), 0) AS reportedRequests,
+      COALESCE(SUM(cost_source = 'estimated'), 0) AS estimatedRequests,
+      COALESCE(SUM(cost_source = 'unpriced'), 0) AS unpricedRequests,
+      COALESCE(SUM(cost_source NOT IN ('reported', 'estimated', 'unpriced')), 0) AS unknownRequests,
+      ${TOKEN_QUALITY_SQL}
+      FROM events WHERE ${where}`).get(...params) as Omit<TrackingSummary,
+        "totalTokens" | "pricedRequests" | "pricingCoveragePercent" | "cachedInputPercent" | "unpricedModels">;
+    const pricedRequests = row.reportedRequests + row.estimatedRequests;
+    const input = row.inputTokens + row.cacheReadTokens + row.cacheWriteTokens;
+    const models = this.db.query(`SELECT DISTINCT model FROM events
+      WHERE ${where} AND cost_source = 'unpriced' ORDER BY model`).all(...params) as Array<{ model: string }>;
+    return {
+      ...row,
+      totalTokens: input + row.outputTokens,
+      pricedRequests,
+      pricingCoveragePercent: row.requests > 0 ? 100 * pricedRequests / row.requests : null,
+      cachedInputPercent: input > 0 ? 100 * row.cacheReadTokens / input : null,
+      unpricedModels: models.map(row => row.model),
+    };
   }
 
   /**
@@ -409,6 +676,8 @@ export class EventCache {
     accountKey: string;
     accountId?: string;
     windows: StoredQuotaWindow[];
+    /** Explicit null slots retire older readings across stable account aliases. */
+    retiredWindows?: Array<{ bucketId: string; windowId: string; model?: string }>;
     credits?: { hasCredits: boolean; unlimited: boolean; balance: string; expiresAt?: string };
     capturedAtIso: string;
     eventId: string;
@@ -449,6 +718,12 @@ export class EventCache {
         observationId = this.db.query<{ id: number }, string[]>(`SELECT id FROM quota_observations
           WHERE provider = ? AND account_key = ? AND bucket_id = ? AND captured_at = ? AND event_id = ?`)
           .get(input.provider, input.accountKey, bucketId, capturedAtIso, input.eventId)!.id;
+      }
+      for (const slot of input.retiredWindows ?? []) {
+        this.db.query(`INSERT OR IGNORE INTO quota_window_retirements
+          (provider, account_key, account_id, bucket_id, window_id, model, captured_at, event_id)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(input.provider, input.accountKey, input.accountId ?? null,
+            slot.bucketId, slot.windowId, slot.model ?? "", capturedAtIso, input.eventId);
       }
       for (const w of input.windows) {
         const label = w.label ?? "";
@@ -525,7 +800,7 @@ export class EventCache {
       for (const r of rows) repoNames.set(r.dir, r.name);
     }
     for (const e of events) {
-      if (!countsTowardTotals(e)) continue;
+      if (!countsTowardTotals(e) || this.db.query("SELECT 1 FROM replayed_usage WHERE event_id = ?").get(e.id) !== null) continue;
       this.rollupStmtUpsert.run(
         rollupDay(e.ts),
         e.provider,
@@ -559,7 +834,7 @@ export class EventCache {
              SUM(e.cost_usd), COUNT(*)
       FROM events e
       LEFT JOIN repo_dirs r ON e.project_dir = r.dir
-      WHERE e.provider <> 't3code'
+      WHERE ${countedUsageSql('e.')}
       GROUP BY day, e.provider, e.account_key, e.model, e.machine_id, r.name;
     `);
   }
@@ -581,6 +856,11 @@ export class EventCache {
 
   /** Full rebuild from all known event log files. */
   rebuild(extraFiles: string[]): void {
+    // Retain pricing and normalized accounting learned by direct rescans when
+    // older log copies are replayed.
+    const knownCosts = this.db.query(`SELECT id, session_id, cost_usd, cost_source, token_source, input_tokens, output_tokens,
+      cache_read_tokens, cache_write_tokens FROM events WHERE cost_source <> 'unknown' OR token_source <> 'unknown'`)
+      .all() as Array<StoredAccounting & { id: string; session_id: string | null; cost_source: NonNullable<UsageEvent["costSource"]> }>;
     this.db.exec("DELETE FROM events");
     const files = [eventsFile(), ...extraFiles];
     // First occurrence wins (local log precedes synced ones), EXCEPT when a
@@ -589,12 +869,43 @@ export class EventCache {
     // re-append enriched events under the same stable id).
     const byId = new Map<string, UsageEvent>();
     const richness = (e: UsageEvent): number => (e.tool !== undefined ? 2 : 0) + (e.quota !== undefined ? 1 : 0);
+    const replayDecisions: UsageReplayDecision[] = [];
     for (const file of files) {
-      for (const e of readEventsFile(file)) {
+      for (const e of readEventsFile(file, decision => replayDecisions.push(decision))) {
         const kept = byId.get(e.id);
-        if (kept === undefined || richness(e) > richness(kept)) byId.set(e.id, e);
+        if (kept === undefined) byId.set(e.id, e);
+        else {
+          const richer = richness(e) > richness(kept) ? e : kept;
+          const priced = costAuthority(e.costSource) > costAuthority(kept.costSource) ? e : kept;
+          // Tool/quota richness must not select legacy counters over normalized ones.
+          const tokenized = tokenAuthority(e.tokenSource) > tokenAuthority(kept.tokenSource) ? e : kept;
+          const accounting = tokenAuthority(tokenized.tokenSource) > 0 ? tokenized
+            : kept.costSource === undefined && e.costSource !== undefined ? e : kept;
+          byId.set(e.id, { ...richer, inputTokens: accounting.inputTokens, outputTokens: accounting.outputTokens,
+            ...((kept.originalUsage === true || e.originalUsage === true) ? { originalUsage: true } : {}),
+            sessionId: accounting.sessionId ?? richer.sessionId,
+            cacheReadTokens: accounting.cacheReadTokens, cacheWriteTokens: accounting.cacheWriteTokens,
+            costUsd: priced.costUsd, costSource: priced.costSource, tokenSource: tokenized.tokenSource,
+            tokenEstimationMethod: tokenized.tokenEstimationMethod });
+        }
       }
     }
+    for (const known of knownCosts) {
+      const event = byId.get(known.id);
+      if (event === undefined) continue;
+      const costUpgrade = costAuthority(known.cost_source) > costAuthority(event.costSource);
+      const tokenUpgrade = tokenAuthority(known.token_source) > tokenAuthority(event.tokenSource);
+      const accounting = tokenUpgrade || (tokenAuthority(event.tokenSource) === 0 && costUpgrade && event.costSource === undefined) ? {
+        sessionId: known.session_id ?? event.sessionId,
+        inputTokens: known.input_tokens, outputTokens: known.output_tokens,
+        cacheReadTokens: known.cache_read_tokens, cacheWriteTokens: known.cache_write_tokens,
+      } : {};
+      byId.set(known.id, { ...event, ...accounting,
+        ...(costUpgrade ? { costUsd: known.cost_usd, costSource: known.cost_source } : {}),
+        ...(tokenUpgrade && known.token_source !== "unknown" ? { tokenSource: known.token_source } : {}),
+      });
+    }
+    this.applyReplayDecisions(replayDecisions);
     this.insert(Array.from(byId.values()));
     // insert() maintains rollups incrementally; the explicit pass is a cheap
     // belt-and-suspenders reset for the full-projection path.
@@ -704,7 +1015,9 @@ export class EventCache {
     // then upgrade enriched duplicates from later logs.
     let offsetsChanged = false;
     for (const { file, from } of tails) {
-      const { events, newSize } = readEventsTail(file, from);
+      const decisions: UsageReplayDecision[] = [];
+      const { events, newSize } = readEventsTail(file, from, decision => decisions.push(decision));
+      this.applyReplayDecisions(decisions);
       this.upsertRicher(events);
       offsets[file] = newSize;
       offsetsChanged = true;
@@ -775,7 +1088,7 @@ export class EventCache {
       const rows = this.db
         .query(
           `SELECT DISTINCT window_minutes AS wm, resets_at AS resets
-           FROM quota_snapshots WHERE provider = ? AND event_id LIKE 'poll:%'`,
+           FROM active_quota_snapshots WHERE provider = ? AND event_id LIKE 'poll:%'`,
         )
         .all(provider) as Array<{ wm: number; resets: number }>;
       return new Set(rows.map((r) => `${r.wm}:${r.resets}`));
@@ -788,7 +1101,7 @@ export class EventCache {
     const observations = this.db.query<QuotaObservation, string[]>(`
       SELECT id, bucket_id AS bucketId, captured_at AS capturedAt, account_id AS accountId
       FROM (SELECT *, ROW_NUMBER() OVER (PARTITION BY bucket_id ORDER BY captured_at DESC, id DESC) AS position
-            FROM quota_observations WHERE provider = ? AND account_key = ? AND complete = 1)
+            FROM active_quota_observations WHERE provider = ? AND account_key = ? AND complete = 1)
       WHERE position = 1
     `).all(provider, accountKey);
     const full = observations.find(row => row.bucketId === "*");
@@ -798,7 +1111,7 @@ export class EventCache {
              resets_at AS resetsAt, credits_json AS creditsJson, captured_at AS capturedAt, event_id AS eventId,
              bucket_id AS bucketId, window_id AS windowId, scope, window_start AS windowStart,
              window_end AS windowEnd, COALESCE(observed_at, captured_at) AS observedAt, observation_id AS observationId
-      FROM quota_snapshots WHERE provider = ? AND account_key = ?
+      FROM active_quota_snapshots WHERE provider = ? AND account_key = ?
       ${full !== undefined ? "AND captured_at >= ?" : ""}
       ORDER BY captured_at DESC, COALESCE(observation_id, 0) DESC
     `).all(provider, accountKey, ...(full !== undefined ? [full.capturedAt] : []));
@@ -825,6 +1138,7 @@ export class EventCache {
 
   /** Latest account-level facts from a provider poll (plan, extra usage, identity). */
   quotaAccountMeta(provider: string, accountKey: string): QuotaAccountMeta | undefined {
+    if (this.metaValue(`quota-account-retired:${provider}@${accountKey}`) !== undefined) return undefined;
     const raw = this.metaValue(`quota-account:${provider}@${accountKey}`);
     if (raw === undefined) return undefined;
     try {
@@ -837,13 +1151,15 @@ export class EventCache {
 
   setQuotaAccountMeta(provider: string, accountKey: string, meta: QuotaAccountMeta): void {
     this.setMetaValue(`quota-account:${provider}@${accountKey}`, JSON.stringify(meta));
+    this.db.query("DELETE FROM meta WHERE key = ?").run(`quota-account-retired:${provider}@${accountKey}`);
+    this.setMetaValue(`quota-account-native:${provider}@${accountKey}`, "1");
   }
 
   /** Stable provider identities attached to the latest polled snapshots. */
   quotaAccountKeys(input: { provider: string; accountId: string }): string[] {
     const rows = this.db.query<{ accountKey: string }, string[]>(`
-      SELECT account_key AS accountKey FROM quota_observations WHERE provider = ? AND account_id = ?
-      UNION SELECT account_key AS accountKey FROM quota_snapshots WHERE provider = ? AND account_id = ?
+      SELECT account_key AS accountKey FROM active_quota_observations WHERE provider = ? AND account_id = ?
+      UNION SELECT account_key AS accountKey FROM active_quota_snapshots WHERE provider = ? AND account_id = ?
     `).all(input.provider, input.accountId, input.provider, input.accountId);
     return rows.map(row => row.accountKey).filter(key => this.quotaAccountIds(input.provider, key).has(input.accountId));
   }
@@ -852,14 +1168,14 @@ export class EventCache {
     try {
       const rows = this.db
         .query(
-          `SELECT DISTINCT account_id AS accountId FROM quota_observations
+          `SELECT DISTINCT account_id AS accountId FROM active_quota_observations
            WHERE provider = ? AND account_key = ? AND account_id IS NOT NULL AND account_id <> ''
-           AND captured_at = (SELECT MAX(captured_at) FROM quota_observations WHERE provider = ? AND account_key = ?)
+           AND captured_at = (SELECT MAX(captured_at) FROM active_quota_observations WHERE provider = ? AND account_key = ?)
            UNION
-           SELECT account_id AS accountId FROM quota_snapshots
+           SELECT account_id AS accountId FROM active_quota_snapshots
            WHERE provider = ? AND account_key = ? AND account_id IS NOT NULL AND account_id <> ''
-           AND NOT EXISTS (SELECT 1 FROM quota_observations WHERE provider = ? AND account_key = ?)
-           AND captured_at = (SELECT MAX(captured_at) FROM quota_snapshots WHERE provider = ? AND account_key = ?)`,
+           AND NOT EXISTS (SELECT 1 FROM active_quota_observations WHERE provider = ? AND account_key = ?)
+           AND captured_at = (SELECT MAX(captured_at) FROM active_quota_snapshots WHERE provider = ? AND account_key = ?)`,
         )
         .all(provider, accountKey, provider, accountKey, provider, accountKey, provider, accountKey, provider, accountKey) as Array<{ accountId: string | null }>;
       return new Set(rows.map((r) => r.accountId).filter((id): id is string => typeof id === "string" && id.length > 0));
@@ -946,7 +1262,7 @@ export class EventCache {
     accountKey?: string,
     includeActivity = false,
   ): { sql: string; params: SQLQueryBindings[] } {
-    const parts = includeActivity ? ["ts >= ?"] : ["ts >= ?", COUNTED_USAGE_SQL];
+    const parts = includeActivity ? ["ts >= ?", ORIGINAL_USAGE_SQL] : ["ts >= ?", COUNTED_USAGE_SQL];
     const params: SQLQueryBindings[] = [];
     if (providers !== undefined && providers.length > 0) {
       const placeholders = providers.map(() => "?").join(", ");
@@ -1120,17 +1436,21 @@ export class EventCache {
     return fromRawRow({ ...row, bucket: "TOTAL" });
   }
 
-  t3codeActivity(window: { sinceIso: string; untilIso?: string }): { total: AggRow; rows: AggRow[] } {
+  t3codeActivity(window: { sinceIso: string; untilIso?: string }): { total: AggRow & TokenQuality; rows: Array<AggRow & TokenQuality> } {
     const where = this.whereClause(["t3code"], window.untilIso, undefined, true);
-    const readRows = ({ byModel }: { byModel: boolean }): AggRow[] => this.db.query<RawAggRow, SQLQueryBindings[]>(`
+    const readRows = ({ byModel }: { byModel: boolean }): Array<AggRow & TokenQuality> => this.db.query<RawAggRow & TokenQuality, SQLQueryBindings[]>(`
       SELECT ${byModel ? "model" : "'TOTAL'"} AS bucket,
              COUNT(*) AS requests, COUNT(DISTINCT session_id) AS sessions,
              SUM(input_tokens) AS input_tokens, SUM(output_tokens) AS output_tokens,
              SUM(cache_read_tokens) AS cache_read_tokens, SUM(cache_write_tokens) AS cache_write_tokens,
-             SUM(cost_usd) AS cost_usd
+             SUM(cost_usd) AS cost_usd, ${TOKEN_QUALITY_SQL}
       FROM events WHERE ${where.sql}
       ${byModel ? "GROUP BY model ORDER BY cost_usd DESC, input_tokens DESC" : ""}
-    `).all(window.sinceIso, ...where.params).map(fromRawRow);
+    `).all(window.sinceIso, ...where.params).map(row => ({ ...fromRawRow(row),
+      reportedTokenRequests: row.reportedTokenRequests, estimatedTokenRequests: row.estimatedTokenRequests,
+      unknownTokenRequests: row.unknownTokenRequests, reportedTokens: row.reportedTokens,
+      estimatedTokens: row.estimatedTokens, unknownTokens: row.unknownTokens,
+    }));
     return { total: readRows({ byModel: false })[0]!, rows: readRows({ byModel: true }) };
   }
 
@@ -1609,7 +1929,7 @@ export class EventCache {
         : dimension === "vendor" ? `FROM events ${vendorJoin("events")}` : "FROM events";
     if (dimension === "repo") this.ensureRepoMap();
     if (dimension === "vendor") this.ensureVendorMap();
-    const conds = ["events.ts >= ?", "events.ts < ?", "events.provider <> 't3code'"];
+    const conds = ["events.ts >= ?", "events.ts < ?", countedUsageSql("events.")];
     const params: SQLQueryBindings[] = [sinceIso, untilIso];
     if (providers !== undefined && providers.length > 0) {
       conds.push(`events.provider IN (${providers.map(() => "?").join(",")})`);
@@ -1733,9 +2053,9 @@ export class EventCache {
       .query(
         `
         SELECT ts, model, input_tokens, output_tokens,
-               cache_read_tokens, cache_write_tokens, cost_usd, tool, description
+               cache_read_tokens, cache_write_tokens, cost_usd, cost_source, token_source, tool, description
         FROM events
-        WHERE provider = ? AND session_id = ?
+        WHERE provider = ? AND session_id = ? AND ${ORIGINAL_USAGE_SQL}
         ORDER BY ts, id
         LIMIT ? OFFSET ?
         `,
@@ -1750,6 +2070,8 @@ export class EventCache {
       cacheReadTokens: r.cache_read_tokens ?? 0,
       cacheWriteTokens: r.cache_write_tokens ?? 0,
       costUsd: r.cost_usd ?? 0,
+      costSource: r.cost_source,
+      tokenSource: r.token_source,
       tool: r.tool ?? undefined,
       description: r.description ?? describeSessionEvent(r, index, conversation),
     }));
@@ -1758,7 +2080,7 @@ export class EventCache {
   sessionCacheEstimate(provider: string, sessionId: string): CacheDurationEstimate {
     const rows = this.db.query(
       `SELECT ts, input_tokens, cache_read_tokens
-       FROM events WHERE provider = ? AND session_id = ? ORDER BY ts, id`,
+       FROM events WHERE provider = ? AND session_id = ? AND ${ORIGINAL_USAGE_SQL} ORDER BY ts, id`,
     ).all(provider, sessionId) as Array<{ ts: string; input_tokens: number | null; cache_read_tokens: number | null }>;
     return estimateCacheDuration(rows.map((row) => ({
       ts: row.ts,
@@ -1769,7 +2091,7 @@ export class EventCache {
 
   sessionEventCount(provider: string, sessionId: string): number {
     const row = this.db
-      .query("SELECT COUNT(*) AS count FROM events WHERE provider = ? AND session_id = ?")
+      .query(`SELECT COUNT(*) AS count FROM events WHERE provider = ? AND session_id = ? AND ${ORIGINAL_USAGE_SQL}`)
       .get(provider, sessionId) as { count?: number } | undefined;
     return Number(row?.count ?? 0);
   }
@@ -1782,7 +2104,7 @@ export class EventCache {
          FROM (
            SELECT input_tokens, output_tokens, cache_read_tokens, cache_write_tokens
            FROM events
-           WHERE provider = ? AND session_id = ?
+           WHERE provider = ? AND session_id = ? AND ${ORIGINAL_USAGE_SQL}
            ORDER BY ts, id
            LIMIT ?
          )`,
@@ -2036,6 +2358,8 @@ const TOOL_BUCKET_SQL = `
 `; // referenced twice (SELECT + GROUP BY), keep in sync
 
 export interface SessionEventRow {
+  tokenSource: TrackingTokenSource;
+  costSource: TrackingCostSource;
   ts: string;
   model: string;
   inputTokens: number;
@@ -2048,6 +2372,8 @@ export interface SessionEventRow {
 }
 
 interface RawSessionEventRow {
+  token_source: TrackingTokenSource;
+  cost_source: TrackingCostSource;
   ts: string;
   model: string;
   input_tokens: number | null;
@@ -2057,4 +2383,51 @@ interface RawSessionEventRow {
   cost_usd: number | null;
   tool: string | null;
   description: string | null;
+}
+
+/** Unknown is reserved for historical records without explicit provenance. */
+export type TrackingCostSource = "reported" | "estimated" | "unpriced" | "unknown";
+interface StoredAccounting {
+  token_source: TrackingTokenSource;
+  cost_usd: number;
+  cost_source: string;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_write_tokens: number;
+}
+function costAuthority(source: string | undefined): number {
+  return source === "reported" ? 3 : source === "estimated" ? 2 : source === "unpriced" ? 1 : 0;
+}
+
+export type TrackingTokenSource = "reported" | "estimated" | "unknown";
+function tokenAuthority(source: string | undefined): number {
+  return source === "reported" ? 2 : source === "estimated" ? 1 : 0;
+}
+export interface TokenQuality {
+  reportedTokenRequests: number;
+  estimatedTokenRequests: number;
+  unknownTokenRequests: number;
+  reportedTokens: number;
+  estimatedTokens: number;
+  unknownTokens: number;
+}
+const TOKEN_QUALITY_SQL = ["reported", "estimated", "unknown"].flatMap(source => {
+  const predicate = source === "unknown" ? "token_source NOT IN ('reported', 'estimated')" : `token_source = '${source}'`;
+  return [
+    `COALESCE(SUM(${predicate}), 0) AS ${source}TokenRequests`,
+    `COALESCE(SUM(CASE WHEN ${predicate} THEN input_tokens + output_tokens + cache_read_tokens + cache_write_tokens ELSE 0 END), 0) AS ${source}Tokens`,
+  ];
+}).join(", ");
+
+export interface TrackingSummary extends UsageTotals, TokenQuality {
+  totalTokens: number;
+  reportedRequests: number;
+  estimatedRequests: number;
+  unpricedRequests: number;
+  unknownRequests: number;
+  pricedRequests: number;
+  pricingCoveragePercent: number | null;
+  cachedInputPercent: number | null;
+  unpricedModels: string[];
 }

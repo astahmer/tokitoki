@@ -53,6 +53,7 @@ describe("cursor dashboard usage", () => {
     expect(events[1]!.cacheReadTokens).toBe(8);
     expect(events[1]!.costUsd).toBeCloseTo(0.1);
     expect(events[0]!.provider).toBe("cursor");
+    expect(events[0]!.tokenSource).toBe("reported");
     expect(events[0]!.accountKey).toBe("default");
     expect(events[0]!.sessionId).toBe("conv-1");
     expect(events[0]!.inputTokens).toBe(1000);

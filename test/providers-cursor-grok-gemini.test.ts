@@ -139,7 +139,11 @@ describe("cursor provider", () => {
     const e = events[0]!;
     expect(e.sessionId).toBe(composerId);
     expect(e.model).toBe("grok-4.6");
+    expect(e.costSource).toBe("unpriced");
+    expect(e.costUsd).toBeUndefined();
     expect(e.provider).toBe("cursor");
+    expect(e.tokenSource).toBe("estimated");
+    expect(e.tokenEstimationMethod).toBe("characters/4");
     expect(e.inputTokens).toBeGreaterThan(0);
     expect(e.outputTokens).toBeGreaterThan(0);
     expect(e.ts).toBe("2026-08-30T10:00:05.000Z");
@@ -218,7 +222,8 @@ describe("grok provider", () => {
     expect(ev.model).toBe("grok-4.5");
     expect(ev.inputTokens).toBe(640);
     expect(ev.projectDir).toBe("/proj");
-    expect(typeof ev.costUsd).toBe("number");
+    expect(ev.costUsd).toBeUndefined();
+    expect(ev.costSource).toBe("unpriced");
 
     const docs = grokProvider.extractSessionDocs!(file);
     expect(docs).toHaveLength(1);

@@ -61,6 +61,9 @@ struct TotalsRow: Codable {
     let cacheReadTokens: Double?
     let cacheWriteTokens: Double?
     let costUsd: Double
+    let reportedTokens: Double?
+    let estimatedTokens: Double?
+    let unknownTokens: Double?
 
     var totalTokens: Double {
         let input = inputTokens ?? 0.0
@@ -370,6 +373,18 @@ struct ProviderRegistryEntry: Codable {
     let vendor: String?
 }
 
+struct AccountCredits: Codable {
+    let hasCredits: Bool
+    let unlimited: Bool
+    let balance: String?
+
+    var displayLabel: String? {
+        if unlimited { return "Unlimited workspace credits" }
+        guard let balance else { return nil }
+        return "Workspace credits " + balance
+    }
+}
+
 struct AccountLimits: Codable, Identifiable {
     let provider: String
     let accountKey: String
@@ -384,7 +399,7 @@ struct AccountLimits: Codable, Identifiable {
     let alsoOn: [String]?
     let planLabel: String?
     let windows: [LimitWindow]
-    /** Where this account's quota data comes from ("polled"/"scan"/"opencodex"/"manual"). */
+    /** Where this account's quota data comes from ("polled"/"scan"/"manual"). */
     let origin: String?
     let bankedResets: Int?
     let bankedExpiresAt: String?
@@ -394,6 +409,25 @@ struct AccountLimits: Codable, Identifiable {
     var extraUsage: AccountExtraUsage? = nil
     var balance: AccountBalance? = nil
     var budgetWindows: [LimitWindow]? = nil
+    /// Native Codex home owning this login; supplied by the backend, never a credential.
+    var codexHome: String? = nil
+    var credits: AccountCredits? = nil
+
+    var sourceDescription: String {
+        switch origin {
+        case "polled": return provider == "codex" ? "read from the native Codex CLI" : "polled live from the provider API"
+        case "manual": return "from a manually registered key"
+        case "scan": return "read from locally scanned sessions"
+        default: return "source unavailable"
+        }
+    }
+
+    static func codexLoginCommand(home: String?) -> String {
+        guard let home, !home.isEmpty else { return "codex login" }
+        // Single-quote the complete value; native-home paths are shell data.
+        let quoted = "'" + home.replacingOccurrences(of: "'", with: "'\"'\"'") + "'"
+        return "CODEX_HOME=" + quoted + " codex login"
+    }
 
     var quotaWindows: [LimitWindow] { windows.filter { $0.source != "derived" } }
 
@@ -507,6 +541,75 @@ struct SpendPeriod: Codable {
     let rows: [ReportRow]
 }
 
+/// Missing provenance in older payloads never implies free usage.
+struct TrackingQuality: Codable {
+    let requests: Int?
+    let totalTokens: Double?
+    let inputTokens: Double?
+    let outputTokens: Double?
+    let cacheReadTokens: Double?
+    let cacheWriteTokens: Double?
+    let costUsd: Double?
+    let reportedRequests: Int?
+    let estimatedRequests: Int?
+    let unpricedRequests: Int?
+    let unknownRequests: Int?
+    let pricedRequests: Int?
+    let pricingCoveragePercent: Double?
+    let cachedInputPercent: Double?
+    let unpricedModels: [String]?
+    let reportedTokens: Double?
+    let estimatedTokens: Double?
+    let unknownTokens: Double?
+
+    static func tokenLabel(reported: Double?, estimated: Double?, unknown: Double?) -> String? {
+        guard let reported, let estimated, let unknown else { return nil }
+        return "Token counts: \(humanCount(reported)) reported · \(humanCount(estimated)) estimated" +
+            (unknown > 0 ? " · \(humanCount(unknown)) source unknown" : "")
+    }
+
+    static func percentLabel(_ value: Double?) -> String {
+        guard let value, value.isFinite, (0...100).contains(value) else { return "—" }
+        return String(format: "%.1f%%", value)
+    }
+
+    static func modelLabel(_ value: String) -> String {
+        // Do not expose arbitrary paths, emails or credential-like identifiers.
+        guard value.count <= 80, !value.lowercased().hasPrefix("sk-"),
+              value.range(of: "^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$", options: .regularExpression) != nil
+        else { return "other model identifier" }
+        return value.count > 40 ? String(value.prefix(37)) + "…" : value
+    }
+}
+
+/// One composition source for the selected Tokens period, including old payloads.
+struct TokenComposition {
+    let input: Double
+    let output: Double
+    let cacheRead: Double
+    let cacheWrite: Double
+
+    static func selected(key: String, tracking: [String: TrackingQuality], periods: [SpendPeriod],
+                         today: ReportPayload?, week: ReportPayload?, customRows: [ReportRow]) -> TokenComposition {
+        if let q = tracking[key], let input = q.inputTokens, let output = q.outputTokens,
+           let read = q.cacheReadTokens, let write = q.cacheWriteTokens {
+            return TokenComposition(input: input, output: output, cacheRead: read, cacheWrite: write)
+        }
+        if key == "today", let total = today?.total { return from(total) }
+        if key == "week", let total = week?.total { return from(total) }
+        let rows = key == "custom" ? customRows : (periods.first { $0.key == key }?.rows ?? [])
+        return TokenComposition(input: rows.reduce(0) { $0 + ($1.inputTokens ?? 0) },
+            output: rows.reduce(0) { $0 + ($1.outputTokens ?? 0) },
+            cacheRead: rows.reduce(0) { $0 + ($1.cacheReadTokens ?? 0) },
+            cacheWrite: rows.reduce(0) { $0 + ($1.cacheWriteTokens ?? 0) })
+    }
+
+    private static func from(_ total: TotalsRow) -> TokenComposition {
+        TokenComposition(input: total.inputTokens ?? 0, output: total.outputTokens ?? 0,
+                         cacheRead: total.cacheReadTokens ?? 0, cacheWrite: total.cacheWriteTokens ?? 0)
+    }
+}
+
 struct T3codeActivityPeriod: Codable {
     let key: String
     let total: TotalsRow
@@ -615,6 +718,7 @@ struct PopoverSessionDetail: Codable {
         let cacheWriteTokens: Double
         let costUsd: Double
         let runningTokens: Double
+        let tokenSource: String?
         let tool: String?
         let description: String?
         var id: Int { n }
@@ -649,6 +753,7 @@ struct WidgetPayload: Decodable {
     let presence: [MachineHeartbeat]?
     let limits: [AccountLimits]?
     let uiPreview: UiPreviewConfig?
+    let trackingPeriods: [String: TrackingQuality]?
     let spendPeriods: [SpendPeriod]?
     let providerPeriods: [SpendPeriod]?
     let modelPeriods: [SpendPeriod]?
@@ -732,6 +837,7 @@ final class Model: ObservableObject {
     /// Uniform strip display: "percent" (default) | "tokens".
     @Published var stripMetric: String = "percent"
     @Published var stripExhausted: String = "reset"
+    @Published var trackingPeriods: [String: TrackingQuality] = [:]
     @Published var spendPeriods: [SpendPeriod] = []
     @Published var providerPeriods: [SpendPeriod] = []
     @Published var modelPeriods: [SpendPeriod] = []
@@ -1041,7 +1147,7 @@ final class Model: ObservableObject {
     /// Accessor for AppDelegate context-menu actions.
     func currentInvocation() -> CLIInvocation { invocation }
 
-    func openAuthFlow(for provider: String) {
+    func openAuthFlow(for provider: String, codexHome: String? = nil) {
         let authProvider: String
         switch provider {
         case "claude": authProvider = "claude-code"
@@ -1055,7 +1161,7 @@ final class Model: ObservableObject {
             command = "claude"
             url = nil
         case "codex":
-            command = "codex login"
+            command = AccountLimits.codexLoginCommand(home: codexHome)
             url = nil
         case "copilot":
             command = "gh auth login"
@@ -1628,6 +1734,7 @@ final class Model: ObservableObject {
                     self.privacyHideIdentities = ui.privacyHideIdentities ?? false
                 }
                 self.updatePollSchedule()
+                self.trackingPeriods = p.trackingPeriods ?? [:]
                 self.spendPeriods = p.spendPeriods ?? []
                 self.providerPeriods = p.providerPeriods ?? []
                 self.modelPeriods = p.modelPeriods ?? []
@@ -7573,6 +7680,7 @@ struct ContentView: View {
                     tokenUpstreamProviderCard
                     tokenModelCard
                     tokenMixCard
+                    trackingQualityCard
                     historyCard
                 }
             }
@@ -7595,7 +7703,7 @@ struct ContentView: View {
                 VStack(alignment: .trailing, spacing: 3) {
                     metric("requests", humanCount(Double(totals.requests)))
                     metric("sessions", "\(totals.sessions)")
-                    metric("cost", String(format: "$%.2f", totals.cost))
+                    metric("API usage value", String(format: "$%.2f", totals.cost))
                 }
             }
             if totals.tokens == 0 && totals.requests == 0 && tokenPeriodKey == "today" {
@@ -7667,9 +7775,9 @@ struct ContentView: View {
                     .font(.caption).foregroundStyle(.secondary)
             } else {
                 HStack(spacing: 14) {
-                    DonutChart(slices: slices, centerLabel: humanCount(total), centerUnit: "last 24h")
+                    DonutChart(slices: slices, centerLabel: humanCount(total), centerUnit: tokenPeriodLabel(tokenPeriodKey))
                         .frame(width: 112, height: 112)
-                        .accessibilityLabel("last 24 hours token composition donut chart")
+                        .accessibilityLabel("\(tokenPeriodLabel(tokenPeriodKey)) token composition donut chart")
                     VStack(alignment: .leading, spacing: 4) {
                         ForEach(Array(slices.enumerated()), id: \.offset) { _, slice in
                             HStack(spacing: 5) {
@@ -7681,6 +7789,48 @@ struct ContentView: View {
                             }
                         }
                     }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private var trackingQualityCard: some View {
+        if let q = model.trackingPeriods[tokenPeriodKey] {
+            card(title: "Tracking quality · \(tokenPeriodLabel(tokenPeriodKey))", icon: "checkmark.shield") {
+                if let label = TrackingQuality.tokenLabel(reported: q.reportedTokens, estimated: q.estimatedTokens, unknown: q.unknownTokens) {
+                    Text(label).font(.caption).fixedSize(horizontal: false, vertical: true)
+                }
+                if (q.estimatedTokens ?? 0) > 0 {
+                    Text("Estimated from visible text (characters ÷ 4); hidden context is not counted.")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+                Text("Cost sources (requests)").font(.caption2).foregroundStyle(.secondary)
+                if q.requests == 0 {
+                    Text("No requests recorded in this period.").font(.caption).foregroundStyle(.secondary)
+                }
+                HStack(alignment: .top) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        metric("Reported", q.reportedRequests.map(String.init) ?? "—")
+                        metric("Estimated", q.estimatedRequests.map(String.init) ?? "—")
+                    }
+                    Spacer()
+                    VStack(alignment: .leading, spacing: 4) {
+                        metric("Unpriced", q.unpricedRequests.map(String.init) ?? "—")
+                        metric("Legacy unknown", q.unknownRequests.map(String.init) ?? "—")
+                    }
+                }
+                metric("Pricing coverage", TrackingQuality.percentLabel(q.pricingCoveragePercent))
+                metric("Cached input", TrackingQuality.percentLabel(q.cachedInputPercent))
+                if let cost = q.costUsd {
+                    metric("Known / estimated API usage value", String(format: "$%.2f", cost))
+                }
+                Text("Request counts by cost source. API-rate estimates are not a subscription bill. Unpriced and legacy unknown usage is not free. Cached input = cache read ÷ (input + cache read + cache write).")
+                    .font(.caption2).foregroundStyle(.secondary)
+                if let models = q.unpricedModels, !models.isEmpty {
+                    Text(model.privacyHideIdentities ? "Unpriced models hidden for privacy" :
+                        "Unpriced models: " + models.prefix(4).map(TrackingQuality.modelLabel).joined(separator: ", ") +
+                        (models.count > 4 ? " (+\(models.count - 4) more)" : ""))
+                        .font(.caption2).foregroundStyle(.secondary).lineLimit(2)
                 }
             }
         }
@@ -8043,7 +8193,7 @@ private struct SessionTimelineView: View {
                         Text(event.description ?? "model response · \(event.model)")
                             .font(.caption2)
                             .lineLimit(2)
-                        Text("\(event.model) · \(humanCount(event.inputTokens + event.outputTokens + event.cacheReadTokens + event.cacheWriteTokens)) tokens · \(String(format: "$%.2f", event.costUsd))")
+                        Text("\(event.model) · \(event.tokenSource == "estimated" ? "≈" : "")\(humanCount(event.inputTokens + event.outputTokens + event.cacheReadTokens + event.cacheWriteTokens)) tokens\(event.tokenSource == "estimated" ? " estimated" : "") · \(String(format: "$%.2f", event.costUsd))")
                             .font(.caption2.monospacedDigit())
                             .foregroundStyle(.secondary)
                     }
@@ -9190,12 +9340,13 @@ private struct HighlightedSnippet: View {
     }
 
     private var tokenMixSlices: [(name: String, value: Double, color: Color)] {
-        guard let total = (model.rollingDay ?? model.today)?.total else { return [] }
+        let mix = TokenComposition.selected(key: tokenPeriodKey, tracking: model.trackingPeriods,
+            periods: model.spendPeriods, today: model.today, week: model.week, customRows: model.customHarnessRows)
         return [
-            ("input", total.inputTokens ?? 0, Color(red: 0.30, green: 0.64, blue: 0.98)),
-            ("output", total.outputTokens ?? 0, Color(red: 0.95, green: 0.44, blue: 0.30)),
-            ("cache read", total.cacheReadTokens ?? 0, Color(red: 0.22, green: 0.78, blue: 0.48)),
-            ("cache write", total.cacheWriteTokens ?? 0, Color(red: 0.66, green: 0.45, blue: 0.90)),
+            ("input", mix.input, Color(red: 0.30, green: 0.64, blue: 0.98)),
+            ("output", mix.output, Color(red: 0.95, green: 0.44, blue: 0.30)),
+            ("cache read", mix.cacheRead, Color(red: 0.22, green: 0.78, blue: 0.48)),
+            ("cache write", mix.cacheWrite, Color(red: 0.66, green: 0.45, blue: 0.90)),
         ].filter { $0.value > 0 }
     }
 
@@ -9276,7 +9427,7 @@ private struct HighlightedSnippet: View {
                     onRefresh: { model.refreshAccount(l) },
                     onAuthAction: {
                         switch authState {
-                        case "login-required": model.openAuthFlow(for: l.provider)
+                        case "login-required": model.openAuthFlow(for: l.provider, codexHome: l.codexHome)
                         case "api-key-required": showAPIKeys = true
                         default: model.refreshAccount(l)
                         }
@@ -9446,6 +9597,9 @@ private struct HighlightedSnippet: View {
                             metric("tokens", humanCount(activity.total.totalTokens))
                             metric("estimated cost", String(format: "$%.2f", activity.total.costUsd))
                         }
+                    }
+                    if let label = TrackingQuality.tokenLabel(reported: activity.total.reportedTokens, estimated: activity.total.estimatedTokens, unknown: activity.total.unknownTokens) {
+                        Text(label).font(.caption2).foregroundStyle(.secondary)
                     }
                     ForEach(activity.rows, id: \.bucket) { row in
                         VStack(alignment: .leading, spacing: 2) {
@@ -10146,7 +10300,7 @@ struct AccountLimitCard: View {
         switch provider {
         case "cursor": return "Open Cursor sign-in"
         case "claude-code": return "Open Claude Code"
-        case "codex": return "Open Codex login"
+        case "codex": return "Sign in to Codex"
         case "copilot": return "Open GitHub login"
         case "commandcode": return "Open Command Code"
         default: return "Open sign-in"
@@ -10175,7 +10329,7 @@ struct AccountLimitCard: View {
                 VStack(alignment: .leading, spacing: 2) {
                     // Provenance ALWAYS shown — users must be able to tell
                     // where an account's numbers come from (SCR-ffhr).
-                    let originNote = originExplanation(limits.origin ?? "scan")
+                    let originNote = limits.sourceDescription
                     Text("source: \(originNote)")
                         .font(.caption2).foregroundStyle(.tertiary)
                         .lineLimit(1)
@@ -10205,22 +10359,11 @@ struct AccountLimitCard: View {
         }
     }
 
-    /// Account-level provenance line for the details disclosure.
-    private func originExplanation(_ origin: String) -> String {
-        switch origin {
-        case "polled": return "polled live from the provider API"
-        case "opencodex": return "read from the opencodex account pool"
-        case "manual": return "from a manually registered key"
-        case "scan": return "estimated from locally scanned sessions (no provider-reported quota)"
-        default: return origin
-        }
-    }
-
     /// Plain-language explanation of where a window's numbers come from.
     private func sourceExplanation(_ source: String) -> String {
         switch source {
         case "embedded": return "reported directly by the provider"
-        case "polled": return "fetched live from the provider API (tokitoki poll)"
+        case "polled": return limits.provider == "codex" ? "fetched through the native Codex CLI (tokitoki poll)" : "fetched live from the provider API (tokitoki poll)"
         default: return "estimated from recorded usage — the provider does not report this limit locally"
         }
     }
@@ -10479,6 +10622,9 @@ struct AccountLimitCard: View {
                 }
             }
             .font(.caption2).foregroundStyle(.secondary)
+        }
+        if let label = limits.credits?.displayLabel {
+            Text(label).font(.caption2).foregroundStyle(.secondary)
         }
         if let balance = limits.balance {
             HStack(spacing: 4) {

@@ -5,7 +5,9 @@ import path from "node:path";
 import { Database } from "bun:sqlite";
 import { z } from "zod";
 
-import { claudeOauthAccount } from "./accounts.ts";
+import { claudeOauthAccount, nativeCodexIdentity } from "./accounts.ts";
+import { codexHomes } from "./codex-homes.ts";
+import { readNativeCodexAccount, type NativeRateLimits } from "./codex-rpc.ts";
 import type { EventCache } from "./cache.ts";
 import { cursorIdeDir } from "./providers/cursor.ts";
 import { syncCursorDashboardUsage } from "./providers/cursor-dashboard.ts";
@@ -18,29 +20,9 @@ import { pollZaiQuotas, zaiApiKey, type ZaiRegion } from "./quota/zai.ts";
 import type { AccountBalance, AccountExtraUsage } from "./quota-windows.ts";
 import { dataDir } from "./store.ts";
 
-/**
- * CodexBar-style opt-in quota polling: reuse the OAuth access token stored by
- * the codex CLI to fetch provider-reported rate-limit windows directly.
- *
- * Endpoint + shape reverse-engineered from CodexBar's OSS implementation
- * (github.com/steipete/CodexBar, CodexOAuthUsageFetcher.swift):
- *   GET https://chatgpt.com/backend-api/wham/usage
- *   Authorization: Bearer <access_token>
- *   ChatGPT-Account-Id: <account_id>
- *   Accept: application/json
- *
- * The menubar runs this only when the user enables background polling. Tokens
- * are never logged; refreshed tokens stay in-memory for the current process.
- * These provider calls read usage/entitlement metadata only: they do not send
- * model prompts or consume model tokens. Providers may still enforce their
- * ordinary request-rate limits.
- */
+/** Opt-in provider quota polling. Codex account reads use the native harness;
+ * credentials and refresh remain owned by that harness. No model calls occur. */
 
-const WHAM_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
-const CODEX_RESET_CREDITS_URL = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits";
-const TOKEN_REFRESH_URL = "https://auth.openai.com/oauth/token";
-/** codex CLI's public OAuth client id (same value Codex CLI itself ships). */
-const OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
 /** OpenRouter key metadata: limit/limit_remaining when a credit limit is set. */
 const OPENROUTER_KEY_URL = "https://openrouter.ai/api/v1/key";
 /** OpenCode Go plan meters — provider-reported percent + reset per window. */
@@ -56,8 +38,6 @@ const COPILOT_USAGE_URL = "https://api.github.com/copilot_internal/user";
 const CURSOR_USAGE_URL = "https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage";
 /** Command Code billing/usage API (the CLI's own live /usage data source). */
 const COMMANDCODE_API_URL = "https://api.commandcode.ai";
-/** opencodex pooled-account quota cache (~/.opencodex). */
-const OPENCODEX_QUOTA_CACHE = `${process.env.HOME ?? "~"}/.opencodex/codex-quota-cache.json`;
 const USER_AGENT = "tokitoki";
 
 export interface PolledWindow {
@@ -89,6 +69,8 @@ export interface PollAccountResult {
   planType?: string;
   windows: PolledWindow[];
   credits?: { hasCredits: boolean; unlimited: boolean; balance: string; expiresAt?: string };
+  bankedResets?: number;
+  bankedExpiresAt?: string;
   extraUsage?: AccountExtraUsage;
   /** Prepaid credit balance (DeepSeek, OpenRouter). Balance-only accounts carry no windows. */
   balance?: AccountBalance;
@@ -147,6 +129,10 @@ export interface PollOptions {
   fetcher?: typeof fetch;
   /** Absolute path to a codex auth.json fixture (tests). */
   authPath?: string;
+  /** Explicit native homes; overrides config and environment discovery. */
+  codexHomes?: string[];
+  /** Complete app-server argv (tests). Default: ["codex", "app-server"]. */
+  codexCommand?: string[];
   /** Absolute path to a pi auth.json fixture (tests). Default ~/.pi/agent/auth.json. */
   piAuthPath?: string;
   /** Absolute path to a claude .credentials.json fixture (tests). Default ~/.claude/.credentials.json; keychain fallback when absent. */
@@ -159,10 +145,6 @@ export interface PollOptions {
   cursorAuthPath?: string;
   /** Absolute path to a cursor state.vscdb fixture (tests). Default platform IDE data dir. */
   cursorStateVscdbPath?: string;
-  /** Absolute path to an opencodex codex-quota-cache.json fixture (tests). Default ~/.opencodex/codex-quota-cache.json. */
-  opencodexCachePath?: string;
-  /** Absolute path to opencodex's pooled account credentials (tests). */
-  opencodexAccountsPath?: string;
   /** Absolute path to an opencode auth.json fixture (tests). Default ~/.local/share/opencode/auth.json. */
   opencodeAuthPath?: string;
   /** Absolute path to Command Code auth.json (tests). Default ~/.commandcode/auth.json. */
@@ -182,250 +164,6 @@ export interface PollOptions {
   /** EventCache instance (tests use a temp db). Default: open the real one. */
   cache?: EventCache;
   now?: number;
-}
-
-interface CodexAuth {
-  auth_mode?: string;
-  OPENAI_API_KEY?: string;
-  tokens?: {
-    id_token?: string;
-    access_token?: string;
-    refresh_token?: string;
-    account_id?: string;
-  };
-  last_refresh?: string;
-}
-
-function authPath(opts: PollOptions): string {
-  if (opts.authPath !== undefined) return opts.authPath;
-  const home = process.env.CODEX_HOME ?? `${process.env.HOME ?? "~"}/.codex`;
-  return `${home}/auth.json`;
-}
-
-function loadAuth(opts: PollOptions): CodexAuth | null {
-  try {
-    const raw = fs.readFileSync(authPath(opts), "utf8");
-    const parsed = JSON.parse(raw) as CodexAuth;
-    return typeof parsed === "object" && parsed !== null ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-
-function decodeJwtPayload(jwt: string): Record<string, unknown> | null {
-  try {
-    const part = jwt.split(".")[1];
-    if (part === undefined) return null;
-    const b64 = part.replaceAll("-", "+").replaceAll("_", "/");
-    return JSON.parse(Buffer.from(b64 + "=".repeat((4 - (b64.length % 4)) % 4), "base64").toString("utf8")) as Record<
-      string,
-      unknown
-    >;
-  } catch {
-    return null;
-  }
-}
-
-const whamWindowSchema = z.object({
-  used_percent: z.number().finite(),
-  reset_at: z.number().finite().optional(),
-  resets_at: z.number().finite().optional(),
-  limit_window_seconds: z.number().finite().optional(),
-});
-const whamRateLimitSchema = z.object({
-  primary_window: whamWindowSchema.nullish(),
-  secondary_window: whamWindowSchema.nullish(),
-  tertiary_window: whamWindowSchema.nullish(),
-  credits: z.unknown().optional(),
-}).refine((value) => [value.primary_window, value.secondary_window, value.tertiary_window].some((window) => window !== undefined));
-const whamUsageSchema = z.object({
-  account_id: z.string().optional(),
-  accountId: z.string().optional(),
-  plan_type: z.string().nullish(),
-  rate_limit: whamRateLimitSchema.nullish(),
-  credits: z.unknown().optional(),
-  code_review_rate_limit: whamRateLimitSchema.nullish(),
-  additional_rate_limits: z.array(z.object({
-    limit_id: z.string().optional(),
-    limit_name: z.string().optional(),
-    metered_feature: z.string().optional(),
-    rate_limit: whamRateLimitSchema.nullable(),
-  })).nullish(),
-}).refine((value) => value.rate_limit !== undefined || value.code_review_rate_limit !== undefined ||
-  (value.additional_rate_limits ?? []).some((bucket) => bucket.rate_limit !== undefined));
-type WhamUsageResponse = z.infer<typeof whamUsageSchema>;
-
-function parsePolledCredits(raw: unknown): { hasCredits: boolean; unlimited: boolean; balance: string; expiresAt?: string } | undefined {
-  if (raw === null || typeof raw !== "object") return undefined;
-  const value = raw as Record<string, unknown>;
-  const hasCredits = value.has_credits === true || value.hasCredits === true;
-  const unlimited = value.unlimited === true;
-  const balance = typeof value.balance === "string" || typeof value.balance === "number" ? String(value.balance) : "0";
-  const expiry = value.expires_at ?? value.expiration_date ?? value.expiresAt ?? value.expirationDate;
-  const expiresAt = typeof expiry === "number" && Number.isFinite(expiry)
-    ? new Date(expiry * 1000).toISOString()
-    : typeof expiry === "string" && !Number.isNaN(Date.parse(expiry))
-      ? new Date(expiry).toISOString()
-      : undefined;
-  return { hasCredits, unlimited, balance, ...(expiresAt !== undefined ? { expiresAt } : {}) };
-}
-
-const codexWindowScope = (minutes: number): PolledWindow["scope"] => {
-  if (minutes === 300) return "session";
-  if (minutes === 1440) return "daily";
-  if (minutes === 10080) return "weekly";
-  return "other";
-};
-
-function parseWindows(body: WhamUsageResponse, observedAt: string): PolledWindow[] {
-  const out: PolledWindow[] = [];
-  const buckets = [
-    { bucketId: "codex", rateLimit: body.rate_limit, label: undefined },
-    { bucketId: "code-review", rateLimit: body.code_review_rate_limit, label: "Code review" },
-    ...(body.additional_rate_limits ?? []).map((bucket, index) => ({
-      bucketId: bucket.metered_feature ?? bucket.limit_id ?? bucket.limit_name ?? `additional:${index}`,
-      label: bucket.limit_name ?? bucket.metered_feature,
-      rateLimit: bucket.rate_limit,
-    })),
-  ];
-  for (const bucket of buckets) {
-    for (const windowId of ["primary", "secondary", "tertiary"] as const) {
-      const w = bucket.rateLimit?.[`${windowId}_window`];
-      if (w?.used_percent === undefined) continue;
-      const seconds = w.limit_window_seconds;
-      const windowMinutes = seconds !== undefined && seconds > 0 ? seconds / 60 : 0;
-      const reset = w.reset_at ?? w.resets_at;
-      const resetsAtEpoch = reset !== undefined && reset > 0 && reset < 8.64e12 ? reset : 0;
-      out.push({
-        bucketId: bucket.bucketId, windowId, observedAt,
-        ...(bucket.label !== undefined ? { label: bucket.label } : {}),
-        scope: codexWindowScope(windowMinutes), windowMinutes,
-        usedPct: Math.max(0, Math.min(100, w.used_percent)), resetsAtEpoch,
-        ...(resetsAtEpoch > 0 ? { windowEnd: new Date(resetsAtEpoch * 1000).toISOString() } : {}),
-      });
-    }
-  }
-  return out;
-}
-
-async function refreshToken(
-  refreshToken: string,
-  fetcher: typeof fetch,
-): Promise<{ ok: boolean; accessToken?: string; refreshToken?: string }> {
-  try {
-    const res = await fetcher(TOKEN_REFRESH_URL, {
-      method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
-      body: new URLSearchParams({
-        client_id: OAUTH_CLIENT_ID,
-        grant_type: "refresh_token",
-        refresh_token: refreshToken,
-      }),
-    });
-    if (!res.ok) return { ok: false };
-    const json = (await res.json()) as { access_token?: string; refresh_token?: string };
-    if (json.access_token === undefined || json.access_token.length === 0) return { ok: false };
-    return {
-      ok: true,
-      accessToken: json.access_token,
-      // If OpenAI's endpoint also rotates refresh tokens (the same
-      // realistic assumption already confirmed for Anthropic's — see
-      // persistClaudeCredentials), capture it so we can save it back.
-      ...(json.refresh_token !== undefined && json.refresh_token.length > 0
-        ? { refreshToken: json.refresh_token }
-        : {}),
-    };
-  } catch {
-    return { ok: false };
-  }
-}
-
-/**
- * Write a rotated Codex access/refresh token back to ~/.codex/auth.json,
- * merging into the existing tokens object (never dropping sibling fields
- * like id_token/account_id, or the top-level auth_mode/OPENAI_API_KEY keys)
- * so the codex CLI's own next read still sees a valid, current session.
- * Best-effort and silent — same rationale as persistClaudeCredentials: a
- * failed persist here must never fail the poll itself.
- */
-function persistCodexCredentials(opts: PollOptions, updated: { accessToken: string; refreshToken?: string }): void {
-  if (updated.refreshToken === undefined) return; // nothing rotated — nothing to persist
-  const filePath = authPath(opts);
-  try {
-    const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as Record<string, unknown>;
-    const tokens = (parsed.tokens ?? {}) as Record<string, unknown>;
-    const merged = {
-      ...parsed,
-      tokens: { ...tokens, access_token: updated.accessToken, refresh_token: updated.refreshToken },
-      last_refresh: new Date().toISOString(),
-    };
-    const tmp = `${filePath}.tmp-${process.pid}`;
-    fs.writeFileSync(tmp, JSON.stringify(merged, null, 2));
-    fs.renameSync(tmp, filePath); // same filesystem — atomic, no partial-write window
-  } catch {
-    // best-effort — see doc comment above
-  }
-}
-
-async function fetchUsage(
-  accessToken: string,
-  accountId: string,
-  fetcher: typeof fetch,
-): Promise<{ status: number; body: WhamUsageResponse | null }> {
-  const res = await fetcher(WHAM_USAGE_URL, {
-    headers: {
-      authorization: `Bearer ${accessToken}`,
-      "chatgpt-account-id": accountId,
-      accept: "application/json",
-      "user-agent": USER_AGENT,
-    },
-  });
-  let body: WhamUsageResponse | null = null;
-  try {
-    const parsed = whamUsageSchema.safeParse(await res.json());
-    body = parsed.success ? parsed.data : null;
-  } catch {
-    // non-JSON error body — status code carries the signal
-  }
-  return { status: res.status, body };
-}
-
-/** Codex keeps optional/banked reset inventory in a supplemental endpoint,
- * rather than embedding it in every wham/usage response. */
-async function fetchCodexResetCredits(
-  accessToken: string,
-  accountId: string,
-  fetcher: typeof fetch,
-): Promise<{ hasCredits: boolean; unlimited: boolean; balance: string; expiresAt?: string } | undefined> {
-  try {
-    const res = await fetcher(CODEX_RESET_CREDITS_URL, {
-      headers: {
-        authorization: `Bearer ${accessToken}`,
-        "chatgpt-account-id": accountId,
-        "openai-beta": "codex-1",
-        originator: "Codex Desktop",
-        accept: "application/json",
-        "user-agent": USER_AGENT,
-      },
-    });
-    if (!res.ok) return undefined;
-    const body = await res.json() as { credits?: Array<Record<string, unknown>>; available_count?: number };
-    const available = (body.credits ?? []).filter((credit) => credit.status === "available");
-    const count = typeof body.available_count === "number" ? body.available_count : available.length;
-    if (count <= 0) return { hasCredits: false, unlimited: false, balance: "0" };
-    const expiries = available
-      .map((credit) => parsePolledCredits({ has_credits: true, balance: "1", expires_at: credit.expires_at })?.expiresAt)
-      .filter((value): value is string => value !== undefined)
-      .sort();
-    return {
-      hasCredits: true,
-      unlimited: false,
-      balance: String(count),
-      ...(expiries[0] !== undefined ? { expiresAt: expiries[0] } : {}),
-    };
-  } catch {
-    return undefined;
-  }
 }
 
 /** Read pi's auth store (~/.pi/agent/auth.json) → {provider: raw api key}. */
@@ -1318,132 +1056,6 @@ async function pollCursorQuotas(opts: PollOptions, fetcher: typeof fetch, now: n
   return { accountKey: "default", harnesses: ["cursor"], windows, inserted };
 }
 
-export interface OpencodexAccountIdentity {
-  email?: string;
-  accountId?: string;
-}
-
-/** Read stable identities for opencodex's pooled ChatGPT accounts. */
-export function opencodexAccountIdentities(
-  path: string = `${process.env.HOME ?? "~"}/.opencodex/codex-accounts.json`,
-): Record<string, OpencodexAccountIdentity> {
-  const out: Record<string, OpencodexAccountIdentity> = {};
-  try {
-    const parsed = JSON.parse(fs.readFileSync(path, "utf8")) as Record<string, {
-      credential?: { accessToken?: string; access?: string; email?: string; chatgptAccountId?: string };
-    }>;
-    for (const [id, account] of Object.entries(parsed)) {
-      const direct = account.credential?.email;
-      const token = account.credential?.accessToken ?? account.credential?.access;
-      const claims = typeof token === "string" ? decodeJwtPayload(token) : undefined;
-      const auth = claims?.["https://api.openai.com/auth"];
-      const authId = auth !== null && typeof auth === "object"
-        ? (auth as Record<string, unknown>).chatgpt_account_id
-        : undefined;
-      const profile = claims?.["https://api.openai.com/profile"];
-      const email = profile !== null && typeof profile === "object"
-        ? (profile as Record<string, unknown>).email
-        : undefined;
-      const resolvedEmail = typeof direct === "string" && direct.includes("@")
-        ? direct
-        : typeof email === "string" && email.includes("@") ? email : undefined;
-      const resolvedId = typeof account.credential?.chatgptAccountId === "string" && account.credential.chatgptAccountId.length > 0
-        ? account.credential.chatgptAccountId
-        : typeof authId === "string" && authId.length > 0 ? authId : undefined;
-      if (resolvedEmail !== undefined || resolvedId !== undefined) {
-        out[id] = {
-          ...(resolvedEmail !== undefined ? { email: resolvedEmail } : {}),
-          ...(resolvedId !== undefined ? { accountId: resolvedId } : {}),
-        };
-      }
-    }
-  } catch {
-    // opencodex is optional
-  }
-  return out;
-}
-
-/** Backwards-compatible email-only view for callers that do not need IDs. */
-export function opencodexAccountEmails(
-  path: string = `${process.env.HOME ?? "~"}/.opencodex/codex-accounts.json`,
-): Record<string, string> {
-  return Object.fromEntries(
-    Object.entries(opencodexAccountIdentities(path))
-      .filter(([, identity]) => identity.email !== undefined)
-      .map(([id, identity]) => [id, identity.email!]),
-  );
-}
-
-const opencodexQuotaSchema = z.object({
-  updatedAt: z.number().finite().min(0).max(8.64e15),
-  weeklyPercent: z.number().finite().optional(),
-  weeklyResetAt: z.number().finite().optional(),
-  monthlyPercent: z.number().finite().optional(),
-  monthlyResetAt: z.number().finite().optional(),
-  monthlyIsPrimaryWindow: z.boolean().optional(),
-  shortPercent: z.number().finite().optional(),
-  shortResetAt: z.number().finite().optional(),
-  shortObservedAt: z.number().finite().min(0).max(8.64e15).optional(),
-  shortWindowSeconds: z.number().finite().optional(),
-  customWindows: z.array(z.object({
-    label: z.string(), percent: z.number().finite(), resetAt: z.number().finite().optional(),
-  })).optional(),
-});
-type OpencodexQuota = z.infer<typeof opencodexQuotaSchema>;
-const OPENCODEX_CACHE_TTL_MS = 6 * 60 * 60_000;
-
-export function opencodexQuotas(path: string = OPENCODEX_QUOTA_CACHE): Record<string, OpencodexQuota> {
-  try {
-    const parsed = z.object({ quotas: z.record(z.string(), z.unknown()) }).parse(JSON.parse(fs.readFileSync(path, "utf8")));
-    const quotas: Record<string, OpencodexQuota> = {};
-    for (const [key, value] of Object.entries(parsed.quotas)) {
-      const quota = opencodexQuotaSchema.safeParse(value);
-      if (quota.success) quotas[key] = quota.data;
-    }
-    return quotas;
-  } catch {
-    return {}; // not installed / not started — fine, nothing to do
-  }
-}
-
-const opencodexCachedWindows = (input: {
-  quota: OpencodexQuota;
-  now: number;
-  previousWindows: Array<{ windowId?: string; windowMinutes: number; scope?: PolledWindow["scope"] }>;
-}): PolledWindow[] => {
-  const { quota, now } = input;
-  const windows: PolledWindow[] = [];
-  const add = (window: { windowId: string; percent?: number; reset?: number; minutes: number; observed: number; scope: PolledWindow["scope"]; label?: string }) => {
-    if (window.percent === undefined || now < window.observed || now - window.observed > OPENCODEX_CACHE_TTL_MS) return;
-    const resetSeconds = window.reset !== undefined && window.reset > 0
-      ? window.reset >= 10_000_000_000 ? window.reset / 1000 : window.reset
-      : 0;
-    const resetsAtEpoch = resetSeconds < 8.64e12 ? resetSeconds : 0;
-    windows.push({
-      bucketId: "codex", windowId: window.windowId, scope: window.scope,
-      windowMinutes: window.minutes, usedPct: Math.max(0, Math.min(100, window.percent)),
-      resetsAtEpoch, observedAt: new Date(window.observed).toISOString(),
-      ...(window.label !== undefined ? { label: window.label } : {}),
-      ...(resetsAtEpoch > 0 ? { windowEnd: new Date(resetsAtEpoch * 1000).toISOString() } : {}),
-    });
-  };
-  const weeklySlot = quota.shortPercent !== undefined ? "secondary" : input.previousWindows.find((window) =>
-    (window.scope === "weekly" || window.windowMinutes === 10080) &&
-    (window.windowId === "primary" || window.windowId === "secondary"),
-  )?.windowId ?? "secondary";
-  add({ windowId: weeklySlot, percent: quota.weeklyPercent, reset: quota.weeklyResetAt, minutes: 10080, observed: quota.updatedAt, scope: "weekly" });
-  add({ windowId: quota.monthlyIsPrimaryWindow === true ? "primary" : "tertiary", percent: quota.monthlyPercent, reset: quota.monthlyResetAt, minutes: 0, observed: quota.updatedAt, scope: "monthly" });
-  const shortMinutes = quota.shortWindowSeconds !== undefined && quota.shortWindowSeconds > 0 ? quota.shortWindowSeconds / 60 : 0;
-  if (quota.monthlyIsPrimaryWindow !== true) {
-    add({ windowId: "primary", percent: quota.shortPercent, reset: quota.shortResetAt, minutes: shortMinutes, observed: quota.shortObservedAt ?? quota.updatedAt, scope: codexWindowScope(shortMinutes) });
-  }
-  for (const window of quota.customWindows ?? []) {
-    add({ windowId: `custom:${window.label}`, percent: window.percent, reset: window.resetAt, minutes: 0, observed: quota.updatedAt, scope: "other", label: window.label });
-  }
-  return windows;
-};
-
-/** Redact a credential for display: first 4 + … + last 4 of the full value. */
 export function redactCredential(secret: string): string {
   if (secret.length <= 12) return "…";
   return `${secret.slice(0, 4)}…${secret.slice(-4)}`;
@@ -1472,7 +1084,7 @@ export function opencodeCredentials(
  * persist them into quota_snapshots so computeLimits() picks them up exactly
  * like scan-embedded ones. Opt-in only (`tokitoki poll`).
  */
-let pollInFlight: Promise<PollResult> | undefined;
+const pollsInFlight = new Map<string | EventCache, Promise<PollResult>>();
 
 const POLL_LOCK_MAX_AGE_MS = 15 * 60_000;
 
@@ -1483,8 +1095,7 @@ const POLL_LOCK_MAX_AGE_MS = 15 * 60_000;
  * A small process lock gives all callers one serialized poll, while the
  * in-process promise coalesces concurrent callers to the same result.
  */
-function acquirePollLock(): { fd: number; file: string } | undefined {
-  const file = process.env.TOKITOKI_POLL_LOCK ?? path.join(dataDir(), "poll.lock");
+function acquirePollLock(file: string): { fd: number; file: string } | undefined {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
@@ -1613,15 +1224,24 @@ function releasePollLock(lock: { fd: number; file: string }): void {
 }
 
 export function pollQuotas(opts: PollOptions = {}): Promise<PollResult> {
-  if (pollInFlight !== undefined) return pollInFlight;
-  pollInFlight = pollQuotasUnlocked(opts).finally(() => {
-    pollInFlight = undefined;
-  });
-  return pollInFlight;
+  const filename = opts.cache?.database.filename;
+  const inMemory = filename === ":memory:" || filename === "";
+  const key = inMemory && opts.cache !== undefined ? opts.cache
+    : path.resolve(filename ?? opts.env?.TOKITOKI_POLL_LOCK ?? path.join(dataDir(), "cache.db"));
+  const current = pollsInFlight.get(key);
+  if (current !== undefined) return current;
+  // Temporary/alternate caches must not contend with a running desktop poll.
+  const lockPath = inMemory ? null : opts.cache !== undefined
+    ? path.join(path.dirname(path.resolve(filename!)), "poll.lock")
+    : opts.env?.TOKITOKI_POLL_LOCK ?? process.env.TOKITOKI_POLL_LOCK ?? path.join(dataDir(), "poll.lock");
+  const pending = pollQuotasUnlocked(opts, lockPath).finally(() => pollsInFlight.delete(key));
+  pollsInFlight.set(key, pending);
+  return pending;
 }
 
-async function pollQuotasUnlocked(opts: PollOptions = {}): Promise<PollResult> {
-  const lock = acquirePollLock();
+async function pollQuotasUnlocked(opts: PollOptions, lockPath: string | null): Promise<PollResult> {
+  if (lockPath === null) return pollQuotasLocked(opts);
+  const lock = acquirePollLock(lockPath);
   if (lock === undefined) {
     return { ok: false, reason: "another quota poll is already running", accounts: [] };
   }
@@ -1629,6 +1249,45 @@ async function pollQuotasUnlocked(opts: PollOptions = {}): Promise<PollResult> {
     return await pollQuotasLocked(opts);
   } finally {
     releasePollLock(lock);
+  }
+}
+
+interface NativeHomeBinding { accountKey: string; accountId: string; capturedAt: string }
+
+/** Identity associations outlive quota freshness, but are valid only while an
+ * active native poll and its home metadata agree. Never used to bind new usage. */
+function nativeHomeBindings(cache: EventCache | undefined, home: string): NativeHomeBinding[] {
+  if (cache === undefined) return [];
+  const rows = cache.database.query<NativeHomeBinding, []>(`
+    SELECT account_key AS accountKey, account_id AS accountId, MAX(captured_at) AS capturedAt FROM (
+      SELECT * FROM active_quota_observations
+      WHERE provider = 'codex' AND event_id LIKE 'poll:%' AND account_id IS NOT NULL
+    ) GROUP BY account_key, account_id`).all();
+  return rows.filter(row => {
+    if (cache.quotaAccountMeta("codex", row.accountKey)?.codexHome !== home) return false;
+    const ids = cache.quotaAccountIds("codex", row.accountKey);
+    return ids.size === 1 && ids.has(row.accountId);
+  });
+}
+
+function cachedNativeHomeId(cache: EventCache | undefined, home: string, now: number): string | undefined {
+  const bindings = nativeHomeBindings(cache, home)
+    .filter(row => Number.isFinite(Date.parse(row.capturedAt)) && Date.parse(row.capturedAt) <= now)
+    .sort((a, b) => Date.parse(b.capturedAt) - Date.parse(a.capturedAt));
+  const latest = bindings[0];
+  if (latest === undefined) return undefined;
+  const ids = new Set(bindings.filter(row => row.capturedAt === latest.capturedAt).map(row => row.accountId));
+  return ids.size === 1 ? latest.accountId : undefined;
+}
+
+function clearNativeHomeBindings(cache: EventCache | undefined, home: string, keepId?: string, preserveLoginTarget = false): void {
+  if (cache === undefined) return;
+  for (const binding of nativeHomeBindings(cache, home)) {
+    if (binding.accountId === keepId) continue;
+    const meta = cache.quotaAccountMeta("codex", binding.accountKey);
+    if (meta === undefined) continue;
+    const { codexHome: _home, ...rest } = meta;
+    cache.setQuotaAccountMeta("codex", binding.accountKey, { ...rest, ...(preserveLoginTarget ? { reauthHome: home } : {}) });
   }
 }
 
@@ -1668,18 +1327,31 @@ async function pollQuotasLocked(opts: PollOptions = {}): Promise<PollResult> {
   const providerEnabled = (provider: string): boolean =>
     selectedProviders.size === 0 || selectedProviders.has(provider);
 
-  // --- codex (ChatGPT wham/usage, OAuth) --------------------------------
+  // Each native home owns its login and credential refresh store.
   if (providerEnabled("codex")) {
-    const auth = loadAuth(opts);
-    const claims = z.object({ "https://api.openai.com/auth": z.object({ chatgpt_account_id: z.string().optional() }).optional() })
-      .safeParse(decodeJwtPayload(auth?.tokens?.id_token ?? ""));
-    const accountId = auth?.tokens?.account_id ?? (claims.success ? claims.data["https://api.openai.com/auth"]?.chatgpt_account_id : undefined);
-    try {
-      const codex = await pollCodexQuotas(opts);
-      if (typeof codex === "string") addReason("codex", codex, { accountId });
-      else accounts.push(codex);
-    } catch (e) {
-      addReason("codex", String(e), { accountId });
+    const homes = opts.authPath !== undefined ? [path.dirname(opts.authPath)]
+      : opts.codexHomes ?? codexHomes({ env: opts.env });
+    const seen = new Set<string>();
+    for (const home of [...new Set(homes.map(home => path.resolve(home.replace(/^~(?=\/|$)/, opts.env?.HOME ?? process.env.HOME ?? "~"))))]) {
+      const identity = nativeCodexIdentity(home, opts.authPath);
+      if (identity?.accountId !== undefined) clearNativeHomeBindings(cache, home, identity.accountId);
+      const errorAccountId = identity?.accountId ?? cachedNativeHomeId(cache, home, now);
+      if (identity?.accountId !== undefined && seen.has(identity.accountId)) continue;
+      // An explicit missing auth fixture disables all native/keychain discovery.
+      if (opts.authPath !== undefined && !fs.existsSync(opts.authPath)) {
+        addReason("codex", "not logged in (no codex auth.json)", { accountId: errorAccountId }); continue;
+      }
+      try {
+        const codex = await pollCodexQuotas({ ...opts, nativeHome: home, seenIds: seen });
+        if (codex === undefined) continue;
+        if (typeof codex === "string") addReason("codex", codex, { accountId: errorAccountId });
+        else if (codex.accountId === undefined || !seen.has(codex.accountId)) {
+          if (codex.accountId !== undefined) seen.add(codex.accountId);
+          accounts.push(codex);
+        }
+      } catch {
+        addReason("codex", "native Codex account read failed; temporarily unavailable", { accountId: errorAccountId });
+      }
     }
   }
 
@@ -1857,85 +1529,6 @@ async function pollQuotasLocked(opts: PollOptions = {}): Promise<PollResult> {
     });
   }
 
-  // --- opencodex pool (also when codex itself yielded a fresh login) ------
-  // The pool can contain another ChatGPT login (for example a work account)
-  // that is not represented by ~/.codex/auth.json. The old fallback skipped
-  // the pool whenever the personal login succeeded, leaving that account
-  // stale forever.
-  const ownCodex = accounts.find((a) => a.accountKey.startsWith("openai:"));
-  const pooled = opencodexQuotas(opts.opencodexCachePath);
-  const poolIdentities = opencodexAccountIdentities(opts.opencodexAccountsPath);
-  const poolCredentials = opencodexAccountCredentials(opts.opencodexAccountsPath);
-  const freshPoolKeys = new Set<string>();
-  // The quota JSON is a lossy compatibility cache. When opencodex has the
-  // OAuth credential, ask WHAM directly so a legacy/misclassified cache field
-  // cannot turn the 5-hour window into a weekly card (or retain stale values).
-  if (providerEnabled("codex")) {
-    for (const [poolKey, credential] of Object.entries(poolCredentials)) {
-      const poolAccountId = poolIdentities[poolKey]?.accountId ?? credential.accountId;
-      if (poolAccountId !== undefined && poolAccountId === ownCodex?.accountId) continue;
-      if (credential.accessToken === undefined || poolAccountId === undefined) continue;
-      const accountKey = poolKey === "__main__" ? "codex" : `codex:${poolKey}`;
-      freshPoolKeys.add(poolKey);
-      const result = await pollCodexCredential(
-        opts,
-        {
-          tokens: {
-            access_token: credential.accessToken,
-            ...(credential.refreshToken !== undefined ? { refresh_token: credential.refreshToken } : {}),
-            account_id: poolAccountId,
-          },
-        },
-        accountKey,
-        poolIdentities[poolKey]?.email ?? credential.email,
-        `:opencodex:${poolKey}`,
-        false,
-      ).catch(() => "usage fetch failed; temporarily unavailable");
-      if (typeof result === "string") {
-        addReason("codex", `${accountKey}: ${result}`, { accountId: poolAccountId });
-      } else {
-        accounts.push({ ...result, harnesses: ["opencodex"] });
-      }
-    }
-  }
-  const seenPoolIds = new Set<string>();
-  for (const [poolKey, q] of providerEnabled("codex") ? Object.entries(pooled) : []) {
-    if (freshPoolKeys.has(poolKey)) continue;
-    if (now < q.updatedAt || now - q.updatedAt > OPENCODEX_CACHE_TTL_MS) continue;
-    const poolAccountId = poolIdentities[poolKey]?.accountId;
-    // The live OAuth poll is the canonical source for the active login.
-    // Never materialize the same account a second time through __main__.
-    if (poolAccountId !== undefined && poolAccountId === ownCodex?.accountId) continue;
-    if (poolAccountId !== undefined) {
-      if (seenPoolIds.has(poolAccountId)) continue;
-      seenPoolIds.add(poolAccountId);
-    }
-    const accountKey = poolKey === "__main__" ? "codex" : `codex:${poolKey}`;
-    const priorKeys = cache !== undefined && poolAccountId !== undefined
-      ? cache.quotaAccountKeys({ provider: "codex", accountId: poolAccountId }) : [];
-    const previousWindows = [...new Set([accountKey, ...priorKeys])]
-      .flatMap(key => cache?.latestQuotaSnapshots("codex", key) ?? [])
-      .filter(window => window.bucketId === "codex")
-      .sort((a, b) => Date.parse(b.observedAt ?? b.capturedAt) - Date.parse(a.observedAt ?? a.capturedAt));
-    const windows = opencodexCachedWindows({ quota: q, now, previousWindows });
-    if (windows.length === 0) continue;
-    const snapshot = {
-      provider: "codex", accountKey, accountId: poolAccountId, windows,
-      complete: false,
-      capturedAtIso: new Date(q.updatedAt).toISOString(),
-      eventId: `poll:${new Date(q.updatedAt).toISOString()}:opencodex:${poolKey}`,
-    };
-    accounts.push({
-      accountKey,
-      ...(poolAccountId !== undefined
-        ? { accountId: poolAccountId }
-        : {}),
-      harnesses: ["opencodex"],
-      windows,
-      inserted: cache?.insertPolledSnapshots(snapshot) ?? 0,
-    });
-  }
-
   const ok = accounts.some((a) => (a.error === undefined && a.deferredUntil === undefined) || a.windows.length > 0 || a.balance !== undefined);
   return {
     ok,
@@ -1946,147 +1539,99 @@ async function pollQuotasLocked(opts: PollOptions = {}): Promise<PollResult> {
   };
 }
 
-/** codex wham/usage poll. Returns the account result, or a reason string. */
-async function pollCodexQuotas(opts: PollOptions): Promise<PollAccountResult | string> {
-  const fetcher = opts.fetcher ?? globalThis.fetch;
-  const auth = loadAuth(opts);
-  const token = auth?.tokens?.access_token;
-  if (auth === null || token === undefined || token.length === 0) {
-    return "not logged in (no codex auth.json / no access token)";
-  }
 
-  return pollCodexCredential(opts, auth);
+const codexWindowScope = (minutes: number): PolledWindow["scope"] => {
+  if (minutes === 300) return "session";
+  if (minutes === 1440) return "daily";
+  if (minutes === 10080) return "weekly";
+  if (minutes >= 28 * 1440 && minutes <= 31 * 1440) return "monthly";
+  return "other";
+};
+
+function nativeWindows(body: NativeRateLimits, observedAt: string): { windows: PolledWindow[]; complete: boolean; retiredWindows: Array<{ bucketId: string; windowId: string }> } {
+  const buckets = new Map(Object.entries(body.rateLimitsByLimitId ?? {}));
+  const defaultId = body.rateLimits.limitId ?? "codex";
+  if (!buckets.has(defaultId)) buckets.set(defaultId, body.rateLimits);
+  const windows: PolledWindow[] = [];
+  const retiredWindows: Array<{ bucketId: string; windowId: string }> = [];
+  let complete = true;
+  for (const [key, bucket] of buckets) {
+    const bucketId = bucket.limitId ?? key;
+    // Omitted slots are unknown; explicit null retires the old slot.
+    if (bucket.primary === undefined || bucket.secondary === undefined) complete = false;
+    for (const windowId of ["primary", "secondary"] as const) {
+      const window = bucket[windowId];
+      if (window === null) retiredWindows.push({ bucketId, windowId });
+      if (window == null) continue;
+      const minutes = window.windowDurationMins != null && window.windowDurationMins > 0 ? window.windowDurationMins : 0;
+      const reset = window.resetsAt != null && window.resetsAt > 0 && window.resetsAt < 8.64e12 ? window.resetsAt : 0;
+      windows.push({
+        bucketId, windowId, observedAt, windowMinutes: minutes,
+        scope: codexWindowScope(minutes), usedPct: Math.min(100, Math.max(0, window.usedPercent)), resetsAtEpoch: reset,
+        ...(bucket.limitName != null ? { label: bucket.limitName } : {}),
+        ...(reset > 0 ? { windowEnd: new Date(reset * 1000).toISOString() } : {}),
+      });
+    }
+  }
+  return { windows, complete, retiredWindows };
 }
 
-/** Poll one OAuth credential, including pooled accounts managed by opencodex. */
-async function pollCodexCredential(
-  opts: PollOptions,
-  auth: CodexAuth,
-  accountKeyOverride?: string,
-  fallbackEmail?: string,
-  eventIdSuffix?: string,
-  allowRefresh = true,
-): Promise<PollAccountResult | string> {
-  const fetcher = opts.fetcher ?? globalThis.fetch;
-  const token = auth.tokens?.access_token;
-  if (token === undefined || token.length === 0) {
-    return "not logged in (no access token in credential)";
+async function pollCodexQuotas(opts: PollOptions & { nativeHome: string; seenIds: ReadonlySet<string> }): Promise<PollAccountResult | string | undefined> {
+  const identity = nativeCodexIdentity(opts.nativeHome, opts.authPath);
+  let response;
+  try { response = await readNativeCodexAccount({ home: opts.nativeHome, command: opts.codexCommand, env: opts.env }); }
+  catch (error) { return error instanceof Error ? error.message : "native Codex account read failed"; }
+  const account = response.account.account;
+  if (account == null || account.type !== "chatgpt") {
+    clearNativeHomeBindings(opts.cache, opts.nativeHome, undefined, account == null);
+    return account == null ? "not logged in (native Codex account unavailable)" : "native Codex account has no ChatGPT subscription quota";
   }
-
-  const claims = decodeJwtPayload(auth.tokens?.id_token ?? "");
-  const authInfo = (claims?.["https://api.openai.com/auth"] ?? {}) as {
-    chatgpt_account_id?: string;
-  };
-  const accountId = auth.tokens?.account_id ?? authInfo.chatgpt_account_id ?? "";
-  if (accountId.length === 0) {
-    return "no chatgpt account id in auth store";
+  if (response.limits === undefined) return "native Codex subscription quota unavailable";
+  const body = response.limits;
+  if (body.accountId != null && identity?.accountId !== undefined && body.accountId !== identity.accountId) {
+    return "native quota response account identity does not match credential";
   }
-  const profile = (claims?.["https://api.openai.com/profile"] ?? {}) as { email?: unknown };
-  const email = typeof claims?.email === "string"
-    ? claims.email
-    : typeof profile.email === "string" ? profile.email : fallbackEmail;
-
-  let access = token;
-  let res = await fetchUsage(access, accountId, fetcher);
-  if (res.status === 401 || res.status === 403) {
-    if (!allowRefresh) return `unauthorized (${res.status}); renew this credential in OpenCodex`;
-    const refresh = auth.tokens?.refresh_token;
-    if (refresh === undefined || refresh.length === 0) {
-      return `unauthorized (${res.status}) and no refresh token available`;
-    }
-    const renewed = await refreshToken(refresh, fetcher);
-    if (!renewed.ok) {
-      return `unauthorized (${res.status}) and token refresh failed`;
-    }
-    persistCodexCredentials(opts, { accessToken: renewed.accessToken!, refreshToken: renewed.refreshToken });
-    access = renewed.accessToken!;
-    res = await fetchUsage(access, accountId, fetcher);
-  }
-  if (res.status < 200 || res.status >= 300 || res.body === null) {
-    return `usage endpoint returned HTTP ${res.status}`;
-  }
-  const reportedId = res.body.account_id ?? res.body.accountId;
-  if (reportedId !== undefined && reportedId !== accountId) return "usage response account identity does not match credential";
-
-  const planType = typeof res.body.plan_type === "string" ? res.body.plan_type : "unknown";
-  const accountKey = accountKeyOverride ?? `openai:${accountId}`;
+  const accountId = body.accountId ?? identity?.accountId;
+  // Email is display metadata, never proof that two logins share an account.
+  if (accountId === undefined || accountId.length === 0) return "native Codex quota account identity unavailable";
+  if (opts.seenIds.has(accountId)) return undefined;
+  const accountKey = `openai:${accountId}`;
   const capturedAtIso = new Date(opts.now ?? Date.now()).toISOString();
-  const windows = parseWindows(res.body, capturedAtIso);
-  // Missing slots describe only a partial observation; explicit null retires a slot.
-  const buckets = [res.body.rate_limit, res.body.code_review_rate_limit,
-    ...(res.body.additional_rate_limits ?? []).map((bucket) => bucket.rate_limit)];
-  const complete = res.body.rate_limit !== undefined && buckets.every((bucket) => bucket === undefined || bucket === null ||
-    (bucket.primary_window !== undefined && bucket.secondary_window !== undefined));
-  let credits = parsePolledCredits(res.body.rate_limit?.credits);
-  if (credits === undefined || !credits.hasCredits || Number(credits.balance) <= 0) {
-    credits = await fetchCodexResetCredits(access, accountId, fetcher) ?? credits;
-  }
-
-  const result: PollAccountResult = {
-    accountKey,
-    accountId,
-    ...(email !== undefined ? { email } : {}),
-    planType,
-    windows,
-    ...(credits !== undefined ? { credits } : {}),
-    inserted: 0,
+  const { windows, complete, retiredWindows } = nativeWindows(body, capturedAtIso);
+  const nativeCredits = body.rateLimits.credits;
+  const credits = nativeCredits == null ? undefined : {
+    hasCredits: nativeCredits.hasCredits, unlimited: nativeCredits.unlimited, balance: nativeCredits.balance ?? "0",
   };
-  const cache = opts.cache;
-  if (cache !== undefined) {
-    storeAccountMeta({
-      cache, provider: "codex", accountKey,
-      meta: {
-        ...(email !== undefined ? { email } : {}),
-        ...(typeof res.body.plan_type === "string" && res.body.plan_type.length > 0 ? { plan: res.body.plan_type } : {}),
-      },
-    });
-    result.inserted = cache.insertPolledSnapshots({
-      provider: "codex",
-      accountKey,
-      accountId,
-      complete,
-      windows,
-      credits,
-      capturedAtIso,
-      eventId: `poll:${capturedAtIso}${eventIdSuffix ?? ""}`,
-    });
-    if (!complete) {
-      cache.setMetaValue(`quota-poll-error:codex@${accountId}`, JSON.stringify({
-        at: Date.parse(capturedAtIso), reason: "partial quota response; omitted windows are unknown",
-      }));
-    }
+  const rawBalance = nativeCredits?.balance;
+  const balance = nativeCredits?.hasCredits === true && typeof rawBalance === "string" && rawBalance.trim() !== "" && Number.isFinite(Number(rawBalance))
+    ? { currency: "credits", remaining: Number(rawBalance), available: nativeCredits.hasCredits } : undefined;
+  const bankedResets = body.rateLimitResetCredits?.availableCount;
+  const expiry = body.rateLimitResetCredits?.credits?.filter(credit => credit.status === "available")
+    .map(credit => credit.expiresAt).filter((value): value is number => value != null && value > 0 && value < 8.64e12).sort((a, b) => a - b)[0];
+  const bankedExpiresAt = bankedResets !== undefined && bankedResets > 0 && expiry !== undefined ? new Date(expiry * 1000).toISOString() : undefined;
+  const email = account.email ?? identity?.email;
+  const planType = body.rateLimits.planType ?? account.planType;
+  const result: PollAccountResult = {
+    accountKey, accountId, harnesses: ["codex"], windows, inserted: 0, planType,
+    ...(email !== undefined ? { email } : {}), ...(credits !== undefined ? { credits } : {}),
+    ...(balance !== undefined ? { balance } : {}),
+    ...(bankedResets !== undefined ? { bankedResets } : {}), ...(bankedExpiresAt !== undefined ? { bankedExpiresAt } : {}),
+  };
+  if (opts.cache !== undefined) {
+    clearNativeHomeBindings(opts.cache, opts.nativeHome, accountId);
+    storeAccountMeta({ cache: opts.cache, provider: "codex", accountKey, meta: {
+      codexHome: opts.nativeHome,
+      ...(nativeCredits != null ? { credits: nativeCredits } : {}),
+      ...(balance !== undefined ? { balance } : {}),
+      ...(email !== undefined ? { email } : {}), plan: planType,
+      ...(bankedResets !== undefined ? { bankedResets } : {}),
+      ...(bankedExpiresAt !== undefined ? { bankedExpiresAt } : {}),
+    } });
+    result.inserted = opts.cache.insertPolledSnapshots({ provider: "codex", accountKey, accountId,
+      complete, windows, retiredWindows, credits, capturedAtIso, eventId: `poll:${capturedAtIso}:codex` });
+    if (!complete) opts.cache.setMetaValue(`quota-poll-error:codex@${accountId}`, JSON.stringify({
+      at: Date.parse(capturedAtIso), reason: "partial quota response; omitted windows are unknown",
+    }));
   }
   return result;
-}
-
-interface OpencodexAccountCredential {
-  accessToken?: string;
-  refreshToken?: string;
-  accountId?: string;
-  email?: string;
-}
-
-/** Read OAuth credentials for pooled ChatGPT accounts without exposing tokens. */
-function opencodexAccountCredentials(
-  path: string = `${process.env.HOME ?? "~"}/.opencodex/codex-accounts.json`,
-): Record<string, OpencodexAccountCredential> {
-  const out: Record<string, OpencodexAccountCredential> = {};
-  try {
-    const parsed = JSON.parse(fs.readFileSync(path, "utf8")) as Record<string, {
-      credential?: { accessToken?: unknown; refreshToken?: unknown; chatgptAccountId?: unknown; email?: unknown };
-    }>;
-    for (const [id, account] of Object.entries(parsed)) {
-      const credential = account.credential;
-      if (credential === undefined || typeof credential !== "object" || credential === null) continue;
-      out[id] = {
-        ...(typeof credential.accessToken === "string" ? { accessToken: credential.accessToken } : {}),
-        ...(typeof credential.refreshToken === "string" ? { refreshToken: credential.refreshToken } : {}),
-        ...(typeof credential.chatgptAccountId === "string" ? { accountId: credential.chatgptAccountId } : {}),
-        ...(typeof credential.email === "string" ? { email: credential.email } : {}),
-      };
-    }
-  } catch {
-    // opencodex is optional
-  }
-  return out;
 }

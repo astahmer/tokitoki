@@ -120,8 +120,10 @@ export class TokitokiMcpServer {
       scanned.push(
         scanProviderCore(p, machineId, {
           onQuotas: (batch) => cache.insertQuotaObservations(batch),
+          onReplayedUsage: (ids) => cache.excludeReplayedUsage(ids),
           onEvents: (batch) => {
             appendEvents(batch);
+            cache.restoreReplayedUsage(batch.map(event => event.id));
             cache.insert(batch);
           },
           onSaveCursors: (cursors) => saveProviderCursors(p.id, cursors),

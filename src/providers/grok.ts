@@ -4,7 +4,7 @@ import path from "node:path";
 import type { UsageEvent } from "../types.ts";
 import { providerConfig } from "../config.ts";
 import { eventId } from "../machine.ts";
-import { estimateCost } from "../pricing.ts";
+import { resolveUsageCost } from "../pricing.ts";
 import { sessionMessage } from "../sessionText.ts";
 import { homePath, type EntryContext, type Provider, type SessionDoc } from "./types.ts";
 
@@ -142,12 +142,12 @@ function emit(
       inputTokens,
       outputTokens,
       cacheReadTokens: cachedInput,
-      costUsd: estimateCost(model, {
+      ...resolveUsageCost({ model, tokens: {
         inputTokens,
         outputTokens,
         cacheReadTokens: cachedInput,
         cacheWriteTokens: 0,
-      }),
+      } }),
       projectDir: typeof state.cwd === "string" ? state.cwd : undefined,
       sessionId,
     },

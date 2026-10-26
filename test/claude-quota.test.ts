@@ -76,8 +76,6 @@ const setup = (credentials: Record<string, unknown>) => {
       copilotAuthPath: missing("copilot.json"),
       cursorAuthPath: missing("cursor.json"),
       cursorStateVscdbPath: missing("cursor.vscdb"),
-      opencodexCachePath: missing("opencodex-cache.json"),
-      opencodexAccountsPath: missing("opencodex-accounts.json"),
       commandcodeAuthPath: missing("commandcode.json"),
     },
   };
