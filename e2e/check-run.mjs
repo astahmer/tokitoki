@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
+import { checkSurfaces } from "./check-surfaces.mjs";
 
 const out = path.resolve(process.argv[2] ?? "");
 if (!process.argv[2]) throw new Error("usage: node e2e/check-run.mjs <output-directory>");
@@ -81,5 +82,7 @@ if (index.shell === "quickshell") {
     assert.ok(ipc.some((entry) => entry.method === method), `missing native IPC method: ${method}`);
   }
 }
+
+checkSurfaces(out, invocations, index.interactions);
 
 console.log(`PASS ${index.shell} autonomous run: ${tabs.length} tabs, ${index.interactions.length} UI interactions, ${sessions.length} sessions CLI calls`);

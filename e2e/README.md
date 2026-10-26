@@ -59,7 +59,7 @@ Artifacts:
 | --- | --- |
 | `bar.png` | top strip with the widget's status |
 | `tab-<tab>.png` | full frame after selecting each tab in the UI |
-| `quotas-lower.png` | expired/unknown quota examples and separately labeled local usage/budgets |
+| `quotas-lower.png` | expired/unknown provider quota examples; local budgets stay in Reports → Budget status |
 | `tokens-lower.png` / `tokens-models.png` | Tokens after scrolling through Pulse, provider, and model cards |
 | `reports-lower.png` | Reports after scrolling to repository and activity cards |
 | `sessions-search.png` | session list after entering the fixture search term |

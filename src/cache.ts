@@ -417,6 +417,12 @@ export class EventCache {
     /** Complete scanner packets can replace just one metered bucket. */
     bucketId?: string;
   }): number {
+    // Invalid meters are a failed observation, never an authoritative empty topology.
+    if (input.windows.some((window) => !Number.isFinite(window.usedPct) ||
+      !Number.isFinite(window.windowMinutes) || window.windowMinutes < 0 ||
+      !Number.isFinite(window.resetsAtEpoch) || window.resetsAtEpoch < 0)) {
+      throw new Error("invalid quota observation");
+    }
     const capturedAtMs = Date.parse(input.capturedAtIso);
     if (!Number.isFinite(capturedAtMs)) return 0;
     const capturedAtIso = new Date(capturedAtMs).toISOString();
@@ -429,6 +435,11 @@ export class EventCache {
     `);
     let inserted = 0;
     const tx = this.db.transaction(() => {
+      if (input.eventId.startsWith("poll:") && input.complete !== false) {
+        const errorKey = `quota-poll-error:${input.provider}@${input.provider === "codex" ? input.accountId ?? input.accountKey : input.accountKey}`;
+        this.db.query("DELETE FROM meta WHERE key = ? AND json_valid(value) AND json_extract(value, '$.at') <= ?")
+          .run(errorKey, capturedAtMs);
+      }
       let observationId: number | null = null;
       {
         const bucketId = input.bucketId ?? "*";
@@ -440,9 +451,6 @@ export class EventCache {
           .get(input.provider, input.accountKey, bucketId, capturedAtIso, input.eventId)!.id;
       }
       for (const w of input.windows) {
-        if (!Number.isFinite(w.usedPct) || !Number.isFinite(w.windowMinutes) || w.windowMinutes < 0 ||
-            !Number.isFinite(w.resetsAtEpoch) || w.resetsAtEpoch < 0)
-          continue;
         const label = w.label ?? "";
         stmt.run(
           input.provider,

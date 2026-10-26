@@ -91,6 +91,7 @@ export interface AccountLimits {
   observedAt?: string;
   /** Freshness of provider-reported data; never confuse stale data with zero. */
   freshness?: "fresh" | "stale" | "unknown";
+  refreshError?: string;
   /** Banked rate-limit resets (codex credits analog). */
   bankedResets?: number;
   bankedExpiresAt?: string;

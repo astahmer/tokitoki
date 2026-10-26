@@ -14,9 +14,15 @@ PlasmoidItem {
     property double now: Date.now()
     property int generation: 0
     property bool refreshing: false
-    readonly property var accounts: Model.accounts(limits, Plasmoid.configuration.accounts, Plasmoid.configuration.hideIdentities, payload.uiPreview)
+    property bool orderSaving: false
+    property var accountOrderOverride: null
+    readonly property var orderedDocument: Object.assign({}, limits, {accountOrder: accountOrderOverride || limits.accountOrder || []})
+    property bool showHidden: false
+    readonly property var accounts: Model.accounts(orderedDocument, Plasmoid.configuration.accounts, Plasmoid.configuration.hideIdentities, payload.uiPreview, "cards")
+    readonly property var barAccounts: Model.accounts(orderedDocument, Plasmoid.configuration.accounts, Plasmoid.configuration.hideIdentities, payload.uiPreview, "bar")
+    readonly property var hiddenAccounts: Model.accounts(orderedDocument, Plasmoid.configuration.accounts, Plasmoid.configuration.hideIdentities, payload.uiPreview, "all").filter(function(a) { return Model.globallyHidden(a, payload.uiPreview) })
     readonly property var stats: payload.stats || ({})
-    readonly property string barText: Model.bar(accounts, Plasmoid.configuration.displayMode, stats, now)
+    readonly property string barText: Model.bar(barAccounts, Plasmoid.configuration.displayMode, stats, now)
     toolTipMainText: "Tokitoki"
     toolTipSubText: (errorText ? errorText + "\n" : "") + Model.tooltip(accounts, now)
     Plasmoid.icon: "view-statistics"
@@ -41,6 +47,8 @@ PlasmoidItem {
                     if (!errors.length) {
                         payload = nextStatus
                         limits = nextLimits
+                        if (accountOrderOverride && JSON.stringify(accountOrderOverride) === JSON.stringify(nextLimits.accountOrder || []))
+                            accountOrderOverride = null
                     }
                     errorText = errors.join(" · ")
                     refreshing = false
@@ -65,6 +73,59 @@ PlasmoidItem {
             if (value.version !== 1 || !Array.isArray(value.accounts)) throw new Error("schema")
             nextLimits = value
         })
+    }
+    function moveAccount(id, direction, bar) {
+        if (orderSaving) return
+        var order = Model.moveOrder(bar ? Object.assign({}, orderedDocument, {accountOrder: (payload.uiPreview || {}).barAccountOrder || orderedDocument.accountOrder}) : orderedDocument, bar ? barAccounts : accounts, id, direction)
+        if (!order) return
+        orderSaving = true
+        var finished = false
+        function finish(message) {
+            if (finished) return
+            finished = true
+            root.orderSaving = false
+            if (message) root.errorText = message
+        }
+        var request = new XMLHttpRequest()
+        request.onreadystatechange = function() {
+            if (request.readyState !== XMLHttpRequest.DONE || finished) return
+            if (request.status < 200 || request.status >= 300) { finish("Could not save account order · HTTP " + request.status); return }
+            try {
+                var response = JSON.parse(request.responseText)
+                if (response.ok !== true) throw new Error("unsupported response")
+                if (!bar) root.accountOrderOverride = order
+                finish("")
+                root.refresh()
+            } catch (error) { finish("Could not save account order · unsupported response") }
+        }
+        request.open("POST", String(Plasmoid.configuration.endpoint).replace(/\/+$/, "") + (bar ? "/v1/ui/bar-account-order" : "/v1/ui/account-order"))
+        request.setRequestHeader("Content-Type", "application/json")
+        var seed = (((payload.uiPreview || {}).barAccountOrder) || orderedDocument.accountOrder || []).slice()
+        ;(orderedDocument.accounts || []).forEach(function(a) { if (seed.indexOf(a.id) < 0) seed.push(a.id) })
+        request.send(JSON.stringify(bar ? {ids: order} : {ids: order, barIds: seed}))
+        timeoutFactory.createObject(root, {request: request, finishRequest: finish})
+    }
+    function setVisibility(id, preference) {
+        if (orderSaving) return
+        orderSaving = true
+        var request = new XMLHttpRequest()
+        var finished = false
+        function finish(message) {
+            if (finished) return
+            finished = true
+            root.orderSaving = false
+            if (message) root.errorText = message
+        }
+        request.onreadystatechange = function() {
+            if (request.readyState !== XMLHttpRequest.DONE || finished) return
+            if (request.status < 200 || request.status >= 300) { finish("Could not save account visibility · HTTP " + request.status); return }
+            finish("")
+            root.refresh()
+        }
+        request.open("POST", String(Plasmoid.configuration.endpoint).replace(/\/+$/, "") + "/v1/ui/account-visibility")
+        request.setRequestHeader("Content-Type", "application/json")
+        request.send(JSON.stringify(Object.assign({id: id}, preference)))
+        timeoutFactory.createObject(root, {request: request, finishRequest: finish})
     }
     Component {
         id: timeoutFactory
@@ -95,7 +156,7 @@ PlasmoidItem {
             spacing: 6
             Kirigami.Icon { source: "view-statistics"; implicitWidth: 18; implicitHeight: 18 }
             Repeater {
-                model: !root.errorText && (Plasmoid.configuration.displayMode === "shortest" || Plasmoid.configuration.displayMode === "quotas") ? root.accounts : []
+                model: !root.errorText && (Plasmoid.configuration.displayMode === "shortest" || Plasmoid.configuration.displayMode === "quotas") ? root.barAccounts : []
                 delegate: RowLayout {
                     required property var modelData
                     spacing: 6
@@ -104,12 +165,12 @@ PlasmoidItem {
                         source: Model.logo(modelData) ? Qt.resolvedUrl("../images/" + Model.logo(modelData) + ".svg") : "view-statistics"
                         implicitWidth: 16; implicitHeight: 16
                     }
-                    PC.Label { text: Model.accountBar(modelData, root.accounts, Plasmoid.configuration.displayMode, root.now) }
+                    PC.Label { text: Model.accountBar(modelData, root.barAccounts, Plasmoid.configuration.displayMode, root.now) }
                 }
             }
             PC.Label {
                 text: root.errorText ? "Tokitoki ?" : root.barText
-                visible: root.errorText || Plasmoid.configuration.displayMode === "total" || root.accounts.length === 0
+                visible: root.errorText || Plasmoid.configuration.displayMode === "total" || root.barAccounts.length === 0
             }
         }
         MouseArea { anchors.fill: parent; onClicked: root.expanded = !root.expanded }
@@ -142,7 +203,30 @@ PlasmoidItem {
                         Layout.fillWidth: true
                         contentItem: ColumnLayout {
                             spacing: 8
-                            PC.Label { text: modelData.vendorName + " · " + modelData.name; font.bold: true }
+                            RowLayout {
+                                Layout.fillWidth: true
+                                PC.Label { text: modelData.vendorName + " · " + modelData.name; font.bold: true; Layout.fillWidth: true; elide: Text.ElideRight }
+                                PC.ToolButton {
+                                    text: "Move account up"; icon.name: "go-up"; display: PC.AbstractButton.IconOnly
+                                    Accessible.name: text
+                                    enabled: !root.orderSaving && root.accounts.findIndex(function(a) { return a.id === modelData.id }) > 0
+                                    onClicked: root.moveAccount(modelData.id, -1)
+                                }
+                                PC.ToolButton {
+                                    text: "Move account down"; icon.name: "go-down"; display: PC.AbstractButton.IconOnly
+                                    Accessible.name: text
+                                    enabled: !root.orderSaving && root.accounts.findIndex(function(a) { return a.id === modelData.id }) < root.accounts.length - 1
+                                    onClicked: root.moveAccount(modelData.id, 1)
+                                }
+                            }
+                            RowLayout {
+                                PC.Button { text: "Hide everywhere"; enabled: !root.orderSaving; onClicked: root.setVisibility(modelData.id, {hidden: true}) }
+                                PC.Button {
+                                    readonly property bool barHidden: ((root.payload.uiPreview || {}).barHiddenAccounts || []).indexOf(modelData.id) >= 0
+                                    text: barHidden ? "Show on bar" : "Hide from bar"; enabled: !root.orderSaving
+                                    onClicked: root.setVisibility(modelData.id, {barHidden: !barHidden})
+                                }
+                            }
                             Repeater {
                                 model: Model.windows(modelData, false, root.now)
                                 delegate: ColumnLayout {
@@ -174,6 +258,26 @@ PlasmoidItem {
                                 }
                             }
                         }
+                    }
+                }
+                PC.Button { text: "Hidden quotas (" + root.hiddenAccounts.length + ")"; visible: root.hiddenAccounts.length > 0; onClicked: root.showHidden = !root.showHidden }
+                Repeater {
+                    model: root.showHidden ? root.hiddenAccounts : []
+                    delegate: RowLayout {
+                        required property var modelData
+                        PC.Label { text: modelData.name; Layout.fillWidth: true }
+                        PC.Button { text: ((root.payload.uiPreview || {}).menubarHidden || []).indexOf(modelData.harness) >= 0 ? "Restore all " + modelData.harness + " accounts" : "Restore"; enabled: !root.orderSaving; onClicked: root.setVisibility(modelData.id, {hidden: false}) }
+                    }
+                }
+                PC.Label { text: "Bar order"; font.bold: true; visible: root.barAccounts.length > 0 }
+                Repeater {
+                    model: root.barAccounts
+                    delegate: RowLayout {
+                        required property var modelData
+                        required property int index
+                        PC.Label { text: modelData.name; Layout.fillWidth: true }
+                        PC.ToolButton { text: "Move bar account left"; icon.name: "go-previous"; enabled: !root.orderSaving && index > 0; onClicked: root.moveAccount(modelData.id, -1, true) }
+                        PC.ToolButton { text: "Move bar account right"; icon.name: "go-next"; enabled: !root.orderSaving && index < root.barAccounts.length - 1; onClicked: root.moveAccount(modelData.id, 1, true) }
                     }
                 }
                 PC.Label { text: "No selected accounts. Check the service and widget settings."; visible: root.accounts.length === 0; wrapMode: Text.Wrap; Layout.fillWidth: true }

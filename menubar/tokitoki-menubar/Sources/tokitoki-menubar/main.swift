@@ -227,6 +227,90 @@ struct QuotaPace: Codable {
     let runsOutAt: String?
 }
 
+enum AccountPresentation {
+    static func id(_ account: AccountLimits) -> String { "\(account.provider)@\(account.accountKey)" }
+
+    static func completeOrder(_ saved: [String], accounts: [String]) -> [String] {
+        var seen: Set<String> = []
+        return (saved + accounts).filter { seen.insert($0).inserted }
+    }
+
+    static func ordered(_ accounts: [AccountLimits], order: [String]) -> [AccountLimits] {
+        let ranks = Dictionary(uniqueKeysWithValues: completeOrder(order, accounts: accounts.map(id)).enumerated().map { ($0.element, $0.offset) })
+        return accounts.enumerated().sorted {
+            let lhs = ranks[id($0.element)] ?? ranks.count
+            let rhs = ranks[id($1.element)] ?? ranks.count
+            return lhs == rhs ? $0.offset < $1.offset : lhs < rhs
+        }.map(\.element)
+    }
+
+    static func move(_ id: String, direction: Int, saved: [String], accounts: [String], visible: [String]) -> [String] {
+        var order = completeOrder(saved, accounts: accounts)
+        guard let index = visible.firstIndex(of: id), visible.indices.contains(index + direction),
+              let from = order.firstIndex(of: id), let to = order.firstIndex(of: visible[index + direction]) else { return order }
+        order.swapAt(from, to)
+        return order
+    }
+
+    static func quotaReorder(_ ids: [String], saved: [String], barOrder: [String]?, accounts: [String]) -> (quota: [String], bar: [String]) {
+        let complete = completeOrder(saved, accounts: accounts)
+        var reordered = ids.makeIterator()
+        let movedIDs = Set(ids)
+        let quota = complete.map { movedIDs.contains($0) ? (reordered.next() ?? $0) : $0 }
+        return (quota, completeOrder(barOrder ?? saved, accounts: accounts))
+    }
+
+    static func grouped(_ accounts: [AccountLimits], order: [String], group: (AccountLimits) -> String?) -> [[AccountLimits]] {
+        var keys: [String] = []
+        var groups: [String: [AccountLimits]] = [:]
+        for account in ordered(accounts, order: order) {
+            let key = group(account) ?? account.provider
+            if groups[key] == nil { keys.append(key) }
+            groups[key, default: []].append(account)
+        }
+        return keys.map { groups[$0] ?? [] }
+    }
+
+    static func moveBar(_ id: String, direction: Int, saved: [String], accounts: [AccountLimits],
+                        visible: [AccountLimits], group: (AccountLimits) -> String?) -> [String] {
+        let complete = completeOrder(saved, accounts: accounts.map(Self.id))
+        var groups = grouped(visible, order: saved, group: group)
+        guard let section = groups.firstIndex(where: { $0.contains { Self.id($0) == id } }),
+              let index = groups[section].firstIndex(where: { Self.id($0) == id }) else { return complete }
+        if groups[section].indices.contains(index + direction) {
+            groups[section].swapAt(index, index + direction)
+        } else if groups.indices.contains(section + direction) {
+            groups.swapAt(section, section + direction)
+        } else {
+            return complete
+        }
+        let visibleIDs = Set(visible.map(Self.id))
+        var moved = groups.flatMap { $0.map(Self.id) }.makeIterator()
+        return complete.map { visibleIDs.contains($0) ? (moved.next() ?? $0) : $0 }
+    }
+
+    static func matches(_ target: String, account: AccountLimits) -> Bool {
+        let parts = target.split(separator: ":", maxSplits: 1).map(String.init)
+        return parts.first == account.provider && (parts.count == 1 || account.accountKey.hasSuffix(parts[1]))
+    }
+
+    static func visible(_ account: AccountLimits, hidden: Set<String>) -> Bool {
+        !hidden.contains { matches($0, account: account) }
+    }
+
+    static func restoring(_ account: AccountLimits, hidden: Set<String>, accounts: [AccountLimits]) -> Set<String> {
+        if hidden.contains(account.provider) {
+            return hidden.filter { $0 != account.provider && !$0.hasPrefix(account.provider + ":") }
+        }
+        let removed = hidden.filter { matches($0, account: account) }
+        var result = hidden.subtracting(removed)
+        for other in accounts where id(other) != id(account) && removed.contains(where: { matches($0, account: other) }) {
+            result.insert("\(other.provider):\(other.accountKey)")
+        }
+        return result
+    }
+}
+
 struct QuotaObservation: Codable {
     let remaining: Double
     let resetAt: String?
@@ -351,6 +435,9 @@ struct UiPreviewConfig: Codable {
     // Provider visibility (context-menu Settings ▸ toggles).
     let providers: [String]?
     let menubarHidden: [String]?
+    var accountOrder: [String]? = nil
+    var barAccountOrder: [String]? = nil
+    var barHiddenAccounts: [String]? = nil
     // Card layout (Customize sheet): ordered ids + hidden flags.
     let cards: [MenubarCardConfig]?
     // Default card projection collapses equivalent harness variants.
@@ -638,6 +725,8 @@ final class Model: ObservableObject {
     @Published var lastUpdatedAt: Date?
     /// Account-card order override applied immediately after customize saves.
     @Published var accountOrderOverride: [String]? = nil
+    @Published var previewAccountOrder: [String]? = nil
+    @Published var previewHiddenAccounts: Set<String> = []
     /// Upstream provider ids hidden from the status-bar strip (cards unaffected).
     @Published var previewHidden: Set<String> = []
     /// Uniform strip display: "percent" (default) | "tokens".
@@ -1519,6 +1608,9 @@ final class Model: ObservableObject {
                     self.sideNotchDisplayNames = ui.sideNotchDisplayNames ?? [:]
                     self.knownProviders = ui.providers ?? []
                     self.menubarHidden = Set(ui.menubarHidden ?? [])
+                    self.accountOrderOverride = ui.accountOrder
+                    self.previewAccountOrder = ui.barAccountOrder ?? ui.accountOrder
+                    self.previewHiddenAccounts = Set(ui.barHiddenAccounts ?? [])
                     self.cardLayout = (ui.cards ?? []).map { ($0.id, $0.hidden) }
                     self.showHarnessVariants = ui.showHarnessVariants ?? false
                     self.pollAuto = ui.pollAuto ?? false
@@ -1583,9 +1675,11 @@ final class Model: ObservableObject {
                     metric: stripMetric,
                     previewHidden: previewHidden,
                     exhaustedBehavior: stripExhausted,
-                    menubarHidden: menubarHidden
+                    menubarHidden: menubarHidden,
+                    previewAccountOrder: previewAccountOrder ?? accountOrderOverride ?? [],
+                    previewHiddenAccounts: previewHiddenAccounts
                 )
-                let newTitle = composeTitle(today: p.today, preview: self.previewEnabled ? Self.previewText(p.limits ?? [], cfg: p.uiPreview, labeled: self.previewMode == "hover", menubarHidden: menubarHidden) : nil, hovering: isHovering, mode: self.previewMode)
+                let newTitle = composeTitle(today: p.today, preview: self.previewEnabled ? Self.previewText(p.limits ?? [], cfg: p.uiPreview, labeled: self.previewMode == "hover", menubarHidden: menubarHidden, previewAccountOrder: previewAccountOrder ?? accountOrderOverride ?? [], previewHiddenAccounts: previewHiddenAccounts, previewHidden: previewHidden) : nil, hovering: isHovering, mode: self.previewMode)
                 setTitleIfChanged(newTitle)
                 self.errorText = nil
                 self.errorDetails = nil
@@ -1946,18 +2040,13 @@ final class Model: ObservableObject {
         previewHidden: Set<String>,
         exhaustedBehavior: String = "show",
         menubarHidden: Set<String> = [],
+        previewAccountOrder: [String] = [],
+        previewHiddenAccounts: Set<String> = [],
     ) -> [(provider: String, lines: [String])] {
-        // Same visibility rule as the popover's own account-card list
-        // (accountCardVisible) — an account switched off in the Customize
-        // sheet's USAGE CARDS list must not still contribute a number here.
-        let limits = limits.filter {
-            !menubarHidden.contains($0.provider) && !menubarHidden.contains("\($0.provider):\($0.accountKey)")
+        let limits = AccountPresentation.ordered(limits, order: previewAccountOrder).filter {
+            AccountPresentation.visible($0, hidden: menubarHidden)
+                && !previewHiddenAccounts.contains(AccountPresentation.id($0))
         }
-        var maxima: [String: Double] = [:]
-        for l in limits {
-            for w in l.quotaWindows { maxima[w.kind] = max(maxima[w.kind] ?? 0, w.tokens) }
-        }
-
         struct AccountPreview {
             let percentLines: [String]
             let smartLine: String
@@ -2139,6 +2228,8 @@ final class Model: ObservableObject {
             previewHidden: previewHidden,
             exhaustedBehavior: stripExhausted,
             menubarHidden: menubarHidden,
+            previewAccountOrder: previewAccountOrder ?? accountOrderOverride ?? [],
+            previewHiddenAccounts: previewHiddenAccounts,
         )
     }
 
@@ -2156,6 +2247,9 @@ final class Model: ObservableObject {
             cfg: currentPreviewCfg,
             labeled: previewMode == "hover",
             menubarHidden: menubarHidden,
+            previewAccountOrder: previewAccountOrder ?? accountOrderOverride ?? [],
+            previewHiddenAccounts: previewHiddenAccounts,
+            previewHidden: previewHidden,
         ) : nil
         setTitleIfChanged(composeTitle(today: currentPayloadForTitle?.today, preview: preview, hovering: isHovering, mode: previewMode))
     }
@@ -2226,8 +2320,7 @@ final class Model: ObservableObject {
     /// distinct rings and detail cards.
     func sideNotchAccountGroups(includeHidden: Bool = false) -> [SideNotchAccountGroup] {
         let visible = limits.filter { limit in
-            !menubarHidden.contains(limit.provider)
-                && !menubarHidden.contains("\(limit.provider):\(limit.accountKey)")
+            AccountPresentation.visible(limit, hidden: menubarHidden)
         }
         let grouped = Dictionary(grouping: visible, by: Self.sideNotchEntryID)
         return grouped.compactMap { id, accountLimits in
@@ -2647,12 +2740,18 @@ final class Model: ObservableObject {
         cfg: UiPreviewConfig?,
         labeled: Bool = false,
         menubarHidden: Set<String> = [],
+        previewAccountOrder: [String]? = nil,
+        previewHiddenAccounts: Set<String>? = nil,
+        previewHidden: Set<String>? = nil,
     ) -> String? {
         let maxLines = cfg?.previewLines ?? 3
         guard maxLines > 0 else { return nil }
-        // Same visibility rule as the popover's own account-card list.
-        let limits = limits.filter {
-            !menubarHidden.contains($0.provider) && !menubarHidden.contains("\($0.provider):\($0.accountKey)")
+        let hiddenAccounts = previewHiddenAccounts ?? Set(cfg?.barHiddenAccounts ?? [])
+        let hiddenProviders = previewHidden ?? Set(cfg?.previewHidden ?? [])
+        let limits = AccountPresentation.ordered(limits, order: previewAccountOrder ?? cfg?.barAccountOrder ?? cfg?.accountOrder ?? []).filter {
+            AccountPresentation.visible($0, hidden: menubarHidden)
+                && !hiddenAccounts.contains(AccountPresentation.id($0))
+                && !hiddenProviders.contains(upstreamProvider($0) ?? $0.provider)
         }
         var groups: [String] = []
         for l in limits {
@@ -2690,7 +2789,7 @@ final class Model: ObservableObject {
             guard oldValue != isHovering else { return }
             let p = currentPayloadForTitle
             let t = composeTitle(today: p?.today,
-                                 preview: previewEnabled ? Self.previewText(p?.limits ?? [], cfg: currentPreviewCfg, labeled: previewMode == "hover", menubarHidden: menubarHidden) : nil,
+                                 preview: previewEnabled ? Self.previewText(p?.limits ?? [], cfg: currentPreviewCfg, labeled: previewMode == "hover", menubarHidden: menubarHidden, previewAccountOrder: previewAccountOrder ?? accountOrderOverride ?? [], previewHiddenAccounts: previewHiddenAccounts, previewHidden: previewHidden) : nil,
                                  hovering: isHovering,
                                  mode: previewMode)
             setTitleIfChanged(t)
@@ -4551,170 +4650,190 @@ struct MonoMark: View {
 struct CustomizeSheet: View {
     @ObservedObject var model: Model
     @Binding var isPresented: Bool
-    /// Section a — usage-card drafts (order + popover visibility).
-    @State private var cards: [CardState] = []
-    /// ui.hidden.menubar targets as of load — the save diff baseline.
-    @State private var originalHiddenTargets: Set<String> = []
+    @State private var quotaOrder: [String] = []
+    @State private var barOrder: [String] = []
+    @State private var hidden: Set<String> = []
+    @State private var barHidden: Set<String> = []
+    @State private var hiddenProviders: Set<String> = []
+    @State private var showHidden = false
 
-    struct CardState: Identifiable, Equatable {
-        /// Display/order id ("provider@accountKey").
-        let id: String
-        /// ui.hidden.menubar target ("provider:accountKey").
-        let target: String
-        var visible: Bool
-        var ident: String { id }
+    private var accounts: [AccountLimits] { model.limits }
+    private var visibleAccounts: [AccountLimits] {
+        accounts.filter { AccountPresentation.visible($0, hidden: hidden) }
+    }
+    private var hiddenAccounts: [AccountLimits] {
+        AccountPresentation.ordered(accounts, order: quotaOrder).filter { !AccountPresentation.visible($0, hidden: hidden) }
+    }
+
+    private var orderedBarAccounts: [AccountLimits] {
+        let shown = visibleAccounts.filter { barVisible($0) }
+        let hidden = visibleAccounts.filter { !barVisible($0) }
+        return AccountPresentation.grouped(shown, order: barOrder, group: Model.upstreamProvider).flatMap { $0 }
+            + AccountPresentation.ordered(hidden, order: barOrder)
     }
 
     var body: some View {
         VStack(spacing: 0) {
-            // Header bar (macOS has no navigation chrome in popovers).
             HStack {
-                Button("Cancel") { isPresented = false }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.secondary)
+                Button("Cancel") { isPresented = false }.buttonStyle(.plain)
                 Spacer()
                 Text("Customize").font(.system(size: 13, weight: .semibold))
                 Spacer()
-                Button("Done") { save(); isPresented = false }
-                    .buttonStyle(.plain).fontWeight(.semibold)
+                Button("Done") { save(); isPresented = false }.buttonStyle(.plain).fontWeight(.semibold)
             }
-            .padding(.horizontal, 12).padding(.vertical, 8)
+            .padding(12)
             Divider()
             List {
-                Section(header: sectionHeader("Usage cards")) {
-                    ForEach($cards) { $card in
-                        CardRow(card: $card)
-                            .onDrag {
-                                dragging = card.id
-                                return NSItemProvider(object: card.id as NSString)
+                Section("Quotas") {
+                    Text("Hide an account everywhere, or change its Quotas order.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    ForEach(AccountPresentation.ordered(visibleAccounts, order: quotaOrder)) { account in
+                        HStack {
+                            accountLabel(account)
+                            Spacer()
+                            orderButtons(account, bar: false)
+                            Button { hidden.insert("\(account.provider):\(account.accountKey)") } label: {
+                                Image(systemName: "eye.slash")
                             }
-                            .onDrop(of: [UTType.plainText], delegate: CardDropDelegate(target: card.id, cards: $cards, dragging: $dragging))
+                            .help("Hide everywhere")
+                            .accessibilityLabel("Hide \(AccountPresentation.id(account)) everywhere")
+                        }
+                    }
+                    DisclosureGroup(isExpanded: $showHidden) {
+                        ForEach(hiddenAccounts) { account in
+                            HStack {
+                                accountLabel(account)
+                                Spacer()
+                                Button(hidden.contains(account.provider) ? "Restore all provider accounts" : "Restore") {
+                                    hidden = AccountPresentation.restoring(account, hidden: hidden, accounts: accounts)
+                                }
+                            }
+                        }
+                        if hiddenAccounts.isEmpty { Text("No hidden accounts").foregroundStyle(.secondary) }
+                    } label: {
+                        Text("Hidden accounts (\(hiddenAccounts.count))")
+                    }
+                }
+                Section("Menu bar") {
+                    Text("Menu bar switches and order are independent of Quotas.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    ForEach(orderedBarAccounts) { account in
+                        HStack {
+                            accountLabel(account)
+                            Spacer()
+                            orderButtons(account, bar: true)
+                            Toggle("Show in menu bar", isOn: Binding(
+                                get: { barVisible(account) },
+                                set: { setBarVisible(account, visible: $0) }
+                            ))
+                            .labelsHidden().toggleStyle(.switch).controlSize(.small)
+                            .accessibilityLabel("Show \(AccountPresentation.id(account)) in menu bar")
+                        }
                     }
                 }
             }
             .listStyle(.inset)
         }
-        .frame(width: 320, height: 480)
-        .onAppear(perform: load)
+        .frame(width: 420, height: 540)
+        .onAppear {
+            quotaOrder = AccountPresentation.completeOrder(model.accountOrderOverride ?? [], accounts: accounts.map(AccountPresentation.id))
+            barOrder = AccountPresentation.completeOrder(model.previewAccountOrder ?? quotaOrder, accounts: accounts.map(AccountPresentation.id))
+            hidden = model.menubarHidden
+            barHidden = model.previewHiddenAccounts
+            hiddenProviders = model.previewHidden
+        }
     }
 
-    private func sectionHeader(_ title: String) -> some View {
-        Text(title.uppercased())
-            .font(.caption2.weight(.semibold))
-            .foregroundStyle(.secondary)
+    private func accountLabel(_ account: AccountLimits) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(account.provider).font(.system(size: 13, weight: .medium))
+            Text(model.privacyHideIdentities ? "Account" : account.accountKey)
+                .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+        }
     }
 
-    @State private var dragging: String?
+    private func barVisible(_ account: AccountLimits) -> Bool {
+        !barHidden.contains(AccountPresentation.id(account))
+            && !hiddenProviders.contains(Model.upstreamProvider(account) ?? account.provider)
+    }
 
-    /// One customize row: drag handle + title/id + native switch.
-    private struct CardRow: View {
-        @Binding var card: CardState
-
-        var body: some View {
-            HStack(spacing: 10) {
-                Image(systemName: "line.3.horizontal")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.tertiary)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(cardDisplayName)
-                        .font(.system(size: 13, weight: .medium))
-                    Text(card.id)
-                        .font(.caption2).foregroundStyle(.tertiary)
+    private func setBarVisible(_ account: AccountLimits, visible: Bool) {
+        let id = AccountPresentation.id(account)
+        if visible {
+            let upstream = Model.upstreamProvider(account) ?? account.provider
+            if hiddenProviders.remove(upstream) != nil {
+                // Preserve the other accounts when overriding a legacy provider-wide switch.
+                for other in accounts where AccountPresentation.id(other) != id
+                    && (Model.upstreamProvider(other) ?? other.provider) == upstream {
+                    barHidden.insert(AccountPresentation.id(other))
                 }
-                Spacer()
-                Toggle("", isOn: $card.visible)
-                    .toggleStyle(.switch)
-                    .labelsHidden()
-                    .controlSize(.small)
+            }
+            barHidden.remove(id)
+        } else {
+            barHidden.insert(id)
+        }
+    }
+
+    private func orderButtons(_ account: AccountLimits, bar: Bool) -> some View {
+        let order = bar ? barOrder : quotaOrder
+        let barAccounts = visibleAccounts.filter { barVisible($0) }
+        let visible = bar
+            ? AccountPresentation.grouped(barAccounts, order: order, group: Model.upstreamProvider).flatMap { $0 }.map(AccountPresentation.id)
+            : AccountPresentation.ordered(visibleAccounts, order: order).map(AccountPresentation.id)
+        let id = AccountPresentation.id(account)
+        return HStack(spacing: 6) {
+            ForEach([-1, 1], id: \.self) { direction in
+                Button {
+                    if bar {
+                        barOrder = AccountPresentation.moveBar(id, direction: direction, saved: order,
+                            accounts: accounts, visible: barAccounts, group: Model.upstreamProvider)
+                    } else {
+                        quotaOrder = AccountPresentation.move(id, direction: direction, saved: order,
+                            accounts: accounts.map(AccountPresentation.id), visible: visible)
+                    }
+                } label: {
+                    Image(systemName: direction < 0 ? "chevron.up" : "chevron.down")
+                }
+                .disabled(!canMove(id, direction: direction, visible: visible))
+                .help(direction < 0 ? "Move up" : "Move down")
+                .accessibilityLabel("Move \(id) \(direction < 0 ? "up" : "down") in \(bar ? "menu bar" : "Quotas")")
             }
         }
-
-        private var cardDisplayName: String {
-            // "pi@opencode-go" → "opencode-go (pi)"-style friendly label when
-            // the account key already carries the name; harness prefix otherwise.
-            let parts = card.id.split(separator: "@", maxSplits: 1)
-            if parts.count == 2, parts[1] != "default" {
-                return "\(parts[1]) · \(parts[0])"
-            }
-            return card.id
-        }
     }
 
-    /// Reorder-on-drop for the customize list.
-    private struct CardDropDelegate: DropDelegate {
-        let target: String
-        @Binding var cards: [CardState]
-        @Binding var dragging: String?
-
-        func performDrop(info: DropInfo) -> Bool {
-            dragging = nil
-            return true
-        }
-
-        func dropEntered(info: DropInfo) {
-            guard let dragging, dragging != target else { return }
-            guard let from = cards.firstIndex(where: { $0.id == dragging }),
-                  let to = cards.firstIndex(where: { $0.id == target }) else { return }
-            withAnimation(.easeInOut(duration: 0.15)) {
-                cards.move(fromOffsets: IndexSet(integer: from), toOffset: to > from ? to + 1 : to)
-            }
-        }
-
-        func validateDrop(info: DropInfo) -> Bool { true }
-        func dropUpdated(info: DropInfo) -> DropProposal? { DropProposal(operation: .move) }
+    private func canMove(_ id: String, direction: Int, visible: [String]) -> Bool {
+        guard let index = visible.firstIndex(of: id) else { return false }
+        return visible.indices.contains(index + direction)
     }
 
-    private func load() {
-        // Section a: every account card (payload order), visibility from
-        // hidden.menubar via the same "provider:accountKey" targets the
-        // context menu writes. Hidden pairs keep their drag slot.
-        cards = model.limits.map { l in
-            let target = "\(l.provider):\(l.accountKey)"
-            return CardState(
-                id: "\(l.provider)@\(l.accountKey)",
-                target: target,
-                visible: !model.menubarHidden.contains(target),
-            )
-        }
-        originalHiddenTargets = model.menubarHidden
-    }
-
-    private func move(from source: IndexSet, to destination: Int) {
-        cards.move(fromOffsets: source, toOffset: destination)
-    }
-
-    /// Done: persist account order + visibility changes, batched on a
-    /// background queue via the existing `ui` flags.
     private func save() {
-        let cli = model.currentInvocation()
-        let order = cards.map { $0.id }
-        var argsList: [[String]] = [["ui", "--account-order", order.joined(separator: ",")]]
-        var newHidden = model.menubarHidden
-        for card in cards {
-            let wasHidden = originalHiddenTargets.contains(card.target)
-            if card.visible && wasHidden {
-                argsList.append(["ui", "--show", card.target])
-                newHidden.remove(card.target)
-            } else if !card.visible && !wasHidden {
-                argsList.append(["ui", "--hide", card.target])
-                newHidden.insert(card.target)
-            }
+        let values: [(String, [String])] = [
+            ("ui.previewAccountOrder", barOrder),
+            ("ui.menubarAccountOrder", quotaOrder),
+            ("ui.hidden.widget", hidden.sorted()),
+            ("ui.previewHiddenAccounts", barHidden.sorted()),
+            ("ui.previewHidden", hiddenProviders.sorted()),
+        ]
+        let argsList = values.compactMap { path, ids -> [String]? in
+            guard let data = try? JSONEncoder().encode(ids), let json = String(data: data, encoding: .utf8) else { return nil }
+            return ["config", "set", path, json]
         }
-        // Optimistic: apply locally so the popover reflects Done instantly.
         model.invalidateRefreshes()
-        model.accountOrderOverride = order
-        model.menubarHidden = newHidden
+        model.accountOrderOverride = quotaOrder
+        model.previewAccountOrder = barOrder
+        model.menubarHidden = hidden
+        model.previewHiddenAccounts = barHidden
+        model.previewHidden = hiddenProviders
         model.rebuildStripPreview()
         model.refreshTitleNow()
+        let cli = model.currentInvocation()
         Task {
             do {
-                for args in argsList {
-                    _ = try await Model.runConfigCLI(cli, args)
-                }
+                for args in argsList { _ = try await Model.runConfigCLI(cli, args) }
             } catch {
-                FileHandle.standardError.write(Data("[tokitoki] customize save failed: \(error)\n".utf8))
+                model.pollStatus = "Could not save customization: \(error.localizedDescription)"
             }
-            await MainActor.run { model.refresh() }
+            model.refresh()
         }
     }
 }
@@ -6437,7 +6556,7 @@ struct HoverPreviewView: View {
 
     private var entries: [Entry] {
         model.limits
-            .filter { !model.menubarHidden.contains($0.provider) && !model.menubarHidden.contains("\($0.provider):\($0.accountKey)") }
+            .filter { AccountPresentation.visible($0, hidden: model.menubarHidden) }
             .flatMap { limit in
                 let account = model.privacyHideIdentities ? "Private account" : (limit.email ?? limit.credential ?? limit.accountKey)
                 return limit.quotaWindows.prefix(3).map { window in
@@ -9114,29 +9233,25 @@ private struct HighlightedSnippet: View {
 
     /// Account cards in drag-saved order (payload order as fallback).
     private func orderedAccounts() -> [AccountLimits] {
-        let all = model.limits.filter { accountCardVisible($0) }
-        if let local = model.accountOrderOverride {
-            let rank = { (l: AccountLimits) in local.firstIndex(of: "\(l.provider)@\(l.accountKey)") ?? local.count }
-            return all.sorted { rank($0) < rank($1) }
-        }
-        return all
+        AccountPresentation.ordered(model.limits, order: model.accountOrderOverride ?? []).filter { accountCardVisible($0) }
     }
 
-    /// ui.hidden.menubar semantics: an entry is either a bare harness id
-    /// ("codex") or a "harness:accountKey" pair.
     private func accountCardVisible(_ l: AccountLimits) -> Bool {
-        !model.menubarHidden.contains(l.provider)
-            && !model.menubarHidden.contains("\(l.provider):\(l.accountKey)")
+        AccountPresentation.visible(l, hidden: model.menubarHidden)
     }
 
     /// Persist a new account-card order via the CLI, optimistically.
     private func persistAccountOrder(_ ids: [String]) {
         model.invalidateRefreshes()
-        model.accountOrderOverride = ids
+        let update = AccountPresentation.quotaReorder(ids, saved: model.accountOrderOverride ?? [],
+            barOrder: model.previewAccountOrder, accounts: model.limits.map(AccountPresentation.id))
+        model.previewAccountOrder = update.bar
+        model.accountOrderOverride = update.quota
         let cli = model.currentInvocation()
         Task {
             do {
-                _ = try await Model.runConfigCLI(cli, ["ui", "--account-order", ids.joined(separator: ",")])
+                _ = try await Model.runConfigCLI(cli, ["ui", "--account-order", update.quota.joined(separator: ","),
+                    "--bar-account-order", update.bar.joined(separator: ",")])
             } catch {
                 FileHandle.standardError.write(Data("[tokitoki] account order save failed: \(error)\n".utf8))
             }

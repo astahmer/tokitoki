@@ -42,5 +42,5 @@ export interface WidgetStatusPayload {
   budgets: WidgetStatusBudget[];
   /** App-layer activity; never added to stats or provider totals. */
   t3codeActivity?: { requests: number; sessions: number; costUsd: number };
-  uiPreview?: { menubarHidden: string[]; previewHidden: string[]; privacyHideIdentities: boolean };
+  uiPreview?: { menubarHidden: string[]; previewHidden: string[]; privacyHideIdentities: boolean; accountOrder?: string[]; barAccountOrder?: string[]; barHiddenAccounts?: string[] };
 }

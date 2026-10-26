@@ -44,6 +44,26 @@ const parseCredits = (raw: string): z.infer<typeof CreditsSchema> | undefined =>
 
 const PolledAccountSchema = z.array(z.object({ provider: z.string(), accountKey: z.string() }));
 const OriginRowSchema = z.object({ origin: z.string().optional() }).nullable();
+const PollErrorSchema = z.object({ at: z.number().finite(), reason: z.string() });
+
+const withPollFailure = (input: { limit: AccountLimits; cache: EventCache }): AccountLimits => {
+  const limit = input.limit;
+  try {
+    const raw = input.cache.metaValue(`quota-poll-error:${limit.provider}@${limit.provider === "codex" ? limit.accountId ?? limit.accountKey : limit.accountKey}`);
+    if (raw === undefined) return limit;
+    const error = PollErrorSchema.parse(JSON.parse(raw));
+    const windows = limit.windows.map((window) => {
+      const observedAt = Date.parse(window.observedAt ?? "");
+      if (Number.isFinite(observedAt) && observedAt >= error.at) return window;
+      return { ...window, status: window.status === "expired" ? "expired" as const : "unknown" as const,
+        usedPct: undefined, usedPercent: undefined, amountUsd: undefined, pace: undefined };
+    });
+    if (windows.every((window, index) => window === limit.windows[index])) return limit;
+    return { ...limit, windows, freshness: "unknown", refreshError: error.reason };
+  } catch {
+    return limit;
+  }
+};
 
 const canonicalCodexAccounts = (input: {
   limits: AccountLimits[];
@@ -308,7 +328,8 @@ export const buildAccountLimits = (input: { cache: EventCache; config: TokitokiC
         : poolIdentity?.email ?? cache.quotaAccountMeta("codex", limit.accountKey)?.email;
       return { ...limit, windows, budgetWindows, accountId, email };
     });
-  return canonicalCodexAccounts({ limits: attributedLimits, cache, now, maxAgeMs }).sort((a, b) => rank(a) - rank(b));
+  return canonicalCodexAccounts({ limits: attributedLimits, cache, now, maxAgeMs })
+    .map((limit) => withPollFailure({ limit, cache })).sort((a, b) => rank(a) - rank(b));
 };
 
 const PaceSchema = z.object({
@@ -354,6 +375,7 @@ const LimitsAccountSchema = z.object({
   credential: z.string().optional(),
   origin: z.string().optional(),
   freshness: z.enum(["fresh", "stale", "unknown"]).optional(),
+  refreshError: z.string().optional(),
   observedAt: z.string().optional(),
   extraUsage: z.object({
     enabled: z.boolean(),
@@ -373,6 +395,7 @@ export const LimitsDocumentSchema = z.object({
   version: z.literal(LIMITS_SCHEMA_VERSION),
   generatedAt: z.string(),
   accounts: z.array(LimitsAccountSchema),
+  accountOrder: z.array(z.string()).optional(),
 });
 
 export type LimitsDocument = z.infer<typeof LimitsDocumentSchema>;
@@ -418,7 +441,7 @@ const vendorRank = (vendor: string): number => {
 };
 
 /** Project card limits onto the versioned document, grouped vendor-first. */
-export const limitsDocument = (input: { limits: AccountLimits[]; now?: Date; showEmail?: boolean }): LimitsDocument => {
+export const limitsDocument = (input: { limits: AccountLimits[]; now?: Date; showEmail?: boolean; accountOrder?: string[] }): LimitsDocument => {
   const accounts = input.limits.map((limit) => {
     const plan = limit.plan ?? limit.planLabel;
     const vendor = vendorForProvider({ provider: limit.provider, accountKey: limit.accountKey });
@@ -436,6 +459,7 @@ export const limitsDocument = (input: { limits: AccountLimits[]; now?: Date; sho
       ...(limit.credential !== undefined ? { credential: limit.credential } : {}),
       ...(limit.origin !== undefined ? { origin: limit.origin } : {}),
       ...(limit.freshness !== undefined ? { freshness: limit.freshness } : {}),
+      ...(limit.refreshError !== undefined ? { refreshError: limit.refreshError } : {}),
       ...(limit.observedAt !== undefined ? { observedAt: limit.observedAt } : {}),
       ...(limit.extraUsage !== undefined ? { extraUsage: limit.extraUsage } : {}),
       ...(limit.balance !== undefined ? { balance: limit.balance } : {}),
@@ -445,12 +469,17 @@ export const limitsDocument = (input: { limits: AccountLimits[]; now?: Date; sho
       ...(limit.budgetWindows !== undefined ? { budgetWindows: limit.budgetWindows.map(documentWindow) } : {}),
     };
   });
-  // Stable sort keeps the user's saved card order within each vendor.
-  accounts.sort((a, b) => vendorRank(a.vendor) - vendorRank(b.vendor) || a.vendor.localeCompare(b.vendor));
+  const saved = input.accountOrder ?? [];
+  const rank = (id: string): number => {
+    const index = saved.indexOf(id);
+    return index < 0 ? saved.length : index;
+  };
+  accounts.sort((a, b) => rank(a.id) - rank(b.id) || vendorRank(a.vendor) - vendorRank(b.vendor) || a.vendor.localeCompare(b.vendor));
   return {
     version: LIMITS_SCHEMA_VERSION,
     generatedAt: (input.now ?? new Date()).toISOString(),
     accounts,
+    accountOrder: saved,
   };
 };
 
@@ -460,7 +489,7 @@ export const readLimitsDocument = (input: { cache?: EventCache; config?: Tokitok
   const now = input.now ?? new Date();
   const build = (cache: EventCache): LimitsDocument => {
     cache.sync(resolveExtraFiles(config));
-    return limitsDocument({ limits: buildAccountLimits({ cache, config, now }), now, showEmail: input.showEmail });
+    return limitsDocument({ limits: buildAccountLimits({ cache, config, now }), now, showEmail: input.showEmail, accountOrder: config.ui?.menubarAccountOrder });
   };
   if (input.cache !== undefined) return build(input.cache);
   const cache = new EventCache();

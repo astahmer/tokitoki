@@ -79,7 +79,7 @@ describe("Codex quota provenance", () => {
     try {
       const keys: string[] = [];
       for (const id of ["personal", "work"]) {
-        const { fetcher } = usageFetcher({ account_id: id, plan_type: "plus", rate_limit: {} });
+        const { fetcher } = usageFetcher({ account_id: id, plan_type: "plus", rate_limit: { primary_window: null, secondary_window: null } });
         const result = await pollQuotas({ ...fixture.options, authPath: authFile({ dir: fixture.dir, id }), fetcher });
         expect(result.accounts[0]?.planType).toBe("plus");
         expect(fixture.cache.quotaAccountMeta("codex", `openai:${id}`)?.plan).toBe("plus");
@@ -119,7 +119,7 @@ describe("Codex quota provenance", () => {
   it("rejects responses from a different account", async () => {
     const fixture = setup();
     try {
-      const { fetcher } = usageFetcher({ account_id: "other", rate_limit: {} });
+      const { fetcher } = usageFetcher({ account_id: "other", rate_limit: { primary_window: null, secondary_window: null } });
       const result = await pollQuotas({ ...fixture.options, authPath: authFile({ dir: fixture.dir, id: "personal" }), fetcher });
       expect(result.accounts).toEqual([]);
       expect(result.reason).toContain("identity does not match");
@@ -136,7 +136,7 @@ describe("Codex quota provenance", () => {
       writeFileSync(pool, JSON.stringify({ work: { credential: { accessToken: "pool", refreshToken: "pool-refresh", chatgptAccountId: "work" } } }));
       writeFileSync(cached, JSON.stringify({ quotas: { work: { updatedAt: NOW - 1000, weeklyPercent: 20 } } }));
       const { fetcher, requests } = routeFetcher({
-        "wham/usage": (request) => request.headers.authorization === "Bearer pool" ? json({}, { status: 401 }) : json({ rate_limit: {} }),
+        "wham/usage": (request) => request.headers.authorization === "Bearer pool" ? json({}, { status: 401 }) : json({ rate_limit: { primary_window: null, secondary_window: null } }),
         "rate-limit-reset-credits": () => json({ available_count: 0 }),
       });
       const result = await pollQuotas({ ...fixture.options, authPath: native, opencodexAccountsPath: pool, opencodexCachePath: cached, fetcher });

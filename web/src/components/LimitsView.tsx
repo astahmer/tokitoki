@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 
-import { Badge, Surface } from "@cloudflare/kumo";
+import { Badge, Button, Surface } from "@cloudflare/kumo";
 
-import { fetchLimits, type LimitsAccount, type LimitsWindow } from "../lib/api";
+import { fetchLimits, saveAccountOrder, saveAccountVisibility, type LimitsAccount, type LimitsWindow } from "../lib/api";
+import { completeAccountOrder, moveAccountOrder } from "../../../src/account-order";
 import { formatCost, humanCount } from "../lib/fmt";
 import { useAsyncStaleWhileRevalidate } from "../lib/useAsync";
 import { EmptyState, Heading, SkeletonBlock } from "../ui";
@@ -92,7 +93,9 @@ function WindowRow({ window, now }: { window: LimitsWindow; now: number }) {
   );
 }
 
-function AccountCard({ account, now }: { account: LimitsAccount; now: number }) {
+function AccountCard({ account, now, moveUp, moveDown }: {
+  account: LimitsAccount; now: number; moveUp?: () => void; moveDown?: () => void;
+}) {
   const title = account.label ?? account.email ?? account.accountKey;
   const harnesses = [account.harness, ...account.alsoOn].join(" · ");
   const extra = account.extraUsage;
@@ -103,12 +106,15 @@ function AccountCard({ account, now }: { account: LimitsAccount; now: number }) 
   return (
     <Surface as="div" className="space-y-3 p-3">
       <div className="flex flex-wrap items-center gap-1.5">
+        <Badge>{account.vendorName}</Badge>
         <span className="truncate text-sm font-medium" title={account.id}>{title}</span>
         {account.plan !== undefined && <Badge variant="primary">{account.plan}</Badge>}
         {account.freshness === "stale" && <Badge variant="warning">stale</Badge>}
         <span className="ml-auto font-mono text-[10px] text-kumo-subtle" title="harnesses reporting this account">
           {harnesses}
         </span>
+        <Button size="sm" variant="secondary" aria-label={`Move ${title} up`} title="Move account up" disabled={!moveUp} onClick={moveUp}>↑</Button>
+        <Button size="sm" variant="secondary" aria-label={`Move ${title} down`} title="Move account down" disabled={!moveDown} onClick={moveDown}>↓</Button>
       </div>
       {account.balance !== undefined && (
         <div className="flex justify-between text-xs">
@@ -150,46 +156,95 @@ function AccountCard({ account, now }: { account: LimitsAccount; now: number }) 
 
 /** Provider quota windows grouped vendor → account → plan → windows. */
 export function LimitsView({ refreshTick, showEmail }: { refreshTick: number; showEmail: boolean }) {
-  const limits = useAsyncStaleWhileRevalidate(() => fetchLimits(showEmail), [refreshTick, showEmail]);
+  const [reload, setReload] = useState(0);
+  const limits = useAsyncStaleWhileRevalidate(() => fetchLimits(showEmail), [refreshTick, showEmail, reload]);
+  const [order, setOrder] = useState<string[] | undefined>();
+  const [showHidden, setShowHidden] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [orderError, setOrderError] = useState("");
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 30_000);
     return () => clearInterval(timer);
   }, []);
 
-  const vendors = useMemo(() => {
+  useEffect(() => { setOrder(undefined); }, [refreshTick, showEmail]);
+  const accounts = useMemo(() => {
     if (limits.state !== "ok") return [];
-    const grouped = new Map<string, LimitsAccount[]>();
-    for (const account of limits.data.accounts) {
-      grouped.set(account.vendor, [...(grouped.get(account.vendor) ?? []), account]);
-    }
-    return [...grouped.entries()];
-  }, [limits]);
+    const saved = order ?? limits.data.accountOrder ?? [];
+    const rank = (id: string) => { const index = saved.indexOf(id); return index < 0 ? saved.length : index; };
+    return limits.data.accounts.slice().sort((a, b) => rank(a.id) - rank(b.id));
+  }, [limits, order]);
+
+  const preferences = limits.state === "ok" ? limits.data.uiPreview : undefined;
+  const globallyHidden = (a: LimitsAccount) => (preferences?.menubarHidden ?? []).some((entry) => {
+    const at = entry.indexOf(":");
+    return at < 0 ? entry === a.harness : entry.slice(0, at) === a.harness && a.accountKey.endsWith(entry.slice(at + 1));
+  });
+  const visibleAccounts = accounts.filter((a) => !globallyHidden(a));
+  const hiddenAccounts = accounts.filter(globallyHidden);
+  const barOrder = preferences?.barAccountOrder ?? (limits.state === "ok" ? limits.data.accountOrder ?? [] : []);
+  const barAccounts = visibleAccounts.filter((a) => !(preferences?.barHiddenAccounts ?? []).includes(a.id) && !(preferences?.previewHidden ?? []).includes(a.vendor)).slice().sort((a, b) => {
+    const rank = (id: string) => { const index = barOrder.indexOf(id); return index < 0 ? barOrder.length : index; };
+    return rank(a.id) - rank(b.id);
+  });
+  async function saveVisibility(id: string, preference: { hidden?: boolean; barHidden?: boolean }) {
+    if (saving) return;
+    setSaving(true); setOrderError("");
+    try { await saveAccountVisibility(id, preference); setReload((value) => value + 1); }
+    catch (error) { setOrderError(error instanceof Error ? error.message : String(error)); }
+    finally { setSaving(false); }
+  }
+  async function moveBarAccount(id: string, direction: -1 | 1) {
+    if (saving) return;
+    const next = moveAccountOrder({ saved: barOrder, accounts: accounts.map((a) => a.id), visible: barAccounts.map((a) => a.id), id, direction });
+    if (!next) return;
+    setSaving(true); setOrderError("");
+    try { await saveAccountOrder(next, true); setReload((value) => value + 1); }
+    catch (error) { setOrderError(error instanceof Error ? error.message : String(error)); }
+    finally { setSaving(false); }
+  }
+
+  async function moveAccount(id: string, direction: -1 | 1) {
+    if (saving || limits.state !== "ok") return;
+    const next = moveAccountOrder({ saved: order ?? limits.data.accountOrder ?? [], accounts: limits.data.accounts.map((a) => a.id), visible: visibleAccounts.map((a) => a.id), id, direction });
+    if (next === undefined) return;
+    setSaving(true);
+    setOrderError("");
+    try {
+      await saveAccountOrder(next, false, completeAccountOrder(barOrder, accounts.map((a) => a.id)));
+      setOrder(next);
+      setReload((value) => value + 1);
+    } catch (error) { setOrderError(error instanceof Error ? error.message : String(error)); }
+    finally { setSaving(false); }
+  }
 
   return (
     <Surface as="section" className="mb-4 p-4">
-      <Heading>limits · provider quotas per vendor and account</Heading>
+      <Heading>limits · provider quotas per account</Heading>
+      <p className="mb-3 text-xs text-kumo-subtle">Reorder quota cards and the bar independently. Hide an account everywhere or only on the bar.</p>
+      {orderError && <p role="alert" className="text-xs text-kumo-danger">{orderError}</p>}
+      {hiddenAccounts.length > 0 && <div className="mb-3">
+        <Button size="sm" onClick={() => setShowHidden((value) => !value)} aria-expanded={showHidden}>Hidden quotas ({hiddenAccounts.length})</Button>
+        {showHidden && hiddenAccounts.map((a) => <div key={a.id} className="flex items-center gap-2 py-1"><span>{a.label ?? a.accountKey}</span><Button size="sm" disabled={saving} onClick={() => void saveVisibility(a.id, { hidden: false })}>{(preferences?.menubarHidden ?? []).includes(a.harness) ? `Restore all ${a.harness} accounts` : "Restore"}</Button></div>)}
+      </div>}
+      {barAccounts.length > 0 && <details className="mb-3"><summary>Bar order</summary>{barAccounts.map((a, index) => <div key={a.id} className="flex items-center gap-2 py-1"><span>{a.label ?? a.accountKey}</span><Button size="sm" disabled={saving || index === 0} onClick={() => void moveBarAccount(a.id, -1)}>←</Button><Button size="sm" disabled={saving || index === barAccounts.length - 1} onClick={() => void moveBarAccount(a.id, 1)}>→</Button></div>)}</details>}
       {limits.state === "loading" ? (
         <SkeletonBlock className="h-40" />
       ) : limits.state === "error" ? (
         <p className="text-xs text-kumo-danger">{limits.error}</p>
-      ) : vendors.length === 0 ? (
+      ) : accounts.length === 0 ? (
         <EmptyState message={"no accounts detected yet\nrun `tokitoki scan` for usage, then `tokitoki poll` for provider-reported quotas"} />
       ) : (
-        <div className="space-y-5">
-          {vendors.map(([vendor, accounts]) => (
-            <div key={vendor}>
-              <div className="mb-2 flex items-baseline gap-2">
-                <h2 className="text-sm font-semibold">{accounts[0]?.vendorName ?? vendor}</h2>
-                <span className="text-[11px] text-kumo-subtle">
-                  {accounts.length} account{accounts.length === 1 ? "" : "s"}
-                </span>
-              </div>
-              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-                {accounts.map((account) => <AccountCard key={account.id} account={account} now={now} />)}
-              </div>
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+          {visibleAccounts.map((account, index) => <div key={account.id}><AccountCard account={account} now={now}
+            moveUp={!saving && index > 0 ? () => void moveAccount(account.id, -1) : undefined}
+            moveDown={!saving && index < visibleAccounts.length - 1 ? () => void moveAccount(account.id, 1) : undefined} />
+            <div className="flex gap-2 py-1">
+              <Button size="sm" disabled={saving} onClick={() => void saveVisibility(account.id, { hidden: true })}>Hide everywhere</Button>
+              <Button size="sm" disabled={saving} onClick={() => void saveVisibility(account.id, { barHidden: !(preferences?.barHiddenAccounts ?? []).includes(account.id) })}>{(preferences?.barHiddenAccounts ?? []).includes(account.id) ? "Show on bar" : "Hide from bar"}</Button>
             </div>
-          ))}
+          </div>)}
         </div>
       )}
     </Surface>

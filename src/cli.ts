@@ -20,6 +20,7 @@ import {
   setMenubarProviders,
   setMenubarCards,
   setMenubarAccountOrder,
+  setPreviewAccountOrder,
   setMenubarTabs,
   MENUBAR_TABS,
   setPollEnabled,
@@ -472,7 +473,7 @@ export async function main(argv: string[]): Promise<void> {
       case "reindex": runReindex(parsed); break;
       case "anomalies": runAnomalies(parsed); break;
       case "budgets": runBudgets(parsed); break;
-      case "widget-payload": await refreshWidgetStatusIncidents(parsed); runWidgetPayload(parsed); break;
+      case "widget-payload": await refreshWidgetStatusIncidents(parsed); await runWidgetPayload(parsed); break;
       case "limits": runLimits(parsed); break;
       case "serve": runServe(parsed); break;
       case "notify": runNotify(parsed); break;
@@ -509,7 +510,7 @@ export async function main(argv: string[]): Promise<void> {
 const KNOWN_FLAGS: Record<string, string[]> = {
   "widget-payload": ["cached", "skip-scan", "notify", "json"],
   notify: ["dry-run", "json"],
-  ui: ["list", "hide", "show", "surface", "menubar-only", "card-set", "account-order", "tabs"],
+  ui: ["list", "hide", "show", "surface", "menubar-only", "card-set", "account-order", "bar-account-order", "tabs"],
   limits: ["json", "show-email", "show-emails"],
   serve: ["port", "host"],
   scan: ["provider", "if-needed"],
@@ -2374,7 +2375,7 @@ function widgetPayloadTokens(row: WidgetPayloadMetricRow): number {
     numericWidgetPayloadValue(row.cacheWriteTokens);
 }
 
-function runWidgetPayload(parsed: ParsedInvocation): void {
+async function runWidgetPayload(parsed: ParsedInvocation): Promise<void> {
   if (!flagBool(parsed, "json")) {
     throw new UserError(
       "the widget-payload contract is JSON-only",
@@ -2388,6 +2389,22 @@ function runWidgetPayload(parsed: ParsedInvocation): void {
   const readOnlyPayload = flagBool(parsed, "cached");
   const skipScan = flagBool(parsed, "skip-scan");
   widgetPayloadReadOnly = readOnlyPayload;
+  const config = loadConfig();
+  if (!readOnlyPayload && config.poll?.enabled === true) {
+    const now = Date.now();
+    const lastAttempt = Number(payloadCache.metaValue("widget_quota_poll_at") ?? 0);
+    const intervalMs = Math.max(1, config.poll.intervalMinutes ?? 15) * 60_000;
+    if (!Number.isFinite(lastAttempt) || now - lastAttempt >= intervalMs) {
+      payloadCache.setMetaValue("widget_quota_poll_at", String(now));
+      await pollQuotas({
+        cache: payloadCache,
+        manualKeys: gatewayExtraKeys(config).filter((key) => key.key.length > 0)
+          .map((key) => ({ id: key.id, provider: key.provider, key: key.key })),
+        providerKeys: providerPollKeys(config),
+        ...(config.poll.zaiRegion !== undefined ? { zaiRegion: config.poll.zaiRegion } : {}),
+      });
+    }
+  }
   // Sequential single-process composition: the menu bar previously spawned
   // 7 CLIs at once (~1GB RSS each) and thrashed memory.
   // Ingest changed harness stores before any report is composed. This is
@@ -2594,6 +2611,9 @@ function runWidgetPayload(parsed: ParsedInvocation): void {
             ...PROVIDERS.filter((provider) => provider.id === "cursor" && provider.discoverRoots().some((root) => provider.listFiles(root).length > 0)).map((provider) => provider.id),
           ])].sort(),
           menubarHidden: config.ui?.hidden?.widget ?? config.ui?.hidden?.menubar ?? config.ui?.hidden?.bar ?? [],
+          accountOrder: config.ui?.menubarAccountOrder ?? [],
+          barAccountOrder: config.ui?.previewAccountOrder ?? config.ui?.menubarAccountOrder ?? [],
+          barHiddenAccounts: config.ui?.previewHiddenAccounts ?? [],
           previewHidden: config.ui?.previewHidden ?? [],
           stripMetric: config.ui?.stripMetric ?? "percent",
           stripExhausted: config.ui?.stripExhausted ?? "reset",
@@ -2777,8 +2797,15 @@ function runUi(parsed: ParsedInvocation): void {
     return;
   }
   const accountOrder = flagString(parsed, "account-order");
+  const barAccountOrder = flagString(parsed, "bar-account-order");
+  if (barAccountOrder !== undefined && accountOrder === undefined) {
+    setPreviewAccountOrder(barAccountOrder.split(",").map((s) => s.trim()).filter(Boolean));
+    console.log("bar account order saved");
+    return;
+  }
   if (accountOrder !== undefined) {
-    setMenubarAccountOrder(accountOrder.split(",").map((s) => s.trim()).filter(Boolean));
+    setMenubarAccountOrder(accountOrder.split(",").map((s) => s.trim()).filter(Boolean),
+      barAccountOrder?.split(",").map((s) => s.trim()).filter(Boolean));
     console.log("account order saved");
     return;
   }

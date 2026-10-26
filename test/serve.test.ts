@@ -120,8 +120,8 @@ describe("tokitoki serve", () => {
     expect((await fetch(`${base}/v1/nope`)).status).toBe(404);
   });
 
-  test("refuses non-loopback Host headers when bound to loopback (DNS rebinding)", () => {
-    const res = handleLocalApiRequest(new Request("http://evil.example:6736/v1/status"), { loopbackOnly: true, appVersion: "test" });
+  test("refuses non-loopback Host headers when bound to loopback (DNS rebinding)", async () => {
+    const res = await handleLocalApiRequest(new Request("http://evil.example:6736/v1/status"), { loopbackOnly: true, appVersion: "test" });
     expect(res.status).toBe(403);
     expect(isLoopbackHost("127.0.0.1")).toBe(true);
     expect(isLoopbackHost("::1")).toBe(true);

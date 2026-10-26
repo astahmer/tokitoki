@@ -227,7 +227,7 @@ function decodeJwtPayload(jwt: string): Record<string, unknown> | null {
 }
 
 const whamWindowSchema = z.object({
-  used_percent: z.number().finite().optional(),
+  used_percent: z.number().finite(),
   reset_at: z.number().finite().optional(),
   resets_at: z.number().finite().optional(),
   limit_window_seconds: z.number().finite().optional(),
@@ -237,7 +237,7 @@ const whamRateLimitSchema = z.object({
   secondary_window: whamWindowSchema.nullish(),
   tertiary_window: whamWindowSchema.nullish(),
   credits: z.unknown().optional(),
-});
+}).refine((value) => [value.primary_window, value.secondary_window, value.tertiary_window].some((window) => window !== undefined));
 const whamUsageSchema = z.object({
   account_id: z.string().optional(),
   accountId: z.string().optional(),
@@ -249,9 +249,10 @@ const whamUsageSchema = z.object({
     limit_id: z.string().optional(),
     limit_name: z.string().optional(),
     metered_feature: z.string().optional(),
-    rate_limit: whamRateLimitSchema.nullish(),
+    rate_limit: whamRateLimitSchema.nullable(),
   })).nullish(),
-});
+}).refine((value) => value.rate_limit !== undefined || value.code_review_rate_limit !== undefined ||
+  (value.additional_rate_limits ?? []).some((bucket) => bucket.rate_limit !== undefined));
 type WhamUsageResponse = z.infer<typeof whamUsageSchema>;
 
 function parsePolledCredits(raw: unknown): { hasCredits: boolean; unlimited: boolean; balance: string; expiresAt?: string } | undefined {
@@ -648,7 +649,7 @@ async function refreshClaudeToken(
 }
 
 const ClaudeUsageWindowSchema = z.object({
-  utilization: z.number().nullish(),
+  utilization: z.number().finite(),
   resets_at: z.string().nullish(),
 }).nullish();
 
@@ -694,6 +695,7 @@ export const parseClaudeUsage = (body: unknown): { windows: PolledWindow[]; extr
   const parsed = ClaudeUsageSchema.safeParse(body);
   if (!parsed.success) return undefined;
   const usage = parsed.data;
+  if (![usage.five_hour, usage.seven_day, usage.seven_day_opus, usage.seven_day_sonnet].some((window) => window !== undefined)) return undefined;
   const spec: Array<{ window: z.infer<typeof ClaudeUsageWindowSchema>; minutes: number; windowId: string; scope: "session" | "weekly" | "model"; model?: string }> = [
     { window: usage.five_hour, minutes: 300, windowId: "five_hour", scope: "session" },
     { window: usage.seven_day, minutes: 10_080, windowId: "seven_day", scope: "weekly" },
@@ -877,7 +879,7 @@ async function pollClaudeQuotas(opts: PollOptions, fetcher: typeof fetch): Promi
     capturedAtIso,
     eventId: `poll:${capturedAtIso}:claude`,
   }) ?? 0;
-  return usage.windows.length === 0 ? { ...result, error: "no usable windows in response" } : result;
+  return result;
 }
 
 /** github.com oauth_token from ~/.config/github-copilot/apps.json (newer) or hosts.json. */
@@ -1056,6 +1058,7 @@ async function pollCommandCodeQuotas(
   const inserted = opts.cache?.insertPolledSnapshots({
     provider: "commandcode",
     accountKey: "default",
+    complete: windows.length > 0,
     windows,
     capturedAtIso,
     eventId: `poll:${capturedAtIso}:commandcode`,
@@ -1147,6 +1150,7 @@ async function pollCopilotQuotas(opts: PollOptions, fetcher: typeof fetch, now: 
   const inserted = opts.cache?.insertPolledSnapshots({
     provider: "copilot",
     accountKey: "default",
+    complete: windows.length > 0,
     windows,
     capturedAtIso,
     eventId: `poll:${capturedAtIso}:copilot`,
@@ -1599,6 +1603,7 @@ async function pollWithBackoff(input: {
   if (typeof outcome === "string" && next?.holdUntil !== undefined) {
     return `${outcome}; temporarily holding until ${new Date(next.holdUntil).toISOString()}`;
   }
+  if (typeof outcome !== "string" && outcome.error !== undefined) return outcome.error;
   return outcome;
 }
 
@@ -1633,8 +1638,18 @@ async function pollQuotasLocked(opts: PollOptions = {}): Promise<PollResult> {
   const reasons: string[] = [];
   const authRequiredProviders = new Set<string>();
   const providerAuthStates = new Map<string, "login-required" | "api-key-required" | "temporarily-unavailable">();
-  const addReason = (provider: string, reason: string): void => {
+  const addReason = (provider: string, reason: string, identity?: { accountId?: string; pairs?: Array<[string, string]> }): void => {
     reasons.push(`${provider}: ${reason}`);
+    const pairs = identity?.pairs ?? (provider === "codex" ? []
+      : provider === "openrouter" ? [["pi", "openrouter"]]
+      : provider === "opencode-go" ? [["pi", "opencode-go"], ["opencode", "opencode-go"]]
+      : [[provider, "default"]]);
+    const keys = provider === "codex"
+      ? [`quota-poll-error:codex${identity?.accountId !== undefined ? `@${identity.accountId}` : ""}`]
+      : pairs.map(([persistedProvider, accountKey]) => `quota-poll-error:${persistedProvider}@${accountKey}`);
+    for (const key of keys) {
+      opts.cache?.setMetaValue(key, JSON.stringify({ at: opts.now ?? Date.now(), reason }));
+    }
     const state = authStateFor(provider, reason);
     if (state !== undefined) {
       for (const cardProvider of authRequiredCardProviders(provider)) {
@@ -1655,12 +1670,16 @@ async function pollQuotasLocked(opts: PollOptions = {}): Promise<PollResult> {
 
   // --- codex (ChatGPT wham/usage, OAuth) --------------------------------
   if (providerEnabled("codex")) {
+    const auth = loadAuth(opts);
+    const claims = z.object({ "https://api.openai.com/auth": z.object({ chatgpt_account_id: z.string().optional() }).optional() })
+      .safeParse(decodeJwtPayload(auth?.tokens?.id_token ?? ""));
+    const accountId = auth?.tokens?.account_id ?? (claims.success ? claims.data["https://api.openai.com/auth"]?.chatgpt_account_id : undefined);
     try {
       const codex = await pollCodexQuotas(opts);
-      if (typeof codex === "string") addReason("codex", codex);
+      if (typeof codex === "string") addReason("codex", codex, { accountId });
       else accounts.push(codex);
     } catch (e) {
-      addReason("codex", String(e));
+      addReason("codex", String(e), { accountId });
     }
   }
 
@@ -1807,9 +1826,9 @@ async function pollQuotasLocked(opts: PollOptions = {}): Promise<PollResult> {
     if (mk.provider === "openrouter") {
       const r = await pollOpenRouter(mk.key, fetcher);
       if (r.error !== undefined) {
-        addReason(mk.provider, `${mk.id}: ${r.error}`);
+        addReason(mk.provider, `${mk.id}: ${r.error}`, { pairs: [["openrouter", mk.id]] });
       } else if (r.skip !== undefined) {
-        addReason(mk.provider, `${mk.id}: ${r.skip}`);
+        addReason(mk.provider, `${mk.id}: ${r.skip}`, { pairs: [["openrouter", mk.id]] });
       } else {
         if (r.balance !== undefined) storeAccountMeta({ cache, provider: "openrouter", accountKey: mk.id, meta: { balance: r.balance } });
         accounts.push({
@@ -1824,7 +1843,7 @@ async function pollQuotasLocked(opts: PollOptions = {}): Promise<PollResult> {
     }
     const r = await pollOpencodeGo(mk.key, fetcher);
     if (r.error !== undefined) {
-      addReason(mk.provider, `${mk.id}: ${r.error}`);
+      addReason(mk.provider, `${mk.id}: ${r.error}`, { pairs: [["pi", mk.id], ["opencode", mk.id]] });
       continue;
     }
     accounts.push({
@@ -1873,7 +1892,7 @@ async function pollQuotasLocked(opts: PollOptions = {}): Promise<PollResult> {
         false,
       ).catch(() => "usage fetch failed; temporarily unavailable");
       if (typeof result === "string") {
-        addReason("codex", `${accountKey}: ${result}`);
+        addReason("codex", `${accountKey}: ${result}`, { accountId: poolAccountId });
       } else {
         accounts.push({ ...result, harnesses: ["opencodex"] });
       }
@@ -1917,7 +1936,7 @@ async function pollQuotasLocked(opts: PollOptions = {}): Promise<PollResult> {
     });
   }
 
-  const ok = accounts.some((a) => a.windows.length > 0 || a.balance !== undefined);
+  const ok = accounts.some((a) => (a.error === undefined && a.deferredUntil === undefined) || a.windows.length > 0 || a.balance !== undefined);
   return {
     ok,
     reason: ok ? undefined : reasons.join("; ") || "no provider returned quota data",
@@ -1993,6 +2012,11 @@ async function pollCodexCredential(
   const accountKey = accountKeyOverride ?? `openai:${accountId}`;
   const capturedAtIso = new Date(opts.now ?? Date.now()).toISOString();
   const windows = parseWindows(res.body, capturedAtIso);
+  // Missing slots describe only a partial observation; explicit null retires a slot.
+  const buckets = [res.body.rate_limit, res.body.code_review_rate_limit,
+    ...(res.body.additional_rate_limits ?? []).map((bucket) => bucket.rate_limit)];
+  const complete = res.body.rate_limit !== undefined && buckets.every((bucket) => bucket === undefined || bucket === null ||
+    (bucket.primary_window !== undefined && bucket.secondary_window !== undefined));
   let credits = parsePolledCredits(res.body.rate_limit?.credits);
   if (credits === undefined || !credits.hasCredits || Number(credits.balance) <= 0) {
     credits = await fetchCodexResetCredits(access, accountId, fetcher) ?? credits;
@@ -2020,11 +2044,17 @@ async function pollCodexCredential(
       provider: "codex",
       accountKey,
       accountId,
+      complete,
       windows,
       credits,
       capturedAtIso,
       eventId: `poll:${capturedAtIso}${eventIdSuffix ?? ""}`,
     });
+    if (!complete) {
+      cache.setMetaValue(`quota-poll-error:codex@${accountId}`, JSON.stringify({
+        at: Date.parse(capturedAtIso), reason: "partial quota response; omitted windows are unknown",
+      }));
+    }
   }
   return result;
 }

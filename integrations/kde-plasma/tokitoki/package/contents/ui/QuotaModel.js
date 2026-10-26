@@ -42,21 +42,41 @@ function windows(a, shortest, now) {
     candidates.sort(function(a, b) { return duration(a) - duration(b) })
     return candidates.length ? [candidates[0]] : rows.slice(0, 1)
 }
-function accounts(doc, selected, hide, ui) {
+function globallyHidden(a, ui) {
+    return ((ui || {}).menubarHidden || []).some(function(entry) {
+        var index = entry.indexOf(":")
+        return index < 0 ? entry === a.harness : entry.slice(0, index) === a.harness && a.accountKey.endsWith(entry.slice(index + 1))
+    })
+}
+function accounts(doc, selected, hide, ui, surface) {
     ui = ui || {}
     hide = hide || ui.privacyHideIdentities
     var ids = selected.split(",").map(function(v) { return v.trim() }).filter(Boolean)
-    return (doc.accounts || []).filter(function(a) {
-        var hidden = (ui.menubarHidden || []).some(function(entry) {
-            var index = entry.indexOf(":")
-            return index < 0 ? entry === a.harness : entry.slice(0, index) === a.harness && a.accountKey.endsWith(entry.slice(index + 1))
-        }) || (ui.previewHidden || []).indexOf(a.vendor) >= 0
+    var saved = surface === "cards" || surface === "all" ? (doc.accountOrder || []) : (ui.barAccountOrder || doc.accountOrder || [])
+    var ordered = (doc.accounts || []).slice().sort(function(a, b) {
+        var left = saved.indexOf(a.id), right = saved.indexOf(b.id)
+        return (left < 0 ? saved.length : left) - (right < 0 ? saved.length : right)
+    })
+    return ordered.filter(function(a) {
+        var hidden = surface !== "all" && (globallyHidden(a, ui) || (surface !== "cards" && ((ui.previewHidden || []).indexOf(a.vendor) >= 0 || (ui.barHiddenAccounts || []).indexOf(a.id) >= 0)))
         return !hidden && (!ids.length || ids.indexOf(a.id) >= 0)
     }).map(function(a) {
         var copy = Object.assign({}, a)
         copy.name = hide ? a.vendorName : (a.label || a.accountKey)
         return copy
     })
+}
+function moveOrder(doc, visible, id, direction) {
+    var ids = visible.map(function(a) { return a.id })
+    var index = ids.indexOf(id)
+    var neighbour = ids[index + direction]
+    if (index < 0 || !neighbour) return null
+    var saved = (doc.accountOrder || []).slice()
+    ;(doc.accounts || []).forEach(function(a) { if (saved.indexOf(a.id) < 0) saved.push(a.id) })
+    var from = saved.indexOf(id), to = saved.indexOf(neighbour)
+    saved[from] = neighbour
+    saved[to] = id
+    return saved
 }
 function logo(a) {
     return a.vendor === "openai" ? "codex" : a.vendor === "anthropic" ? "claude-code" : a.vendor === "cursor" ? "cursor" : ""

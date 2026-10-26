@@ -86,7 +86,7 @@ function M.vendorName(a)
   return ({openai = "OpenAI", anthropic = "Anthropic", cursor = "Cursor", google = "Google", github = "GitHub"})[vendor] or vendor
 end
 
-function M.accounts(payload, selected, hideIdentities)
+function M.accounts(payload, selected, hideIdentities, surface)
   local result = {}
   local hidden = (payload.uiPreview or {}).previewHidden or {}
   local function contains(list, value)
@@ -104,16 +104,41 @@ function M.accounts(payload, selected, hideIdentities)
   for _, a in ipairs(payload.limits or {}) do
     local id = a.provider .. "@" .. a.accountKey
     local barHidden = (payload.uiPreview or {}).menubarHidden or {}
-    if not contains(hidden, id) and not contains(hidden, M.vendor(a)) and not contains(hidden, a.provider)
-      and not accountHidden(barHidden, a)
+    local globallyHidden = accountHidden(barHidden, a)
+    local stripHidden = contains((payload.uiPreview or {}).barHiddenAccounts or {}, id) or contains(hidden, M.vendor(a)) or contains(hidden, a.provider)
+    if (surface == "all" or (not globallyHidden and (surface == "cards" or not stripHidden)))
       and (#selected == 0 or contains(selected, id)) then
       local copy = table.clone(a)
       copy.id = id
+      copy.globallyHidden = globallyHidden
       copy.name = if hideIdentities then M.vendorName(a) else (a.label or a.accountKey)
       table.insert(result, copy)
     end
   end
+  local preferences = payload.uiPreview or {}
+  local saved = if surface == "cards" or surface == "all" then preferences.accountOrder or {} else preferences.barAccountOrder or preferences.accountOrder or {}
+  -- Keep source order as a stable fallback for accounts added after the saved order.
+  local ranked = {}
+  for index, a in ipairs(result) do ranked[a.id] = table.find(saved, a.id) or (#saved + index) end
+  table.sort(result, function(a, b) return ranked[a.id] < ranked[b.id] end)
   return result
+end
+
+function M.moveOrder(payload, visible, id, direction, bar)
+  local ids = {}
+  for _, a in ipairs(visible) do table.insert(ids, a.id) end
+  local index = table.find(ids, id)
+  local neighbour = if index then ids[index + direction] else nil
+  if not neighbour then return nil end
+  local preferences = payload.uiPreview or {}
+  local saved = table.clone(if bar then preferences.barAccountOrder or preferences.accountOrder or {} else preferences.accountOrder or {})
+  for _, a in ipairs(payload.limits or {}) do
+    local key = a.provider .. "@" .. a.accountKey
+    if not table.find(saved, key) then table.insert(saved, key) end
+  end
+  local from, to = table.find(saved, id), table.find(saved, neighbour)
+  saved[from], saved[to] = saved[to], saved[from]
+  return saved
 end
 
 function M.rows(a, shortest, now)

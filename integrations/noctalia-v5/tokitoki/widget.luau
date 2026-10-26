@@ -3,6 +3,7 @@ local payload = {}
 local refreshing = false
 local lastError = nil
 local lastRefresh = 0
+local firstRead = true
 
 local function accounts()
   return model.accounts(payload, noctalia.getConfig("accounts"), noctalia.getConfig("hide_identities") or (payload.uiPreview or {}).privacyHideIdentities)
@@ -51,7 +52,9 @@ local function refresh()
   if refreshing then return end
   refreshing = true
   lastRefresh = noctalia.nowMs()
-  local accepted = noctalia.runAsync({noctalia.getConfig("executable"), "widget-payload", "--cached", "--json"}, function(result)
+  local readFlag = if firstRead then "--cached" else "--skip-scan"
+  firstRead = false
+  local accepted = noctalia.runAsync({noctalia.getConfig("executable"), "widget-payload", readFlag, "--json"}, function(result)
     refreshing = false
     if result.exitCode ~= 0 then
       lastError = if result.stderr ~= "" then result.stderr else "Tokitoki could not refresh"
@@ -81,3 +84,8 @@ end
 function onClick() noctalia.togglePanel("tokitoki/usage:details") end
 function onRightClick() noctalia.openSettings() end
 function onMiddleClick() refresh() end
+
+noctalia.state.watch("payload", function(value)
+  payload = value or {}
+  render()
+end)

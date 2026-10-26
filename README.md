@@ -744,6 +744,38 @@ fires once per period.
   an orange badge and an explicit recovery action; right-clicking a provider
   exposes the same actions without opening the popover.
 
+Quota cards and the bar have separate account orders. The up/down arrows on a
+card reorder Quotas; the arrows on its **Bar** row reorder the bar. Its bar eye
+switch leaves the quota card visible, while the header eye hides the account
+globally. Expand **Hidden accounts** to restore it. Restoring a provider-wide
+hide explicitly restores all accounts of that provider.
+
+These preferences use `ui.menubarAccountOrder`, `ui.previewAccountOrder` and
+`ui.previewHiddenAccounts` (`provider@accountKey` IDs). For example:
+
+```sh
+tokitoki ui --account-order 'codex@work,codex@personal'
+tokitoki ui --bar-account-order 'codex@personal,codex@work'
+tokitoki config set ui.previewHiddenAccounts '["codex@work"]'
+```
+
+DMS/Quickshell first show the saved payload, then refresh without rescanning
+sources unless requested. Live payload reads poll quotas when `poll.enabled`
+is true, respecting `poll.intervalMinutes` and provider backoff. Failed or
+incomplete observations preserve the account with an explicit unknown/stale
+state; a verified empty provider response can remove its previous windows.
+
+For a linked development plugin, build the matching CLI with
+`nix build .#tokitoki -o result` and set the plugin's executable path to the
+absolute `result/bin/tokitoki` path. Reload with
+`dms ipc call plugins reload tokitoki`. Clear the executable override to return
+to the system CLI; reloading QML alone does not replace that installed package.
+
+The local HTTP adapters expose `POST /v1/ui/account-order` (`ids`, optional
+`barIds` to preserve the first bar baseline), `POST /v1/ui/bar-account-order`
+(`ids`), and `POST /v1/ui/account-visibility` (`id`, `hidden` and/or `barHidden`).
+These accept JSON and reject cross-origin browser requests.
+
 Menubar notification preferences are stored in a top-level `[notifications]`
 section:
 

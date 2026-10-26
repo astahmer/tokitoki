@@ -4,6 +4,8 @@ set -eu
 fixture_dir="${E2E_FIXTURE_DIR:-/opt/e2e/fixtures}"
 command_log="${E2E_COMMAND_LOG:-/out/cli-invocations.jsonl}"
 date_shift="${E2E_DATE_SHIFT_SECONDS:-0}"
+prefs="${E2E_UI_PREFS:-/out/ui-prefs.json}"
+[ -f "$prefs" ] || jq '[.limits[] | .provider + "@" + .accountKey] as $order | {accountOrder:$order, barHiddenAccounts:[], menubarHidden:[]}' "$fixture_dir/payload.json" > "$prefs"
 subcommand="${1:-}"
 [ "$#" -gt 0 ] && shift
 
@@ -18,7 +20,56 @@ rebase_dates() {
 
 case "$subcommand" in
   widget-payload)
-    exec jq --argjson offset "$date_shift" -f /opt/e2e/rebase-dates.jq "$fixture_dir/payload.json"
+    mode=valid
+    if [ -f /out/refresh-next ]; then
+      mode=$(cat /out/refresh-next)
+      rm /out/refresh-next
+    fi
+    printf '%s\n' "$mode" >> /out/refresh-results.log
+    if [ "$mode" = failed ]; then
+      printf '{"schema":1,"app":"tokitoki","limits":[]}\n'
+      echo 'e2e injected failed refresh' >&2
+      exit 17
+    fi
+    jq --slurpfile prefs "$prefs" --arg mode "$mode" '
+      .uiPreview += $prefs[0]
+      | if $mode == "null" then .limits = null
+        elif $mode == "empty" then .limits = [] else . end
+    ' "$fixture_dir/payload.json" | rebase_dates
+    ;;
+  ui)
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --account-order|--bar-account-order)
+          key=accountOrder
+          [ "$1" = --bar-account-order ] && key=barAccountOrder
+          jq --arg key "$key" --arg order "$2" '.[$key] = ($order | split(","))' "$prefs" > "$prefs.next"
+          shift 2
+          ;;
+        --hide|--show)
+          jq --arg action "$1" --arg target "$2" '
+            .menubarHidden = ((.menubarHidden // []) | map(select(. != $target)))
+            | if $action == "--hide" then .menubarHidden += [$target] else . end
+          ' "$prefs" > "$prefs.next"
+          shift 2
+          ;;
+        --surface) shift 2; continue ;;
+        *) exit 2 ;;
+      esac
+      mv "$prefs.next" "$prefs"
+    done
+    ;;
+  config)
+    if [ "${1:-}" = set ]; then
+      case "${2:-}" in
+        ui.previewHiddenAccounts)
+          jq --argjson hidden "$3" '.barHiddenAccounts = $hidden' "$prefs" > "$prefs.next" ;;
+        notifications.enabled)
+          jq --argjson enabled "$3" '.notificationsEnabled = $enabled' "$prefs" > "$prefs.next" ;;
+        *) cp "$prefs" "$prefs.next" ;;
+      esac
+      mv "$prefs.next" "$prefs"
+    fi
     ;;
   sessions)
     search=""

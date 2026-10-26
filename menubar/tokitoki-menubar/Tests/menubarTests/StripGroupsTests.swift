@@ -482,4 +482,51 @@ import Testing
         #expect(limit.windows.first?.pace?.status == "under")
         #expect(limit.windows.first?.pace?.runsOutAt == nil)
     }
+    @Test func barOrderAndAccountHideAreIndependentOfQuotaCards() throws {
+        let personal = account(provider: "codex", accountKey: "personal", windows: [window(kind: "week", tokens: 1, usedPct: 10)])
+        let work = account(provider: "codex", accountKey: "work", windows: [window(kind: "week", tokens: 1, usedPct: 20)])
+        let claude = account(provider: "claude-code", accountKey: "default", windows: [window(kind: "week", tokens: 1, usedPct: 30)])
+        let accounts = [personal, work, claude]
+        let barOrder = [claude.id, work.id, personal.id]
+        let groups = Model.stripGroups(from: accounts, metric: "percent", previewHidden: [],
+            previewAccountOrder: barOrder, previewHiddenAccounts: [personal.id])
+        #expect(groups.map(\.provider) == ["claude", "openai"])
+        #expect(groups.map(\.lines) == [["70%"], ["80%"]])
+        #expect(AccountPresentation.ordered(accounts, order: []).map(\.id) == accounts.map(\.id))
+        #expect(accounts.allSatisfy { AccountPresentation.visible($0, hidden: []) })
+        let cfg = try JSONDecoder().decode(UiPreviewConfig.self, from: Data("""
+        {"accountOrder":["codex@personal","codex@work","claude-code@default"],
+         "barAccountOrder":["claude-code@default","codex@work","codex@personal"],
+         "barHiddenAccounts":["codex@personal"]}
+        """.utf8))
+        #expect(Model.previewText(accounts, cfg: cfg) == "70% · 80%")
+        #expect(Model.previewText(accounts, cfg: cfg, menubarHidden: ["codex"]) == "70%")
+        #expect(Model.stripGroups(from: accounts, metric: "percent", previewHidden: [],
+            menubarHidden: ["codex"], previewAccountOrder: barOrder).map(\.provider) == ["claude"])
+    }
+
+    @Test func previewFallsBackToQuotaOrderOnlyWhenBarOrderIsAbsent() throws {
+        let accounts = [
+            account(provider: "codex", accountKey: "a", windows: [window(kind: "week", tokens: 1, usedPct: 10)]),
+            account(provider: "codex", accountKey: "b", windows: [window(kind: "week", tokens: 1, usedPct: 20)]),
+        ]
+        let legacy = try JSONDecoder().decode(UiPreviewConfig.self, from: Data("{\"accountOrder\":[\"codex@b\",\"codex@a\"]}".utf8))
+        #expect(Model.previewText(accounts, cfg: legacy) == "80% · 90%")
+        let empty = try JSONDecoder().decode(UiPreviewConfig.self, from: Data("{\"accountOrder\":[\"codex@b\"],\"barAccountOrder\":[]}".utf8))
+        #expect(Model.previewText(accounts, cfg: empty) == "90% · 80%")
+    }
+
+    @Test func barArrowsMoveHarnessAccountsAsTheirRenderedUpstreamGroup() {
+        let a = account(provider: "codex", accountKey: "a", windows: [window(kind: "week", tokens: 1, usedPct: 10)])
+        let b = account(provider: "claude-code", accountKey: "b", windows: [window(kind: "week", tokens: 1, usedPct: 20)])
+        let c = account(provider: "t3code", accountKey: "openai-c", windows: [window(kind: "week", tokens: 1, usedPct: 30)])
+        let accounts = [a, b, c]
+        let moved = AccountPresentation.moveBar(c.id, direction: 1, saved: accounts.map(\.id),
+            accounts: accounts, visible: accounts, group: Model.upstreamProvider)
+        let groups = Model.stripGroups(from: accounts, metric: "percent", previewHidden: [], previewAccountOrder: moved)
+        #expect(moved == [b.id, a.id, c.id])
+        #expect(groups.map(\.provider) == ["claude", "openai"])
+        #expect(groups.map(\.lines) == [["80%"], ["90%", "70%"]])
+    }
+
 }

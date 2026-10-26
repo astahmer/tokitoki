@@ -16,6 +16,7 @@ PluginComponent {
     property string errorText: "Waiting for Tokitoki"
     property string lastError: ""
     property bool scanNextRefresh: false
+    property bool cachedFirstRead: true
     property string searchText: ""
     property string selectedTab: "overview"
     property string selectedPeriod: "today"
@@ -30,10 +31,24 @@ PluginComponent {
     property bool pendingRefresh: false
     property bool pendingScan: false
     property bool statusExited: false
+    property bool refreshActive: true
+    property bool statusStdoutDone: false
+    property bool statusStderrDone: false
+    property int statusExitCode: 0
+    property string statusStdout: ""
+    property string statusStderr: ""
     // The plugin can run ahead of the installed CLI (e.g. a linked checkout);
     // drop --notify for this session instead of failing every refresh.
     property bool notifySupported: true
-    property bool notifyRejected: false
+    property var accountOrderOverride: null
+    property var barAccountOrderOverride: null
+    property var barHiddenOverride: null
+    property var pendingBarHidden: []
+    property bool hiddenAccountsExpanded: false
+    property string pendingOrderSurface: "quotas"
+    property var pendingAccountOrder: []
+    property var pendingBarOrderSeed: []
+    readonly property bool accountOrderBusy: accountOrderProcess.running
     readonly property string barSummaryMode: root.pluginSetting("barSummaryMode", "summary")
     readonly property string barTotalPeriod: root.normalizeChoice(
         root.pluginSetting("barTotalPeriod", "day"),
@@ -53,7 +68,7 @@ PluginComponent {
     )
 
     readonly property bool hasPayload: payload && payload.schema === 1 && payload.app === "tokitoki"
-    readonly property bool isBusy: statusProcess.running
+    readonly property bool isBusy: refreshActive
     readonly property bool hasLimits: hasPayload && Array.isArray(payload.limits) && payload.limits.length > 0
     readonly property bool hasHistory: Boolean(hasPayload && payload.history &&
         Array.isArray(payload.history.days) && payload.history.days.length > 0)
@@ -795,9 +810,114 @@ PluginComponent {
     function filteredLimits() {
         if (!hasLimits)
             return []
-        return payload.limits.filter(function(account) {
+        return orderedAccounts().filter(function(account) {
             return matchesAccount(account) && !root.accountCardHidden(account.provider, account.accountKey)
         })
+    }
+
+    function hiddenLimits() {
+        return orderedAccounts().filter(function(account) {
+            return matchesAccount(account) && root.accountCardHidden(account.provider, account.accountKey)
+        })
+    }
+
+    function restoreAccountLabel(account) {
+        var hidden = (payload.uiPreview || {}).menubarHidden || []
+        return hidden.indexOf(account.provider) >= 0
+            ? "Restore all " + providerName(account.provider) + " accounts" : "Restore this account"
+    }
+
+    function barAccountHidden(account) {
+        var hidden = Array.isArray(barHiddenOverride) ? barHiddenOverride : (payload.uiPreview || {}).barHiddenAccounts || []
+        return hidden.indexOf(account.provider + "@" + account.accountKey) >= 0
+    }
+
+    function setBarAccountHidden(account, hidden) {
+        if (barVisibilityProcess.running)
+            return
+        var ids = Array.isArray(barHiddenOverride) ? barHiddenOverride.slice() : ((payload.uiPreview || {}).barHiddenAccounts || []).slice()
+        var id = account.provider + "@" + account.accountKey
+        ids = ids.filter(function(value) { return value !== id })
+        if (hidden) ids.push(id)
+        pendingBarHidden = ids
+        barVisibilityProcess.running = true
+    }
+
+    function orderedAccounts(surface) {
+        var accounts = Array.isArray(payload.limits) ? payload.limits.slice() : []
+        var ui = payload.uiPreview || {}
+        var override = surface === "bar" ? barAccountOrderOverride : accountOrderOverride
+        var saved = Array.isArray(override) ? override : surface === "bar" ? ui.barAccountOrder || ui.accountOrder || [] : ui.accountOrder || []
+        var rank = function(account) {
+            var index = saved.indexOf(String(account.provider) + "@" + String(account.accountKey))
+            return index < 0 ? saved.length : index
+        }
+        return accounts.sort(function(a, b) { return rank(a) - rank(b) })
+    }
+
+    function shiftedAccountOrder(account, direction, surface) {
+        if (surface === "bar") return shiftedBarAccountOrder(account, direction)
+        var visibleAccounts = surface === "bar" ? orderedAccounts("bar").filter(function(a) {
+            return !root.barAccountHidden(a) && root.providerIsVisible(a.provider, a.accountKey, a.vendor)
+        }) : filteredLimits()
+        var visible = visibleAccounts.map(function(a) { return a.provider + "@" + a.accountKey })
+        var id = account.provider + "@" + account.accountKey
+        var index = visible.indexOf(id)
+        var neighbour = visible[index + direction]
+        if (index < 0 || !neighbour)
+            return null
+        var ui = payload.uiPreview || {}
+        var override = surface === "bar" ? barAccountOrderOverride : accountOrderOverride
+        var saved = (Array.isArray(override) ? override : surface === "bar" ? ui.barAccountOrder || ui.accountOrder || [] : ui.accountOrder || []).slice()
+        orderedAccounts(surface).forEach(function(a) {
+            var key = a.provider + "@" + a.accountKey
+            if (saved.indexOf(key) < 0) saved.push(key)
+        })
+        var from = saved.indexOf(id)
+        var to = saved.indexOf(neighbour)
+        saved[from] = neighbour
+        saved[to] = id
+        return saved
+    }
+
+    function shiftedBarAccountOrder(account, direction) {
+        var known = orderedAccounts("bar").map(function(a) { return a.provider + "@" + a.accountKey })
+        var groups = buildStatusStripGroups().map(function(group) {
+            return group.accounts.map(function(a) { return a.provider + "@" + a.accountKey })
+                .filter(function(id) { return known.indexOf(id) >= 0 })
+        }).filter(function(group) { return group.length > 0 })
+        var original = [].concat.apply([], groups)
+        var id = account.provider + "@" + account.accountKey
+        var groupIndex = groups.findIndex(function(group) { return group.indexOf(id) >= 0 })
+        if (groupIndex < 0) return null
+        var group = groups[groupIndex]
+        var index = group.indexOf(id)
+        if (index + direction >= 0 && index + direction < group.length) {
+            group[index] = group[index + direction]
+            group[index + direction] = id
+        } else {
+            if (groupIndex + direction < 0 || groupIndex + direction >= groups.length) return null
+            groups[groupIndex] = groups[groupIndex + direction]
+            groups[groupIndex + direction] = group
+        }
+        var desired = [].concat.apply([], groups)
+        var ui = payload.uiPreview || {}
+        var saved = (Array.isArray(barAccountOrderOverride) ? barAccountOrderOverride : ui.barAccountOrder || ui.accountOrder || []).slice()
+        known.forEach(function(key) { if (saved.indexOf(key) < 0) saved.push(key) })
+        var next = 0
+        return saved.map(function(key) { return original.indexOf(key) >= 0 ? desired[next++] : key })
+    }
+
+    function moveAccount(account, direction, surface) {
+        if (accountOrderBusy)
+            return
+        var next = shiftedAccountOrder(account, direction, surface)
+        if (!next)
+            return
+        pendingAccountOrder = next
+        pendingBarOrderSeed = orderedAccounts("bar").map(function(a) { return a.provider + "@" + a.accountKey })
+        pendingOrderSurface = surface === "bar" ? "bar" : "quotas"
+        accountOrderProcess.running = true
     }
 
     function searchQueryText() {
@@ -931,17 +1051,6 @@ PluginComponent {
     function observationLabel(windowData) {
         return windowData && windowData.observedAt
             ? "Observed " + relativeAge(windowData.observedAt) : "Observation time unknown"
-    }
-
-    function budgetValueLabel(windowData) {
-        var text = formatMoney(windowData.cost) + " spent · " + compactNumber(windowData.tokens) + " tokens · " + safeNumber(windowData.requests) + " requests"
-        if (windowData.usedPct !== undefined && windowData.usedPct !== null && isFinite(Number(windowData.usedPct)))
-            text += " · " + Math.round(Number(windowData.usedPct)) + (windowData.kind === "month" ? "% of local budget" : "% of local budget pace")
-        return text
-    }
-
-    function budgetBoundsLabel(windowData) {
-        return String(windowData.windowStart || "Unknown start") + " → " + String(windowData.windowEnd || "Unknown end")
     }
 
     function clockLabel(value) {
@@ -1273,7 +1382,7 @@ PluginComponent {
         if (!hasPayload)
             return []
         var groups = []
-        var accounts = hasLimits ? payload.limits.slice() : []
+        var accounts = hasLimits ? orderedAccounts("bar") : []
         var usageRows = payload.today && Array.isArray(payload.today.rows) ? payload.today.rows : []
         for (var usageIndex = 0; usageIndex < usageRows.length; usageIndex++) {
             var harness = String(usageRows[usageIndex].bucket || "")
@@ -1286,7 +1395,7 @@ PluginComponent {
         for (var i = 0; i < accounts.length; i++) {
             var account = accounts[i]
             var provider = vendorFor(account.provider, account.vendor) || String(account.provider || "")
-            if (!provider || !providerIsVisible(account.provider, account.accountKey, account.vendor))
+            if (!provider || barAccountHidden(account) || !providerIsVisible(account.provider, account.accountKey, account.vendor))
                 continue
             var group = groups.find(function(item) { return item.provider === provider })
             if (!group) {
@@ -1353,18 +1462,25 @@ PluginComponent {
     }
 
     function refresh(scan) {
-        if (statusProcess.running) {
+        if (statusProcess.running || refreshActive) {
             pendingRefresh = true
             pendingScan = pendingScan || Boolean(scan)
             return
         }
         scanNextRefresh = Boolean(scan)
+        cachedFirstRead = false
+        refreshActive = true
         statusExited = false
+        statusStdoutDone = false
+        statusStderrDone = false
+        statusStdout = ""
+        statusStderr = ""
         statusProcess.running = true
     }
 
     function statusStartFailed() {
         var message = "could not start " + root.command + " (check the " + root.shellName + " PATH or executable setting)"
+        refreshActive = false
         scanNextRefresh = false
         pendingRefresh = false
         pendingScan = false
@@ -1372,6 +1488,26 @@ PluginComponent {
             lastError = message
         else
             errorText = message
+    }
+
+    function finishStatus() {
+        if (!refreshActive || !statusExited || !statusStdoutDone || !statusStderrDone)
+            return
+        var retryNotify = notifySupported && statusStderr.indexOf("unknown flag '--notify'") >= 0
+        var scan = pendingScan || (retryNotify && scanNextRefresh)
+        var again = pendingRefresh || retryNotify
+        refreshActive = false
+        scanNextRefresh = false
+        pendingRefresh = false
+        pendingScan = false
+        if (retryNotify) notifySupported = false
+        else if (statusExitCode === 0) accept(statusStdout)
+        else {
+            var message = statusStderr.trim() || "tokitoki unavailable (exit " + statusExitCode + ")"
+            if (hasPayload) lastError = message
+            else errorText = message
+        }
+        if (again) refresh(scan)
     }
 
     function accept(raw) {
@@ -1388,9 +1524,26 @@ PluginComponent {
                 throw new Error("unsupported widget payload")
             if ((next.recentSessions === null || next.recentSessions === undefined) && hasPayload)
                 next.recentSessions = payload.recentSessions
+            var quotaWarning = ""
+            if (!Array.isArray(next.limits) && hasPayload && Array.isArray(payload.limits)) {
+                next.limits = payload.limits.map(function(account) {
+                    var saved = Object.assign({}, account)
+                    saved.windows = (account.windows || []).map(function(windowData) {
+                        return Object.assign({}, windowData, { status: "stale" })
+                    })
+                    return saved
+                })
+                quotaWarning = "Quota refresh incomplete; showing last observations"
+            }
             payload = next
+            if (Array.isArray(accountOrderOverride) && JSON.stringify((next.uiPreview || {}).accountOrder || []) === JSON.stringify(accountOrderOverride))
+                accountOrderOverride = null
+            if (Array.isArray(barAccountOrderOverride) && JSON.stringify((next.uiPreview || {}).barAccountOrder || []) === JSON.stringify(barAccountOrderOverride))
+                barAccountOrderOverride = null
+            if (Array.isArray(barHiddenOverride) && JSON.stringify((next.uiPreview || {}).barHiddenAccounts || []) === JSON.stringify(barHiddenOverride))
+                barHiddenOverride = null
             errorText = ""
-            lastError = ""
+            lastError = quotaWarning
         } catch (error) {
             if (hasPayload)
                 lastError = String(error)
@@ -2384,12 +2537,30 @@ PluginComponent {
                                                     }
 
                                                     DActionButton {
+                                                        buttonSize: 24
+                                                        iconSize: 16
+                                                        iconName: "arrow_upward"
+                                                        tooltipText: "Move up in Quotas"
+                                                        enabled: !root.accountOrderBusy && root.shiftedAccountOrder(accountCard.account, -1) !== null
+                                                        onClicked: root.moveAccount(accountCard.account, -1)
+                                                    }
+
+                                                    DActionButton {
+                                                        buttonSize: 24
+                                                        iconSize: 16
+                                                        iconName: "arrow_downward"
+                                                        tooltipText: "Move down in Quotas"
+                                                        enabled: !root.accountOrderBusy && root.shiftedAccountOrder(accountCard.account, 1) !== null
+                                                        onClicked: root.moveAccount(accountCard.account, 1)
+                                                    }
+
+                                                    DActionButton {
                                                         id: hideButton
                                                         buttonSize: 26
                                                         iconSize: 16
                                                         iconName: "visibility_off"
                                                         iconColor: Theme.surfaceVariantText
-                                                        tooltipText: "Hide this account"
+                                                        tooltipText: "Hide this account everywhere"
                                                         enabled: !visibilityProcess.running
                                                         Layout.alignment: Qt.AlignVCenter
                                                         onClicked: root.setAccountHidden(
@@ -2397,6 +2568,41 @@ PluginComponent {
                                                             accountCard.account.accountKey,
                                                             true
                                                         )
+                                                    }
+                                                }
+
+                                                RowLayout {
+                                                    width: parent.width
+                                                    spacing: Theme.spacingXS
+                                                    StyledText {
+                                                        text: "Bar"
+                                                        color: Theme.surfaceVariantText
+                                                        font.pixelSize: Theme.fontSizeSmall
+                                                        Layout.fillWidth: true
+                                                    }
+                                                    DActionButton {
+                                                        buttonSize: 24
+                                                        iconSize: 16
+                                                        iconName: "arrow_back"
+                                                        tooltipText: "Move earlier in the bar"
+                                                        enabled: !root.accountOrderBusy && root.shiftedAccountOrder(accountCard.account, -1, "bar") !== null
+                                                        onClicked: root.moveAccount(accountCard.account, -1, "bar")
+                                                    }
+                                                    DActionButton {
+                                                        buttonSize: 24
+                                                        iconSize: 16
+                                                        iconName: "arrow_forward"
+                                                        tooltipText: "Move later in the bar"
+                                                        enabled: !root.accountOrderBusy && root.shiftedAccountOrder(accountCard.account, 1, "bar") !== null
+                                                        onClicked: root.moveAccount(accountCard.account, 1, "bar")
+                                                    }
+                                                    DActionButton {
+                                                        buttonSize: 24
+                                                        iconSize: 16
+                                                        iconName: root.barAccountHidden(accountCard.account) ? "visibility_off" : "visibility"
+                                                        tooltipText: root.barAccountHidden(accountCard.account) ? "Show in bar" : "Hide from bar only"
+                                                        enabled: !barVisibilityProcess.running
+                                                        onClicked: root.setBarAccountHidden(accountCard.account, !root.barAccountHidden(accountCard.account))
                                                     }
                                                 }
 
@@ -2505,40 +2711,6 @@ PluginComponent {
                                                     }
                                                 }
 
-                                                Column {
-                                                    width: parent.width
-                                                    spacing: Theme.spacingXS
-                                                    visible: (accountCard.account.budgetWindows || []).length > 0
-
-                                                    StyledText {
-                                                        text: "Local usage / budgets"
-                                                        color: Theme.surfaceText
-                                                        font.pixelSize: Theme.fontSizeSmall + 1
-                                                        font.weight: Font.DemiBold
-                                                    }
-
-                                                    Repeater {
-                                                        model: accountCard.account.budgetWindows || []
-                                                        delegate: Column {
-                                                            width: parent.width
-                                                            StyledText {
-                                                                width: parent.width
-                                                                text: root.windowName(modelData.kind) + " · " + root.budgetValueLabel(modelData)
-                                                                color: Theme.surfaceVariantText
-                                                                font.pixelSize: Theme.fontSizeSmall + 1
-                                                                wrapMode: Text.WordWrap
-                                                            }
-                                                            StyledText {
-                                                                width: parent.width
-                                                                text: root.budgetBoundsLabel(modelData)
-                                                                color: Theme.surfaceVariantText
-                                                                font.pixelSize: Theme.fontSizeSmall
-                                                                wrapMode: Text.WrapAnywhere
-                                                            }
-                                                        }
-                                                    }
-                                                }
-
                                                 StyledText {
                                                     text: root.extraUsageLabel(accountCard.account.extraUsage)
                                                     color: Theme.surfaceVariantText
@@ -2565,6 +2737,56 @@ PluginComponent {
                                                     font.pixelSize: Theme.fontSizeSmall + 1
                                                     visible: accountCard.account.bankedResets > 0
                                                 }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        TokitokiCard {
+                            title: "Hidden accounts · " + root.hiddenLimits().length
+                            iconName: "visibility_off"
+                            visible: root.tabIs("quotas") && root.hiddenLimits().length > 0
+                            contentComponent: Component {
+                                Column {
+                                    width: parent ? parent.width : 0
+                                    spacing: Theme.spacingS
+                                    Rectangle {
+                                        width: parent.width
+                                        height: 28
+                                        radius: Theme.cornerRadius
+                                        color: Theme.withAlpha(Theme.surfaceText, 0.06)
+                                        StyledText {
+                                            anchors.centerIn: parent
+                                            text: root.hiddenAccountsExpanded ? "Collapse hidden accounts" : "Show hidden accounts"
+                                            color: Theme.surfaceText
+                                            font.pixelSize: Theme.fontSizeSmall
+                                        }
+                                        MouseArea {
+                                            anchors.fill: parent
+                                            cursorShape: Qt.PointingHandCursor
+                                            onClicked: root.hiddenAccountsExpanded = !root.hiddenAccountsExpanded
+                                        }
+                                    }
+                                    Repeater {
+                                        model: root.hiddenAccountsExpanded ? root.hiddenLimits() : []
+                                        delegate: RowLayout {
+                                            width: parent.width
+                                            StyledText {
+                                                Layout.fillWidth: true
+                                                text: root.accountPrimaryLabel(modelData)
+                                                elide: Text.ElideRight
+                                                color: Theme.surfaceVariantText
+                                                font.pixelSize: Theme.fontSizeSmall
+                                            }
+                                            DActionButton {
+                                                buttonSize: 28
+                                                iconSize: 18
+                                                iconName: "visibility"
+                                                tooltipText: root.restoreAccountLabel(modelData)
+                                                enabled: !visibilityProcess.running
+                                                onClicked: root.setAccountHidden(modelData.provider, modelData.accountKey, false)
                                             }
                                         }
                                     }
@@ -3555,6 +3777,34 @@ PluginComponent {
     }
 
     Process {
+        id: accountOrderProcess
+        command: [root.command, "ui", root.pendingOrderSurface === "bar" ? "--bar-account-order" : "--account-order", root.pendingAccountOrder.join(",")]
+            .concat(root.pendingOrderSurface === "bar" ? [] : ["--bar-account-order", root.pendingBarOrderSeed.join(",")])
+        onExited: function(exitCode, exitStatus) {
+            if (exitCode === 0) {
+                if (root.pendingOrderSurface === "bar") root.barAccountOrderOverride = root.pendingAccountOrder.slice()
+                else {
+                    root.accountOrderOverride = root.pendingAccountOrder.slice()
+                }
+                root.refresh(false)
+            } else {
+                root.lastError = "Could not save account order (exit " + exitCode + ")"
+            }
+        }
+    }
+
+    Process {
+        id: barVisibilityProcess
+        command: [root.command, "config", "set", "ui.previewHiddenAccounts", JSON.stringify(root.pendingBarHidden)]
+        onExited: function(exitCode, exitStatus) {
+            if (exitCode === 0) {
+                root.barHiddenOverride = root.pendingBarHidden.slice()
+                root.refresh(false)
+            } else root.lastError = "Could not save bar visibility (exit " + exitCode + ")"
+        }
+    }
+
+    Process {
         id: visibilityProcess
 
         command: [root.command, "ui", root.visibilityHide ? "--hide" : "--show",
@@ -3572,64 +3822,45 @@ PluginComponent {
         id: statusProcess
 
         command: [root.command, "widget-payload"]
-            .concat(root.scanNextRefresh ? [] : ["--cached"])
+            .concat(root.cachedFirstRead ? ["--cached"] : root.scanNextRefresh ? [] : ["--skip-scan"])
             .concat(root.notifySupported ? ["--notify"] : [])
             .concat(["--json"])
         running: true
 
         stdout: StdioCollector {
             id: statusOutput
-            onStreamFinished: root.accept(statusOutput.text)
+            onStreamFinished: {
+                root.statusStdout = statusOutput.text
+                root.statusStdoutDone = true
+                root.finishStatus()
+            }
         }
 
         stderr: StdioCollector {
             id: errorOutput
             onStreamFinished: {
-                if (root.notifySupported && errorOutput.text.indexOf("unknown flag '--notify'") !== -1) {
-                    root.notifySupported = false
-                    if (root.statusExited)
-                        root.refresh(false)
-                    else
-                        root.notifyRejected = true
-                    return
-                }
-                if (errorOutput.text.trim().length > 0) {
-                    if (root.hasPayload)
-                        root.lastError = errorOutput.text.trim()
-                    else
-                        root.errorText = errorOutput.text.trim()
-                }
+                root.statusStderr = errorOutput.text
+                root.statusStderrDone = true
+                root.finishStatus()
             }
         }
 
         onExited: function(exitCode, exitStatus) {
             root.statusExited = true
-            if (root.notifyRejected) {
-                root.notifyRejected = false
-                var retryScan = root.scanNextRefresh
-                root.scanNextRefresh = false
-                root.refresh(retryScan || root.pendingScan)
-                root.pendingRefresh = false
-                root.pendingScan = false
-                return
-            }
-            root.scanNextRefresh = false
-            if (exitCode !== 0 && errorOutput.text.trim().length === 0) {
-                if (root.hasPayload)
-                    root.lastError = "tokitoki unavailable (exit " + exitCode + ")"
-                else
-                    root.errorText = "tokitoki unavailable (exit " + exitCode + ")"
-            }
-            if (root.pendingRefresh) {
-                root.pendingRefresh = false
-                var scan = root.pendingScan
-                root.pendingScan = false
-                root.refresh(scan)
-            }
+            root.statusExitCode = exitCode
+            root.finishStatus()
         }
 
         onRunningChanged: {
-            if (!running && !root.statusExited)
+            if (!running && !root.statusExited) statusFailureTimer.restart()
+        }
+    }
+
+    Timer {
+        id: statusFailureTimer
+        interval: 100
+        onTriggered: {
+            if (!statusProcess.running && !root.statusExited && root.refreshActive)
                 root.statusStartFailed()
         }
     }

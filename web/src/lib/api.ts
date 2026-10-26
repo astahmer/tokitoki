@@ -430,6 +430,22 @@ export interface LimitsDocument {
   version: 1;
   generatedAt: string;
   accounts: LimitsAccount[];
+  accountOrder?: string[];
+  uiPreview?: { accountOrder: string[]; barAccountOrder: string[]; barHiddenAccounts: string[]; menubarHidden: string[]; previewHidden: string[] };
+}
+
+export async function saveAccountOrder(ids: string[], bar = false, barIds?: string[]): Promise<void> {
+  const response = await fetch(bar ? "/v1/ui/bar-account-order" : "/v1/ui/account-order", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ids, ...(barIds !== undefined ? { barIds } : {}) }),
+  });
+  if (!response.ok) throw new Error("Could not save account order (HTTP " + response.status + ")");
+}
+
+export async function saveAccountVisibility(id: string, preference: { hidden?: boolean; barHidden?: boolean }): Promise<void> {
+  const response = await fetch("/v1/ui/account-visibility", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id, ...preference }),
+  });
+  if (!response.ok) throw new Error("Could not save account visibility (HTTP " + response.status + ")");
 }
 
 export function fetchLimits(showEmail: boolean): Promise<LimitsDocument> {

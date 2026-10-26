@@ -1,4 +1,7 @@
 import fs from "node:fs";
+import { loadConfig } from "../config.ts";
+import { accountUiPreferences } from "../uiToggles.ts";
+import { handleAccountOrderRequest } from "../account-order-api.ts";
 import path from "node:path";
 
 import { apiAnomalies, apiBreakdown, apiBudgets, apiExport, apiGrid, apiNotificationHistory, apiSessionDetail, apiSessionSearch, apiSessions, apiSources, apiSummary, apiTable, apiTimeseries, apiWidgetStatus, type WindowParams } from "./api.ts";
@@ -198,7 +201,11 @@ export function startWebServer(options: WebServerOptions = {}): Bun.Server<undef
       }
       case "/api/limits":
       case "/v1/limits":
-        return json(readLimitsDocument({ showEmail: url.searchParams.get("showEmail") === "1" }));
+        return json({ ...readLimitsDocument({ showEmail: url.searchParams.get("showEmail") === "1" }), uiPreview: accountUiPreferences(loadConfig()) });
+      case "/v1/ui/bar-account-order":
+      case "/v1/ui/account-visibility":
+      case "/v1/ui/account-order":
+        return handleAccountOrderRequest(request);
       case "/api/budgets":
         return json(apiBudgets());
       case "/api/notifications":

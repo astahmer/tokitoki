@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { handleAccountOrderRequest } from "./account-order-api.ts";
 
 import { EventCache, dimensionLabel, parseDimension, type AggRow } from "./cache.ts";
 import { loadConfig } from "./config.ts";
@@ -83,12 +84,13 @@ const error = (status: number, message: string, details?: unknown): Response =>
  * bound to loopback the Host header must be loopback too, which blocks DNS
  * rebinding from a malicious page.
  */
-export const handleLocalApiRequest = (request: Request, options: { loopbackOnly: boolean; appVersion: string }): Response => {
+export const handleLocalApiRequest = async (request: Request, options: { loopbackOnly: boolean; appVersion: string }): Promise<Response> => {
   const url = new URL(request.url);
   if (options.loopbackOnly && !isLoopbackHost(url.hostname.replace(/^\[|\]$/g, ""))) {
     return error(403, "loopback Host header required");
   }
-  if (request.method !== "GET" && request.method !== "HEAD") return error(405, "read-only API: use GET");
+  if (["/v1/ui/account-order", "/v1/ui/bar-account-order", "/v1/ui/account-visibility"].includes(url.pathname)) return handleAccountOrderRequest(request);
+  if (request.method !== "GET" && request.method !== "HEAD") return error(405, "read-only data API: use GET");
   try {
     switch (url.pathname) {
       // Same routes as `tokitoki web`: /v1/health is the probe, /v1/status the compact widget summary.

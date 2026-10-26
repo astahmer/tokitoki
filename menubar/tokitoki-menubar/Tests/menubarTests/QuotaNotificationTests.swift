@@ -102,4 +102,36 @@ import Testing
             criticalPercent: 10, observations: &observations))
         #expect(!healthy.availableAgain)
     }
+    @Test func repeatedObservationIsUnchangedAndResetGetsANewAlertKey() throws {
+        var observations: [String: QuotaObservation] = [:]
+        let first = try #require(QuotaNotificationUpdate.record(account: account(), window: window(),
+            criticalPercent: 10, observations: &observations))
+        let repeated = try #require(QuotaNotificationUpdate.record(account: account(), window: window(),
+            criticalPercent: 10, observations: &observations))
+        #expect(first.changed)
+        #expect(!repeated.changed)
+        #expect(first.criticalKey == repeated.criticalKey)
+        let next = try #require(QuotaNotificationUpdate.record(account: account(),
+            window: window(reset: "2100-01-01T00:00:00Z"), criticalPercent: 10, observations: &observations))
+        #expect(next.changed)
+        #expect(next.criticalKey != first.criticalKey)
+        #expect(!next.availableAgain)
+    }
+
+    @Test func nonfiniteAndDerivedObservationsDoNotOverwriteRealQuota() throws {
+        var observations: [String: QuotaObservation] = [:]
+        let first = try #require(QuotaNotificationUpdate.record(account: account(), window: window(),
+            criticalPercent: 10, observations: &observations))
+        for used in [Double.nan, Double.infinity, -Double.infinity] {
+            #expect(QuotaNotificationUpdate.record(account: account(), window: window(used: used),
+                criticalPercent: 10, observations: &observations) == nil)
+        }
+        let derived = LimitWindow(kind: "week", source: "derived", tokens: 100, cost: 0,
+            requests: 0, usedPct: 0, resetsAt: nil, windowStart: nil, windowEnd: nil)
+        #expect(QuotaNotificationUpdate.record(account: account(), window: derived,
+            criticalPercent: 10, observations: &observations) == nil)
+        #expect(observations.count == 1)
+        #expect(observations[first.identity]?.remaining == 5)
+    }
+
 }

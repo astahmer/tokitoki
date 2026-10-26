@@ -57,6 +57,7 @@ mkdir -p "$E2E_OUT/previews"
 rm -f "$E2E_OUT/index.json" "$E2E_OUT/index.pending.json" "$E2E_OUT/quickshell-before-restart.log"
 : > "$E2E_OUT/interactions.jsonl"
 chmod 700 "$XDG_RUNTIME_DIR"
+rm -f /out/ui-prefs.json /out/refresh-next /out/refresh-results.log
 : > "$E2E_COMMAND_LOG"
 : > "$E2E_STATE_LOG"
 : > "$E2E_SHELL_IPC_LOG"
@@ -137,6 +138,7 @@ const hook = `
 const end = source.lastIndexOf("}");
 fs.writeFileSync(file, source.slice(0, end) + hook + source.slice(end));
 JS
+  node /opt/e2e/instrument-surfaces.mjs /tmp/e2e-plugin/TokitokiWidget.qml
   ln -sfn /tmp/e2e-plugin "$CONFIG/plugins/tokitoki"
   jq --arg tab "$E2E_TAB" \
     '.tokitoki = ((.tokitoki // {}) + {enabled: true, openingTab: $tab})' \
@@ -149,7 +151,12 @@ else
     mkdir -p "$E2E_QUICKSHELL_DIR"
     cp -R /opt/e2e/embedded/. "$E2E_QUICKSHELL_DIR/"
     sh /integrations-src/quickshell/prepare-components.sh /integrations-src /tmp/tokitoki-components
+    node /opt/e2e/instrument-surfaces.mjs /tmp/tokitoki-components/views/TokitokiWidget.qml
     ln -s /tmp/tokitoki-components "$E2E_QUICKSHELL_DIR/Tokitoki"
+  else
+    E2E_QUICKSHELL_DIR=/tmp/tokitoki-components
+    sh /integrations-src/quickshell/prepare-components.sh /integrations-src "$E2E_QUICKSHELL_DIR"
+    node /opt/e2e/instrument-surfaces.mjs "$E2E_QUICKSHELL_DIR/views/TokitokiWidget.qml"
   fi
   mkdir -p "$(dirname "$QS_CONFIG_FILE")" "$(dirname "$QS_STATE_FILE")"
   printf '{"autoRefreshEnabled":true}\n' > "$QS_CONFIG_FILE"
@@ -475,6 +482,7 @@ else
   select_tab quotas
   scroll_down 30
   capture quotas-lower.png
+  . /opt/e2e/surface-scenario.sh
   select_tab tokens
   scroll_down 5
   capture tokens-lower.png

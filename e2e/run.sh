@@ -49,6 +49,8 @@ docker run --rm \
   -e "E2E_PLUGIN_DIR=/plugin-src" \
   -e "E2E_QUICKSHELL_DIR=/integrations-src/quickshell/tokitoki" \
   -v "$here/container/entrypoint.sh:/opt/e2e/entrypoint.sh:ro" \
+  -v "$here/container/instrument-surfaces.mjs:/opt/e2e/instrument-surfaces.mjs:ro" \
+  -v "$here/container/surface-scenario.sh:/opt/e2e/surface-scenario.sh:ro" \
   -v "$here/container/embedded:/opt/e2e/embedded:ro" \
   -v "$here/container/fake-tokitoki:/opt/e2e/bin/tokitoki:ro" \
   -v "$here/../integrations/dms/tokitoki:/plugin-src:ro" \
@@ -63,6 +65,9 @@ if [ "$mode" = all ]; then
     tab-sources tab-mcp tab-settings sessions-search sessions-detail sessions-back \
     sessions-pagination sessions-page-2 sessions-page-1-return settings-tab settings-config \
     quotas-lower tokens-lower tokens-models reports-lower settings-notifications)
+  screenshots+=(surface-baseline surface-bar-hidden surface-bar-restored surface-quota-order surface-bar-order
+    surface-globally-hidden surface-hidden-folded surface-hidden-expanded surface-globally-restored
+    surface-refresh-failed surface-refresh-null surface-refresh-empty surface-refresh-valid)
   if [ "$shell" = quickshell ]; then
     screenshots+=(widget-config-before after-restart)
   fi

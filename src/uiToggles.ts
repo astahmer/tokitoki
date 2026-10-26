@@ -69,9 +69,8 @@ export function isVisibleOn(
 }
 
 /**
- * Popover-CARD visibility (widget surface): entries in ui.hidden.widget hide
- * accounts from the popover cards. The status-bar STRIP has its own switch —
- * see isPreviewVisible.
+ * Global widget visibility: entries in ui.hidden.widget hide accounts from
+ * both quota cards and the status bar. Bar-only exclusions are applied separately.
  */
 export function isCardVisibleOn(config: TokitokiConfig, provider: string, accountKey: string): boolean {
   const hidden = hiddenTargets(config, "widget");
@@ -198,9 +197,11 @@ export function setPollEnabled(enabled: boolean): void {
 }
 
 /** Persist the account-card display order (menubar popover drag & drop). */
-export function setMenubarAccountOrder(ids: string[]): void {
+export function setMenubarAccountOrder(ids: string[], barIds?: string[]): void {
   saveUiMutator((cfg) => {
     cfg.ui ??= {};
+    // Freeze the inherited bar order before changing the quota-card order.
+    cfg.ui.previewAccountOrder ??= [...new Set(barIds ?? cfg.ui.menubarAccountOrder ?? [])];
     cfg.ui.menubarAccountOrder = ids;
   });
 }
@@ -231,4 +232,32 @@ export function assertValidSurface(surface: string | undefined): Surface {
     throw new UserError(`invalid --surface '${surface}'`, "tokitoki ui --hide codex --surface widget");
   }
   return normalized;
+}
+
+/** Quota-card and bar preferences share stable provider@accountKey account ids. */
+export function accountUiPreferences(config: TokitokiConfig) {
+  return {
+    accountOrder: config.ui?.menubarAccountOrder ?? [],
+    barAccountOrder: config.ui?.previewAccountOrder ?? config.ui?.menubarAccountOrder ?? [],
+    barHiddenAccounts: config.ui?.previewHiddenAccounts ?? [],
+    menubarHidden: hiddenTargets(config, "widget"),
+    previewHidden: config.ui?.previewHidden ?? [],
+  };
+}
+
+export function setPreviewAccountOrder(ids: string[]): void {
+  saveUiMutator((cfg) => {
+    cfg.ui ??= {};
+    cfg.ui.previewAccountOrder = [...new Set(ids)];
+  });
+}
+
+export function setPreviewAccountVisibility(id: string, visible: boolean): void {
+  saveUiMutator((cfg) => {
+    cfg.ui ??= {};
+    const hidden = new Set(cfg.ui.previewHiddenAccounts ?? []);
+    if (visible) hidden.delete(id);
+    else hidden.add(id);
+    cfg.ui.previewHiddenAccounts = [...hidden];
+  });
 }

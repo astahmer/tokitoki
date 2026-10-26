@@ -112,7 +112,7 @@ export interface TokitokiConfig {
    */
   ui?: {
     hidden?: {
-      /** Hidden from the shell-widget preview rows. */
+      /** Globally hidden from shell-widget quota cards and the status bar. */
       widget?: string[];
       /** @deprecated pre-rename names for `widget`; still read, folded forward on write. */
       menubar?: string[];
@@ -126,9 +126,13 @@ export interface TokitokiConfig {
      * UPSTREAM providers hidden from the STATUS-BAR STRIP only (openai,
      * claude, opencode, openrouter, gemini, grok, cursor) — popover cards
      * are unaffected. Distinct from hidden.widget, which hides accounts
-     * from the popover CARDS.
+     * from both the popover CARDS and the bar.
      */
     previewHidden?: string[];
+    /** Stable provider@accountKey ids hidden only from the status bar. */
+    previewHiddenAccounts?: string[];
+    /** Status-bar order; undefined inherits menubarAccountOrder, [] uses source order. */
+    previewAccountOrder?: string[];
     /**
      * Uniform status-strip metric: "percent" (default) shows real
      * provider-reported remaining % and nothing when unknown; "tokens"

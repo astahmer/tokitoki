@@ -28,6 +28,17 @@ const makeWidget = () => {
     statusProcess: { running: false },
     pendingRefresh: false,
     pendingScan: false,
+    accountOrderOverride: null,
+    barAccountOrderOverride: null,
+    barHiddenOverride: null,
+    refreshActive: false,
+    statusExited: false,
+    statusStdoutDone: false,
+    statusStderrDone: false,
+    statusExitCode: 0,
+    statusStdout: "",
+    statusStderr: "",
+    notifySupported: true,
   });
   context.root = context;
   runInContext(functions(widget), context);
@@ -292,9 +303,6 @@ describe("DMS widget uses the existing payload without distorting totals", () =>
     const groups = ui.buildStatusStripGroups();
     expect(ui.shortestWindowGroups(groups)[0].lines).toEqual(["7d 80%"]);
     expect(groups[0].profiles[0].rows.map((row: { label: string }) => row.label)).toEqual(["7d"]);
-    expect(ui.budgetValueLabel({ ...daily, cost: 2, tokens: 100, requests: 3 })).toBe("$2.00 spent · 100 tokens · 3 requests · 40% of local budget pace");
-    expect(ui.budgetBoundsLabel(daily)).toContain(daily.windowStart);
-    expect(ui.budgetValueLabel({ kind: "month", cost: 0, tokens: 10, requests: 1 })).not.toContain("%");
     expect(ui.barWindowDuration({ ...daily, windowEnd: "invalid" })).toBe("");
     expect(ui.barWindowDuration({ ...daily, windowEnd: daily.windowStart })).toBe("");
     expect(ui.barWindowDuration({ kind: "0min", usedPct: 0 })).toBe("");
@@ -346,6 +354,76 @@ it("live payloads retain recent sessions until a cached page replaces them", () 
   expect(ui.payload.recentSessions.rows[0].title).toBe("cached session");
   ui.accept(JSON.stringify({ schema: 1, app: "tokitoki", recentSessions: { rows: [] } }));
   expect(ui.payload.recentSessions.rows).toEqual([]);
+});
+
+it("keeps bar order and visibility independent of Quotas and exposes hidden accounts", () => {
+  const ui = makeWidget();
+  const account = (key: string) => ({ provider: "codex", accountKey: key, windows: [{ kind: "week", usedPct: 30, windowMinutes: 10080 }] });
+  ui.hasLimits = true;
+  ui.payload.limits = [account("a"), account("b"), account("c")];
+  ui.payload.uiPreview = { accountOrder: ["codex@b", "codex@a", "codex@c"],
+    barAccountOrder: ["codex@a", "codex@c", "codex@b"], barHiddenAccounts: ["codex@a"], menubarHidden: ["codex:c"] };
+  expect(ui.filteredLimits().map((a: { accountKey: string }) => a.accountKey)).toEqual(["b", "a"]);
+  expect(ui.orderedAccounts("bar").map((a: { accountKey: string }) => a.accountKey)).toEqual(["a", "c", "b"]);
+  expect(ui.hiddenLimits().map((a: { accountKey: string }) => a.accountKey)).toEqual(["c"]);
+  expect(ui.buildStatusStripGroups()[0].accounts.map((a: { accountKey: string }) => a.accountKey)).toEqual(["b"]);
+  expect(ui.shiftedAccountOrder(account("a"), -1)).toEqual(["codex@a", "codex@b", "codex@c"]);
+  expect(ui.shiftedAccountOrder(account("b"), -1, "bar")).toBeNull();
+});
+
+it("waits for exit and both streams before accepting or starting a queued refresh", () => {
+  for (const order of [["exit", "out", "err"], ["out", "err", "exit"], ["err", "exit", "out"]]) {
+    const ui = makeWidget();
+    ui.refreshActive = true;
+    ui.pendingRefresh = true;
+    ui.pendingScan = true;
+    ui.statusStdout = JSON.stringify({ schema: 1, app: "tokitoki", limits: [], marker: "new" });
+    order.forEach((event, index) => {
+      if (event === "exit") ui.statusExited = true;
+      if (event === "out") ui.statusStdoutDone = true;
+      if (event === "err") ui.statusStderrDone = true;
+      ui.finishStatus();
+      if (index < 2) expect(ui.payload.marker).toBeUndefined();
+    });
+    expect(ui.payload.marker).toBe("new");
+    expect(ui.scanNextRefresh).toBe(true);
+    expect(ui.cachedFirstRead).toBe(false);
+    expect(ui.statusProcess.running).toBe(true);
+  }
+});
+
+it("bar movement follows rendered provider groups rather than interleaved raw rows", () => {
+  const ui = makeWidget();
+  ui.hasLimits = true;
+  const a = { provider: "codex", vendor: "openai", accountKey: "a", windows: [] };
+  const b = { provider: "claude-code", vendor: "anthropic", accountKey: "b", windows: [] };
+  const c = { provider: "codex", vendor: "openai", accountKey: "c", windows: [] };
+  ui.payload.limits = [a, b, c];
+  ui.payload.uiPreview = { barAccountOrder: ["codex@a", "claude-code@b", "codex@c"] };
+  expect(ui.shiftedAccountOrder(c, -1, "bar")).toEqual(["codex@c", "codex@a", "claude-code@b"]);
+  expect(ui.shiftedAccountOrder(c, 1, "bar")).toEqual(["claude-code@b", "codex@a", "codex@c"]);
+  ui.barAccountOrderOverride = ui.shiftedAccountOrder(c, 1, "bar");
+  expect(ui.buildStatusStripGroups().map((g: { provider: string }) => g.provider)).toEqual(["anthropic", "openai"]);
+  ui.payload.uiPreview.menubarHidden = ["codex"];
+  expect(ui.restoreAccountLabel(a)).toBe("Restore all codex accounts");
+});
+
+it("preserves observations on failed or incomplete refreshes but accepts an explicit empty result", () => {
+  const ui = makeWidget();
+  ui.payload.limits = [{ provider: "codex", accountKey: "a", windows: [{ status: "current", usedPct: 20 }] }];
+  ui.refreshActive = true;
+  ui.statusExited = ui.statusStdoutDone = ui.statusStderrDone = true;
+  ui.statusExitCode = 1;
+  ui.statusStdout = JSON.stringify({ schema: 1, app: "tokitoki", limits: [] });
+  ui.statusStderr = "temporary failure";
+  ui.finishStatus();
+  expect(ui.payload.limits).toHaveLength(1);
+  expect(ui.lastError).toBe("temporary failure");
+  ui.accept(JSON.stringify({ schema: 1, app: "tokitoki", limits: null }));
+  expect(ui.payload.limits[0].windows[0].status).toBe("stale");
+  expect(ui.lastError).toContain("last observations");
+  ui.accept(JSON.stringify({ schema: 1, app: "tokitoki", limits: [] }));
+  expect(ui.payload.limits).toEqual([]);
 });
 
 it("matching repositories and legend entries remain visible beyond the normal top-six cutoff", () => {

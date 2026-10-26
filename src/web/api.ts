@@ -139,6 +139,9 @@ export function apiWidgetStatus(wp: WindowParams = {}): WidgetStatusPayload {
       providers,
       t3codeActivity: cache.t3codeActivity({ sinceIso: w.sinceIso, untilIso: w.untilIso }).total,
       uiPreview: {
+        accountOrder: config.ui?.menubarAccountOrder ?? [],
+        barAccountOrder: config.ui?.previewAccountOrder ?? config.ui?.menubarAccountOrder ?? [],
+        barHiddenAccounts: config.ui?.previewHiddenAccounts ?? [],
         menubarHidden: config.ui?.hidden?.widget ?? config.ui?.hidden?.menubar ?? config.ui?.hidden?.bar ?? [],
         previewHidden: config.ui?.previewHidden ?? [],
         privacyHideIdentities: config.privacy?.hideIdentities === true,

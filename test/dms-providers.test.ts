@@ -9,6 +9,9 @@ const functions = (source: string) => [...source.matchAll(/^    function [\s\S]*
 
 const makeWidget = (payload: Record<string, unknown>) => {
   const context = createContext({
+    accountOrderOverride: null,
+    barAccountOrderOverride: null,
+    barHiddenOverride: null,
     payload: { schema: 1, app: "tokitoki", providerRegistry: JSON.parse(JSON.stringify(PROVIDER_REGISTRY)), ...payload },
     hasPayload: true,
     hasLimits: Array.isArray(payload.limits),

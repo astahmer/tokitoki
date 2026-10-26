@@ -11,6 +11,12 @@ PluginSettings {
     property string shellName: "DMS"
     property var accounts: []
     property var hiddenEntries: []
+    property var barHiddenEntries: []
+    property var pendingBarHidden: []
+    property bool accountsExited: false
+    property bool accountsLoading: false
+    property bool accountsStdoutDone: false
+    property int accountsExitCode: 0
     property string visibilityTarget: ""
     property bool visibilityHide: true
     property bool pendingReload: false
@@ -88,6 +94,20 @@ PluginSettings {
         root.startVisibilityChange(change)
     }
 
+    function isBarAccountHidden(account) {
+        return root.barHiddenEntries.indexOf(account.provider + "@" + account.accountKey) >= 0
+    }
+
+    function setBarAccountHidden(account, hidden) {
+        if (barVisibilityProcess.running) return
+        const id = account.provider + "@" + account.accountKey
+        const next = root.barHiddenEntries.filter(value => value !== id)
+        if (hidden) next.push(id)
+        root.pendingBarHidden = next
+        root.visibilityError = ""
+        barVisibilityProcess.running = true
+    }
+
     function startVisibilityChange(change) {
         root.visibilityTarget = change.target
         root.visibilityHide = change.hide
@@ -106,12 +126,27 @@ PluginSettings {
     }
 
     function reload() {
-        if (accountsProcess.running) {
+        if (accountsProcess.running || root.accountsLoading) {
             pendingReload = true
             return
         }
         root.pendingPayload = ""
+        root.accountsLoading = true
+        root.accountsExited = false
+        root.accountsStdoutDone = false
         accountsProcess.running = true
+    }
+
+    function finishReload() {
+        if (!root.accountsExited || !root.accountsStdoutDone) return
+        root.accountsLoading = false
+        if (root.accountsExitCode === 0) root.acceptPayload(root.pendingPayload)
+        else root.loadError = "Could not load Tokitoki account settings (exit code " + root.accountsExitCode + ")."
+        root.pendingPayload = ""
+        if (root.pendingReload) {
+            root.pendingReload = false
+            root.reload()
+        }
     }
 
     function acceptPayload(raw) {
@@ -123,6 +158,7 @@ PluginSettings {
                 throw new Error("payload is missing account visibility data")
             root.accounts = parsed.limits
             root.hiddenEntries = parsed.uiPreview.menubarHidden
+            root.barHiddenEntries = parsed.uiPreview.barHiddenAccounts || []
             root.loadError = ""
         } catch (error) {
             root.loadError = "Could not read Tokitoki account settings: " + String(error)
@@ -135,18 +171,16 @@ PluginSettings {
         id: accountsProcess
         command: [root.tokitokiCommand, "widget-payload", "--cached", "--json"]
         stdout: StdioCollector {
-            onStreamFinished: root.pendingPayload = text
+            onStreamFinished: {
+                root.pendingPayload = text
+                root.accountsStdoutDone = true
+                root.finishReload()
+            }
         }
         onExited: function(exitCode, exitStatus) {
-            if (exitCode === 0)
-                root.acceptPayload(root.pendingPayload)
-            else
-                root.loadError = "Could not load Tokitoki account settings (exit code " + exitCode + ")."
-            root.pendingPayload = ""
-            if (root.pendingReload) {
-                root.pendingReload = false
-                root.reload()
-            }
+            root.accountsExitCode = exitCode
+            root.accountsExited = true
+            root.finishReload()
         }
     }
 
@@ -158,6 +192,17 @@ PluginSettings {
             if (exitCode !== 0)
                 root.visibilityError = "Could not save account visibility (exit code " + exitCode + ")."
             root.runNextVisibilityChange()
+        }
+    }
+
+    Process {
+        id: barVisibilityProcess
+        command: [root.tokitokiCommand, "config", "set", "ui.previewHiddenAccounts", JSON.stringify(root.pendingBarHidden)]
+        onExited: function(exitCode, exitStatus) {
+            if (exitCode === 0) {
+                root.barHiddenEntries = root.pendingBarHidden.slice()
+                root.reload()
+            } else root.visibilityError = "Could not save bar visibility (exit code " + exitCode + ")."
         }
     }
 
@@ -327,14 +372,24 @@ PluginSettings {
         Repeater {
             model: root.accounts
 
-            DToggle {
+            Column {
                 required property var modelData
-
                 width: parent.width
-                text: root.accountLabel(modelData)
-                description: root.accountDescription(modelData)
-                checked: !root.isAccountHidden(modelData)
-                onToggled: isChecked => root.setAccountHidden(modelData, !isChecked)
+                DToggle {
+                    width: parent.width
+                    text: root.accountLabel(parent.modelData)
+                    description: root.accountDescription(parent.modelData)
+                    checked: !root.isAccountHidden(parent.modelData)
+                    onToggled: isChecked => root.setAccountHidden(parent.modelData, !isChecked)
+                }
+                DToggle {
+                    width: parent.width
+                    text: "Show in bar"
+                    description: "Independent from the Quotas card; reorder directly in Quotas."
+                    checked: !root.isBarAccountHidden(parent.modelData)
+                    enabled: !barVisibilityProcess.running && !root.isAccountHidden(parent.modelData)
+                    onToggled: isChecked => root.setBarAccountHidden(parent.modelData, !isChecked)
+                }
             }
         }
     }
