@@ -46,8 +46,14 @@ it("CLI quota refresh preserves failed observations, honors cadence, and accepts
       const run = async (args) => {
         const lines = [];
         const original = console.log;
+        const originalWrite = process.stdout.write;
         console.log = (...values) => lines.push(values.join(" "));
-        try { await main(args); } finally { console.log = original; process.exitCode = 0; }
+        process.stdout.write = (chunk, callback) => { lines.push(String(chunk).trim()); callback?.(); return true; };
+        try { await main(args); } finally {
+          console.log = original;
+          process.stdout.write = originalWrite;
+          process.exitCode = 0;
+        }
         assert.equal(lines.length, 1);
         return JSON.parse(lines[0]);
       };

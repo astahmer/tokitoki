@@ -138,7 +138,7 @@ PluginSettings {
     }
 
     function finishReload() {
-        if (!root.accountsExited || !root.accountsStdoutDone) return
+        if (!root.accountsLoading || !root.accountsExited || !root.accountsStdoutDone) return
         root.accountsLoading = false
         if (root.accountsExitCode === 0) root.acceptPayload(root.pendingPayload)
         else root.loadError = "Could not load Tokitoki account settings (exit code " + root.accountsExitCode + ")."
@@ -177,6 +177,7 @@ PluginSettings {
                 root.finishReload()
             }
         }
+        stderr: StdioCollector {}
         onExited: function(exitCode, exitStatus) {
             root.accountsExitCode = exitCode
             root.accountsExited = true

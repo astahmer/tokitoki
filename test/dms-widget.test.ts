@@ -7,6 +7,7 @@ const sparkline = readFileSync(new URL("../integrations/dms/tokitoki/TokitokiSpa
 const dayClock = readFileSync(new URL("../integrations/dms/tokitoki/TokitokiDayClock.qml", import.meta.url), "utf8");
 const activityGrid = readFileSync(new URL("../integrations/dms/tokitoki/TokitokiActivityGrid.qml", import.meta.url), "utf8");
 const notifications = readFileSync(new URL("../integrations/dms/tokitoki/TokitokiNotifications.qml", import.meta.url), "utf8");
+const settings = readFileSync(new URL("../integrations/dms/tokitoki/TokitokiSettings.qml", import.meta.url), "utf8");
 const functions = (source: string) => [...source.matchAll(/^    function [\s\S]*?^    }/gm)].map((match) => match[0]).join("\n");
 const makeWidget = () => {
   const context = createContext({
@@ -46,6 +47,25 @@ const makeWidget = () => {
 };
 
 afterEach(() => setSystemTime());
+
+it("settings consume each completed payload once even when completion is signalled twice", () => {
+  const ui = createContext({
+    accountsLoading: true, accountsExited: true, accountsStdoutDone: true,
+    accountsExitCode: 0, pendingReload: false,
+    pendingPayload: JSON.stringify({ app: "tokitoki", schema: 1,
+      limits: [{ provider: "codex", accountKey: "native" }],
+      uiPreview: { menubarHidden: [], barHiddenAccounts: [] } }),
+    loadError: "", accounts: [],
+  });
+  ui.root = ui;
+  runInContext(functions(settings), ui);
+  ui.finishReload();
+  expect(ui.accounts).toHaveLength(1);
+  expect(ui.loadError).toBe("");
+  ui.finishReload();
+  expect(ui.accounts).toHaveLength(1);
+  expect(ui.loadError).toBe("");
+});
 
 it("tracking quality preserves unknown coverage and follows the exact composition period", () => {
   const ui = makeWidget();

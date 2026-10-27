@@ -2775,7 +2775,9 @@ async function runWidgetPayload(parsed: ParsedInvocation): Promise<void> {
   parts["today"] = vendorTagged.today;
   parts.providerRegistry = PROVIDER_REGISTRY;
   parts.statusIncidents = cachedStatusIncidents({ cache: payloadCache, vendors: vendorTagged.vendors });
-  console.log(JSON.stringify(parts));
+  await new Promise<void>((resolve, reject) => {
+    process.stdout.write(JSON.stringify(parts) + "\n", error => error ? reject(error) : resolve());
+  });
   if (flagBool(parsed, "notify")) {
     // Alerts are best-effort: the payload was already written for the widget.
     try {

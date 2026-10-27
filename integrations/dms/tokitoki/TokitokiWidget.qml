@@ -1851,13 +1851,19 @@ PluginComponent {
 
                     spacing: Theme.spacingXS
 
-                    Rectangle {
-                        width: 1
+                    Item {
+                        width: 9
                         height: Math.max(8, root.iconSize - Theme.spacingXXS)
-                        radius: 0.5
-                        color: Theme.withAlpha(Theme.outlineLight, 0.65)
                         anchors.verticalCenter: parent.verticalCenter
                         visible: index > 0
+
+                        Rectangle {
+                            anchors.centerIn: parent
+                            width: 1
+                            height: parent.height
+                            radius: 0.5
+                            color: Theme.withAlpha("#a0a0a0", 0.55)
+                        }
                     }
 
                     TokitokiProviderLogo {
@@ -1870,19 +1876,37 @@ PluginComponent {
                     }
 
                     Row {
-                        spacing: Theme.spacingXXS
+                        spacing: Theme.spacingXS
                         anchors.verticalCenter: parent.verticalCenter
 
-                        StyledText {
-                            text: groupData.lines.join(" · ")
-                            color: Theme.widgetTextColor
-                            font.pixelSize: Theme.barTextSize(
-                                root.barThickness,
-                                root.barConfig?.fontScale,
-                                root.barConfig?.maximizeWidgetText
-                            )
-                            font.weight: Font.DemiBold
-                            anchors.verticalCenter: parent.verticalCenter
+                        Repeater {
+                            model: providerGroup.groupData.lines
+                            delegate: Row {
+                                required property string modelData
+                                required property int index
+                                spacing: Theme.spacingXS
+
+                                Rectangle {
+                                    width: 1
+                                    height: Math.max(8, root.iconSize - Theme.spacingXXS)
+                                    radius: 0.5
+                                    color: Theme.withAlpha("#a0a0a0", 0.35)
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    visible: index > 0
+                                }
+
+                                StyledText {
+                                    text: modelData
+                                    color: Theme.widgetTextColor
+                                    font.pixelSize: Theme.barTextSize(
+                                        root.barThickness,
+                                        root.barConfig?.fontScale,
+                                        root.barConfig?.maximizeWidgetText
+                                    )
+                                    font.weight: Font.DemiBold
+                                    anchors.verticalCenter: parent.verticalCenter
+                                }
+                            }
                         }
                     }
                 }
