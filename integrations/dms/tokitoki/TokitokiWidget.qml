@@ -1862,7 +1862,7 @@ PluginComponent {
                             width: 1
                             height: parent.height
                             radius: 0.5
-                            color: Theme.withAlpha("#a0a0a0", 0.55)
+                            color: Theme.primary
                         }
                     }
 

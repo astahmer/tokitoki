@@ -397,7 +397,7 @@ describe("pollQuotas", () => {
               billingCycleStart: String(Date.now() - 25 * 24 * 3600_000),
               billingCycleEnd: String(endMs),
               planUsage: { autoPercentUsed: 38.5, apiPercentUsed: 0, totalPercentUsed: 32.4 },
-              spendLimitUsage: { pooledUsed: 34_770, pooledLimit: 300_000, limitType: "team" },
+              spendLimitUsage: { pooledUsed: 34_770, pooledLimit: "300000", limitType: "team" },
             }),
             { status: 200 },
           );

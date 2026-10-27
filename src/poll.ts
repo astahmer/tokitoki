@@ -995,11 +995,15 @@ async function pollCursorQuotas(opts: PollOptions, fetcher: typeof fetch, now: n
     return String(e);
   }
 
+  const cursorAmount = z.union([
+    z.number().finite(),
+    z.string().trim().min(1).refine((value) => Number.isFinite(Number(value))).transform(Number),
+  ]);
   const parsed = z.object({
     billingCycleStart: z.string().or(z.number()).optional(),
     billingCycleEnd: z.string().or(z.number()).optional(),
     planUsage: z.object({ autoPercentUsed: z.number().optional(), apiPercentUsed: z.number().optional() }).optional(),
-    spendLimitUsage: z.object({ pooledUsed: z.number().optional(), pooledLimit: z.number().optional() }).optional(),
+    spendLimitUsage: z.object({ pooledUsed: cursorAmount.optional(), pooledLimit: cursorAmount.optional() }).optional(),
   }).safeParse(body);
   if (!parsed.success) return "cursor quota unavailable: unsupported response; current weekly plan schema is unverified";
   const root = parsed.data;
