@@ -10,6 +10,9 @@ PluginSettings {
 
     property string shellName: "DMS"
     property var accounts: []
+    property var providerRegistry: ({})
+    property var hiddenBarWindows: ({})
+    readonly property var barWindowGroups: root.buildBarWindowGroups()
     property var hiddenEntries: []
     property var barHiddenEntries: []
     property var pendingBarHidden: []
@@ -33,6 +36,56 @@ PluginSettings {
 
     function accountTarget(account) {
         return String(account.provider || "") + ":" + String(account.accountKey || "")
+    }
+
+    function barWindowKey(windowData) {
+        var scope = String(windowData.scope || windowData.kind || "other").toLowerCase()
+        var bucket = String(windowData.bucketId || "").toLowerCase()
+        var model = String(windowData.model || "").toLowerCase()
+        if (!bucket && !model && windowData.label && !/^(session|daily|weekly|monthly|limit)$/i.test(String(windowData.label)))
+            bucket = String(windowData.label).toLowerCase()
+        return JSON.stringify([scope, bucket, model])
+    }
+
+    function barWindowVisible(hidden, provider, windowData) {
+        var entries = hidden && hidden[provider]
+        return !Array.isArray(entries) || entries.indexOf(barWindowKey(windowData)) < 0
+    }
+
+    function buildBarWindowGroups() {
+        const groups = []
+        for (const account of root.accounts) {
+            const entry = root.providerRegistry[account.provider] || ({})
+            const provider = String(account.vendor || entry.vendor || account.provider || "")
+            if (!provider) continue
+            let group = groups.find(value => value.provider === provider)
+            if (!group) {
+                const vendorEntry = root.providerRegistry[provider] || ({})
+                group = { provider: provider, label: String(vendorEntry.displayName || provider), windows: [] }
+                groups.push(group)
+            }
+            for (const windowData of (Array.isArray(account.windows) ? account.windows : [])) {
+                const id = root.barWindowKey(windowData)
+                if (group.windows.some(value => value.id === id)) continue
+                let label = String(windowData.label || windowData.model || windowData.scope || windowData.kind || "Limit")
+                const minutes = Number(windowData.windowMinutes)
+                if (/^session$/i.test(label) && Number.isFinite(minutes) && minutes > 0 && minutes % 60 === 0)
+                    label += " (" + minutes / 60 + "h)"
+                group.windows.push({ id: id, label: label, window: windowData })
+            }
+        }
+        return groups.filter(value => value.windows.length > 0)
+    }
+
+    function setBarWindowVisible(provider, windowData, visible) {
+        const next = Object.assign({}, root.hiddenBarWindows)
+        const id = root.barWindowKey(windowData)
+        const entries = Array.isArray(next[provider]) ? next[provider].filter(value => value !== id) : []
+        if (!visible) entries.push(id)
+        if (entries.length) next[provider] = entries
+        else delete next[provider]
+        root.hiddenBarWindows = next
+        root.saveValue("hiddenBarWindows", next)
     }
 
     function accountLabel(account) {
@@ -157,6 +210,7 @@ PluginSettings {
             if (!parsed.uiPreview || !Array.isArray(parsed.uiPreview.menubarHidden))
                 throw new Error("payload is missing account visibility data")
             root.accounts = parsed.limits
+            root.providerRegistry = parsed.providerRegistry || ({})
             root.hiddenEntries = parsed.uiPreview.menubarHidden
             root.barHiddenEntries = parsed.uiPreview.barHiddenAccounts || []
             root.loadError = ""
@@ -207,7 +261,10 @@ PluginSettings {
         }
     }
 
-    Component.onCompleted: Qt.callLater(root.reload)
+    Component.onCompleted: {
+        root.hiddenBarWindows = root.loadValue("hiddenBarWindows", ({})) || ({})
+        Qt.callLater(root.reload)
+    }
 
     Connections {
         target: root
@@ -327,6 +384,52 @@ PluginSettings {
             { label: "Month", value: "month" }
         ]
         defaultValue: "day"
+    }
+
+    StyledText {
+        width: parent.width
+        text: "Bar quota windows"
+        color: Theme.surfaceText
+        font.pixelSize: Theme.fontSizeLarge
+        font.weight: Font.DemiBold
+    }
+
+    StyledText {
+        width: parent.width
+        text: "Choose the windows shown in the bar for each provider. Quota cards and hover details still show all windows."
+        color: Theme.surfaceVariantText
+        font.pixelSize: Theme.fontSizeSmall + 1
+        wrapMode: Text.WordWrap
+    }
+
+    Column {
+        width: parent.width
+        spacing: Theme.spacingXS
+        Repeater {
+            model: root.barWindowGroups
+            Column {
+                id: barWindowGroup
+                required property var modelData
+                width: parent.width
+                StyledText {
+                    width: parent.width
+                    text: parent.modelData.label
+                    color: Theme.surfaceText
+                    font.weight: Font.DemiBold
+                }
+                Repeater {
+                    model: parent.modelData.windows
+                    DToggle {
+                        required property var modelData
+                        property string providerId: barWindowGroup.modelData.provider
+                        width: parent.width
+                        text: modelData.label
+                        checked: root.barWindowVisible(root.hiddenBarWindows, providerId, modelData.window)
+                        onToggled: isChecked => root.setBarWindowVisible(providerId, modelData.window, isChecked)
+                    }
+                }
+            }
+        }
     }
 
     SelectionSetting {

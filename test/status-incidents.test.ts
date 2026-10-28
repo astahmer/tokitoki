@@ -47,6 +47,11 @@ describe("status page parsing", () => {
     expect(parseStatuspageSummary({ body: { nope: true }, pageUrl: "u" })).toBeUndefined();
   });
 
+  it("shows the latest provider update for an open incident", () => {
+    const body = { status: { indicator: "minor" }, incidents: [{ name: "Copilot disruption", status: "investigating", impact: "minor", incident_updates: [{ body: "  Some models are unavailable.  " }] }] };
+    expect(parseStatuspageSummary({ body, pageUrl: "https://status.example" })?.description).toBe("Some models are unavailable.");
+  });
+
   it("filters Google incidents to active ones for the Gemini product", () => {
     expect(parseGoogleIncidents({ body: fixture("google-incidents.json"), productId: GEMINI_PRODUCT, pageUrl: "p" })).toEqual({
       indicator: "major",

@@ -77,7 +77,21 @@ describe("DMS widget provider registry lookups", () => {
     expect(ui.vendorIncident("openai")).toBeNull();
     expect(ui.incidentColor(ui.vendorIncident("anthropic"))).toBe("red");
     expect(ui.incidentColor(ui.vendorIncident("google"))).toBe("orange");
-    expect(ui.buildAttentionItems()[0]).toEqual({ title: "Claude status: major", detail: "Elevated errors" });
+    expect(ui.buildAttentionItems()).toEqual([]);
+  });
+
+  it("only shows the bar warning for vendors represented in the bar", () => {
+    const ui = makeWidget({
+      statusIncidents: {
+        github: { indicator: "minor", description: "Copilot issue", url: "g" },
+        openai: { indicator: "major", description: "OpenAI issue", url: "o" },
+      },
+    });
+    ui.quotaStripGroups = [{ provider: "openai" }, { provider: "anthropic" }];
+    expect(ui.degradedBarVendors()).toEqual(["openai"]);
+    ui.quotaStripGroups = [{ provider: "anthropic" }];
+    expect(ui.degradedBarVendors()).toEqual([]);
+    expect(ui.degradedVendors()).toEqual(["openai", "github"]);
   });
 
   it("formats prepaid balances", () => {

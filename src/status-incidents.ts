@@ -45,6 +45,7 @@ const StatuspageSummarySchema = z.object({
     status: z.string().optional(),
     impact: z.string().nullish(),
     shortlink: z.string().nullish(),
+    incident_updates: z.array(z.object({ body: z.string().nullish() })).optional(),
   })).optional(),
 });
 
@@ -64,7 +65,8 @@ export const parseStatuspageSummary = (input: { body: unknown; pageUrl: string }
   const indicator = INDICATOR_RANK[incidentIndicator] > INDICATOR_RANK[pageIndicator] ? incidentIndicator : pageIndicator;
   return {
     indicator,
-    description: worstIncident?.name ?? summary.status.description ?? "",
+    description: worstIncident?.incident_updates?.find((update) => Boolean(update.body?.trim()))?.body?.trim()
+      ?? worstIncident?.name ?? summary.status.description ?? "",
     url: worstIncident?.shortlink ?? summary.page?.url ?? input.pageUrl,
   };
 };

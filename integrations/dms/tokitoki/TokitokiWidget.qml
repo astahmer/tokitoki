@@ -50,6 +50,7 @@ PluginComponent {
     property var pendingBarOrderSeed: []
     readonly property bool accountOrderBusy: accountOrderProcess.running
     readonly property string barSummaryMode: root.pluginSetting("barSummaryMode", "summary")
+    readonly property var hiddenBarWindows: root.pluginSetting("hiddenBarWindows", ({}))
     readonly property string barTotalPeriod: root.normalizeChoice(
         root.pluginSetting("barTotalPeriod", "day"),
         ["day", "week", "month"],
@@ -273,6 +274,20 @@ PluginComponent {
     function pluginSetting(key, defaultValue) {
         var value = pluginData ? pluginData[key] : undefined
         return value === undefined ? defaultValue : value
+    }
+
+    function barWindowKey(windowData) {
+        var scope = String(windowData.scope || windowData.kind || "other").toLowerCase()
+        var bucket = String(windowData.bucketId || "").toLowerCase()
+        var model = String(windowData.model || "").toLowerCase()
+        if (!bucket && !model && windowData.label && !/^(session|daily|weekly|monthly|limit)$/i.test(String(windowData.label)))
+            bucket = String(windowData.label).toLowerCase()
+        return JSON.stringify([scope, bucket, model])
+    }
+
+    function barWindowVisible(hidden, provider, windowData) {
+        var entries = hidden && hidden[provider]
+        return !Array.isArray(entries) || entries.indexOf(barWindowKey(windowData)) < 0
     }
 
     function displayLabel(value) {
@@ -810,6 +825,11 @@ PluginComponent {
         })
     }
 
+    function degradedBarVendors() {
+        var visible = root.quotaStripGroups.map(function(group) { return group.provider })
+        return root.degradedVendors().filter(function(vendor) { return visible.indexOf(vendor) >= 0 })
+    }
+
     function incidentColor(incident) {
         return incident && (incident.indicator === "major" || incident.indicator === "critical")
             ? Theme.error : Theme.warning
@@ -1256,13 +1276,7 @@ PluginComponent {
     }
 
     function buildAttentionItems() {
-        var items = degradedVendors().map(function(vendor) {
-            var incident = vendorIncident(vendor)
-            return {
-                title: providerShortName(vendor) + " status: " + incident.indicator,
-                detail: incident.description || "See the provider status page"
-            }
-        })
+        var items = []
         if (hasLimits) {
             for (var i = 0; i < payload.limits.length; i++) {
                 var account = payload.limits[i]
@@ -1495,9 +1509,6 @@ PluginComponent {
                     var value = hasAmount ? formatMoney(windowData.amountUsd)
                         : Math.round(remainingPercent(windowData)) + "%"
                     var bucket = barWindowBucket(windowData)
-                    parts.push((duration !== lastDuration ? duration + " " : "") +
-                        (bucket ? bucket + " " : "") + value)
-                    lastDuration = duration
                     var fullBucket = String(windowData.label || windowData.model || "")
                     if (/^(session|daily|weekly|monthly|limit)$/i.test(fullBucket))
                         fullBucket = ""
@@ -1505,6 +1516,11 @@ PluginComponent {
                         value: value, resetsAt: String(windowData.resetsAt || ""),
                         color: hasAmount ? Theme.primary : limitColor(windowData),
                         icon: hasAmount ? "payments" : "hourglass_empty" })
+                    if (!root.barWindowVisible(root.hiddenBarWindows, currentGroup.provider, windowData))
+                        continue
+                    parts.push((duration !== lastDuration ? duration + " " : "") +
+                        (bucket ? bucket + " " : "") + value)
+                    lastDuration = duration
                     var minutes = windowOrderMinutes(windowData)
                     if (!profile.shortest || minutes < profile.shortest.minutes) {
                         var shortDuration = duration === "1mo" ? Math.round(minutes / 1440) + "d" : duration
@@ -1649,9 +1665,9 @@ PluginComponent {
             DIcon {
                 name: "warning"
                 size: root.iconSize
-                color: root.incidentColor(root.vendorIncident(root.degradedVendors()[0]))
+                color: root.incidentColor(root.vendorIncident(root.degradedBarVendors()[0]))
                 anchors.verticalCenter: parent.verticalCenter
-                visible: root.degradedVendors().length > 0
+                visible: root.degradedBarVendors().length > 0
             }
 
             DIcon {
@@ -1921,9 +1937,9 @@ PluginComponent {
             DIcon {
                 name: "warning"
                 size: root.iconSize
-                color: root.incidentColor(root.vendorIncident(root.degradedVendors()[0]))
+                color: root.incidentColor(root.vendorIncident(root.degradedBarVendors()[0]))
                 anchors.horizontalCenter: parent.horizontalCenter
-                visible: root.degradedVendors().length > 0
+                visible: root.degradedBarVendors().length > 0
             }
 
             DIcon {
@@ -2217,6 +2233,57 @@ PluginComponent {
                                         }
                                     }
                                 }
+                        }
+
+                        TokitokiCard {
+                            title: "Service alerts"
+                            iconName: "warning"
+                            visible: root.tabIs("overview") && root.hasPayload && (root.degradedVendors().length > 0 || root.lastError.length > 0)
+                            contentComponent: Component {
+                                Column {
+                                    width: parent ? parent.width : 0
+                                    spacing: Theme.spacingS
+
+                                    StyledText {
+                                        width: parent.width
+                                        visible: root.lastError.length > 0
+                                        text: root.lastError
+                                        color: Theme.warning
+                                        wrapMode: Text.Wrap
+                                        font.pixelSize: Theme.fontSizeSmall + 1
+                                    }
+
+                                    Repeater {
+                                        model: root.degradedVendors()
+                                        Column {
+                                            required property string modelData
+                                            property var incident: root.vendorIncident(modelData)
+                                            width: parent.width
+                                            spacing: Theme.spacingXXS
+                                            StyledText {
+                                                width: parent.width
+                                                text: root.providerShortName(parent.modelData) + " · " + root.displayLabel(parent.incident.indicator)
+                                                color: root.incidentColor(parent.incident)
+                                                font.weight: Font.DemiBold
+                                            }
+                                            StyledText {
+                                                width: parent.width
+                                                text: parent.incident.description || "See the provider status page"
+                                                color: Theme.surfaceText
+                                                wrapMode: Text.Wrap
+                                                font.pixelSize: Theme.fontSizeSmall + 1
+                                            }
+                                            DButton {
+                                                visible: Boolean(parent.incident.url)
+                                                text: "View status"
+                                                iconName: "open_in_new"
+                                                buttonHeight: 28
+                                                onClicked: Qt.openUrlExternally(parent.incident.url)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                         }
 
                         TokitokiCard {

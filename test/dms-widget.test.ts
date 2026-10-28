@@ -67,6 +67,33 @@ it("settings consume each completed payload once even when completion is signall
   expect(ui.loadError).toBe("");
 });
 
+it("persists independent provider window choices and shares them between accounts", () => {
+  const saved: Array<{ key: string; value: unknown }> = [];
+  const session = { scope: "session", bucketId: "codex", label: "Session", windowMinutes: 300 };
+  const weekly = { scope: "weekly", bucketId: "codex", label: "Weekly" };
+  const onDemand = { scope: "monthly", bucketId: "on-demand", label: "On-Demand" };
+  const ui = createContext({
+    accounts: [
+      { provider: "codex", vendor: "openai", windows: [session, weekly] },
+      { provider: "codex", vendor: "openai", windows: [session, weekly] },
+      { provider: "cursor", vendor: "cursor", windows: [onDemand] },
+    ],
+    providerRegistry: {}, hiddenBarWindows: {},
+    saveValue(key: string, value: unknown) { saved.push({ key, value }); },
+  });
+  ui.root = ui;
+  runInContext(functions(settings), ui);
+  const groups = ui.buildBarWindowGroups();
+  expect(groups[0].windows.map((w: { label: string }) => w.label)).toEqual(["Session (5h)", "Weekly"]);
+  ui.setBarWindowVisible("openai", session, false);
+  expect(saved[0]).toEqual({ key: "hiddenBarWindows", value: ui.hiddenBarWindows });
+  expect(ui.barWindowVisible(ui.hiddenBarWindows, "openai", session)).toBe(false);
+  expect(ui.barWindowVisible(ui.hiddenBarWindows, "openai", weekly)).toBe(true);
+  expect(ui.barWindowVisible(ui.hiddenBarWindows, "cursor", onDemand)).toBe(true);
+  ui.setBarWindowVisible("openai", session, true);
+  expect(ui.barWindowVisible(ui.hiddenBarWindows, "openai", session)).toBe(true);
+});
+
 it("tracking quality preserves unknown coverage and follows the exact composition period", () => {
   const ui = makeWidget();
   expect(ui.trackingForPeriod("day")).toBeNull();
@@ -208,6 +235,11 @@ describe("DMS widget uses the existing payload without distorting totals", () =>
     ] }];
     ui.payload.today = { rows: [{ bucket: "codex", inputTokens: 120, costUsd: 2 }] };
     expect(ui.buildStatusStripGroups()[0].lines[0]).toBe("5h 100% · 7d 20%");
+    ui.hiddenBarWindows = { codex: [ui.barWindowKey({ kind: "5h" })] };
+    const filtered = ui.buildStatusStripGroups()[0];
+    expect(filtered.lines[0]).toBe("7d 20%");
+    expect(filtered.profiles[0].rows).toHaveLength(2);
+    expect(filtered.profiles[0].shortest.text).toBe("7d 20%");
   });
 
   it("renders provider-neutral windows with labels, pace, and run-out time", () => {
