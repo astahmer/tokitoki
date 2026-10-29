@@ -6,6 +6,16 @@ if ! command -v jq >/dev/null 2>&1; then
   exit 0
 fi
 
+# Waybar starts a new run every interval even if the last one is still going;
+# an overlapping run reprints the previous line instead of racing it.
+state_dir="${XDG_RUNTIME_DIR:-/tmp}/tokitoki-waybar-$(id -u)"
+mkdir -p "$state_dir"
+exec 9>"$state_dir/lock"
+if command -v flock >/dev/null 2>&1 && ! flock -n 9; then
+  cat "$state_dir/last" 2>/dev/null || printf '%s\n' '{"text":"tokitoki …","tooltip":"refreshing","class":"ok"}'
+  exit 0
+fi
+
 if ! payload="$(tokitoki widget-payload --cached --notify --json 2>/dev/null)"; then
   printf '%s\n' '{"text":"tokitoki ?","tooltip":"tokitoki widget payload failed","class":"error"}'
   exit 0
@@ -40,4 +50,4 @@ printf '%s\n' "$payload" | jq -c '
     ),
     percentage: ((.stats.cachePct // 0) | floor)
   }
-'
+' | tee "$state_dir/last"

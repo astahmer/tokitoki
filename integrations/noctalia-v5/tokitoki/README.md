@@ -36,6 +36,6 @@ Settings offer `shortest` (default), `quotas`, `total` and `icon`. Shortest sele
 
 Expired, stale or unknown observations remain labeled as such. Unknown durations show `?`; no billing interval or capacity is invented. On-demand dollar amounts take precedence over percentage placeholders. Local budget usage is separate from provider quotas. The “Via T3 Code” activity card is separate from usage totals.
 
-The plugin reads `tokitoki widget-payload --cached --json` every 30 seconds; it does not scan credentials or poll providers. Run `tokitoki scan` and, for live quotas, `tokitoki poll`, or enable the corresponding Home Manager timers. This adapter does not send desktop notifications; use `programs.tokitoki.notify.enable` for notifications independently of the shell.
+The plugin paints from `tokitoki widget-payload --cached --json`, then refreshes every 30 seconds with `--skip-scan`: the payload is live (quotas are polled when `poll.enabled` is set) but harness logs are not rescanned. Middle click runs a full refresh that scans sources too; `tokitoki scan` or the Home Manager timers keep totals current otherwise. Every refresh passes `--notify`, so desktop alerts follow `[notifications]` like the other Linux shells.
 
 For Nix-managed installs, make the entire directory available as an immutable plugin path source, enable `tokitoki/usage`, and place the widget as above. All required Luau modules, translations and icons live inside this directory.

@@ -33,8 +33,11 @@ QtObject {
     readonly property color info: "#8ebde8"
     readonly property color secondary: "#c3a4df"
     readonly property color tertiary: "#7fd3cc"
+    // Callers pass both color values and hex strings; Qt.darker(_, 1.0)
+    // turns either into a color without changing it.
     function withAlpha(value, alpha) {
-        return Qt.rgba(value.r, value.g, value.b, alpha);
+        const color = Qt.darker(value, 1.0);
+        return Qt.rgba(color.r, color.g, color.b, alpha);
     }
     function barTextSize() {
         return 14;

@@ -48,7 +48,7 @@ local function setVisibility(a, hidden, bar)
     if (bar and entry == a.id) or (not bar and (entry == a.provider or (provider == a.provider and string.sub(a.accountKey, -#suffix) == suffix))) then table.remove(list, index) end
   end
   if hidden then table.insert(list, if bar then a.id else target) end
-  local args = if bar then {noctalia.getConfig("executable"), "config", "set", "ui.previewHiddenAccounts", noctalia.json.encode(list)} else {noctalia.getConfig("executable"), "ui", if hidden then "--hide" else "--show", target, "--surface", "widget"}
+  local args = if bar then {noctalia.getConfig("executable"), "config", "set", "ui.previewHiddenAccounts", if #list == 0 then "[]" else noctalia.json.encode(list)} else {noctalia.getConfig("executable"), "ui", if hidden then "--hide" else "--show", target, "--surface", "widget"}
   saving = true
   noctalia.state.set("order_error", "")
   render()

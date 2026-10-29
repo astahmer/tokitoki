@@ -1,7 +1,7 @@
 use std::process::Command;
 use std::time::Duration;
 
-use cosmic::iced::{window::Id, Limits, Subscription};
+use cosmic::iced::{Limits, Subscription, window::Id};
 use cosmic::prelude::*;
 use cosmic::widget;
 
@@ -10,11 +10,13 @@ pub struct AppModel {
     core: cosmic::Core,
     popup: Option<Id>,
     status: String,
+    loading: bool,
 }
 
 #[derive(Debug, Clone)]
 pub enum Message {
     Refresh,
+    StatusLoaded(String),
     TogglePopup,
     PopupClosed(Id),
 }
@@ -38,14 +40,13 @@ impl cosmic::Application for AppModel {
         core: cosmic::Core,
         _flags: Self::Flags,
     ) -> (Self, Task<cosmic::Action<Self::Message>>) {
-        (
-            Self {
-                core,
-                status: read_status(),
-                ..Default::default()
-            },
-            Task::none(),
-        )
+        let mut app = Self {
+            core,
+            status: "Loading…".to_string(),
+            ..Default::default()
+        };
+        let task = app.start_refresh();
+        (app, task)
     }
 
     fn on_close_requested(&self, id: Id) -> Option<Message> {
@@ -61,11 +62,12 @@ impl cosmic::Application for AppModel {
     }
 
     fn view_window(&self, _id: Id) -> Element<'_, Self::Message> {
-        let content = widget::column()
-            .push(widget::text("Tokitoki Usage"))
-            .push(widget::text(self.status.clone()))
-            .spacing(8)
-            .padding(12);
+        let content = widget::column(vec![
+            widget::text("Tokitoki Usage").into(),
+            widget::text(self.status.clone()).into(),
+        ])
+        .spacing(8)
+        .padding(12);
         self.core.applet.popup_container(content).into()
     }
 
@@ -75,7 +77,11 @@ impl cosmic::Application for AppModel {
 
     fn update(&mut self, message: Self::Message) -> Task<cosmic::Action<Self::Message>> {
         match message {
-            Message::Refresh => self.status = read_status(),
+            Message::Refresh => return self.start_refresh(),
+            Message::StatusLoaded(status) => {
+                self.loading = false;
+                self.status = status;
+            }
             Message::TogglePopup => {
                 return if let Some(popup) = self.popup.take() {
                     cosmic::iced::platform_specific::shell::wayland::commands::popup::destroy_popup(
@@ -115,6 +121,25 @@ impl cosmic::Application for AppModel {
     }
 }
 
+impl AppModel {
+    /// The CLI can take seconds on a large history; run it off the UI thread
+    /// and skip ticks while a run is still in flight.
+    fn start_refresh(&mut self) -> Task<cosmic::Action<Message>> {
+        if self.loading {
+            return Task::none();
+        }
+        self.loading = true;
+        Task::perform(
+            async {
+                tokio::task::spawn_blocking(read_status)
+                    .await
+                    .unwrap_or_else(|_| "tokitoki unavailable".to_string())
+            },
+            |status| cosmic::Action::App(Message::StatusLoaded(status)),
+        )
+    }
+}
+
 fn read_status() -> String {
     let output = match Command::new("tokitoki")
         .args(["widget-payload", "--cached", "--notify", "--json"])
@@ -128,6 +153,9 @@ fn read_status() -> String {
         Ok(payload) => payload,
         Err(_) => return "invalid tokitoki payload".to_string(),
     };
+    if payload["schema"].as_u64() != Some(1) || payload["app"].as_str() != Some("tokitoki") {
+        return "unsupported tokitoki payload".to_string();
+    }
     let stats = &payload["stats"];
     let cost = stats["costUsd"].as_f64().unwrap_or(0.0);
     let tokens = stats["tokens"].as_u64().unwrap_or(0);

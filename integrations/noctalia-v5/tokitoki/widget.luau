@@ -48,16 +48,29 @@ local function render()
   barWidget.setTooltip(tooltip)
 end
 
-local function refresh()
+-- One short line for the bar; raw stderr can carry paths and account keys.
+local function failureText(result)
+  local hideIdentities = noctalia.getConfig("hide_identities") or (payload.uiPreview or {}).privacyHideIdentities
+  local line = string.match(result.stderr or "", "error: ([^\n]+)")
+  if hideIdentities or not line then return "Tokitoki request failed (exit " .. tostring(result.exitCode) .. ")" end
+  return line
+end
+
+-- The first paint reads the stored payload; later reads are live without a
+-- source scan, and a manual refresh (middle click) scans sources too.
+local function refresh(scan)
   if refreshing then return end
   refreshing = true
   lastRefresh = noctalia.nowMs()
-  local readFlag = if firstRead then "--cached" else "--skip-scan"
+  local args = {noctalia.getConfig("executable"), "widget-payload"}
+  if firstRead then table.insert(args, "--cached") elseif not scan then table.insert(args, "--skip-scan") end
   firstRead = false
-  local accepted = noctalia.runAsync({noctalia.getConfig("executable"), "widget-payload", readFlag, "--json"}, function(result)
+  table.insert(args, "--notify")
+  table.insert(args, "--json")
+  local accepted = noctalia.runAsync(args, function(result)
     refreshing = false
     if result.exitCode ~= 0 then
-      lastError = if result.stderr ~= "" then result.stderr else "Tokitoki could not refresh"
+      lastError = failureText(result)
     else
       local nextPayload = noctalia.json.decode(result.stdout)
       if type(nextPayload) == "table" and nextPayload.schema == 1 and nextPayload.app == "tokitoki" then
@@ -83,7 +96,7 @@ end
 
 function onClick() noctalia.togglePanel("tokitoki/usage:details") end
 function onRightClick() noctalia.openSettings() end
-function onMiddleClick() refresh() end
+function onMiddleClick() refresh(true) end
 
 noctalia.state.watch("payload", function(value)
   payload = value or {}
