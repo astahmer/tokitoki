@@ -423,7 +423,7 @@ describe("computeLimits", () => {
         makeEvent({ id: "old", accountKey: "account:reported-account", ts: "2026-08-20T10:00:00.000Z", quota: { accountId: "reported-account", primary: { usedPct: 90, windowMinutes: 10080, resetsAtEpoch: 1 } } }),
         makeEvent({ id: "new", accountKey: "account:reported-account", ts: "2026-08-24T10:00:00.000Z", quota: { accountId: "reported-account", primary: { usedPct: 5, windowMinutes: 10080, resetsAtEpoch: 1788160164 } } }),
       ]);
-      const limits = computeLimits(cache, {}, new Date(2026, 7, 24, 12, 0));
+      const limits = computeLimits(cache, {}, new Date("2026-08-24T12:00:00.000Z"));
       const week = limits[0]!.windows.find((w) => w.kind === "week")!;
       expect(week.usedPct).toBeCloseTo(5);
       expect(week).toMatchObject({ status: "current", bucketId: "codex", windowId: "primary", observedAt: "2026-08-24T10:00:00.000Z" });

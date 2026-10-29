@@ -68,12 +68,14 @@ describe("tracking quality", () => {
       event("overlap", { provider: "t3code", inputTokens: 9000, costUsd: 9000, costSource: "reported" }),
     ]);
     const summary = cache.trackingSummary({ sinceIso });
-    expect(summary).toEqual({ requests: 6, totalTokens: 720, inputTokens: 360, outputTokens: 120,
+    // Codex rows without provenance are legacy: their input included cache
+    // hits, so ingest derives the uncached part (60 - 30) as an estimate.
+    expect(summary).toEqual({ requests: 6, totalTokens: 540, inputTokens: 180, outputTokens: 120,
       cacheReadTokens: 180, cacheWriteTokens: 60, costUsd: 5, reportedRequests: 1,
       estimatedRequests: 1, unpricedRequests: 3, unknownRequests: 1, pricedRequests: 2,
-      pricingCoveragePercent: 100 / 3, cachedInputPercent: 30, unpricedModels: ["a", "z"],
-      reportedTokenRequests: 0, estimatedTokenRequests: 0, unknownTokenRequests: 6,
-      reportedTokens: 0, estimatedTokens: 0, unknownTokens: 720 });
+      pricingCoveragePercent: 100 / 3, cachedInputPercent: 180 / 420 * 100, unpricedModels: ["a", "z"],
+      reportedTokenRequests: 0, estimatedTokenRequests: 6, unknownTokenRequests: 0,
+      reportedTokens: 0, estimatedTokens: 540, unknownTokens: 0 });
     expect(cache.sessionDetail("codex", "session").find(row => row.costSource === "reported")?.costUsd).toBe(0);
   }));
 
@@ -150,7 +152,8 @@ describe("tracking quality", () => {
       cacheReadTokens: 800, cacheWriteTokens: 0, costUsd: 5 });
     const normalized = { ...legacy, inputTokens: 200, costSource: "estimated" as const };
     cache.insert([legacy]);
-    expect(cache.trackingSummary({ sinceIso }).totalTokens).toBe(1900);
+    // Legacy Codex input included cache hits; ingest derives the uncached part.
+    expect(cache.trackingSummary({ sinceIso }).totalTokens).toBe(1100);
     expect(cache.insert([normalized])).toBe(0);
     for (let i = 0; i < 3; i++) {
       cache.insert([legacy, normalized]);

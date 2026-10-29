@@ -1,12 +1,12 @@
 /**
  * Scan worker: one provider per worker, spawned by `tokitoki scan` so
  * independent harness stores are read in parallel. Streams extracted events
- * back to the parent in batches; persists its own cursor shard directly so
- * progress survives an interrupted scan.
+ * back to the parent in batches. Cursors go to the parent too: it saves them
+ * only after the events are in events.jsonl, so an interrupted scan replays
+ * instead of skipping unwritten events.
  */
 import { getProvider } from "./providers/index.ts";
 import { scanProviderCore } from "./scan.ts";
-import { saveProviderCursors } from "./store.ts";
 
 interface ScanRequest {
   type: "scan";
@@ -32,7 +32,7 @@ workerSelf.onmessage = (ev: MessageEvent<ScanRequest>) => {
       onEvents: (events) => workerSelf.postMessage({ type: "events", events }),
       onQuotas: (quotas) => workerSelf.postMessage({ type: "quotas", quotas }),
       onReplayedUsage: (ids) => workerSelf.postMessage({ type: "replayed-usage", ids }),
-      onSaveCursors: (cursors) => saveProviderCursors(provider.id, cursors),
+      onSaveCursors: (cursors) => workerSelf.postMessage({ type: "cursors", cursors }),
     });
     workerSelf.postMessage({ type: "done", result });
   } catch (err) {

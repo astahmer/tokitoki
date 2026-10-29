@@ -184,3 +184,38 @@ it("migrates legacy measured-cost rows to unknown tokens and removes historical 
     expect(migrated.sessionDetail("cursor", "session")).toHaveLength(1);
   } finally { migrated.close(); rmSync(directory, { recursive: true, force: true }); }
 });
+
+it("derives uncached input for legacy Codex rows once, across rebuilds, and lets a rescan replace it", () => fixture((cache, directory) => {
+  const old = process.env.TOKITOKI_DATA_DIR;
+  process.env.TOKITOKI_DATA_DIR = directory;
+  try {
+    const legacy = event("legacy-codex", { model: "gpt-5", inputTokens: 1000, cacheReadTokens: 800, cacheWriteTokens: 0, costUsd: 50 });
+    writeFileSync(join(directory, "events.jsonl"), JSON.stringify(legacy) + "\n");
+    for (let i = 0; i < 2; i++) {
+      cache.rebuild([]);
+      const summary = cache.trackingSummary({ sinceIso });
+      expect(summary).toMatchObject({ inputTokens: 200, cacheReadTokens: 800, estimatedTokenRequests: 1, estimatedRequests: 1 });
+      expect(summary.costUsd).toBeLessThan(1);
+    }
+    cache.insert([{ ...legacy, inputTokens: 150, tokenSource: "reported" }]);
+    expect(cache.trackingSummary({ sinceIso })).toMatchObject({ inputTokens: 150, reportedTokenRequests: 1 });
+  } finally { if (old === undefined) delete process.env.TOKITOKI_DATA_DIR; else process.env.TOKITOKI_DATA_DIR = old; }
+}));
+
+it("counts a Claude Code message copied into a resumed session once", () => fixture(cache => {
+  const message = (session: string): UsageEvent => event(`claude-code:default:${session}:msg_01ABC`, {
+    provider: "claude-code", sessionId: session, tokenSource: "reported", costSource: "estimated", costUsd: 1,
+  });
+  cache.insert([message("original")]);
+  cache.insert([message("resumed"), message("original")]);
+  expect(cache.trackingSummary({ sinceIso })).toMatchObject({ requests: 1, costUsd: 1 });
+}));
+
+it("leaves Codex requests billed through Cursor to the Cursor dashboard", () => fixture(cache => {
+  cache.insert([
+    event("routed", { model: "cursor/grok-4.6", tokenSource: "reported", costSource: "estimated", costUsd: 4 }),
+    event("direct", { model: "gpt-5", tokenSource: "reported", costSource: "estimated", costUsd: 1 }),
+  ]);
+  expect(cache.trackingSummary({ sinceIso })).toMatchObject({ requests: 1, costUsd: 1 });
+  expect(cache.hybridUsage(sinceIso, undefined, untilIso)).toMatchObject({ requests: 1, costUsd: 1 });
+}));

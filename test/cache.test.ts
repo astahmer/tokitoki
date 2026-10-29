@@ -86,7 +86,7 @@ describe("EventCache", () => {
     const cache = new EventCache(path.join(dir, "cache.db"));
     try {
       cache.insert([
-        makeEvent({ id: "openai-1", provider: "codex", accountKey: "openai:plus", model: "gpt-5", inputTokens: 100 }),
+        makeEvent({ id: "openai-1", provider: "codex", accountKey: "openai:plus", model: "gpt-5", inputTokens: 100, tokenSource: "reported" }),
         makeEvent({ id: "openai-2", provider: "pi", accountKey: "codex-work", model: "gpt-5", inputTokens: 200 }),
         makeEvent({ id: "router-1", provider: "pi", accountKey: "openrouter", model: "anthropic/claude-sonnet-4", inputTokens: 300 }),
       ]);

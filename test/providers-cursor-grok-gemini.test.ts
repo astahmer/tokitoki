@@ -193,6 +193,16 @@ describe("grok provider", () => {
     expect(r.events).toBe(1);
   });
 
+  test("keeps cached input out of the uncached input bucket in both shapes", () => {
+    const c = ctx(path.join(sessionsDir, "cached.jsonl"));
+    const nested = grokProvider.parseLine(JSON.stringify({ type: "event_msg", timestamp: "2026-08-24T10:00:00Z",
+      payload: { type: "token_count", info: { last_token_usage: { input_tokens: 1200, output_tokens: 30, cached_input_tokens: 800 } } } }), c);
+    const flat = grokProvider.parseLine(JSON.stringify({ ts: "2026-08-24T11:00:00Z", model: "grok-3",
+      usage: { prompt_tokens: 500, completion_tokens: 20, cached_tokens: 100 } }), c);
+    expect([nested[0]!.inputTokens, nested[0]!.cacheReadTokens]).toEqual([400, 800]);
+    expect([flat[0]!.inputTokens, flat[0]!.cacheReadTokens]).toEqual([400, 100]);
+  });
+
   test("zero-token usage emits nothing (no fabricated events)", () => {
     const file = path.join(sessionsDir, "empty.jsonl");
     const r = ctxLines(file, [JSON.stringify({ usage: { input_tokens: 0, output_tokens: 0 } }), "not json at all"]);

@@ -243,6 +243,23 @@ function normalize(value: unknown): TokitokiConfig {
   if (cfg.notifications !== undefined && typeof cfg.notifications !== "object") delete cfg.notifications;
   if (cfg.privacy !== undefined && typeof cfg.privacy !== "object") delete cfg.privacy;
   if (cfg.statusIncidents !== undefined && typeof cfg.statusIncidents !== "object") delete cfg.statusIncidents;
+  if (cfg.ui !== undefined && (cfg.ui === null || typeof cfg.ui !== "object")) delete cfg.ui;
+  // Shell plugins write these lists with `config set`; a wrongly encoded empty
+  // list ({} from some JSON encoders) must not break every payload consumer.
+  const stringList = z.array(z.string());
+  if (cfg.ui !== undefined) {
+    for (const key of ["menubarProviders", "previewHidden", "previewHiddenAccounts", "previewAccountOrder", "menubarAccountOrder", "sideNotchHidden"] as const) {
+      const value = cfg.ui[key];
+      if (value === undefined) continue;
+      if (!stringList.safeParse(value).success) delete cfg.ui[key];
+    }
+    if (cfg.ui.hidden !== undefined) {
+      if (cfg.ui.hidden === null || typeof cfg.ui.hidden !== "object") delete cfg.ui.hidden;
+      else for (const surface of ["widget", "menubar", "bar", "dashboard"] as const) {
+        if (cfg.ui.hidden[surface] !== undefined && !stringList.safeParse(cfg.ui.hidden[surface]).success) delete cfg.ui.hidden[surface];
+      }
+    }
+  }
   if (cfg.poll !== undefined && (cfg.poll === null || typeof cfg.poll !== "object")) delete cfg.poll;
   if (cfg.poll?.codexHomes !== undefined) {
     if (!Array.isArray(cfg.poll.codexHomes)) delete cfg.poll.codexHomes;

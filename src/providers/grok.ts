@@ -121,10 +121,13 @@ function emit(
   entry: Record<string, unknown>,
   usage: Record<string, unknown>,
 ): UsageEvent[] {
-  const inputTokens = num(usage.input_tokens ?? usage.prompt_tokens);
+  const totalInput = num(usage.input_tokens ?? usage.prompt_tokens);
   const outputTokens = num(usage.output_tokens ?? usage.completion_tokens);
-  const cachedInput = num(usage.cached_input_tokens ?? usage.cached_tokens);
-  if (inputTokens === 0 && outputTokens === 0) return [];
+  const cachedInput = Math.min(totalInput, num(usage.cached_input_tokens ?? usage.cached_tokens));
+  if (totalInput === 0 && outputTokens === 0) return [];
+  // Both the Codex-style and OpenAI-style shapes count cache hits inside the
+  // input total; keep the buckets disjoint like the Codex adapter does.
+  const inputTokens = totalInput - cachedInput;
 
   const sessionId = typeof state.sessionId === "string" ? state.sessionId : path.basename(ctx.path).replace(/\.jsonl$/, "");
   const model = typeof entry.model === "string" ? entry.model : typeof state.model === "string" ? state.model : "unknown";

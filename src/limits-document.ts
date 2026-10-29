@@ -90,40 +90,9 @@ const canonicalCodexAccounts = (input: {
   for (const [accountId, aliases] of groups) {
     const keys = aliases.map((alias) => alias.accountKey);
     const placeholders = keys.map(() => "?").join(", ");
-    const observations = input.cache.database.query<{
-      id: number; bucketId: string; capturedAt: string; accountKey: string;
-    }, string[]>(`SELECT id, bucket_id AS bucketId, captured_at AS capturedAt, account_key AS accountKey
-      FROM active_quota_observations WHERE provider = 'codex' AND account_id = ? AND complete = 1 AND account_key IN (${placeholders})
-      ORDER BY captured_at DESC, id DESC`).all(accountId, ...keys);
-    const full = observations.find((observation) => observation.bucketId === "*");
-    const buckets = new Map<string, typeof observations[number]>();
-    for (const observation of observations) {
-      if (full !== undefined && (observation.capturedAt < full.capturedAt ||
-        (observation.capturedAt === full.capturedAt && observation.id <= full.id))) continue;
-      if (!buckets.has(observation.bucketId)) buckets.set(observation.bucketId, observation);
-    }
-    const rows = input.cache.database.query<QuotaSnapshotRow & { observationId: number | null }, string[]>(`
-      SELECT account_key AS accountKey, account_id AS accountId, window_minutes AS windowMinutes,
-        label, used_pct AS usedPct, amount_usd AS amountUsd, NULLIF(model, '') AS model,
-        resets_at AS resetsAt, credits_json AS creditsJson, captured_at AS capturedAt, event_id AS eventId,
-        bucket_id AS bucketId, window_id AS windowId, scope, window_start AS windowStart,
-        window_end AS windowEnd, COALESCE(observed_at, captured_at) AS observedAt, observation_id AS observationId
-      FROM active_quota_snapshots WHERE provider = 'codex' AND account_id = ? AND account_key IN (${placeholders})
-      ORDER BY captured_at DESC, COALESCE(observation_id, 0) DESC
-    `).all(accountId, ...keys);
-    const legacyLatest = observations.length === 0 && rows.every((row) => row.observationId === null)
-      ? rows[0]?.capturedAt : undefined;
-    const snapshots = new Map<string, QuotaSnapshotRow>();
-    for (const row of rows) {
-      if (full !== undefined && (row.capturedAt < full.capturedAt ||
-        (row.capturedAt === full.capturedAt && (row.observationId ?? 0) < full.id))) continue;
-      if (legacyLatest !== undefined && row.capturedAt !== legacyLatest) continue;
-      const bucket = buckets.get(row.bucketId ?? "");
-      if (bucket !== undefined && (row.capturedAt < bucket.capturedAt ||
-        (row.capturedAt === bucket.capturedAt && (row.observationId ?? 0) < bucket.id))) continue;
-      const slot = JSON.stringify([row.bucketId ?? "", row.windowId || row.label || row.model || String(row.windowMinutes), row.model ?? ""]);
-      if (!snapshots.has(slot)) snapshots.set(slot, row);
-    }
+    const current = input.cache.currentQuotaWindows({ provider: "codex", accountKeys: keys, accountId });
+    const full = current.full;
+    const rows = current.rows;
     const latestObservation = input.cache.database.query<{ capturedAt: string; eventId: string; accountKey: string }, string[]>(
       `SELECT captured_at AS capturedAt, event_id AS eventId, account_key AS accountKey
        FROM active_quota_observations WHERE provider = 'codex' AND account_id = ? AND account_key IN (${placeholders})
@@ -182,7 +151,7 @@ const canonicalCodexAccounts = (input: {
         : preferred.bankedExpiresAt ?? aliases.find(alias => alias.bankedExpiresAt !== undefined)?.bankedExpiresAt,
       origin: observationEventId?.startsWith("poll:") ? "polled" : "scan",
       observedAt, freshness,
-      windows: withUniqueWindowIds([...snapshots.values()].map((snapshot) => embeddedLimitWindow({
+      windows: withUniqueWindowIds(rows.map((snapshot) => embeddedLimitWindow({
         snapshot, now: input.now, identityVerified: true, maxAgeMs: input.maxAgeMs(snapshot.eventId),
       }))),
       ...(budgets.size > 0 ? { budgetWindows: withUniqueWindowIds([...budgets.values()]) } : {}),

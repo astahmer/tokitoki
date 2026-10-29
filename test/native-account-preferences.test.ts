@@ -128,3 +128,26 @@ it("local and web HTTP surfaces expose the same projected preferences without co
     expect(readFileSync(process.env.TOKITOKI_CONFIG, "utf8")).toBe(before);
   } finally { web.stop(true); }
 });
+
+it("aliases pre-native Codex keys that resolve to one polled account", () => {
+  const dir = mkdtempSync(join(tmpdir(), "tokitoki-native-alias-"));
+  testFolders.push(dir);
+  process.env.TOKITOKI_DATA_DIR = dir;
+  process.env.TOKITOKI_CONFIG = join(dir, "config.json");
+  const cache = new EventCache();
+  try {
+    const now = new Date();
+    const reset = Math.floor(now.getTime() / 1000) + 3600;
+    cache.insertPolledSnapshots({ provider: "codex", accountKey: "openai:plus", accountId: "acc1", capturedAtIso: new Date(now.getTime() - 86_400_000).toISOString(), eventId: "poll:legacy", complete: false, windows: [
+      { windowMinutes: 300, usedPct: 40, resetsAtEpoch: reset },
+    ] });
+    cache.database.query("UPDATE quota_snapshots SET observation_id = NULL WHERE event_id LIKE 'poll:legacy:%'").run();
+    cache.insertPolledSnapshots({ provider: "codex", accountKey: "openai:acc1", accountId: "acc1", capturedAtIso: now.toISOString(), eventId: "poll:native", complete: false, windows: [
+      { windowMinutes: 300, usedPct: 10, resetsAtEpoch: reset, bucketId: "codex", windowId: "primary" },
+    ] });
+    const nativeAliases = cache.nativeAccountAliases({});
+    expect(nativeAliases.get("codex@openai:plus")).toBe("codex@openai:acc1");
+    expect(nativeAliases.has("codex@openai:acc1")).toBe(false);
+    expect(normalizeHiddenAccounts(["codex:openai:plus"], nativeAliases)).toEqual(["codex:openai:acc1"]);
+  } finally { cache.close(); }
+});

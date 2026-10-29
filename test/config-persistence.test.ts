@@ -132,3 +132,15 @@ describe("menubar config persistence", () => {
     expect(fs.readFileSync(configPath, "utf8")).not.toContain("{\n");
   });
 });
+
+describe("malformed ui lists", () => {
+  it("drops non-list visibility entries instead of failing every payload", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tokitoki-config-lists-"));
+    const configPath = path.join(dir, "config.json");
+    configs.push(configPath);
+    expect(run(["config", "set", "ui.previewHiddenAccounts", "{}"], configPath).status).toBe(0);
+    const result = run(["widget-payload", "--cached", "--json"], configPath);
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout).uiPreview.barHiddenAccounts).toEqual([]);
+  });
+});

@@ -1308,7 +1308,7 @@ async function pollQuotasLocked(opts: PollOptions = {}): Promise<PollResult> {
       : provider === "opencode-go" ? [["pi", "opencode-go"], ["opencode", "opencode-go"]]
       : [[provider, "default"]]);
     const keys = provider === "codex"
-      ? [`quota-poll-error:codex${identity?.accountId !== undefined ? `@${identity.accountId}` : ""}`]
+      ? (identity?.accountId !== undefined ? [`quota-poll-error:codex@${identity.accountId}`] : [])
       : pairs.map(([persistedProvider, accountKey]) => `quota-poll-error:${persistedProvider}@${accountKey}`);
     for (const key of keys) {
       opts.cache?.setMetaValue(key, JSON.stringify({ at: opts.now ?? Date.now(), reason }));

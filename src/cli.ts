@@ -3,7 +3,7 @@ import { parseArgs, type FlagValue, type ParsedInvocation } from "./args.ts";
 import fs from "node:fs";
 import path from "node:path";
 import { localMachineId } from "./machine.ts";
-import { appendEvents, eventsFile, loadCursors, saveProviderCursors } from "./store.ts";
+import { appendEvents, eventsFile, loadCursors, saveProviderCursors, type Cursors } from "./store.ts";
 import { PROVIDERS, getProvider } from "./providers/index.ts";
 import { extractionVersionFor, scanProviderCore, type ScanResult } from "./scan.ts";
 import type { QuotaObservationEvent, UsageEvent } from "./types.ts";
@@ -629,6 +629,8 @@ const MAX_SCAN_WORKERS = 4;
 
 interface ScanOutcome {
   result: ScanResult;
+  /** Latest cursor shard; saved only once the events are appended. */
+  cursors?: Cursors;
   events: UsageEvent[];
   quotas: QuotaObservationEvent[];
   replayedUsage: string[];
@@ -665,11 +667,13 @@ function scanInWorker(input: {
     const worker = new Worker(new URL("./scan-worker.ts", import.meta.url));
     const { events, quotas } = input;
     const replayedUsage = input.replayedUsage;
+    let cursors: Cursors | undefined;
     const onMessage = (ev: MessageEvent) => {
       const msg = ev.data as
         | { type: "events"; events: UsageEvent[] }
         | { type: "quotas"; quotas: QuotaObservationEvent[] }
         | { type: "replayed-usage"; ids: string[] }
+        | { type: "cursors"; cursors: Cursors }
         | { type: "done"; result: ScanResult }
         | { type: "error"; message: string };
       if (msg.type === "events") {
@@ -678,9 +682,11 @@ function scanInWorker(input: {
         quotas.push(...msg.quotas);
       } else if (msg.type === "replayed-usage") {
         replayedUsage.push(...msg.ids);
+      } else if (msg.type === "cursors") {
+        cursors = msg.cursors;
       } else if (msg.type === "done") {
         cleanup();
-        resolve({ result: msg.result, events, quotas, replayedUsage });
+        resolve({ result: msg.result, events, quotas, replayedUsage, ...(cursors === undefined ? {} : { cursors }) });
       } else {
         cleanup();
         reject(new Error(msg.message));
@@ -738,6 +744,7 @@ async function runScan(parsed: ParsedInvocation): Promise<void> {
           cache.insert(outcome.events);
           cache.insertQuotaObservations(outcome.quotas);
           cache.excludeReplayedUsage(outcome.replayedUsage);
+          if (outcome.cursors !== undefined) saveProviderCursors(id, outcome.cursors);
           const { provider, eventsEmitted, filesScanned } = outcome.result;
           if (eventsEmitted === 0 && filesScanned === 0) {
             // Nothing new on disk — one quiet italic line instead of a zero row.
@@ -776,13 +783,14 @@ async function runWithWorkerFallback(providerId: string, machineId: string): Pro
     return await scanInWorker({ providerId, machineId, events, quotas, replayedUsage });
   } catch {
     const provider = getProvider(providerId)!;
+    let cursors: Cursors | undefined;
     const result = scanProviderCore(provider, machineId, {
       onEvents: (batch) => events.push(...batch),
       onQuotas: (batch) => quotas.push(...batch),
       onReplayedUsage: (batch) => replayedUsage.push(...batch),
-      onSaveCursors: (cursors) => saveProviderCursors(provider.id, cursors),
+      onSaveCursors: (latest) => { cursors = latest; },
     });
-    return { result, events, quotas, replayedUsage };
+    return { result, events, quotas, replayedUsage, ...(cursors === undefined ? {} : { cursors }) };
   }
 }
 

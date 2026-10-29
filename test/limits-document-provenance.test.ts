@@ -29,6 +29,47 @@ const fixture = () => {
 };
 
 describe("limits builder provenance", () => {
+  it("merges matching legacy and native Codex windows without hiding distinct meters", () => {
+    const context = fixture();
+    try {
+      const reset = Math.floor(now.getTime() / 1000) + 3600;
+      context.cache.insertPolledSnapshots({ provider: "codex", accountKey: "openai:local", accountId: "local", capturedAtIso: new Date(now.getTime() - 60_000).toISOString(), eventId: "poll:native", complete: false, windows: [
+        { windowMinutes: 300, usedPct: 10, resetsAtEpoch: reset, bucketId: "codex", windowId: "primary" },
+        { windowMinutes: 10080, usedPct: 15, resetsAtEpoch: reset + 86400, bucketId: "codex", windowId: "secondary" },
+        { windowMinutes: 300, usedPct: 10, resetsAtEpoch: reset, bucketId: "review", windowId: "primary" },
+      ] });
+      context.cache.insertPolledSnapshots({ provider: "codex", accountKey: "openai:plus", accountId: "local", capturedAtIso: now.toISOString(), eventId: "poll:legacy", complete: false, windows: [
+        { windowMinutes: 300, usedPct: 10, resetsAtEpoch: reset },
+        { windowMinutes: 10080, usedPct: 15, resetsAtEpoch: reset + 86400 },
+        { windowMinutes: 1440, usedPct: 30, resetsAtEpoch: reset + 123 },
+      ] });
+      context.cache.database.query("UPDATE quota_snapshots SET observation_id = NULL WHERE event_id LIKE 'poll:legacy:%'").run();
+      const card = buildAccountLimits({ cache: context.cache, config: { experimental: { zeroStateCards: false } }, now }).find((value) => value.accountId === "local");
+      expect(card?.windows.map((window) => [window.bucketId, window.windowMinutes]).sort()).toEqual([
+        ["", 1440], ["codex", 10080], ["codex", 300], ["review", 300],
+      ]);
+    } finally { context.close(); }
+  });
+
+  it("retires pre-observation Codex windows once a newer partial native poll exists", () => {
+    const context = fixture();
+    try {
+      const weekAgo = new Date(now.getTime() - 7 * 86_400_000);
+      const oldReset = Math.floor(weekAgo.getTime() / 1000) + 3600;
+      context.cache.insertPolledSnapshots({ provider: "codex", accountKey: "openai:plus", accountId: "local", capturedAtIso: weekAgo.toISOString(), eventId: "poll:legacy", complete: false, windows: [
+        { windowMinutes: 300, usedPct: 40, resetsAtEpoch: oldReset },
+        { windowMinutes: 10080, usedPct: 60, resetsAtEpoch: oldReset + 86400 },
+      ] });
+      context.cache.database.query("UPDATE quota_snapshots SET observation_id = NULL WHERE event_id LIKE 'poll:legacy:%'").run();
+      const reset = Math.floor(now.getTime() / 1000) + 3600;
+      context.cache.insertPolledSnapshots({ provider: "codex", accountKey: "openai:local", accountId: "local", capturedAtIso: now.toISOString(), eventId: "poll:native", complete: false, windows: [
+        { windowMinutes: 300, usedPct: 10, resetsAtEpoch: reset, bucketId: "codex", windowId: "primary" },
+      ] });
+      const card = buildAccountLimits({ cache: context.cache, config: { experimental: { zeroStateCards: false } }, now }).find((value) => value.accountId === "local");
+      expect(card?.windows.map((window) => [window.bucketId, window.windowMinutes])).toEqual([["codex", 300]]);
+    } finally { context.close(); }
+  });
+
   it("preserves independent aliases through partial updates and accepts newer partials at a complete bucket's timestamp", () => {
     const context = fixture();
     try {
