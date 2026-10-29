@@ -40,9 +40,19 @@ const makeWidget = () => {
     statusStdout: "",
     statusStderr: "",
     notifySupported: true,
+    cachedFirstRead: false,
+    uiWriteGeneration: 0,
+    statusGeneration: 0,
+    queuedUiActions: [],
   });
   context.root = context;
   runInContext(functions(widget), context);
+  // Mirrors the QML binding of the same name.
+  Object.defineProperty(context, "statusStripGroups", { get: () => {
+    if (context.barSummaryMode === "icon" || context.barSummaryMode === "total") return [];
+    const groups = context.buildStatusStripGroups();
+    return context.isShortestWindowMode() ? context.shortestWindowGroups(groups) : groups;
+  } });
   return context;
 };
 
@@ -67,22 +77,31 @@ it("settings consume each completed payload once even when completion is signall
   expect(ui.loadError).toBe("");
 });
 
-it("persists independent provider window choices and shares them between accounts", () => {
-  const saved: Array<{ key: string; value: unknown }> = [];
-  const session = { scope: "session", bucketId: "codex", label: "Session", windowMinutes: 300 };
-  const weekly = { scope: "weekly", bucketId: "codex", label: "Weekly" };
-  const onDemand = { scope: "monthly", bucketId: "on-demand", label: "On-Demand" };
+// Settings reads plugin data through loadValue(); hiddenBarWindows is a binding over it.
+const makeSettings = (input: { accounts: unknown[]; data?: Record<string, unknown>; saved?: Array<{ key: string; value: unknown }> }) => {
+  const data: Record<string, unknown> = { ...input.data };
   const ui = createContext({
-    accounts: [
-      { provider: "codex", vendor: "openai", windows: [session, weekly] },
-      { provider: "codex", vendor: "openai", windows: [session, weekly] },
-      { provider: "cursor", vendor: "cursor", windows: [onDemand] },
-    ],
-    providerRegistry: {}, hiddenBarWindows: {},
-    saveValue(key: string, value: unknown) { saved.push({ key, value }); },
+    accounts: input.accounts, providerRegistry: {}, previewHidden: [], providerVisibility: "all", selectedProviderList: [],
+    hiddenEntries: [], barHiddenEntries: [], settingsRevision: 0,
+    loadValue: (key: string, fallback: unknown) => data[key] ?? fallback,
+    saveValue: (key: string, value: unknown) => { data[key] = value; input.saved?.push({ key, value }); },
   });
   ui.root = ui;
   runInContext(functions(settings), ui);
+  Object.defineProperty(ui, "hiddenBarWindows", { get: () => data.hiddenBarWindows ?? {} });
+  return ui;
+};
+
+it("persists independent provider window choices and shares them between accounts", () => {
+  const saved: Array<{ key: string; value: unknown }> = [];
+  const session = { scope: "session", bucketId: "codex", label: "Session", windowMinutes: 300, usedPct: 10 };
+  const weekly = { scope: "weekly", bucketId: "codex", label: "Weekly", usedPct: 20 };
+  const onDemand = { scope: "monthly", bucketId: "on-demand", label: "On-Demand", amountUsd: 3 };
+  const ui = makeSettings({ saved, accounts: [
+    { provider: "codex", vendor: "openai", windows: [session, weekly] },
+    { provider: "codex", vendor: "openai", windows: [session, weekly] },
+    { provider: "cursor", vendor: "cursor", windows: [onDemand] },
+  ] });
   const groups = ui.buildBarWindowGroups();
   expect(groups[0].windows.map((w: { label: string }) => w.label)).toEqual(["Session (5h)", "Weekly"]);
   ui.setBarWindowVisible("openai", session, false);
@@ -96,22 +115,15 @@ it("persists independent provider window choices and shares them between account
 
 it("groups legacy and native windows and restores old hidden preferences", () => {
   const saved: Array<{ key: string; value: unknown }> = [];
-  const session = { scope: "session", label: "Session", bucketId: "codex", windowMinutes: 300 };
-  const weekly = { scope: "weekly", label: "Weekly", bucketId: "codex" };
-  const oldWeekly = { scope: "weekly", label: "Weekly", bucketId: "" };
-  const cursor = { scope: "monthly", label: "Other Models", bucketId: "other-models" };
-  const oldCursor = { scope: "other", label: "Other Models" };
-  const ui = createContext({
-    accounts: [
-      { provider: "codex", vendor: "openai", windows: [session, weekly, oldWeekly] },
-      { provider: "cursor", vendor: "cursor", windows: [cursor, oldCursor] },
-    ],
-    providerRegistry: {},
-    hiddenBarWindows: { openai: ['["weekly","codex",""]'], cursor: ['["other","other models",""]'] },
-    saveValue(key: string, value: unknown) { saved.push({ key, value }); },
-  });
-  ui.root = ui;
-  runInContext(functions(settings), ui);
+  const session = { scope: "session", label: "Session", bucketId: "codex", windowMinutes: 300, usedPct: 1 };
+  const weekly = { scope: "weekly", label: "Weekly", bucketId: "codex", usedPct: 1 };
+  const oldWeekly = { scope: "weekly", label: "Weekly", bucketId: "", usedPct: 1 };
+  const cursor = { scope: "monthly", label: "Other Models", bucketId: "other-models", usedPct: 1 };
+  const oldCursor = { scope: "other", label: "Other Models", usedPct: 1 };
+  const ui = makeSettings({ saved, accounts: [
+    { provider: "codex", vendor: "openai", windows: [session, weekly, oldWeekly] },
+    { provider: "cursor", vendor: "cursor", windows: [cursor, oldCursor] },
+  ], data: { hiddenBarWindows: { openai: ['["weekly","codex",""]'], cursor: ['["other","other models",""]'] } } });
   const groups = ui.buildBarWindowGroups();
   expect(groups[0].windows.map((w: { label: string }) => w.label)).toEqual(["Session (5h)", "Weekly"]);
   expect(groups[1].windows.map((w: { label: string }) => w.label)).toEqual(["Other Models"]);
@@ -123,6 +135,33 @@ it("groups legacy and native windows and restores old hidden preferences", () =>
   const widgetUi = makeWidget();
   expect(widgetUi.barWindowKey(weekly)).toBe(ui.barWindowKey(oldWeekly));
   expect(widgetUi.barWindowKey(cursor)).toBe(ui.barWindowKey(oldCursor));
+});
+
+it("keeps saved bar windows of other providers when toggling one", () => {
+  const session = { scope: "session", bucketId: "codex", label: "Session", windowMinutes: 300, usedPct: 10 };
+  const ui = makeSettings({ accounts: [{ provider: "codex", vendor: "openai", windows: [session] }],
+    data: { hiddenBarWindows: { anthropic: ['["session","",""]'] } } });
+  ui.setBarWindowVisible("openai", session, false);
+  expect(Object.keys(ui.hiddenBarWindows).sort()).toEqual(["anthropic", "openai"]);
+});
+
+it("explains why a provider's accounts never reach the bar and skips windows it cannot draw", () => {
+  const current = { scope: "weekly", label: "Weekly", usedPct: 20 };
+  const derived = { scope: "daily", label: "Daily", source: "derived", usedPct: 5 };
+  const expired = { scope: "session", label: "Session", status: "expired", usedPct: 90 };
+  const ui = makeSettings({ accounts: [
+    { provider: "codex", vendor: "openai", accountKey: "a", windows: [current, derived, expired] },
+    { provider: "codex", vendor: "openai", accountKey: "b", windows: [current] },
+    { provider: "cursor", vendor: "cursor", accountKey: "default", windows: [current] },
+  ] });
+  ui.hiddenEntries = ["codex:b"];
+  ui.previewHidden = ["cursor"];
+  const groups = ui.buildBarWindowGroups();
+  expect(groups[0].windows.map((w: { label: string }) => w.label)).toEqual(["Weekly"]);
+  expect(groups[0].shownAccounts).toBe(1);
+  expect(groups[0].reasons).toEqual(["an account is turned off under Usage cards"]);
+  expect(groups[1].windows).toEqual([]);
+  expect(groups[1].reasons).toEqual(["the provider is hidden in Tokitoki's preview settings"]);
 });
 
 it("tracking quality preserves unknown coverage and follows the exact composition period", () => {
@@ -400,7 +439,7 @@ describe("DMS widget uses the existing payload without distorting totals", () =>
     ui.payload.uiPreview = { menubarHidden: ["codex:global"] };
     expect(ui.shortestWindowGroups(ui.buildStatusStripGroups())[0].lines).toEqual(["5h 40%"]);
     ui.payload.limits = [{ provider: "cursor", windows: [] }];
-    expect(ui.shortestWindowGroups(ui.buildStatusStripGroups())[0].lines).toEqual(["—"]);
+    expect(ui.shortestWindowGroups(ui.buildStatusStripGroups())).toEqual([]);
     expect(ui.shortestWindowGroups([])).toEqual([]);
   });
 
@@ -670,4 +709,65 @@ it("notification category writes preserve other categories and custom thresholds
   ui.setCategoryEnabled("quotaCritical", false);
   expect(ui.activeWrite.path).toBe("notifications.disabled");
   expect(JSON.parse(ui.activeWrite.json)).toEqual(["futureCategory", "quotaCritical"]);
+});
+
+it("follows the cached first paint with one live refresh", () => {
+  const ui = makeWidget();
+  ui.cachedFirstRead = true;
+  ui.refreshActive = true;
+  ui.statusExited = ui.statusStdoutDone = ui.statusStderrDone = true;
+  ui.statusStdout = JSON.stringify({ schema: 1, app: "tokitoki", limits: [] });
+  ui.finishStatus();
+  expect(ui.cachedFirstRead).toBe(false);
+  expect(ui.statusProcess.running).toBe(true);
+  expect(ui.scanNextRefresh).toBe(false);
+});
+
+it("starts a refresh queued during a timed-out run once that run exits", () => {
+  const ui = makeWidget();
+  ui.refresh(false);
+  ui.statusTimedOut();
+  ui.statusProcess.running = true;
+  ui.refresh(true);
+  expect(ui.pendingRefresh).toBe(true);
+  ui.statusProcess.running = false;
+  ui.runPendingRefresh();
+  expect(ui.statusProcess.running).toBe(true);
+  expect(ui.scanNextRefresh).toBe(true);
+  expect(ui.pendingRefresh).toBe(false);
+});
+
+it("drops optimistic overrides once a refresh started after the last write lands", () => {
+  const ui = makeWidget();
+  ui.barHiddenOverride = ["codex@a"];
+  ui.uiWriteGeneration = 1;
+  ui.statusGeneration = 0;
+  ui.accept(JSON.stringify({ schema: 1, app: "tokitoki", limits: [], uiPreview: { barHiddenAccounts: ["codex@a", "codex@b"] } }));
+  expect(ui.barHiddenOverride).toEqual(["codex@a"]);
+  ui.refresh(false);
+  expect(ui.statusGeneration).toBe(1);
+  ui.accept(JSON.stringify({ schema: 1, app: "tokitoki", limits: [], uiPreview: { barHiddenAccounts: ["codex@a", "codex@b"] } }));
+  expect(ui.barHiddenOverride).toBeNull();
+});
+
+it("precomputed move arrows agree with the order each move would produce", () => {
+  const ui = makeWidget();
+  ui.hasLimits = true;
+  const accounts = [
+    { provider: "codex", vendor: "openai", accountKey: "a", windows: [] },
+    { provider: "claude-code", vendor: "anthropic", accountKey: "b", windows: [] },
+    { provider: "codex", vendor: "openai", accountKey: "c", windows: [] },
+    { provider: "cursor", vendor: "cursor", accountKey: "d", windows: [] },
+  ];
+  ui.payload.limits = accounts;
+  ui.payload.uiPreview = { accountOrder: ["codex@c", "cursor@d", "codex@a", "claude-code@b"], barAccountOrder: ["claude-code@b", "codex@a", "cursor@d", "codex@c"], barHiddenAccounts: ["cursor@d"] };
+  Object.defineProperty(ui, "quotaStripGroups", { get: () => ui.buildStatusStripGroups() });
+  const moves = ui.buildAccountMoves();
+  for (const account of accounts) {
+    const entry = moves[`${account.provider}@${account.accountKey}`] ?? {};
+    expect(Boolean(entry.up)).toBe(ui.shiftedAccountOrder(account, -1) !== null);
+    expect(Boolean(entry.down)).toBe(ui.shiftedAccountOrder(account, 1) !== null);
+    expect(Boolean(entry.barUp)).toBe(ui.shiftedAccountOrder(account, -1, "bar") !== null);
+    expect(Boolean(entry.barDown)).toBe(ui.shiftedAccountOrder(account, 1, "bar") !== null);
+  }
 });

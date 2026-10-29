@@ -11,8 +11,24 @@ PluginSettings {
     property string shellName: "DMS"
     property var accounts: []
     property var providerRegistry: ({})
-    property var hiddenBarWindows: ({})
+    // pluginService is attached after creation and plugin data can change
+    // from another window; bindings over loadValue() re-read on this tick.
+    property int settingsRevision: 0
+    readonly property var hiddenBarWindows: {
+        root.settingsRevision
+        return root.loadValue("hiddenBarWindows", ({})) || ({})
+    }
+    readonly property string providerVisibility: {
+        root.settingsRevision
+        return String(root.loadValue("providerVisibility", "all"))
+    }
+    readonly property var selectedProviderList: {
+        root.settingsRevision
+        return String(root.loadValue("selectedProviders", "")).split(",")
+            .map(item => item.trim().toLowerCase()).filter(item => item.length > 0)
+    }
     readonly property var barWindowGroups: root.buildBarWindowGroups()
+    property var previewHidden: []
     property var hiddenEntries: []
     property var barHiddenEntries: []
     property var pendingBarHidden: []
@@ -27,9 +43,13 @@ PluginSettings {
     property string pendingPayload: ""
     property string loadError: ""
     property string visibilityError: ""
-    readonly property bool hideIdentities: Boolean(root.loadValue("privacyHideIdentities", false))
+    readonly property bool hideIdentities: {
+        root.settingsRevision
+        return Boolean(root.loadValue("privacyHideIdentities", false))
+    }
 
     readonly property string tokitokiCommand: {
+        root.settingsRevision
         const override = String(root.loadValue("executablePath", ""))
         return override.length > 0 ? override : "tokitoki"
     }
@@ -75,8 +95,44 @@ PluginSettings {
         return !Array.isArray(entries) || !entries.some(function(entry) { return normalizeBarWindowKey(entry) === key })
     }
 
+    // Vendor id plus legacy aliases, as matched by the widget's previewHidden
+    // and selectedProviders checks.
+    function vendorKeys(vendor) {
+        if (!vendor) return []
+        const entry = root.providerRegistry[vendor] || ({})
+        const aliases = Array.isArray(entry.aliases) ? entry.aliases : []
+        return [String(vendor).toLowerCase()].concat(aliases.map(alias => String(alias).toLowerCase()))
+    }
+
+    // Why an account never reaches the bar, mirroring the widget's
+    // providerIsVisible() and barAccountHidden(); "" when it does.
+    function barHiddenReason(account, vendor) {
+        if (root.isAccountHidden(account)) return "card"
+        if (root.isBarAccountHidden(account)) return "bar"
+        const keys = root.vendorKeys(vendor)
+        if (keys.some(key => root.previewHidden.indexOf(key) >= 0)) return "provider"
+        if (root.providerVisibility === "selected" && root.selectedProviderList.length > 0 &&
+            root.selectedProviderList.indexOf(String(account.provider || "").toLowerCase()) < 0 &&
+            !keys.some(key => root.selectedProviderList.indexOf(key) >= 0)) return "selection"
+        return ""
+    }
+
+    function barWindowShown(windowData) {
+        if (!windowData || windowData.source === "derived") return false
+        if (windowData.status && windowData.status !== "current") return false
+        const used = Number(windowData.usedPct)
+        return (windowData.usedPct !== null && windowData.usedPct !== undefined && isFinite(used)) ||
+            (windowData.amountUsd !== null && windowData.amountUsd !== undefined)
+    }
+
     function buildBarWindowGroups() {
         const groups = []
+        const reasonText = {
+            card: "an account is turned off under Usage cards",
+            bar: "an account has Show in bar turned off under Usage cards",
+            provider: "the provider is hidden in Tokitoki's preview settings",
+            selection: "the provider is not in Selected providers"
+        }
         for (const account of root.accounts) {
             const entry = root.providerRegistry[account.provider] || ({})
             const provider = String(account.vendor || entry.vendor || account.provider || "")
@@ -84,10 +140,17 @@ PluginSettings {
             let group = groups.find(value => value.provider === provider)
             if (!group) {
                 const vendorEntry = root.providerRegistry[provider] || ({})
-                group = { provider: provider, label: String(vendorEntry.displayName || provider), windows: [] }
+                group = { provider: provider, label: String(vendorEntry.displayName || provider), windows: [], reasons: [], shownAccounts: 0 }
                 groups.push(group)
             }
+            const reason = root.barHiddenReason(account, provider)
+            if (reason) {
+                if (group.reasons.indexOf(reasonText[reason]) < 0) group.reasons.push(reasonText[reason])
+                continue
+            }
+            group.shownAccounts++
             for (const windowData of (Array.isArray(account.windows) ? account.windows : [])) {
+                if (!root.barWindowShown(windowData)) continue
                 const id = root.barWindowKey(windowData)
                 if (group.windows.some(value => value.id === id)) continue
                 let label = String(windowData.label || windowData.model || windowData.scope || windowData.kind || "Limit")
@@ -97,18 +160,24 @@ PluginSettings {
                 group.windows.push({ id: id, label: label, window: windowData })
             }
         }
-        return groups.filter(value => value.windows.length > 0)
+        return groups.filter(value => value.windows.length > 0 || value.reasons.length > 0)
     }
 
     function setBarWindowVisible(provider, windowData, visible) {
-        const next = Object.assign({}, root.hiddenBarWindows)
+        const next = Object.assign({}, root.loadValue("hiddenBarWindows", ({})) || ({}))
         const id = root.barWindowKey(windowData)
         const entries = Array.isArray(next[provider]) ? next[provider].filter(value => root.normalizeBarWindowKey(value) !== id) : []
         if (!visible) entries.push(id)
         if (entries.length) next[provider] = entries
         else delete next[provider]
-        root.hiddenBarWindows = next
         root.saveValue("hiddenBarWindows", next)
+        root.settingsRevision++
+    }
+
+    // Account visibility lives in Tokitoki's config; bumping this plugin key
+    // tells the bar widget to re-read its payload right away.
+    function announceConfigWrite() {
+        root.saveValue("uiConfigRevision", Date.now())
     }
 
     function accountLabel(account) {
@@ -133,7 +202,7 @@ PluginSettings {
     }
 
     function isAccountHidden(account) {
-        return root.hiddenEntries.some(entry => root.hiddenEntryMatches(entry, account))
+        return (root.hiddenEntries || []).some(entry => root.hiddenEntryMatches(entry, account))
     }
 
     // "provider" hides the whole provider, "provider:accountKey" one account;
@@ -171,7 +240,7 @@ PluginSettings {
     }
 
     function isBarAccountHidden(account) {
-        return root.barHiddenEntries.indexOf(account.provider + "@" + account.accountKey) >= 0
+        return (root.barHiddenEntries || []).indexOf(account.provider + "@" + account.accountKey) >= 0
     }
 
     function setBarAccountHidden(account, hidden) {
@@ -236,6 +305,7 @@ PluginSettings {
             root.providerRegistry = parsed.providerRegistry || ({})
             root.hiddenEntries = parsed.uiPreview.menubarHidden
             root.barHiddenEntries = parsed.uiPreview.barHiddenAccounts || []
+            root.previewHidden = (parsed.uiPreview.previewHidden || []).map(key => String(key).toLowerCase())
             root.loadError = ""
         } catch (error) {
             root.loadError = "Could not read Tokitoki account settings: " + String(error)
@@ -269,6 +339,7 @@ PluginSettings {
         onExited: function(exitCode, exitStatus) {
             if (exitCode !== 0)
                 root.visibilityError = "Could not save account visibility (exit code " + exitCode + ")."
+            else root.announceConfigWrite()
             root.runNextVisibilityChange()
         }
     }
@@ -279,21 +350,30 @@ PluginSettings {
         onExited: function(exitCode, exitStatus) {
             if (exitCode === 0) {
                 root.barHiddenEntries = root.pendingBarHidden.slice()
+                root.announceConfigWrite()
                 root.reload()
             } else root.visibilityError = "Could not save bar visibility (exit code " + exitCode + ")."
         }
     }
 
-    Component.onCompleted: {
-        root.hiddenBarWindows = root.loadValue("hiddenBarWindows", ({})) || ({})
-        Qt.callLater(root.reload)
-    }
+    Component.onCompleted: Qt.callLater(root.reload)
 
     Connections {
         target: root
 
         function onPluginServiceChanged() {
+            root.settingsRevision++
             Qt.callLater(root.reload)
+        }
+    }
+
+    Connections {
+        target: root.pluginService
+        enabled: root.pluginService !== null
+
+        function onPluginDataChanged(changedPluginId) {
+            if (changedPluginId === root.pluginId)
+                root.settingsRevision++
         }
     }
 
@@ -440,6 +520,15 @@ PluginSettings {
                     color: Theme.surfaceText
                     font.weight: Font.DemiBold
                 }
+                StyledText {
+                    width: parent.width
+                    visible: barWindowGroup.modelData.reasons.length > 0
+                    text: (barWindowGroup.modelData.shownAccounts > 0 ? "Some accounts are" : "Not")
+                        + " shown in the bar: " + barWindowGroup.modelData.reasons.join("; ") + "."
+                    color: Theme.warning
+                    font.pixelSize: Theme.fontSizeSmall
+                    wrapMode: Text.WordWrap
+                }
                 Repeater {
                     model: parent.modelData.windows
                     DToggle {
@@ -513,7 +602,7 @@ PluginSettings {
                     width: parent.width
                     text: "Show in bar"
                     description: "Independent from the Quotas card; reorder directly in Quotas."
-                    checked: !root.isBarAccountHidden(parent.modelData)
+                    checked: !root.isAccountHidden(parent.modelData) && !root.isBarAccountHidden(parent.modelData)
                     enabled: !barVisibilityProcess.running && !root.isAccountHidden(parent.modelData)
                     onToggled: isChecked => root.setBarAccountHidden(parent.modelData, !isChecked)
                 }

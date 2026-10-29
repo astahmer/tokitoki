@@ -2,14 +2,20 @@
 import fs from 'node:fs';
 const file = process.argv[2];
 let source = fs.readFileSync(file, 'utf8');
-source = source.replace('id: accountCard', 'id: accountCard\n property string e2eAccount: account.provider + "@" + account.accountKey');
-for (const label of ['Move up in Quotas', 'Move down in Quotas', 'Hide this account everywhere', 'Move earlier in the bar', 'Move later in the bar', 'Restore this account']) {
-  source = source.replace(`tooltipText: "${label}"`, `Component.onCompleted: root.e2eSurfaceControls.push(this)\n tooltipText: "${label}"`);
+// A missing anchor means the widget changed; fail loudly instead of
+// producing a run with silently uninstrumented controls.
+const patch = (anchor, replacement) => {
+  if (!source.includes(anchor)) throw new Error(`instrument-surfaces: anchor not found: ${anchor}`);
+  source = source.replace(anchor, replacement);
+};
+patch('id: accountCard', 'id: accountCard\n property string e2eAccount: account.provider + "@" + account.accountKey');
+for (const label of ['Move up in Quotas', 'Move down in Quotas', 'Hide this account everywhere', 'Move earlier in the bar', 'Move later in the bar']) {
+  patch(`tooltipText: "${label}"`, `Component.onCompleted: root.e2eSurfaceControls.push(this)\n tooltipText: "${label}"`);
 }
-source = source.replace('tooltipText: root.restoreAccountLabel(modelData)', 'Component.onCompleted: root.e2eSurfaceControls.push(this)\n tooltipText: root.restoreAccountLabel(modelData)');
-source = source.replace('tooltipText: root.barAccountHidden(accountCard.account) ?', 'Component.onCompleted: root.e2eSurfaceControls.push(this)\n tooltipText: root.barAccountHidden(accountCard.account) ?');
-source = source.replace('onClicked: root.hiddenAccountsExpanded = !root.hiddenAccountsExpanded', 'Component.onCompleted: { root.e2eFold = this }\n onClicked: root.hiddenAccountsExpanded = !root.hiddenAccountsExpanded');
-source = source.replace('id: refreshButton', 'id: refreshButton\n Component.onCompleted: root.e2eRefresh = this');
+patch('tooltipText: root.restoreAccountLabel(modelData)', 'Component.onCompleted: root.e2eSurfaceControls.push(this)\n tooltipText: root.restoreAccountLabel(modelData)');
+patch('tooltipText: providerFiltered ?', 'Component.onCompleted: root.e2eSurfaceControls.push(this)\n tooltipText: providerFiltered ?');
+patch('onClicked: root.hiddenAccountsExpanded = !root.hiddenAccountsExpanded', 'Component.onCompleted: { root.e2eFold = this }\n onClicked: root.hiddenAccountsExpanded = !root.hiddenAccountsExpanded');
+patch('id: refreshButton', 'id: refreshButton\n Component.onCompleted: root.e2eRefresh = this');
 const hook = `
  property var e2eSurfaceControls: []
  property var e2eFold: null

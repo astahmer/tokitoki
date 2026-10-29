@@ -79,7 +79,7 @@ if [ "$E2E_SHELL" = dms ]; then
 import fs from "node:fs";
 const file = process.argv[2];
 const source = fs.readFileSync(file, "utf8")
-  .replace("property bool tooltipOpen: false", "property bool tooltipOpen: false\n                    onTooltipOpenChanged: if (tooltipOpen) root.e2eHoverGroup = providerGroup")
+  .replace("readonly property bool tooltipOpen: root.openTooltipProvider === String(groupData.provider)", "readonly property bool tooltipOpen: root.openTooltipProvider === String(groupData.provider)\n                    onTooltipOpenChanged: if (tooltipOpen) root.e2eHoverGroup = providerGroup")
   .replace("id: clearSearch", "id: clearSearch\n                                    Component.onCompleted: root.e2eClearSearch = clearSearch")
   .replace("TokitokiSessionsView {", "TokitokiSessionsView {\n                                    Component.onCompleted: root.e2eSessionsView = this")
   .replace("TokitokiNotifications {", "TokitokiNotifications {\n                                    Component.onCompleted: root.e2eNotifications = this")

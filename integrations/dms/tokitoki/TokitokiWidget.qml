@@ -44,6 +44,17 @@ PluginComponent {
     property var barAccountOrderOverride: null
     property var barHiddenOverride: null
     property var pendingBarHidden: []
+    // Bumped after each successful config write; a payload whose refresh
+    // started at or after the latest write replaces the optimistic overrides.
+    property int uiWriteGeneration: 0
+    property int statusGeneration: 0
+    // UI writes run one at a time; clicks made meanwhile wait here.
+    property var queuedUiActions: []
+    property string openTooltipProvider: ""
+    readonly property var uiConfigRevision: root.pluginSetting("uiConfigRevision", 0)
+    readonly property string barLabel: root.barSummaryText()
+    readonly property var barDegradedVendors: root.degradedBarVendors()
+    readonly property var accountMoves: root.buildAccountMoves()
     property bool hiddenAccountsExpanded: false
     property string pendingOrderSurface: "quotas"
     property var pendingAccountOrder: []
@@ -682,10 +693,7 @@ PluginComponent {
                 return "tokitoki ?"
             return compactNumber(totalTokens(report.total)) + " · " + formatMoney(report.total.costUsd)
         }
-        var groups = root.buildStatusStripGroups()
-        if (root.isShortestWindowMode())
-            groups = root.shortestWindowGroups(groups)
-        return groups.map(function(group) {
+        return root.statusStripGroups.map(function(group) {
             var text = group.lines.join(" · ")
             return group.label + (text ? " " + text : "")
         }).join(" | ")
@@ -719,9 +727,26 @@ PluginComponent {
         return false
     }
 
-    function setAccountHidden(provider, accountKey, hidden) {
-        if (visibilityProcess.running)
+    function uiWriteBusy() {
+        return visibilityProcess.running || barVisibilityProcess.running || accountOrderProcess.running
+    }
+
+    function runQueuedUiAction() {
+        if (uiWriteBusy() || queuedUiActions.length === 0)
             return
+        var actions = queuedUiActions.slice()
+        var action = actions.shift()
+        queuedUiActions = actions
+        action()
+    }
+
+    function queueUiAction(action) {
+        queuedUiActions = queuedUiActions.concat([action])
+    }
+
+    function setAccountHidden(provider, accountKey, hidden) {
+        if (uiWriteBusy())
+            return queueUiAction(function() { root.setAccountHidden(provider, accountKey, hidden) })
         visibilityTarget = root.accountTarget(provider, accountKey)
         visibilityHide = hidden
         visibilityProcess.running = true
@@ -923,8 +948,8 @@ PluginComponent {
     }
 
     function setBarAccountHidden(account, hidden) {
-        if (barVisibilityProcess.running)
-            return
+        if (uiWriteBusy())
+            return queueUiAction(function() { root.setBarAccountHidden(account, hidden) })
         var ids = Array.isArray(barHiddenOverride) ? barHiddenOverride.slice() : ((payload.uiPreview || {}).barHiddenAccounts || []).slice()
         var id = account.provider + "@" + account.accountKey
         ids = ids.filter(function(value) { return value !== id })
@@ -947,18 +972,14 @@ PluginComponent {
 
     function shiftedAccountOrder(account, direction, surface) {
         if (surface === "bar") return shiftedBarAccountOrder(account, direction)
-        var visibleAccounts = surface === "bar" ? orderedAccounts("bar").filter(function(a) {
-            return !root.barAccountHidden(a) && root.providerIsVisible(a.provider, a.accountKey, a.vendor)
-        }) : filteredLimits()
-        var visible = visibleAccounts.map(function(a) { return a.provider + "@" + a.accountKey })
+        var visible = filteredLimits().map(function(a) { return a.provider + "@" + a.accountKey })
         var id = account.provider + "@" + account.accountKey
         var index = visible.indexOf(id)
         var neighbour = visible[index + direction]
         if (index < 0 || !neighbour)
             return null
         var ui = payload.uiPreview || {}
-        var override = surface === "bar" ? barAccountOrderOverride : accountOrderOverride
-        var saved = (Array.isArray(override) ? override : surface === "bar" ? ui.barAccountOrder || ui.accountOrder || [] : ui.accountOrder || []).slice()
+        var saved = (Array.isArray(accountOrderOverride) ? accountOrderOverride : ui.accountOrder || []).slice()
         orderedAccounts(surface).forEach(function(a) {
             var key = a.provider + "@" + a.accountKey
             if (saved.indexOf(key) < 0) saved.push(key)
@@ -998,9 +1019,42 @@ PluginComponent {
         return saved.map(function(key) { return original.indexOf(key) >= 0 ? desired[next++] : key })
     }
 
+    // Which arrows each card can use, computed once per payload/override
+    // change; mirrors where shiftedAccountOrder()/shiftedBarAccountOrder()
+    // return null.
+    function buildAccountMoves() {
+        var moves = {}
+        var accountId = function(a) { return a.provider + "@" + a.accountKey }
+        var move = function(id) {
+            if (!moves[id]) moves[id] = { up: false, down: false, barUp: false, barDown: false }
+            return moves[id]
+        }
+        var quotaIds = filteredLimits().map(accountId)
+        quotaIds.forEach(function(id, index) {
+            move(id).up = index > 0
+            move(id).down = index < quotaIds.length - 1
+        })
+        var known = orderedAccounts("bar").map(accountId)
+        var groups = root.quotaStripGroups.map(function(group) {
+            return group.accounts.map(accountId).filter(function(id) { return known.indexOf(id) >= 0 })
+        }).filter(function(group) { return group.length > 0 })
+        groups.forEach(function(group, groupIndex) {
+            group.forEach(function(id, index) {
+                move(id).barUp = index > 0 || groupIndex > 0
+                move(id).barDown = index < group.length - 1 || groupIndex < groups.length - 1
+            })
+        })
+        return moves
+    }
+
+    function canMove(account, key) {
+        var entry = root.accountMoves[account.provider + "@" + account.accountKey]
+        return Boolean(entry && entry[key])
+    }
+
     function moveAccount(account, direction, surface) {
-        if (accountOrderBusy)
-            return
+        if (uiWriteBusy())
+            return queueUiAction(function() { root.moveAccount(account, direction, surface) })
         var next = shiftedAccountOrder(account, direction, surface)
         if (!next)
             return
@@ -1075,6 +1129,8 @@ PluginComponent {
             return searchMatches(root.shellName + " integration settings executable configuration")
         if (id === "notifications")
             return searchMatches("notifications alerts quota spend burn budget settings")
+        if (id === "alerts")
+            return searchMatches("service alerts status incidents outage errors " + degradedVendors().join(" "))
         if (id === "tracking")
             return searchMatches("tracking quality pricing cost tokens cache reported estimated unpriced coverage legacy unknown")
         if (id === "pulse" || id === "composition" || id === "history")
@@ -1366,9 +1422,6 @@ PluginComponent {
         return updated
     }
 
-    function barText() {
-        return barSummaryText()
-    }
 
     function detailText() {
         if (!hasPayload)
@@ -1468,10 +1521,12 @@ PluginComponent {
 
     function shortestWindowGroups(groups) {
         return groups.map(function(group) {
-            return Object.assign({}, group, { lines: group.profiles.map(function(profile) {
-                return profile.prefix + (profile.shortest ? profile.shortest.text : "—")
+            return Object.assign({}, group, { lines: group.profiles.filter(function(profile) {
+                return profile.shortest
+            }).map(function(profile) {
+                return profile.prefix + profile.shortest.text
             }) })
-        })
+        }).filter(function(group) { return group.lines.length > 0 })
     }
 
     function buildStatusStripGroups() {
@@ -1523,7 +1578,7 @@ PluginComponent {
                             resetsAt: "", color: Theme.primary, icon: "history" })
                         continue
                     }
-                    if (quotaStatus(windowData) !== "current" || (!hasUsedPercent(windowData) && (windowData.amountUsd === undefined || windowData.amountUsd === null)))
+                    if ((!hasUsedPercent(windowData) && (windowData.amountUsd === undefined || windowData.amountUsd === null)))
                         continue
                     var duration = barWindowDuration(windowData)
                     if (!duration)
@@ -1567,6 +1622,7 @@ PluginComponent {
         }
         scanNextRefresh = Boolean(scan)
         cachedFirstRead = false
+        statusGeneration = uiWriteGeneration
         refreshActive = true
         statusExited = false
         statusStdoutDone = false
@@ -1576,12 +1632,12 @@ PluginComponent {
         statusProcess.running = true
     }
 
+    // Queued refreshes survive a timeout: runPendingRefresh() starts them once
+    // the stuck process has actually exited.
     function statusTimedOut() {
         refreshActive = false
         statusProcess.running = false
         scanNextRefresh = false
-        pendingRefresh = false
-        pendingScan = false
         var message = "Quota refresh timed out; retrying on next automatic refresh"
         if (hasPayload) lastError = message
         else errorText = message
@@ -1600,12 +1656,24 @@ PluginComponent {
             errorText = message
     }
 
+    function runPendingRefresh() {
+        if (refreshActive || statusProcess.running || !pendingRefresh)
+            return
+        var scan = pendingScan
+        pendingRefresh = false
+        pendingScan = false
+        refresh(scan)
+    }
+
     function finishStatus() {
         if (!refreshActive || !statusExited || !statusStdoutDone || !statusStderrDone)
             return
         var retryNotify = notifySupported && statusStderr.indexOf("unknown flag '--notify'") >= 0
         var scan = pendingScan || (retryNotify && scanNextRefresh)
-        var again = pendingRefresh || retryNotify
+        // The first paint comes from the stored payload; follow it with a live
+        // read so quotas never sit on an hours-old snapshot.
+        var again = pendingRefresh || retryNotify || cachedFirstRead
+        cachedFirstRead = false
         refreshActive = false
         scanNextRefresh = false
         pendingRefresh = false
@@ -1646,12 +1714,13 @@ PluginComponent {
                 quotaWarning = "Quota refresh incomplete; showing last observations"
             }
             payload = next
-            if (Array.isArray(accountOrderOverride) && JSON.stringify((next.uiPreview || {}).accountOrder || []) === JSON.stringify(accountOrderOverride))
+            // A payload read after the last write is authoritative, even when
+            // Settings or the CLI changed the same lists in the meantime.
+            if (statusGeneration >= uiWriteGeneration) {
                 accountOrderOverride = null
-            if (Array.isArray(barAccountOrderOverride) && JSON.stringify((next.uiPreview || {}).barAccountOrder || []) === JSON.stringify(barAccountOrderOverride))
                 barAccountOrderOverride = null
-            if (Array.isArray(barHiddenOverride) && JSON.stringify((next.uiPreview || {}).barHiddenAccounts || []) === JSON.stringify(barHiddenOverride))
                 barHiddenOverride = null
+            }
             errorText = ""
             lastError = quotaWarning
         } catch (error) {
@@ -1662,7 +1731,16 @@ PluginComponent {
         }
     }
 
-    Component.onCompleted: Qt.callLater(root.restoreSelections)
+    // Start the first read once pluginData is attached, so a custom
+    // executablePath is honoured from the very first run.
+    Component.onCompleted: Qt.callLater(function() {
+        root.restoreSelections()
+        statusProcess.running = true
+    })
+    onUiConfigRevisionChanged: {
+        if (!cachedFirstRead)
+            refresh(false)
+    }
 
     onSelectedTabChanged: saveState("selectedTab", selectedTab)
     onOpeningTabChanged: {
@@ -1688,9 +1766,9 @@ PluginComponent {
             DIcon {
                 name: "warning"
                 size: root.iconSize
-                color: root.incidentColor(root.vendorIncident(root.degradedBarVendors()[0]))
+                color: root.incidentColor(root.vendorIncident(root.barDegradedVendors[0]))
                 anchors.verticalCenter: parent.verticalCenter
-                visible: root.degradedBarVendors().length > 0
+                visible: root.barDegradedVendors.length > 0
             }
 
             DIcon {
@@ -1702,7 +1780,7 @@ PluginComponent {
             }
 
             StyledText {
-                text: root.barText()
+                text: root.barLabel
                 color: Theme.widgetTextColor
                 font.pixelSize: Theme.barTextSize(
                     root.barThickness,
@@ -1711,7 +1789,7 @@ PluginComponent {
                 )
                 font.weight: Font.Medium
                 anchors.verticalCenter: parent.verticalCenter
-                visible: root.statusStripGroups.length === 0 && root.barText().length > 0
+                visible: root.statusStripGroups.length === 0 && root.barLabel.length > 0
             }
 
             Repeater {
@@ -1720,14 +1798,19 @@ PluginComponent {
                 delegate: Row {
                     id: providerGroup
                     property var groupData: modelData
-                    property bool tooltipOpen: false
+                    readonly property bool tooltipOpen: root.openTooltipProvider === String(groupData.provider)
+
+                    Component.onCompleted: {
+                        if (tooltipOpen)
+                            tooltipClose.restart()
+                    }
 
                     HoverHandler {
                         id: providerHover
                         onHoveredChanged: {
                             if (hovered) {
                                 tooltipClose.stop()
-                                providerGroup.tooltipOpen = true
+                                root.openTooltipProvider = String(providerGroup.groupData.provider)
                             } else {
                                 tooltipClose.restart()
                             }
@@ -1738,8 +1821,8 @@ PluginComponent {
                         id: tooltipClose
                         interval: 180
                         onTriggered: {
-                            if (!providerHover.hovered && !cardHover.hovered)
-                                providerGroup.tooltipOpen = false
+                            if (!providerHover.hovered && !cardHover.hovered && providerGroup.tooltipOpen)
+                                root.openTooltipProvider = ""
                         }
                     }
 
@@ -1960,9 +2043,9 @@ PluginComponent {
             DIcon {
                 name: "warning"
                 size: root.iconSize
-                color: root.incidentColor(root.vendorIncident(root.degradedBarVendors()[0]))
+                color: root.incidentColor(root.vendorIncident(root.barDegradedVendors[0]))
                 anchors.horizontalCenter: parent.horizontalCenter
-                visible: root.degradedBarVendors().length > 0
+                visible: root.barDegradedVendors.length > 0
             }
 
             DIcon {
@@ -1973,10 +2056,10 @@ PluginComponent {
             }
 
             StyledText {
-                text: root.barText()
+                text: root.barLabel
                 color: Theme.widgetTextColor
                 font.pixelSize: Theme.fontSizeSmall
-                visible: root.barText().length > 0
+                visible: root.statusStripGroups.length === 0 && root.barLabel.length > 0
                 anchors.horizontalCenter: parent.horizontalCenter
             }
         }
@@ -2675,7 +2758,7 @@ PluginComponent {
                                                         iconSize: 16
                                                         iconName: "arrow_upward"
                                                         tooltipText: "Move up in Quotas"
-                                                        enabled: !root.accountOrderBusy && root.shiftedAccountOrder(accountCard.account, -1) !== null
+                                                        enabled: root.canMove(accountCard.account, "up")
                                                         onClicked: root.moveAccount(accountCard.account, -1)
                                                     }
 
@@ -2684,7 +2767,7 @@ PluginComponent {
                                                         iconSize: 16
                                                         iconName: "arrow_downward"
                                                         tooltipText: "Move down in Quotas"
-                                                        enabled: !root.accountOrderBusy && root.shiftedAccountOrder(accountCard.account, 1) !== null
+                                                        enabled: root.canMove(accountCard.account, "down")
                                                         onClicked: root.moveAccount(accountCard.account, 1)
                                                     }
 
@@ -2716,7 +2799,7 @@ PluginComponent {
                                                         iconSize: 16
                                                         iconName: "arrow_back"
                                                         tooltipText: "Move earlier in the bar"
-                                                        enabled: !root.accountOrderBusy && root.shiftedAccountOrder(accountCard.account, -1, "bar") !== null
+                                                        enabled: root.canMove(accountCard.account, "barUp")
                                                         onClicked: root.moveAccount(accountCard.account, -1, "bar")
                                                     }
                                                     DActionButton {
@@ -2724,15 +2807,20 @@ PluginComponent {
                                                         iconSize: 16
                                                         iconName: "arrow_forward"
                                                         tooltipText: "Move later in the bar"
-                                                        enabled: !root.accountOrderBusy && root.shiftedAccountOrder(accountCard.account, 1, "bar") !== null
+                                                        enabled: root.canMove(accountCard.account, "barDown")
                                                         onClicked: root.moveAccount(accountCard.account, 1, "bar")
                                                     }
                                                     DActionButton {
+                                                        // Provider filters (selected providers, preview-hidden vendors)
+                                                        // keep the account out of the bar whatever this toggle says.
+                                                        readonly property bool providerFiltered: !root.providerIsVisible(
+                                                            accountCard.account.provider, accountCard.account.accountKey, accountCard.account.vendor)
                                                         buttonSize: 24
                                                         iconSize: 16
-                                                        iconName: root.barAccountHidden(accountCard.account) ? "visibility_off" : "visibility"
-                                                        tooltipText: root.barAccountHidden(accountCard.account) ? "Show in bar" : "Hide from bar only"
-                                                        enabled: !barVisibilityProcess.running
+                                                        iconName: providerFiltered || root.barAccountHidden(accountCard.account) ? "visibility_off" : "visibility"
+                                                        tooltipText: providerFiltered ? "Hidden from the bar by provider visibility settings"
+                                                            : root.barAccountHidden(accountCard.account) ? "Show in bar" : "Hide from bar only"
+                                                        enabled: !providerFiltered
                                                         onClicked: root.setBarAccountHidden(accountCard.account, !root.barAccountHidden(accountCard.account))
                                                     }
                                                 }
@@ -3619,7 +3707,8 @@ PluginComponent {
                         TokitokiCard {
                             title: "Service alerts"
                             iconName: "warning"
-                            visible: root.tabIs("overview") && root.hasPayload && (root.degradedVendors().length > 0 || root.lastError.length > 0)
+                            visible: root.tabIs("overview") && root.hasPayload && root.cardSurvives("alerts") &&
+                                (root.degradedVendors().length > 0 || root.lastError.length > 0)
                             contentComponent: Component {
                                 Column {
                                     width: parent ? parent.width : 0
@@ -3980,16 +4069,6 @@ PluginComponent {
                     }
                 }
 
-                Connections {
-                    target: root.pluginService
-                    enabled: root.pluginService !== null
-
-                    function onPluginDataChanged(changedPluginId) {
-                        if (changedPluginId === root.pluginId && autoRefreshTimer.running)
-                            autoRefreshTimer.restart()
-                    }
-                }
-
                 Rectangle {
                     id: footer
 
@@ -4053,13 +4132,13 @@ PluginComponent {
         onExited: function(exitCode, exitStatus) {
             if (exitCode === 0) {
                 if (root.pendingOrderSurface === "bar") root.barAccountOrderOverride = root.pendingAccountOrder.slice()
-                else {
-                    root.accountOrderOverride = root.pendingAccountOrder.slice()
-                }
+                else root.accountOrderOverride = root.pendingAccountOrder.slice()
+                root.uiWriteGeneration++
                 root.refresh(false)
             } else {
                 root.lastError = "Could not save account order (exit " + exitCode + ")"
             }
+            Qt.callLater(root.runQueuedUiAction)
         }
     }
 
@@ -4069,8 +4148,10 @@ PluginComponent {
         onExited: function(exitCode, exitStatus) {
             if (exitCode === 0) {
                 root.barHiddenOverride = root.pendingBarHidden.slice()
+                root.uiWriteGeneration++
                 root.refresh(false)
             } else root.lastError = "Could not save bar visibility (exit " + exitCode + ")"
+            Qt.callLater(root.runQueuedUiAction)
         }
     }
 
@@ -4081,10 +4162,12 @@ PluginComponent {
             root.visibilityTarget, "--surface", "widget"]
 
         onExited: function(exitCode, exitStatus) {
-            if (exitCode === 0)
+            if (exitCode === 0) {
+                root.uiWriteGeneration++
                 root.refresh(false)
-            else
+            } else
                 root.lastError = "could not update card visibility (exit " + exitCode + ")"
+            Qt.callLater(root.runQueuedUiAction)
         }
     }
 
@@ -4095,7 +4178,6 @@ PluginComponent {
             .concat(root.cachedFirstRead ? ["--cached"] : root.scanNextRefresh ? [] : ["--skip-scan"])
             .concat(root.notifySupported ? ["--notify"] : [])
             .concat(["--json"])
-        running: true
 
         stdout: StdioCollector {
             id: statusOutput
@@ -4119,6 +4201,7 @@ PluginComponent {
             root.statusExited = true
             root.statusExitCode = exitCode
             root.finishStatus()
+            Qt.callLater(root.runPendingRefresh)
         }
 
         onRunningChanged: {

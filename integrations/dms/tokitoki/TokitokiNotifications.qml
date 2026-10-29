@@ -29,9 +29,9 @@ Item {
 
     readonly property var categories: [
         { id: "quotaCritical", label: "Critical quota", description: "When a provider reports very little quota remaining." },
-        { id: "quotaReset", label: "Quota reset / recovery", description: "When exhausted or critical quota becomes available again." },
+        { id: "quotaReset", label: "Quota reset / recovery", description: "When exhausted or critical quota becomes available again.", requires: "resetAware", requiresLabel: "Notify when an exhausted quota resets" },
         { id: "quotaPace", label: "Runs out before reset", description: "When the current burn rate exhausts a quota window before it resets." },
-        { id: "burnRate", label: "Burn-rate", description: "When projected monthly spend reaches the configured warning ratio." },
+        { id: "burnRate", label: "Burn-rate", description: "When projected monthly spend reaches the configured warning ratio.", requires: "burnWarnings", requiresLabel: "Warn when projected spend reaches the cap" },
         { id: "budget", label: "Budget threshold", description: "When spend crosses a configured budget threshold." }
     ]
     readonly property var criticalOptions: root.optionsWithCurrent([5, 10, 20], root.notificationSettings.quotaCriticalPercent)
@@ -402,10 +402,13 @@ Item {
                     required property var modelData
 
                     width: parent.width
+                    // quotaReset and burnRate also need their switch above (see notify.ts).
+                    readonly property bool prerequisiteOn: !modelData.requires || root.notificationSettings[modelData.requires] === true
                     label: modelData.label
-                    description: modelData.description
-                    checked: root.categoryEnabled(modelData.id)
-                    toggleEnabled: root.notificationSettings.enabled
+                    description: prerequisiteOn ? modelData.description
+                        : modelData.description + " Turn on \u201c" + modelData.requiresLabel + "\u201d first."
+                    checked: root.categoryEnabled(modelData.id) && prerequisiteOn
+                    toggleEnabled: root.notificationSettings.enabled && prerequisiteOn
                     onToggled: isChecked => root.setCategoryEnabled(modelData.id, isChecked)
                 }
             }
