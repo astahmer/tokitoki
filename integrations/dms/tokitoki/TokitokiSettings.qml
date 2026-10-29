@@ -42,14 +42,37 @@ PluginSettings {
         var scope = String(windowData.scope || windowData.kind || "other").toLowerCase()
         var bucket = String(windowData.bucketId || "").toLowerCase()
         var model = String(windowData.model || "").toLowerCase()
-        if (!bucket && !model && windowData.label && !/^(session|daily|weekly|monthly|limit)$/i.test(String(windowData.label)))
-            bucket = String(windowData.label).toLowerCase()
+        var label = String(windowData.label || "").toLowerCase()
+        var scopes = { day: "daily", daily: "daily", week: "weekly", weekly: "weekly", month: "monthly", monthly: "monthly", session: "session" }
+        scope = scopes[scope] || scope
+        if ((scope === "other" || scope === "unknown") && scopes[label])
+            scope = scopes[label]
+        if (bucket === "codex" || bucket === "claude")
+            bucket = ""
+        if (!bucket && !model && label && !/^(session|daily|weekly|monthly|limit)$/.test(label))
+            bucket = label
+        var aliases = { "cursor models": "cursor-models", "other models": "other-models", "on demand": "on-demand" }
+        bucket = aliases[bucket] || bucket
+        if (["cursor-models", "other-models", "on-demand"].indexOf(bucket) >= 0)
+            scope = "monthly"
         return JSON.stringify([scope, bucket, model])
+    }
+
+    function normalizeBarWindowKey(key) {
+        try {
+            var parts = JSON.parse(String(key))
+            if (!Array.isArray(parts) || parts.length !== 3)
+                return String(key)
+            return barWindowKey({ scope: parts[0], bucketId: parts[1], model: parts[2] })
+        } catch (error) {
+            return String(key)
+        }
     }
 
     function barWindowVisible(hidden, provider, windowData) {
         var entries = hidden && hidden[provider]
-        return !Array.isArray(entries) || entries.indexOf(barWindowKey(windowData)) < 0
+        var key = barWindowKey(windowData)
+        return !Array.isArray(entries) || !entries.some(function(entry) { return normalizeBarWindowKey(entry) === key })
     }
 
     function buildBarWindowGroups() {
@@ -80,7 +103,7 @@ PluginSettings {
     function setBarWindowVisible(provider, windowData, visible) {
         const next = Object.assign({}, root.hiddenBarWindows)
         const id = root.barWindowKey(windowData)
-        const entries = Array.isArray(next[provider]) ? next[provider].filter(value => value !== id) : []
+        const entries = Array.isArray(next[provider]) ? next[provider].filter(value => root.normalizeBarWindowKey(value) !== id) : []
         if (!visible) entries.push(id)
         if (entries.length) next[provider] = entries
         else delete next[provider]

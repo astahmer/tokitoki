@@ -280,14 +280,37 @@ PluginComponent {
         var scope = String(windowData.scope || windowData.kind || "other").toLowerCase()
         var bucket = String(windowData.bucketId || "").toLowerCase()
         var model = String(windowData.model || "").toLowerCase()
-        if (!bucket && !model && windowData.label && !/^(session|daily|weekly|monthly|limit)$/i.test(String(windowData.label)))
-            bucket = String(windowData.label).toLowerCase()
+        var label = String(windowData.label || "").toLowerCase()
+        var scopes = { day: "daily", daily: "daily", week: "weekly", weekly: "weekly", month: "monthly", monthly: "monthly", session: "session" }
+        scope = scopes[scope] || scope
+        if ((scope === "other" || scope === "unknown") && scopes[label])
+            scope = scopes[label]
+        if (bucket === "codex" || bucket === "claude")
+            bucket = ""
+        if (!bucket && !model && label && !/^(session|daily|weekly|monthly|limit)$/.test(label))
+            bucket = label
+        var aliases = { "cursor models": "cursor-models", "other models": "other-models", "on demand": "on-demand" }
+        bucket = aliases[bucket] || bucket
+        if (["cursor-models", "other-models", "on-demand"].indexOf(bucket) >= 0)
+            scope = "monthly"
         return JSON.stringify([scope, bucket, model])
+    }
+
+    function normalizeBarWindowKey(key) {
+        try {
+            var parts = JSON.parse(String(key))
+            if (!Array.isArray(parts) || parts.length !== 3)
+                return String(key)
+            return barWindowKey({ scope: parts[0], bucketId: parts[1], model: parts[2] })
+        } catch (error) {
+            return String(key)
+        }
     }
 
     function barWindowVisible(hidden, provider, windowData) {
         var entries = hidden && hidden[provider]
-        return !Array.isArray(entries) || entries.indexOf(barWindowKey(windowData)) < 0
+        var key = barWindowKey(windowData)
+        return !Array.isArray(entries) || !entries.some(function(entry) { return normalizeBarWindowKey(entry) === key })
     }
 
     function displayLabel(value) {
@@ -2236,57 +2259,6 @@ PluginComponent {
                         }
 
                         TokitokiCard {
-                            title: "Service alerts"
-                            iconName: "warning"
-                            visible: root.tabIs("overview") && root.hasPayload && (root.degradedVendors().length > 0 || root.lastError.length > 0)
-                            contentComponent: Component {
-                                Column {
-                                    width: parent ? parent.width : 0
-                                    spacing: Theme.spacingS
-
-                                    StyledText {
-                                        width: parent.width
-                                        visible: root.lastError.length > 0
-                                        text: root.lastError
-                                        color: Theme.warning
-                                        wrapMode: Text.Wrap
-                                        font.pixelSize: Theme.fontSizeSmall + 1
-                                    }
-
-                                    Repeater {
-                                        model: root.degradedVendors()
-                                        Column {
-                                            required property string modelData
-                                            property var incident: root.vendorIncident(modelData)
-                                            width: parent.width
-                                            spacing: Theme.spacingXXS
-                                            StyledText {
-                                                width: parent.width
-                                                text: root.providerShortName(parent.modelData) + " · " + root.displayLabel(parent.incident.indicator)
-                                                color: root.incidentColor(parent.incident)
-                                                font.weight: Font.DemiBold
-                                            }
-                                            StyledText {
-                                                width: parent.width
-                                                text: parent.incident.description || "See the provider status page"
-                                                color: Theme.surfaceText
-                                                wrapMode: Text.Wrap
-                                                font.pixelSize: Theme.fontSizeSmall + 1
-                                            }
-                                            DButton {
-                                                visible: Boolean(parent.incident.url)
-                                                text: "View status"
-                                                iconName: "open_in_new"
-                                                buttonHeight: 28
-                                                onClicked: Qt.openUrlExternally(parent.incident.url)
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        TokitokiCard {
                             title: "Sessions"
                             iconName: "forum"
                             visible: root.tabIs("sessions")
@@ -3637,6 +3609,57 @@ PluginComponent {
                                                     isMonospace: true
                                                     Layout.alignment: Qt.AlignVCenter
                                                 }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        TokitokiCard {
+                            title: "Service alerts"
+                            iconName: "warning"
+                            visible: root.tabIs("overview") && root.hasPayload && (root.degradedVendors().length > 0 || root.lastError.length > 0)
+                            contentComponent: Component {
+                                Column {
+                                    width: parent ? parent.width : 0
+                                    spacing: Theme.spacingS
+
+                                    StyledText {
+                                        width: parent.width
+                                        visible: root.lastError.length > 0
+                                        text: root.lastError
+                                        color: Theme.warning
+                                        wrapMode: Text.Wrap
+                                        font.pixelSize: Theme.fontSizeSmall + 1
+                                    }
+
+                                    Repeater {
+                                        model: root.degradedVendors()
+                                        Column {
+                                            required property string modelData
+                                            property var incident: root.vendorIncident(modelData)
+                                            width: parent.width
+                                            spacing: Theme.spacingXXS
+                                            StyledText {
+                                                width: parent.width
+                                                text: root.providerShortName(parent.modelData) + " · " + root.displayLabel(parent.incident.indicator)
+                                                color: root.incidentColor(parent.incident)
+                                                font.weight: Font.DemiBold
+                                            }
+                                            StyledText {
+                                                width: parent.width
+                                                text: parent.incident.description || "See the provider status page"
+                                                color: Theme.surfaceText
+                                                wrapMode: Text.Wrap
+                                                font.pixelSize: Theme.fontSizeSmall + 1
+                                            }
+                                            DButton {
+                                                visible: Boolean(parent.incident.url)
+                                                text: "View status"
+                                                iconName: "open_in_new"
+                                                buttonHeight: 28
+                                                onClicked: Qt.openUrlExternally(parent.incident.url)
                                             }
                                         }
                                     }

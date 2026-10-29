@@ -94,6 +94,37 @@ it("persists independent provider window choices and shares them between account
   expect(ui.barWindowVisible(ui.hiddenBarWindows, "openai", session)).toBe(true);
 });
 
+it("groups legacy and native windows and restores old hidden preferences", () => {
+  const saved: Array<{ key: string; value: unknown }> = [];
+  const session = { scope: "session", label: "Session", bucketId: "codex", windowMinutes: 300 };
+  const weekly = { scope: "weekly", label: "Weekly", bucketId: "codex" };
+  const oldWeekly = { scope: "weekly", label: "Weekly", bucketId: "" };
+  const cursor = { scope: "monthly", label: "Other Models", bucketId: "other-models" };
+  const oldCursor = { scope: "other", label: "Other Models" };
+  const ui = createContext({
+    accounts: [
+      { provider: "codex", vendor: "openai", windows: [session, weekly, oldWeekly] },
+      { provider: "cursor", vendor: "cursor", windows: [cursor, oldCursor] },
+    ],
+    providerRegistry: {},
+    hiddenBarWindows: { openai: ['["weekly","codex",""]'], cursor: ['["other","other models",""]'] },
+    saveValue(key: string, value: unknown) { saved.push({ key, value }); },
+  });
+  ui.root = ui;
+  runInContext(functions(settings), ui);
+  const groups = ui.buildBarWindowGroups();
+  expect(groups[0].windows.map((w: { label: string }) => w.label)).toEqual(["Session (5h)", "Weekly"]);
+  expect(groups[1].windows.map((w: { label: string }) => w.label)).toEqual(["Other Models"]);
+  expect(ui.barWindowVisible(ui.hiddenBarWindows, "openai", oldWeekly)).toBe(false);
+  expect(ui.barWindowVisible(ui.hiddenBarWindows, "cursor", cursor)).toBe(false);
+  ui.setBarWindowVisible("openai", oldWeekly, true);
+  expect(ui.barWindowVisible(ui.hiddenBarWindows, "openai", weekly)).toBe(true);
+  expect(ui.hiddenBarWindows.cursor).toHaveLength(1);
+  const widgetUi = makeWidget();
+  expect(widgetUi.barWindowKey(weekly)).toBe(ui.barWindowKey(oldWeekly));
+  expect(widgetUi.barWindowKey(cursor)).toBe(ui.barWindowKey(oldCursor));
+});
+
 it("tracking quality preserves unknown coverage and follows the exact composition period", () => {
   const ui = makeWidget();
   expect(ui.trackingForPeriod("day")).toBeNull();
