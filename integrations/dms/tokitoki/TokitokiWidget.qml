@@ -51,6 +51,72 @@ PluginComponent {
     // UI writes run one at a time; clicks made meanwhile wait here.
     property var queuedUiActions: []
     property string openTooltipProvider: ""
+    // Popout palette: the neutral macOS-menubar look by default, or the
+    // shell's own theme when "Appearance" is set to follow it.
+    readonly property bool followShellTheme: root.pluginSetting("appearance", "menubar") === "shell"
+    readonly property var ui: root.followShellTheme ? ({
+        window: "transparent",
+        card: Theme.withAlpha(Theme.surfaceContainerHigh, 0.55),
+        cardBorder: Theme.withAlpha(Theme.outlineLight, 0.7),
+        selected: Theme.withAlpha(Theme.surfaceText, 0.12),
+        hover: Theme.withAlpha(Theme.surfaceText, 0.05),
+        control: Theme.withAlpha(Theme.surfaceText, 0.1),
+        controlHover: Theme.withAlpha(Theme.surfaceText, 0.16),
+        text: Theme.surfaceText,
+        secondary: Theme.surfaceVariantText,
+        tertiary: Theme.withAlpha(Theme.surfaceVariantText, 0.75),
+        separator: Theme.outlineLight,
+        track: Theme.withAlpha(Theme.surfaceText, 0.12),
+        green: Theme.success,
+        amber: Theme.warning,
+        rose: Theme.error,
+        blue: Theme.info,
+        mint: Theme.info,
+        orange: Theme.warning,
+        attention: Theme.withAlpha(Theme.warning, 0.1),
+        attentionBorder: Theme.withAlpha(Theme.warning, 0.3),
+        chip: Theme.primaryContainer,
+        chipIdle: Theme.withAlpha(Theme.surfaceText, 0.06),
+        chipText: Theme.primary,
+        cardIcon: Theme.primary,
+        highlight: Theme.withAlpha(Theme.primaryContainer, 0.72),
+        highlightBorder: Theme.primary
+    }) : ({
+        window: "#1e1e1e",
+        card: "#2a2a2a",
+        cardBorder: "#333333",
+        selected: "#3e3e3e",
+        hover: "#2f2f2f",
+        control: "#383838",
+        controlHover: "#444444",
+        text: "#ececec",
+        secondary: "#8e8e8e",
+        tertiary: "#6b6b6b",
+        separator: "#333333",
+        track: "#3a3a3a",
+        green: "#29c778",
+        amber: "#ff9e0a",
+        rose: "#f04259",
+        blue: "#549ef5",
+        mint: "#63d9d0",
+        orange: "#ff9f0a",
+        attention: "#2f2a22",
+        attentionBorder: "#4a3c27",
+        chip: "#4a4a4a",
+        chipIdle: "#303030",
+        chipText: "#ffffff",
+        cardIcon: "#a1a1a1",
+        highlight: "#2c3138",
+        highlightBorder: "#3d4a5c"
+    })
+    property bool layoutMode: false
+    property bool moreMenuOpen: false
+    property var accountCollapsed: ({})
+    property var accountDetailsOpen: ({})
+    property string refreshingProvider: ""
+    property double shareCopiedAt: 0
+    readonly property var primaryTabs: root.tabOptions.slice(0, 4)
+    readonly property var secondaryTabs: root.tabOptions.slice(4)
     readonly property var uiConfigRevision: root.pluginSetting("uiConfigRevision", 0)
     readonly property string barLabel: root.barSummaryText()
     readonly property var barDegradedVendors: root.degradedBarVendors()
@@ -116,6 +182,54 @@ PluginComponent {
             ? root.shortestWindowGroups(root.quotaStripGroups) : root.quotaStripGroups
 
     layerNamespacePlugin: "tokitoki"
+
+    // Bordered small button in the popout palette (menubar footer style).
+    component PaletteButton: Rectangle {
+        id: paletteButton
+        property string text: ""
+        property string iconName: ""
+        property bool highlighted: false
+        signal clicked()
+        implicitWidth: buttonRow.implicitWidth + 20
+        implicitHeight: 28
+        radius: 7
+        opacity: enabled ? 1 : 0.5
+        color: highlighted ? root.ui.selected : buttonArea.containsMouse && enabled ? root.ui.controlHover : root.ui.control
+        border.width: 1
+        border.color: root.ui.cardBorder
+        Accessible.role: Accessible.Button
+        Accessible.name: text
+
+        Row {
+            id: buttonRow
+            anchors.centerIn: parent
+            spacing: 5
+
+            DIcon {
+                name: paletteButton.iconName
+                size: 15
+                color: root.ui.text
+                visible: paletteButton.iconName.length > 0
+                anchors.verticalCenter: parent.verticalCenter
+            }
+
+            StyledText {
+                text: paletteButton.text
+                color: root.ui.text
+                font.pixelSize: Theme.fontSizeSmall + 1
+                anchors.verticalCenter: parent.verticalCenter
+            }
+        }
+
+        MouseArea {
+            id: buttonArea
+            anchors.fill: parent
+            hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
+            enabled: paletteButton.enabled
+            onClicked: paletteButton.clicked()
+        }
+    }
 
     // Shared donut + legend for the by-provider / by-model cards.
     component BreakdownPie: Row {
@@ -198,12 +312,12 @@ PluginComponent {
                     height: 26
                     radius: 13
                     color: root.selectedPeriod === modelData
-                        ? Theme.primaryContainer : Theme.withAlpha(Theme.surfaceText, 0.06)
+                        ? root.ui.chip : root.ui.chipIdle
                     StyledText {
                         id: periodText
                         anchors.centerIn: parent
                         text: root.periodLabel(modelData)
-                        color: root.selectedPeriod === modelData ? Theme.primary : Theme.surfaceVariantText
+                        color: root.selectedPeriod === modelData ? root.ui.chipText : root.ui.secondary
                         font.pixelSize: Theme.fontSizeSmall + 1
                         font.weight: root.selectedPeriod === modelData ? Font.DemiBold : Font.Normal
                     }
@@ -239,12 +353,12 @@ PluginComponent {
                         height: 26
                         radius: 13
                         color: root.selectedMetric === modelData
-                            ? Theme.primaryContainer : Theme.withAlpha(Theme.surfaceText, 0.06)
+                            ? root.ui.chip : root.ui.chipIdle
                         StyledText {
                             id: metricText
                             anchors.centerIn: parent
                             text: root.metricLabel(modelData)
-                            color: root.selectedMetric === modelData ? Theme.primary : Theme.surfaceVariantText
+                            color: root.selectedMetric === modelData ? root.ui.chipText : root.ui.secondary
                             font.pixelSize: Theme.fontSizeSmall + 1
                             font.weight: root.selectedMetric === modelData ? Font.DemiBold : Font.Normal
                         }
@@ -352,8 +466,8 @@ PluginComponent {
         root.pluginService.savePluginState(root.pluginId, key, value)
     }
 
-    function openDashboard() {
-        Qt.openUrlExternally("http://127.0.0.1:7788")
+    function openDashboard(view) {
+        Qt.openUrlExternally("http://127.0.0.1:7788" + (view ? "/?view=" + view : ""))
     }
 
     function metricLabel(metric) {
@@ -795,7 +909,7 @@ PluginComponent {
 
     function tabLabel(tab) {
         switch (tab) {
-        case "overview": return "Overview"
+        case "overview": return "Home"
         case "quotas": return "Quotas"
         case "tokens": return "Tokens"
         case "reports": return "Reports"
@@ -805,6 +919,151 @@ PluginComponent {
         case "settings": return "Settings"
         default: return tab
         }
+    }
+
+    function tabIcon(tab) {
+        switch (tab) {
+        case "overview": return "home"
+        case "quotas": return "bar_chart"
+        case "tokens": return "toll"
+        case "reports": return "description"
+        case "sessions": return "forum"
+        case "sources": return "database"
+        case "mcp": return "hub"
+        case "settings": return "settings"
+        default: return "circle"
+        }
+    }
+
+    function toggleAccountFlag(property, id) {
+        var next = Object.assign({}, root[property])
+        if (next[id]) delete next[id]
+        else next[id] = true
+        root[property] = next
+    }
+
+    // Providers `tokitoki poll --provider` can refresh live.
+    function isPollable(provider) {
+        return ["claude-code", "codex", "commandcode", "copilot", "cursor", "opencode-go", "openrouter"].indexOf(String(provider)) >= 0
+    }
+
+    function refreshAccount(account) {
+        if (accountPollProcess.running || !isPollable(account.provider))
+            return
+        refreshingProvider = String(account.provider)
+        accountPollProcess.running = true
+    }
+
+    function accountIssue(account) {
+        var reason = String(account && account.refreshError || "")
+        if (reason.length === 0)
+            return null
+        var login = /log ?in|sign ?in|auth|401|403|unauthori|credential|expired/i.test(reason)
+        return { login: login, title: login ? "Login required" : "Refresh failed", action: "Retry", reason: reason }
+    }
+
+    // Provider-reported windows first, then local estimate windows (budgets).
+    function cardWindows(account) {
+        var windows = orderedWindows(account.windows)
+        var estimates = Array.isArray(account.budgetWindows) ? account.budgetWindows.slice() : []
+        estimates.sort(function(a, b) { return windowOrderMinutes(a) - windowOrderMinutes(b) })
+        return windows.concat(estimates)
+    }
+
+    function limitValueParts(windowData) {
+        if (quotaStatus(windowData) !== "current")
+            return { source: "", value: displayLabel(quotaStatus(windowData)) + " · " + observationLabel(windowData) }
+        if (windowData && windowData.amountUsd !== null && windowData.amountUsd !== undefined)
+            return { source: sourceLabel(windowData.source), value: formatMoney(windowData.amountUsd) }
+        if (hasUsedPercent(windowData))
+            return { source: sourceLabel(windowData.source), value: Math.round(remainingPercent(windowData)) + "% left" }
+        if (windowData && safeNumber(windowData.tokens) > 0)
+            return { source: "Estimated", value: compactNumber(windowData.tokens) + " tokens" }
+        return { source: "", value: "Usage unknown" }
+    }
+
+    function windowResetText(windowData) {
+        if (quotaStatus(windowData) !== "current")
+            return "Awaiting fresh observation"
+        var reset = windowData && (windowData.resetsAt || windowData.windowEnd)
+        if (!reset)
+            return ""
+        var countdown = barCountdown(reset)
+        return countdown && countdown !== "now" ? "Resets in " + countdown : "Awaiting fresh observation"
+    }
+
+    function shortDateTime(value) {
+        var date = new Date(String(value || ""))
+        return isFinite(date.getTime()) ? Qt.formatDateTime(date, "d MMM HH:mm") : ""
+    }
+
+    function accountExtraRows(account) {
+        var rows = []
+        var banked = safeNumber(account.bankedResets)
+        if (banked > 0) {
+            var expires = account.bankedExpiresAt ? " (expires " + shortDateTime(account.bankedExpiresAt) + " · " + barCountdown(account.bankedExpiresAt) + ")" : ""
+            rows.push({ icon: "event_repeat", tone: "info", label: banked + " banked reset" + (banked === 1 ? "" : "s") + expires })
+        }
+        var extra = extraUsageLabel(account.extraUsage)
+        if (extra.length > 0) rows.push({ icon: "add_card", tone: "ok", label: extra })
+        var credits = workspaceCreditsLabel(account.credits)
+        if (credits.length > 0) rows.push({ icon: "toll", tone: "ok", label: credits })
+        var balance = balanceLabel(account.balance)
+        if (balance.length > 0)
+            rows.push({ icon: "account_balance_wallet", tone: account.balance && account.balance.available === false ? "warning" : "ok", label: balance })
+        var budgets = Array.isArray(payload.budgets) ? payload.budgets : []
+        for (var i = 0; i < budgets.length; i++) {
+            var budget = budgets[i]
+            var pattern = String(budget.label || "").split(" ")[0]
+            if (pattern !== account.accountKey && pattern !== account.provider && pattern !== account.provider + "@" + account.accountKey)
+                continue
+            rows.push({ icon: "bar_chart", tone: budget.state === "ok" ? "ok" : "warning", label: budget.label,
+                value: formatMoney(budget.used) + " / " + formatMoney(budget.cap), note: Math.round(safeNumber(budget.daysLeft)) + "d left" })
+        }
+        return rows
+    }
+
+    function accountDetailRows(account) {
+        var rows = [{ label: "source: " + (account.origin === "polled" ? "live provider poll" : "harness logs") }]
+        if (account.observedAt)
+            rows.push({ label: "last observed " + shortDateTime(account.observedAt) + (account.freshness === "stale" ? " · stale" : ""), warn: account.freshness === "stale" })
+        else if (account.freshness === "unknown")
+            rows.push({ label: "no provider observation available" })
+        var issue = accountIssue(account)
+        if (issue) rows.push({ label: issue.reason, warn: true })
+        var windows = cardWindows(account)
+        for (var i = 0; i < windows.length; i++) {
+            var reset = windows[i].resetsAt || windows[i].windowEnd
+            rows.push({ label: windowTitle(windows[i]), value: reset ? "resets " + shortDateTime(reset) : "" })
+        }
+        return rows
+    }
+
+    function summaryMarkdown() {
+        var lines = ["## Tokitoki usage"]
+        var stats = payload.stats || ({})
+        lines.push((payload.window && payload.window.label ? payload.window.label : "today") + ": " + formatMoney(stats.costUsd) +
+            " · " + compactNumber(stats.tokens) + " tokens · " + safeNumber(stats.requests) + " requests")
+        var accounts = filteredLimits()
+        if (accounts.length > 0) {
+            lines.push("", "### Quotas")
+            for (var i = 0; i < accounts.length; i++) {
+                var parts = cardWindows(accounts[i]).map(function(windowData) {
+                    var value = limitValueParts(windowData).value
+                    var reset = windowResetText(windowData)
+                    return windowTitle(windowData) + " " + value + (reset ? " (" + reset.toLowerCase() + ")" : "")
+                })
+                lines.push("- **" + accountPrimaryLabel(accounts[i]) + "** (" + providerName(accounts[i].provider) + "): " +
+                    (parts.length > 0 ? parts.join(", ") : "no provider quota"))
+            }
+        }
+        return lines.join("\n")
+    }
+
+    function copySummary() {
+        Quickshell.execDetached(["sh", "-c", "printf '%s' \"$1\" | wl-copy 2>/dev/null || dms cl copy \"$1\"", "tokitoki-share", summaryMarkdown()])
+        shareCopiedAt = Date.now()
+        shareCopiedTimer.restart()
     }
 
     function tabIs(tab) {
@@ -1318,10 +1577,10 @@ PluginComponent {
             return Theme.primary
         var remaining = remainingPercent(windowData)
         if (remaining < 20)
-            return Theme.error
+            return root.ui.rose
         if (remaining < 50)
-            return Theme.warning
-        return Theme.success
+            return root.ui.amber
+        return root.ui.green
     }
 
     function windowName(kind) {
@@ -2075,7 +2334,7 @@ PluginComponent {
             id: popout
 
             width: parent.width
-            headerText: root.configOpen ? "Tokitoki Settings" : "Tokitoki Usage"
+            headerText: root.configOpen ? "Tokitoki Settings" : ""
 
             headerActions: Component {
                 Row {
@@ -2112,12 +2371,214 @@ PluginComponent {
                     popout.detailsHeight - Theme.spacingXL)
                 height: implicitHeight
 
+                Rectangle {
+                    anchors.fill: parent
+                    radius: Theme.cornerRadius
+                    color: root.ui.window
+                    visible: !root.configOpen
+                }
+
+                Rectangle {
+                    id: navBar
+
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.top: parent.top
+                    height: root.configOpen ? 0 : 46
+                    visible: !root.configOpen
+                    color: "transparent"
+
+                    RowLayout {
+                        anchors.fill: parent
+                        anchors.leftMargin: Theme.spacingS
+                        anchors.rightMargin: Theme.spacingS
+                        anchors.bottomMargin: 4
+                        spacing: Theme.spacingXXS
+
+                        Repeater {
+                            model: root.primaryTabs
+
+                            delegate: Rectangle {
+                                Layout.fillWidth: true
+                                Layout.preferredHeight: 34
+                                radius: 8
+                                activeFocusOnTab: true
+                                Accessible.role: Accessible.Button
+                                Accessible.name: root.tabLabel(modelData)
+                                Keys.onSpacePressed: root.selectedTab = modelData
+                                Keys.onReturnPressed: root.selectedTab = modelData
+                                color: root.tabIs(modelData)
+                                    ? root.ui.selected
+                                    : navHover.containsMouse ? root.ui.hover : "transparent"
+
+                                Row {
+                                    anchors.centerIn: parent
+                                    spacing: 5
+
+                                    DIcon {
+                                        name: root.tabIcon(modelData)
+                                        size: 15
+                                        color: root.tabIs(modelData) ? root.ui.text : root.ui.secondary
+                                        anchors.verticalCenter: parent.verticalCenter
+                                    }
+
+                                    StyledText {
+                                        text: root.tabLabel(modelData)
+                                        color: root.tabIs(modelData) ? root.ui.text : root.ui.secondary
+                                        font.pixelSize: Theme.fontSizeSmall + 1
+                                        font.weight: root.tabIs(modelData) ? Font.DemiBold : Font.Normal
+                                        anchors.verticalCenter: parent.verticalCenter
+                                    }
+                                }
+
+                                MouseArea {
+                                    id: navHover
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: {
+                                        root.moreMenuOpen = false
+                                        root.selectedTab = modelData
+                                    }
+                                }
+                            }
+                        }
+
+                        Rectangle {
+                            id: moreButton
+                            readonly property bool active: root.secondaryTabs.indexOf(root.selectedTab) >= 0
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: 34
+                            radius: 8
+                            Accessible.role: Accessible.Button
+                            Accessible.name: "More views"
+                            color: active || root.moreMenuOpen
+                                ? root.ui.selected
+                                : moreHover.containsMouse ? root.ui.hover : "transparent"
+
+                            Row {
+                                anchors.centerIn: parent
+                                spacing: 4
+
+                                DIcon {
+                                    name: moreButton.active ? root.tabIcon(root.selectedTab) : "more_horiz"
+                                    size: 15
+                                    color: moreButton.active ? root.ui.text : root.ui.secondary
+                                    anchors.verticalCenter: parent.verticalCenter
+                                }
+
+                                StyledText {
+                                    text: moreButton.active ? root.tabLabel(root.selectedTab) : "More"
+                                    color: moreButton.active ? root.ui.text : root.ui.secondary
+                                    font.pixelSize: Theme.fontSizeSmall + 1
+                                    font.weight: moreButton.active ? Font.DemiBold : Font.Normal
+                                    anchors.verticalCenter: parent.verticalCenter
+                                }
+
+                                DIcon {
+                                    name: "expand_more"
+                                    size: 14
+                                    color: root.ui.secondary
+                                    anchors.verticalCenter: parent.verticalCenter
+                                }
+                            }
+
+                            MouseArea {
+                                id: moreHover
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: root.moreMenuOpen = !root.moreMenuOpen
+                            }
+                        }
+                    }
+
+                    Rectangle {
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.bottom: parent.bottom
+                        height: 1
+                        color: root.ui.separator
+                    }
+                }
+
+                // Dropdown for the views beyond the first four, plus widget settings.
+                Rectangle {
+                    id: moreMenu
+
+                    z: 20
+                    visible: root.moreMenuOpen && !root.configOpen
+                    anchors.right: parent.right
+                    anchors.rightMargin: Theme.spacingS
+                    y: navBar.height - 2
+                    width: 200
+                    height: moreMenuColumn.implicitHeight + Theme.spacingXS * 2
+                    radius: 10
+                    color: root.ui.card
+                    border.width: 1
+                    border.color: root.ui.separator
+
+                    Column {
+                        id: moreMenuColumn
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.top: parent.top
+                        anchors.margins: Theme.spacingXS
+
+                        Repeater {
+                            model: root.secondaryTabs.concat(["widget-settings"])
+
+                            delegate: Rectangle {
+                                width: parent.width
+                                height: 32
+                                radius: 6
+                                color: menuItemHover.containsMouse ? root.ui.hover : "transparent"
+
+                                Row {
+                                    anchors.left: parent.left
+                                    anchors.leftMargin: Theme.spacingS
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    spacing: Theme.spacingS
+
+                                    DIcon {
+                                        name: modelData === "widget-settings" ? "tune" : root.tabIcon(modelData)
+                                        size: 16
+                                        color: root.tabIs(modelData) ? root.ui.blue : root.ui.secondary
+                                        anchors.verticalCenter: parent.verticalCenter
+                                    }
+
+                                    StyledText {
+                                        text: modelData === "widget-settings" ? "Widget settings" : root.tabLabel(modelData)
+                                        color: root.tabIs(modelData) ? root.ui.blue : root.ui.text
+                                        font.pixelSize: Theme.fontSizeSmall + 1
+                                        anchors.verticalCenter: parent.verticalCenter
+                                    }
+                                }
+
+                                MouseArea {
+                                    id: menuItemHover
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: {
+                                        root.moreMenuOpen = false
+                                        if (modelData === "widget-settings")
+                                            root.configOpen = true
+                                        else
+                                            root.selectedTab = modelData
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
                 DFlickable {
                     id: viewport
 
                     anchors.left: parent.left
                     anchors.right: parent.right
-                    anchors.top: parent.top
+                    anchors.top: navBar.bottom
                     anchors.bottom: footer.top
                     visible: !root.configOpen
                     clip: true
@@ -2299,49 +2760,646 @@ PluginComponent {
                             }
                         }
 
-                        Flow {
+                        Rectangle {
                             width: parent.width
-                            spacing: Theme.spacingXXS
+                            height: 34
+                            radius: 8
+                            visible: root.tabIs("overview")
+                            color: root.ui.card
+                            border.width: 1
+                            border.color: root.ui.cardBorder
+
+                            RowLayout {
+                                anchors.fill: parent
+                                anchors.leftMargin: Theme.spacingS
+                                anchors.rightMargin: Theme.spacingS
+                                spacing: Theme.spacingXS
+
+                                DIcon {
+                                    name: "language"
+                                    size: 16
+                                    color: root.ui.secondary
+                                    Layout.alignment: Qt.AlignVCenter
+                                }
+
+                                StyledText {
+                                    text: "Browser dashboard"
+                                    color: root.ui.text
+                                    font.pixelSize: Theme.fontSizeSmall + 1
+                                    Layout.fillWidth: true
+                                    Layout.alignment: Qt.AlignVCenter
+
+                                    MouseArea {
+                                        anchors.fill: parent
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: root.openDashboard("")
+                                    }
+                                }
 
                                 Repeater {
-                                    model: root.tabOptions
+                                    model: [{ label: "Reports", view: "reports" }, { label: "Sources", view: "sources" }]
 
                                     delegate: Rectangle {
-                                        width: tabText.implicitWidth + Theme.spacingS * 2
-                                        activeFocusOnTab: true
-                                        Accessible.role: Accessible.Button
-                                        Accessible.name: tabText.text
-                                        Keys.onSpacePressed: root.selectedTab = modelData
-                                        Keys.onReturnPressed: root.selectedTab = modelData
-                                        height: 30
-                                        radius: 15
-                                        color: root.tabIs(modelData)
-                                            ? Theme.primaryContainer
-                                            : Theme.withAlpha(Theme.surfaceText, 0.06)
+                                        Layout.alignment: Qt.AlignVCenter
+                                        width: chipText.implicitWidth + Theme.spacingS * 2
+                                        height: 22
+                                        radius: 6
+                                        color: chipHover.containsMouse ? root.ui.controlHover : root.ui.control
 
                                         StyledText {
-                                            id: tabText
+                                            id: chipText
                                             anchors.centerIn: parent
-                                            text: root.tabLabel(modelData)
-                                            color: root.tabIs(modelData)
-                                                ? Theme.primary
-                                                : Theme.surfaceVariantText
-                                            font.pixelSize: Theme.fontSizeSmall + 1
-                                            font.weight: root.tabIs(modelData)
-                                                ? Font.DemiBold : Font.Normal
+                                            text: modelData.label
+                                            color: root.ui.text
+                                            font.pixelSize: Theme.fontSizeSmall
                                         }
 
                                         MouseArea {
+                                            id: chipHover
                                             anchors.fill: parent
                                             hoverEnabled: true
                                             cursorShape: Qt.PointingHandCursor
-                                            onClicked: root.selectedTab = modelData
+                                            onClicked: root.openDashboard(modelData.view)
                                         }
                                     }
                                 }
+                            }
+                        }
+
+                        // Account quota cards, one per account (macOS menubar layout).
+                        Column {
+                            id: quotaCardList
+                            width: parent.width
+                            spacing: Theme.spacingS
+                            visible: (root.tabIs("overview") || root.tabIs("quotas")) && root.filteredLimits().length > 0 &&
+                                root.cardSurvives("limits")
+
+                            Repeater {
+                                model: root.tabIs("overview") || root.tabIs("quotas") ? root.filteredLimits() : []
+
+                                delegate: Rectangle {
+                                    id: accountCard
+
+                                    property var account: modelData
+                                    readonly property string accountKeyId: account.provider + "@" + account.accountKey
+                                    readonly property bool expanded: !root.accountCollapsed[accountKeyId]
+                                    readonly property bool detailsOpen: Boolean(root.accountDetailsOpen[accountKeyId])
+                                    readonly property var issue: root.accountIssue(account)
+                                    property var accountWindows: root.cardWindows(account)
+                                    width: parent.width
+                                    implicitHeight: accountContent.implicitHeight + Theme.spacingM * 2
+                                    height: implicitHeight
+                                    radius: Theme.cornerRadius
+                                    color: root.ui.card
+                                    border.width: 1
+                                    border.color: root.ui.cardBorder
+
+                                    Column {
+                                        id: accountContent
+
+                                        anchors.left: parent.left
+                                        anchors.right: parent.right
+                                        anchors.top: parent.top
+                                        anchors.margins: Theme.spacingM
+                                        spacing: Theme.spacingS
+
+                                        RowLayout {
+                                            width: parent.width
+                                            spacing: Theme.spacingXS
+
+                                            DIcon {
+                                                name: accountCard.expanded ? "expand_more" : "chevron_right"
+                                                size: 18
+                                                color: root.ui.secondary
+                                                Layout.alignment: Qt.AlignVCenter
+
+                                                MouseArea {
+                                                    anchors.fill: parent
+                                                    anchors.margins: -4
+                                                    cursorShape: Qt.PointingHandCursor
+                                                    onClicked: root.toggleAccountFlag("accountCollapsed", accountCard.accountKeyId)
+                                                }
+                                            }
+
+                                            DIcon {
+                                                name: "drag_indicator"
+                                                size: 16
+                                                color: root.ui.tertiary
+                                                visible: root.layoutMode
+                                                Layout.alignment: Qt.AlignVCenter
+                                            }
+
+                                            TokitokiProviderLogo {
+                                                provider: accountCard.account.provider
+                                                registry: root.payload.providerRegistry || ({})
+                                                size: 20
+                                                fallbackIcon: root.providerEntry(accountCard.account.provider) ? root.harnessIcon(accountCard.account.provider) : "account_circle"
+                                                fallbackColor: root.ui.blue
+                                                Layout.alignment: Qt.AlignVCenter
+                                            }
+
+                                            Column {
+                                                Layout.fillWidth: true
+                                                Layout.alignment: Qt.AlignVCenter
+                                                spacing: 0
+
+                                                StyledText {
+                                                    width: parent.width
+                                                    text: root.accountPrimaryLabel(accountCard.account)
+                                                    color: root.ui.text
+                                                    font.pixelSize: Theme.fontSizeMedium
+                                                    font.weight: Font.DemiBold
+                                                    elide: Text.ElideRight
+                                                }
+
+                                                StyledText {
+                                                    width: parent.width
+                                                    text: root.accountSecondaryLabel(accountCard.account)
+                                                    color: root.ui.secondary
+                                                    font.pixelSize: Theme.fontSizeSmall
+                                                    elide: Text.ElideRight
+                                                }
+                                            }
+
+                                            Rectangle {
+                                                id: incidentBadge
+                                                property var incident: root.vendorIncident(root.vendorFor(accountCard.account.provider, accountCard.account.vendor))
+                                                width: incident ? incidentRow.implicitWidth + Theme.spacingS * 2 : 0
+                                                height: incident ? 20 : 0
+                                                radius: 10
+                                                color: Theme.withAlpha(root.incidentColor(incident), 0.16)
+                                                visible: incident !== null
+                                                Layout.alignment: Qt.AlignVCenter
+
+                                                Row {
+                                                    id: incidentRow
+                                                    anchors.centerIn: parent
+                                                    spacing: Theme.spacingXXS
+
+                                                    DIcon {
+                                                        name: "warning"
+                                                        size: 13
+                                                        color: root.incidentColor(incidentBadge.incident)
+                                                        anchors.verticalCenter: parent.verticalCenter
+                                                    }
+
+                                                    StyledText {
+                                                        text: incidentBadge.incident ? String(incidentBadge.incident.indicator).toUpperCase() : ""
+                                                        color: root.incidentColor(incidentBadge.incident)
+                                                        font.pixelSize: Theme.fontSizeSmall - 1
+                                                        font.weight: Font.DemiBold
+                                                        anchors.verticalCenter: parent.verticalCenter
+                                                    }
+                                                }
+
+                                                MouseArea {
+                                                    anchors.fill: parent
+                                                    cursorShape: Qt.PointingHandCursor
+                                                    enabled: incidentBadge.incident !== null && Boolean(incidentBadge.incident.url)
+                                                    onClicked: Qt.openUrlExternally(incidentBadge.incident.url)
+                                                }
+                                            }
+
+                                            DActionButton {
+                                                buttonSize: 24
+                                                iconSize: 16
+                                                iconName: root.refreshingProvider === accountCard.account.provider ? "sync" : "refresh"
+                                                iconColor: root.ui.secondary
+                                                tooltipText: "Refresh " + root.providerName(accountCard.account.provider) + " quota"
+                                                visible: root.isPollable(accountCard.account.provider)
+                                                enabled: !accountPollProcess.running
+                                                Layout.alignment: Qt.AlignVCenter
+                                                onClicked: root.refreshAccount(accountCard.account)
+                                            }
+
+                                            DActionButton {
+                                                id: hideButton
+                                                buttonSize: 24
+                                                iconSize: 16
+                                                iconName: "visibility_off"
+                                                iconColor: root.ui.secondary
+                                                tooltipText: "Hide this account everywhere"
+                                                enabled: !visibilityProcess.running
+                                                Layout.alignment: Qt.AlignVCenter
+                                                onClicked: root.setAccountHidden(
+                                                    accountCard.account.provider,
+                                                    accountCard.account.accountKey,
+                                                    true
+                                                )
+                                            }
+
+                                            Rectangle {
+                                                id: planBadge
+                                                property string plan: accountCard.account.planLabel || accountCard.account.plan || ""
+                                                width: plan.length > 0 ? planText.implicitWidth + Theme.spacingS * 2 : 0
+                                                height: plan.length > 0 ? 20 : 0
+                                                radius: 6
+                                                color: root.ui.control
+                                                visible: plan.length > 0
+                                                Layout.alignment: Qt.AlignVCenter
+
+                                                StyledText {
+                                                    id: planText
+                                                    anchors.centerIn: parent
+                                                    text: planBadge.plan.toUpperCase()
+                                                    color: root.ui.secondary
+                                                    font.pixelSize: Theme.fontSizeSmall - 1
+                                                    font.weight: Font.Bold
+                                                }
+                                            }
+                                        }
+
+                                        // Layout mode: reorder in Quotas and in the bar, bar-only visibility.
+                                        RowLayout {
+                                            width: parent.width
+                                            spacing: Theme.spacingXS
+                                            visible: root.layoutMode
+
+                                            StyledText {
+                                                text: "Quotas"
+                                                color: root.ui.secondary
+                                                font.pixelSize: Theme.fontSizeSmall
+                                                Layout.alignment: Qt.AlignVCenter
+                                            }
+
+                                            DActionButton {
+                                                buttonSize: 24
+                                                iconSize: 16
+                                                iconName: "arrow_upward"
+                                                tooltipText: "Move up in Quotas"
+                                                enabled: root.canMove(accountCard.account, "up")
+                                                onClicked: root.moveAccount(accountCard.account, -1)
+                                            }
+
+                                            DActionButton {
+                                                buttonSize: 24
+                                                iconSize: 16
+                                                iconName: "arrow_downward"
+                                                tooltipText: "Move down in Quotas"
+                                                enabled: root.canMove(accountCard.account, "down")
+                                                onClicked: root.moveAccount(accountCard.account, 1)
+                                            }
+
+                                            Item { Layout.fillWidth: true }
+
+                                            StyledText {
+                                                text: "Bar"
+                                                color: root.ui.secondary
+                                                font.pixelSize: Theme.fontSizeSmall
+                                                Layout.alignment: Qt.AlignVCenter
+                                            }
+
+                                            DActionButton {
+                                                buttonSize: 24
+                                                iconSize: 16
+                                                iconName: "arrow_back"
+                                                tooltipText: "Move earlier in the bar"
+                                                enabled: root.canMove(accountCard.account, "barUp")
+                                                onClicked: root.moveAccount(accountCard.account, -1, "bar")
+                                            }
+
+                                            DActionButton {
+                                                buttonSize: 24
+                                                iconSize: 16
+                                                iconName: "arrow_forward"
+                                                tooltipText: "Move later in the bar"
+                                                enabled: root.canMove(accountCard.account, "barDown")
+                                                onClicked: root.moveAccount(accountCard.account, 1, "bar")
+                                            }
+
+                                            DActionButton {
+                                                // Provider filters (selected providers, preview-hidden vendors)
+                                                // keep the account out of the bar whatever this toggle says.
+                                                readonly property bool providerFiltered: !root.providerIsVisible(
+                                                    accountCard.account.provider, accountCard.account.accountKey, accountCard.account.vendor)
+                                                buttonSize: 24
+                                                iconSize: 16
+                                                iconName: providerFiltered || root.barAccountHidden(accountCard.account) ? "visibility_off" : "visibility"
+                                                tooltipText: providerFiltered ? "Hidden from the bar by provider visibility settings"
+                                                    : root.barAccountHidden(accountCard.account) ? "Show in bar" : "Hide from bar only"
+                                                enabled: !providerFiltered
+                                                onClicked: root.setBarAccountHidden(accountCard.account, !root.barAccountHidden(accountCard.account))
+                                            }
+                                        }
+
+                                        RowLayout {
+                                            width: parent.width
+                                            spacing: Theme.spacingXS
+                                            visible: accountCard.issue !== null
+
+                                            DIcon {
+                                                name: accountCard.issue && accountCard.issue.login ? "account_circle_off" : "error"
+                                                size: 16
+                                                color: root.ui.orange
+                                                Layout.alignment: Qt.AlignVCenter
+                                            }
+
+                                            StyledText {
+                                                text: accountCard.issue ? accountCard.issue.title : ""
+                                                color: root.ui.orange
+                                                font.pixelSize: Theme.fontSizeSmall + 1
+                                                font.weight: Font.DemiBold
+                                                Layout.fillWidth: true
+                                                elide: Text.ElideRight
+                                                Layout.alignment: Qt.AlignVCenter
+                                            }
+
+                                            StyledText {
+                                                text: accountCard.issue ? accountCard.issue.action : ""
+                                                color: root.ui.orange
+                                                font.pixelSize: Theme.fontSizeSmall + 1
+                                                font.weight: Font.DemiBold
+                                                visible: root.isPollable(accountCard.account.provider)
+                                                Layout.alignment: Qt.AlignVCenter
+
+                                                MouseArea {
+                                                    anchors.fill: parent
+                                                    cursorShape: Qt.PointingHandCursor
+                                                    enabled: !accountPollProcess.running
+                                                    onClicked: root.refreshAccount(accountCard.account)
+                                                }
+                                            }
+                                        }
+
+                                        Column {
+                                            width: parent.width
+                                            spacing: Theme.spacingS
+                                            visible: accountCard.expanded
+
+                                            Repeater {
+                                                model: accountCard.accountWindows.length
+
+                                                delegate: Column {
+                                                    id: windowRow
+                                                    property var windowData: accountCard.accountWindows[index]
+                                                    property var valueParts: root.limitValueParts(windowData)
+                                                    width: parent.width
+                                                    spacing: 3
+
+                                                    RowLayout {
+                                                        width: parent.width
+                                                        spacing: Theme.spacingXS
+
+                                                        StyledText {
+                                                            text: root.windowTitle(windowRow.windowData)
+                                                            Layout.fillWidth: true
+                                                            elide: Text.ElideRight
+                                                            color: root.ui.secondary
+                                                            font.pixelSize: Theme.fontSizeSmall + 1
+                                                            font.weight: Font.Medium
+                                                        }
+
+                                                        StyledText {
+                                                            text: windowRow.valueParts.source
+                                                            visible: text.length > 0
+                                                            color: root.ui.secondary
+                                                            font.pixelSize: Theme.fontSizeSmall + 1
+                                                        }
+
+                                                        StyledText {
+                                                            text: windowRow.valueParts.value
+                                                            color: root.hasUsedPercent(windowRow.windowData)
+                                                                ? root.limitColor(windowRow.windowData) : root.ui.secondary
+                                                            font.pixelSize: Theme.fontSizeSmall + 1
+                                                            font.weight: Font.DemiBold
+                                                        }
+                                                    }
+
+                                                    Rectangle {
+                                                        id: limitTrack
+                                                        width: parent.width
+                                                        height: 6
+                                                        radius: 3
+                                                        color: root.ui.selected
+
+                                                        Rectangle {
+                                                            width: limitTrack.width * root.limitFraction(windowRow.windowData)
+                                                            height: parent.height
+                                                            radius: parent.radius
+                                                            color: root.hasUsedPercent(windowRow.windowData)
+                                                                ? root.limitColor(windowRow.windowData) : root.ui.blue
+                                                        }
+
+                                                        Rectangle {
+                                                            property real fraction: root.paceMarkerFraction(windowRow.windowData)
+                                                            visible: fraction >= 0
+                                                            x: Math.max(0, limitTrack.width * fraction - width / 2)
+                                                            y: -2
+                                                            width: 2
+                                                            height: parent.height + 4
+                                                            radius: 1
+                                                            color: root.ui.text
+                                                            opacity: 0.7
+                                                        }
+                                                    }
+
+                                                    RowLayout {
+                                                        width: parent.width
+                                                        spacing: Theme.spacingXS
+                                                        visible: paceText.text.length > 0 || resetText.text.length > 0
+
+                                                        StyledText {
+                                                            id: paceText
+                                                            text: root.paceLabel(windowRow.windowData)
+                                                            color: windowRow.windowData.pace && windowRow.windowData.pace.status === "over"
+                                                                ? root.ui.orange : root.ui.secondary
+                                                            font.pixelSize: Theme.fontSizeSmall
+                                                            Layout.fillWidth: true
+                                                            elide: Text.ElideRight
+                                                        }
+
+                                                        StyledText {
+                                                            id: resetText
+                                                            text: root.windowResetText(windowRow.windowData)
+                                                            color: root.ui.secondary
+                                                            opacity: 0.8
+                                                            font.pixelSize: Theme.fontSizeSmall
+                                                            horizontalAlignment: Text.AlignRight
+                                                        }
+                                                    }
+                                                }
+                                            }
+
+                                            StyledText {
+                                                text: "No provider quota reported"
+                                                visible: accountCard.accountWindows.length === 0
+                                                color: root.ui.secondary
+                                                opacity: 0.8
+                                                font.pixelSize: Theme.fontSizeSmall
+                                            }
+
+                                            Repeater {
+                                                model: root.accountExtraRows(accountCard.account)
+
+                                                delegate: RowLayout {
+                                                    width: parent.width
+                                                    spacing: Theme.spacingXS
+
+                                                    DIcon {
+                                                        name: modelData.icon
+                                                        size: 15
+                                                        color: modelData.tone === "info" ? root.ui.mint
+                                                            : modelData.tone === "warning" ? root.ui.orange : root.ui.green
+                                                        Layout.alignment: Qt.AlignVCenter
+                                                    }
+
+                                                    StyledText {
+                                                        text: modelData.label
+                                                        Layout.fillWidth: true
+                                                        elide: Text.ElideRight
+                                                        color: modelData.tone === "info" ? root.ui.mint : root.ui.text
+                                                        font.pixelSize: Theme.fontSizeSmall + 1
+                                                        font.weight: modelData.tone === "info" ? Font.DemiBold : Font.Medium
+                                                    }
+
+                                                    StyledText {
+                                                        text: modelData.value || ""
+                                                        visible: text.length > 0
+                                                        color: modelData.tone === "warning" ? root.ui.orange : root.ui.green
+                                                        font.pixelSize: Theme.fontSizeSmall + 1
+                                                        font.weight: Font.DemiBold
+                                                    }
+
+                                                    StyledText {
+                                                        text: modelData.note || ""
+                                                        visible: text.length > 0
+                                                        color: root.ui.secondary
+                                                        font.pixelSize: Theme.fontSizeSmall
+                                                    }
+                                                }
+                                            }
+
+                                            Item {
+                                                width: detailsToggle.implicitWidth
+                                                height: detailsToggle.implicitHeight
+
+                                            Row {
+                                                id: detailsToggle
+                                                spacing: Theme.spacingXXS
+
+                                                DIcon {
+                                                    name: accountCard.detailsOpen ? "expand_more" : "chevron_right"
+                                                    size: 14
+                                                    color: root.ui.secondary
+                                                    opacity: 0.8
+                                                    anchors.verticalCenter: parent.verticalCenter
+                                                }
+
+                                                StyledText {
+                                                    text: "Details · source and reset dates"
+                                                    color: root.ui.secondary
+                                                    opacity: 0.8
+                                                    font.pixelSize: Theme.fontSizeSmall
+                                                    anchors.verticalCenter: parent.verticalCenter
+                                                }
+
+                                            }
+
+                                            MouseArea {
+                                                anchors.fill: parent
+                                                cursorShape: Qt.PointingHandCursor
+                                                onClicked: root.toggleAccountFlag("accountDetailsOpen", accountCard.accountKeyId)
+                                            }
+                                            }
+
+                                            Column {
+                                                width: parent.width
+                                                spacing: 2
+                                                visible: accountCard.detailsOpen
+
+                                                Repeater {
+                                                    model: accountCard.detailsOpen ? root.accountDetailRows(accountCard.account) : []
+
+                                                    delegate: RowLayout {
+                                                        width: parent.width
+                                                        spacing: Theme.spacingXS
+
+                                                        StyledText {
+                                                            text: modelData.label
+                                                            Layout.fillWidth: true
+                                                            elide: Text.ElideRight
+                                                            color: modelData.warn ? root.ui.orange : root.ui.secondary
+                                                            font.pixelSize: Theme.fontSizeSmall
+                                                        }
+
+                                                        StyledText {
+                                                            text: modelData.value || ""
+                                                            visible: text.length > 0
+                                                            color: root.ui.secondary
+                                                            opacity: 0.8
+                                                            font.pixelSize: Theme.fontSizeSmall
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Rectangle {
+                            width: parent.width
+                            visible: root.tabIs("overview") && root.attentionItems.length > 0 && root.cardSurvives("spend")
+                            implicitHeight: attentionColumn.implicitHeight + Theme.spacingS * 2
+                            height: visible ? implicitHeight : 0
+                            radius: 10
+                            color: root.ui.attention
+                            border.width: 1
+                            border.color: root.ui.attentionBorder
+
+                            Column {
+                                id: attentionColumn
+                                anchors.left: parent.left
+                                anchors.right: parent.right
+                                anchors.top: parent.top
+                                anchors.margins: Theme.spacingS
+                                spacing: 4
+
+                                StyledText {
+                                    text: "Needs attention"
+                                    color: root.ui.orange
+                                    font.pixelSize: Theme.fontSizeSmall + 1
+                                    font.weight: Font.DemiBold
+                                }
+
+                                Repeater {
+                                    model: root.attentionItems
+
+                                    delegate: RowLayout {
+                                        width: parent.width
+                                        spacing: Theme.spacingXS
+
+                                        DIcon {
+                                            name: "error"
+                                            size: 15
+                                            color: root.ui.orange
+                                            Layout.alignment: Qt.AlignVCenter
+                                        }
+
+                                        StyledText {
+                                            text: modelData.title
+                                            Layout.fillWidth: true
+                                            elide: Text.ElideRight
+                                            color: root.ui.text
+                                            font.pixelSize: Theme.fontSizeSmall + 1
+                                        }
+
+                                        StyledText {
+                                            text: modelData.detail
+                                            Layout.maximumWidth: parent.width * 0.62
+                                            elide: Text.ElideRight
+                                            color: root.ui.secondary
+                                            font.pixelSize: Theme.fontSizeSmall
+                                            horizontalAlignment: Text.AlignRight
+                                        }
+                                    }
+                                }
+                            }
                         }
 
                         TokitokiCard {
+
+                            ui: root.ui
                             title: "Sessions"
                             iconName: "forum"
                             visible: root.tabIs("sessions")
@@ -2358,6 +3416,8 @@ PluginComponent {
                         }
 
                         TokitokiCard {
+
+                            ui: root.ui
                             title: root.shellName + " integration"
                             iconName: "settings"
                             visible: root.tabIs("settings") && root.cardSurvives("integration")
@@ -2402,6 +3462,8 @@ PluginComponent {
                         }
 
                         TokitokiCard {
+
+                            ui: root.ui
                             title: "Notifications & spend guard"
                             iconName: "notifications"
                             visible: root.tabIs("settings") && root.cardSurvives("notifications")
@@ -2419,6 +3481,8 @@ PluginComponent {
                         }
 
                         TokitokiCard {
+
+                            ui: root.ui
                             title: "Activity today"
                             iconName: "analytics"
                             visible: root.tabIs("overview") && root.hasPayload && root.cardSurvives("spend")
@@ -2553,60 +3617,6 @@ PluginComponent {
                             }
                         }
 
-                        TokitokiCard {
-                            title: "Needs attention"
-                            iconName: "warning"
-                            visible: root.tabIs("overview") && root.attentionItems.length > 0 &&
-                                root.cardSurvives("spend")
-                            contentComponent: Component {
-                                Column {
-                                    width: parent ? parent.width : 0
-                                    spacing: Theme.spacingXS
-
-                                    Repeater {
-                                        model: root.attentionItems
-
-                                        delegate: TokitokiListRow {
-                                            alternate: index % 2 === 1
-
-                                            RowLayout {
-                                                anchors.fill: parent
-                                                spacing: Theme.spacingXS
-
-                                                DIcon {
-                                                    name: "error"
-                                                    size: Theme.iconSizeSmall
-                                                    color: Theme.warning
-                                                    Layout.alignment: Qt.AlignVCenter
-                                                }
-
-                                                StyledText {
-                                                    text: modelData.title
-                                                    Layout.fillWidth: true
-                                                    color: Theme.surfaceText
-                                                    font.pixelSize: Theme.fontSizeMedium
-                                                    elide: Text.ElideRight
-                                                    Layout.alignment: Qt.AlignVCenter
-                                                }
-
-                                                StyledText {
-                                                    id: detail
-                                                    text: modelData.detail
-                                                    Layout.maximumWidth: parent.width * 0.68
-                                                    elide: Text.ElideRight
-                                                    color: Theme.warning
-                                                    font.pixelSize: Theme.fontSizeSmall - 1
-                                                    isMonospace: true
-                                                    horizontalAlignment: Text.AlignRight
-                                                    Layout.alignment: Qt.AlignVCenter
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
                         StyledText {
                             width: parent.width
                             visible: root.tabIs("quotas") && root.hasPayload && root.filteredLimits().length === 0
@@ -2618,359 +3628,8 @@ PluginComponent {
                         }
 
                         TokitokiCard {
-                            title: "Usage limits"
-                            iconName: "speed"
-                            visible: root.tabIs("quotas") && root.filteredLimits().length > 0 &&
-                                root.cardSurvives("limits")
-                            contentComponent: Component {
-                                Column {
-                                    width: parent ? parent.width : 0
-                                    spacing: Theme.spacingS
 
-                                    Repeater {
-                                        model: root.filteredLimits()
-
-                                        delegate: Rectangle {
-                                            id: accountCard
-
-                                            property var account: modelData
-                                            property var accountWindows: root.orderedWindows(account.windows)
-                                            width: parent.width
-                                            implicitHeight: accountContent.childrenRect.height + Theme.spacingS * 2
-                                            height: implicitHeight
-                                            radius: Theme.cornerRadius
-                                            color: Theme.withAlpha(Theme.surfaceContainer, 0.58)
-                                            border.width: 1
-                                            border.color: Theme.outlineLight
-
-                                            Column {
-                                                id: accountContent
-
-                                                anchors.left: parent.left
-                                                anchors.right: parent.right
-                                                anchors.top: parent.top
-                                                anchors.margins: Theme.spacingS
-                                                spacing: Theme.spacingS
-
-                                                RowLayout {
-                                                    id: accountHeader
-
-                                                    width: parent.width
-                                                    height: 30
-                                                    spacing: Theme.spacingXS
-
-                                                    TokitokiProviderLogo {
-                                                        provider: accountCard.account.provider
-                                                        registry: root.payload.providerRegistry || ({})
-                                                        size: Theme.iconSizeLarge
-                                                        showBackground: true
-                                                        fallbackIcon: root.providerEntry(accountCard.account.provider) ? root.harnessIcon(accountCard.account.provider) : "account_circle"
-                                                        fallbackColor: Theme.primary
-                                                        Layout.alignment: Qt.AlignVCenter
-                                                    }
-
-                                                    Column {
-                                                        Layout.fillWidth: true
-                                                        spacing: 0
-                                                        Layout.alignment: Qt.AlignVCenter
-
-                                                        StyledText {
-                                                            width: parent.width
-                                                            text: root.accountPrimaryLabel(accountCard.account)
-                                                            color: Theme.surfaceText
-                                                            font.pixelSize: Theme.fontSizeMedium
-                                                            font.weight: Font.Medium
-                                                            elide: Text.ElideRight
-                                                        }
-
-                                                        StyledText {
-                                                            width: parent.width
-                                                            text: root.accountSecondaryLabel(accountCard.account)
-                                                            color: Theme.surfaceVariantText
-                                                            font.pixelSize: Theme.fontSizeSmall + 1
-                                                            elide: Text.ElideRight
-                                                        }
-                                                    }
-
-                                                    Rectangle {
-                                                        id: incidentBadge
-                                                        property var incident: root.vendorIncident(root.vendorFor(accountCard.account.provider, accountCard.account.vendor))
-                                                        width: incident ? incidentRow.implicitWidth + Theme.spacingS * 2 : 0
-                                                        height: incident ? 22 : 0
-                                                        radius: 11
-                                                        color: Theme.withAlpha(root.incidentColor(incident), 0.16)
-                                                        visible: incident !== null
-                                                        Layout.alignment: Qt.AlignVCenter
-
-                                                        Row {
-                                                            id: incidentRow
-                                                            anchors.centerIn: parent
-                                                            spacing: Theme.spacingXXS
-
-                                                            DIcon {
-                                                                name: "warning"
-                                                                size: 14
-                                                                color: root.incidentColor(incidentBadge.incident)
-                                                                anchors.verticalCenter: parent.verticalCenter
-                                                            }
-
-                                                            StyledText {
-                                                                text: incidentBadge.incident ? String(incidentBadge.incident.indicator).toUpperCase() : ""
-                                                                color: root.incidentColor(incidentBadge.incident)
-                                                                font.pixelSize: Theme.fontSizeSmall
-                                                                font.weight: Font.DemiBold
-                                                                anchors.verticalCenter: parent.verticalCenter
-                                                            }
-                                                        }
-
-                                                        MouseArea {
-                                                            anchors.fill: parent
-                                                            cursorShape: Qt.PointingHandCursor
-                                                            enabled: incidentBadge.incident !== null && Boolean(incidentBadge.incident.url)
-                                                            onClicked: Qt.openUrlExternally(incidentBadge.incident.url)
-                                                        }
-                                                    }
-
-                                                    Rectangle {
-                                                        id: planBadge
-                                                        property string plan: accountCard.account.planLabel || accountCard.account.plan || ""
-                                                        width: plan.length > 0
-                                                            ? planText.implicitWidth + Theme.spacingS * 2
-                                                            : 0
-                                                        height: plan.length > 0 ? 22 : 0
-                                                        radius: 11
-                                                        color: Theme.withAlpha(Theme.surfaceText, 0.08)
-                                                        visible: plan.length > 0
-                                                        Layout.alignment: Qt.AlignVCenter
-
-                                                        StyledText {
-                                                            id: planText
-                                                            anchors.centerIn: parent
-                                                            text: planBadge.plan.toUpperCase()
-                                                            color: Theme.surfaceVariantText
-                                                            font.pixelSize: Theme.fontSizeSmall
-                                                            font.weight: Font.DemiBold
-                                                        }
-                                                    }
-
-                                                    DActionButton {
-                                                        buttonSize: 24
-                                                        iconSize: 16
-                                                        iconName: "arrow_upward"
-                                                        tooltipText: "Move up in Quotas"
-                                                        enabled: root.canMove(accountCard.account, "up")
-                                                        onClicked: root.moveAccount(accountCard.account, -1)
-                                                    }
-
-                                                    DActionButton {
-                                                        buttonSize: 24
-                                                        iconSize: 16
-                                                        iconName: "arrow_downward"
-                                                        tooltipText: "Move down in Quotas"
-                                                        enabled: root.canMove(accountCard.account, "down")
-                                                        onClicked: root.moveAccount(accountCard.account, 1)
-                                                    }
-
-                                                    DActionButton {
-                                                        id: hideButton
-                                                        buttonSize: 26
-                                                        iconSize: 16
-                                                        iconName: "visibility_off"
-                                                        iconColor: Theme.surfaceVariantText
-                                                        tooltipText: "Hide this account everywhere"
-                                                        enabled: !visibilityProcess.running
-                                                        Layout.alignment: Qt.AlignVCenter
-                                                        onClicked: root.setAccountHidden(
-                                                            accountCard.account.provider,
-                                                            accountCard.account.accountKey,
-                                                            true
-                                                        )
-                                                    }
-                                                }
-
-                                                RowLayout {
-                                                    width: parent.width
-                                                    spacing: Theme.spacingXS
-                                                    Item {
-                                                        Layout.fillWidth: true
-                                                    }
-                                                    DActionButton {
-                                                        buttonSize: 24
-                                                        iconSize: 16
-                                                        iconName: "arrow_back"
-                                                        tooltipText: "Move earlier in the bar"
-                                                        enabled: root.canMove(accountCard.account, "barUp")
-                                                        onClicked: root.moveAccount(accountCard.account, -1, "bar")
-                                                    }
-                                                    DActionButton {
-                                                        buttonSize: 24
-                                                        iconSize: 16
-                                                        iconName: "arrow_forward"
-                                                        tooltipText: "Move later in the bar"
-                                                        enabled: root.canMove(accountCard.account, "barDown")
-                                                        onClicked: root.moveAccount(accountCard.account, 1, "bar")
-                                                    }
-                                                    DActionButton {
-                                                        // Provider filters (selected providers, preview-hidden vendors)
-                                                        // keep the account out of the bar whatever this toggle says.
-                                                        readonly property bool providerFiltered: !root.providerIsVisible(
-                                                            accountCard.account.provider, accountCard.account.accountKey, accountCard.account.vendor)
-                                                        buttonSize: 24
-                                                        iconSize: 16
-                                                        iconName: providerFiltered || root.barAccountHidden(accountCard.account) ? "visibility_off" : "visibility"
-                                                        tooltipText: providerFiltered ? "Hidden from the bar by provider visibility settings"
-                                                            : root.barAccountHidden(accountCard.account) ? "Show in bar" : "Hide from bar only"
-                                                        enabled: !providerFiltered
-                                                        onClicked: root.setBarAccountHidden(accountCard.account, !root.barAccountHidden(accountCard.account))
-                                                    }
-                                                }
-
-                                                Column {
-                                                    id: quotaRows
-                                                    width: parent.width
-                                                    spacing: 0
-
-                                                    Repeater {
-                                                        model: accountCard.accountWindows.length
-
-                                                        delegate: TokitokiListRow {
-                                                            property var windowData: accountCard.accountWindows[index]
-                                                            width: parent.width
-                                                            rowHeight: windowContent.implicitHeight + 5
-                                                            verticalPadding: 0
-                                                            showSurface: false
-
-                                                            Column {
-                                                                id: windowContent
-                                                                anchors.fill: parent
-                                                                spacing: Theme.spacingXXS
-
-                                                                RowLayout {
-                                                                    width: parent.width
-                                                                    spacing: Theme.spacingXS
-
-                                                                    StyledText {
-                                                                        text: root.windowTitle(windowData)
-                                                                        Layout.fillWidth: true
-                                                                        color: Theme.surfaceVariantText
-                                                                        font.pixelSize: Theme.fontSizeSmall + 1
-                                                                        font.weight: Font.Medium
-                                                                        Layout.alignment: Qt.AlignVCenter
-                                                                    }
-
-                                                                    StyledText {
-                                                                        id: valueText
-                                                                        text: root.limitValueLabel(windowData)
-                                                                        Layout.maximumWidth: parent.width * 0.8
-                                                                        elide: Text.ElideRight
-                                                                        color: root.hasUsedPercent(windowData)
-                                                                            ? root.limitColor(windowData)
-                                                                            : Theme.surfaceVariantText
-                                                                        font.pixelSize: Theme.fontSizeSmall + 1
-                                                                        font.weight: Font.DemiBold
-                                                                        isMonospace: true
-                                                                        Layout.alignment: Qt.AlignVCenter
-                                                                    }
-                                                                }
-
-                                                                Rectangle {
-                                                                    id: limitTrack
-                                                                    width: parent.width
-                                                                    height: 5
-                                                                    radius: 2.5
-                                                                    color: Theme.withAlpha(Theme.surfaceText, 0.12)
-
-                                                                    Rectangle {
-                                                                        width: limitTrack.width * root.limitFraction(windowData)
-                                                                        height: parent.height
-                                                                        radius: parent.radius
-                                                                        color: root.limitColor(windowData)
-                                                                    }
-
-                                                                    Rectangle {
-                                                                        property real fraction: root.paceMarkerFraction(windowData)
-                                                                        visible: fraction >= 0
-                                                                        x: Math.max(0, limitTrack.width * fraction - width / 2)
-                                                                        y: -2
-                                                                        width: 2
-                                                                        height: parent.height + 4
-                                                                        radius: 1
-                                                                        color: Theme.surfaceText
-                                                                        opacity: 0.7
-                                                                    }
-                                                                }
-
-                                                                RowLayout {
-                                                                    width: parent.width
-                                                                    spacing: Theme.spacingXS
-                                                                    visible: paceText.text.length > 0 || resetText.text.length > 0
-
-                                                                    StyledText {
-                                                                        id: paceText
-                                                                        text: root.paceLabel(windowData)
-                                                                        color: windowData.pace && windowData.pace.status === "over"
-                                                                            ? Theme.warning
-                                                                            : Theme.surfaceVariantText
-                                                                        font.pixelSize: Theme.fontSizeSmall
-                                                                        Layout.fillWidth: true
-                                                                        elide: Text.ElideRight
-                                                                    }
-
-                                                                    StyledText {
-                                                                        id: resetText
-                                                                        text: root.quotaStatus(windowData) === "current"
-                                                                            ? root.resetLabel(windowData.resetsAt) : "Awaiting fresh observation"
-                                                                        color: Theme.surfaceVariantText
-                                                                        font.pixelSize: Theme.fontSizeSmall
-                                                                        horizontalAlignment: Text.AlignRight
-                                                                    }
-                                                                }
-                                                            }
-                                                        }
-                                                    }
-                                                }
-
-                                                StyledText {
-                                                    text: root.extraUsageLabel(accountCard.account.extraUsage)
-                                                    color: Theme.surfaceVariantText
-                                                    font.pixelSize: Theme.fontSizeSmall + 1
-                                                    visible: text.length > 0
-                                                }
-
-                                                StyledText {
-                                                    text: root.workspaceCreditsLabel(accountCard.account.credits)
-                                                    color: Theme.surfaceVariantText
-                                                    font.pixelSize: Theme.fontSizeSmall + 1
-                                                    visible: text.length > 0
-                                                }
-
-                                                StyledText {
-                                                    width: parent.width
-                                                    text: root.balanceLabel(accountCard.account.balance)
-                                                    color: accountCard.account.balance && accountCard.account.balance.available === false
-                                                        ? Theme.warning : Theme.surfaceVariantText
-                                                    font.pixelSize: Theme.fontSizeSmall + 1
-                                                    elide: Text.ElideRight
-                                                    visible: text.length > 0
-                                                }
-
-                                                StyledText {
-                                                    text: accountCard.account.bankedResets > 0
-                                                        ? accountCard.account.bankedResets + " banked reset" +
-                                                            (accountCard.account.bankedResets === 1 ? "" : "s")
-                                                        : ""
-                                                    color: Theme.success
-                                                    font.pixelSize: Theme.fontSizeSmall + 1
-                                                    visible: accountCard.account.bankedResets > 0
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        TokitokiCard {
+                            ui: root.ui
                             title: "Hidden accounts · " + root.hiddenLimits().length
                             iconName: "visibility_off"
                             visible: root.tabIs("quotas") && root.hiddenLimits().length > 0
@@ -3021,6 +3680,8 @@ PluginComponent {
                         }
 
                         TokitokiCard {
+
+                            ui: root.ui
                             title: "Usage distribution"
                             iconName: "pie_chart"
                             visible: (root.tabIs("overview") || root.tabIs("tokens")) &&
@@ -3043,6 +3704,8 @@ PluginComponent {
                         }
 
                         TokitokiCard {
+
+                            ui: root.ui
                             title: "Token composition · " + root.compositionRangeLabel(root.compositionPeriod)
                             iconName: "data_usage"
                             visible: root.tabIs("tokens") && root.cardSurvives("composition") && (root.hasTokenMixReport("day") ||
@@ -3071,16 +3734,16 @@ PluginComponent {
                                                 height: 26
                                                 radius: 13
                                                 color: root.compositionPeriod === modelData
-                                                    ? Theme.primaryContainer
-                                                    : Theme.withAlpha(Theme.surfaceText, 0.06)
+                                                    ? root.ui.chip
+                                                    : root.ui.chipIdle
 
                                                 StyledText {
                                                     id: compositionPeriodText
                                                     anchors.centerIn: parent
                                                     text: root.historyRangeLabel(modelData)
                                                     color: root.compositionPeriod === modelData
-                                                        ? Theme.primary
-                                                        : Theme.surfaceVariantText
+                                                        ? root.ui.chipText
+                                                        : root.ui.secondary
                                                     font.pixelSize: Theme.fontSizeSmall + 1
                                                     font.weight: root.compositionPeriod === modelData
                                                         ? Font.DemiBold : Font.Normal
@@ -3157,6 +3820,8 @@ PluginComponent {
                         }
 
                         TokitokiCard {
+
+                            ui: root.ui
                             title: "Tracking quality · " + root.compositionRangeLabel(root.compositionPeriod)
                             iconName: "fact_check"
                             visible: root.tabIs("tokens") && root.cardSurvives("tracking") && root.trackingReport !== null
@@ -3230,6 +3895,8 @@ PluginComponent {
                         }
 
                         TokitokiCard {
+
+                            ui: root.ui
                             title: "Usage history · " + root.historyRangeLabel(root.historyPeriod)
                             iconName: "analytics"
                             visible: root.tabIs("tokens") && root.hasHistoryData && root.cardSurvives("history")
@@ -3255,16 +3922,16 @@ PluginComponent {
                                                 height: 26
                                                 radius: 13
                                                 color: root.historyPeriod === modelData
-                                                    ? Theme.primaryContainer
-                                                    : Theme.withAlpha(Theme.surfaceText, 0.06)
+                                                    ? root.ui.chip
+                                                    : root.ui.chipIdle
 
                                                 StyledText {
                                                     id: historyPeriodText
                                                     anchors.centerIn: parent
                                                     text: root.historyRangeLabel(modelData)
                                                     color: root.historyPeriod === modelData
-                                                        ? Theme.primary
-                                                        : Theme.surfaceVariantText
+                                                        ? root.ui.chipText
+                                                        : root.ui.secondary
                                                     font.pixelSize: Theme.fontSizeSmall + 1
                                                     font.weight: root.historyPeriod === modelData
                                                         ? Font.DemiBold : Font.Normal
@@ -3291,6 +3958,8 @@ PluginComponent {
                         }
 
                         TokitokiCard {
+
+                            ui: root.ui
                             title: "Token pulse"
                             iconName: "monitor_heart"
                             visible: (root.tabIs("overview") || root.tabIs("tokens")) &&
@@ -3351,6 +4020,8 @@ PluginComponent {
                         }
 
                         TokitokiCard {
+
+                            ui: root.ui
                             title: "By provider · " + root.metricLabel(root.selectedMetric)
                             iconName: "hub"
                             visible: (root.tabIs("overview") || root.tabIs("tokens")) &&
@@ -3367,6 +4038,8 @@ PluginComponent {
                         }
 
                         TokitokiCard {
+
+                            ui: root.ui
                             title: "By model · " + root.metricLabel(root.selectedMetric)
                             iconName: "deployed_code"
                             visible: (root.tabIs("overview") || root.tabIs("tokens")) &&
@@ -3383,6 +4056,8 @@ PluginComponent {
                         }
 
                         TokitokiCard {
+
+                            ui: root.ui
                             title: "Repo activity · 30 days"
                             iconName: "bar_chart"
                             visible: (root.tabIs("reports") || root.tabIs("overview")) && root.hasPayload &&
@@ -3399,6 +4074,8 @@ PluginComponent {
                         }
 
                         TokitokiCard {
+
+                            ui: root.ui
                             title: "Activity · last year"
                             iconName: "calendar_month"
                             visible: root.tabIs("reports") && root.hasActivityGrid && root.cardSurvives("activity")
@@ -3411,6 +4088,8 @@ PluginComponent {
                         }
 
                         TokitokiCard {
+
+                            ui: root.ui
                             title: "Via T3code"
                             iconName: "apps"
                             visible: (root.tabIs("overview") || root.tabIs("sources")) &&
@@ -3486,6 +4165,8 @@ PluginComponent {
                         }
 
                         TokitokiCard {
+
+                            ui: root.ui
                             title: "Today by harness"
                             iconName: "apps"
                             visible: (root.tabIs("overview") || root.tabIs("sources")) &&
@@ -3550,6 +4231,8 @@ PluginComponent {
                         }
 
                         TokitokiCard {
+
+                            ui: root.ui
                             title: "Top repos this month"
                             iconName: "folder"
                             visible: (root.tabIs("overview") || root.tabIs("reports") ||
@@ -3601,6 +4284,8 @@ PluginComponent {
                         }
 
                         TokitokiCard {
+
+                            ui: root.ui
                             title: "Top tools today"
                             iconName: "build"
                             visible: (root.tabIs("overview") || root.tabIs("sources") ||
@@ -3652,6 +4337,8 @@ PluginComponent {
                         }
 
                         TokitokiCard {
+
+                            ui: root.ui
                             title: "Budget status"
                             iconName: "speed"
                             visible: root.tabIs("reports") && root.hasPayload &&
@@ -3705,6 +4392,8 @@ PluginComponent {
                         }
 
                         TokitokiCard {
+
+                            ui: root.ui
                             title: "Service alerts"
                             iconName: "warning"
                             visible: root.tabIs("overview") && root.hasPayload && root.cardSurvives("alerts") &&
@@ -3757,6 +4446,8 @@ PluginComponent {
                         }
 
                         TokitokiCard {
+
+                            ui: root.ui
                             title: "Anomalies"
                             iconName: "warning"
                             visible: (root.tabIs("overview") || root.tabIs("reports")) &&
@@ -3816,6 +4507,8 @@ PluginComponent {
                         }
 
                         TokitokiCard {
+
+                            ui: root.ui
                             title: "Statusline preview"
                             iconName: "terminal"
                             visible: root.tabIs("reports") && root.hasPayload &&
@@ -3848,6 +4541,8 @@ PluginComponent {
                         }
 
                         TokitokiCard {
+
+                            ui: root.ui
                             title: "Billing blocks · active timeline"
                             iconName: "schedule"
                             visible: root.tabIs("reports") && root.hasPayload && Boolean(root.payload.blocks) &&
@@ -3918,6 +4613,8 @@ PluginComponent {
                         }
 
                         TokitokiCard {
+
+                            ui: root.ui
                             title: "Other machines"
                             iconName: "lan"
                             visible: root.tabIs("reports") && root.hasPayload &&
@@ -3967,6 +4664,8 @@ PluginComponent {
                         }
 
                         TokitokiCard {
+
+                            ui: root.ui
                             title: "Recent sessions"
                             iconName: "chat_bubble"
                             visible: root.tabIs("sources") && root.hasPayload && Boolean(root.payload.recentSessions) &&
@@ -4075,26 +4774,31 @@ PluginComponent {
                     anchors.left: parent.left
                     anchors.right: parent.right
                     anchors.bottom: parent.bottom
-                    height: 52
+                    height: 48
                     visible: !root.configOpen
-                    color: Theme.withAlpha(Theme.surfaceContainer, 0.96)
-                    border.width: 1
-                    border.color: Theme.outlineLight
+                    radius: Theme.cornerRadius
+                    color: root.ui.window === "transparent" ? Theme.withAlpha(Theme.surfaceContainer, 0.96) : root.ui.window
+
+                    Rectangle {
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.top: parent.top
+                        height: 1
+                        color: root.ui.separator
+                    }
 
                     RowLayout {
                         anchors.fill: parent
                         anchors.leftMargin: Theme.spacingM
                         anchors.rightMargin: Theme.spacingM
-                        spacing: Theme.spacingS
+                        spacing: 6
 
-                        DButton {
+                        PaletteButton {
                             id: refreshButton
                             text: root.isBusy
                                 ? (root.scanNextRefresh ? "Scanning…" : "Refreshing…")
                                 : "Refresh & scan"
                             iconName: root.isBusy ? "sync" : "refresh"
-                            buttonHeight: 34
-                            horizontalPadding: Theme.spacingM
                             enabled: !root.isBusy
                             Layout.alignment: Qt.AlignVCenter
                             onClicked: root.refresh(true)
@@ -4102,14 +4806,30 @@ PluginComponent {
 
                         Item { Layout.fillWidth: true }
 
-                        DButton {
-                            id: openButton
-                            text: "Dashboard"
-                            iconName: "open_in_new"
-                            buttonHeight: 34
-                            horizontalPadding: Theme.spacingS
+                        PaletteButton {
+                            id: shareButton
+                            text: root.shareCopiedAt > 0 ? "Copied" : "Share"
+                            iconName: root.shareCopiedAt > 0 ? "check" : "ios_share"
+                            enabled: root.hasPayload
                             Layout.alignment: Qt.AlignVCenter
-                            onClicked: root.openDashboard()
+                            onClicked: root.copySummary()
+                        }
+
+                        PaletteButton {
+                            id: layoutButton
+                            text: "Layout"
+                            iconName: "dashboard_customize"
+                            highlighted: root.layoutMode
+                            Layout.alignment: Qt.AlignVCenter
+                            onClicked: root.layoutMode = !root.layoutMode
+                        }
+
+                        PaletteButton {
+                            id: openButton
+                            text: "Open"
+                            iconName: "open_in_new"
+                            Layout.alignment: Qt.AlignVCenter
+                            onClicked: root.openDashboard("")
                         }
                     }
                 }
@@ -4123,6 +4843,23 @@ PluginComponent {
         case "warn": return Theme.warning
         default: return Theme.success
         }
+    }
+
+    Process {
+        id: accountPollProcess
+        command: [root.command, "poll", "--json", "--provider", root.refreshingProvider]
+        onExited: function(exitCode, exitStatus) {
+            if (exitCode !== 0)
+                root.lastError = "Could not refresh " + root.providerName(root.refreshingProvider) + " quota (exit " + exitCode + ")"
+            root.refreshingProvider = ""
+            root.refresh(false)
+        }
+    }
+
+    Timer {
+        id: shareCopiedTimer
+        interval: 2000
+        onTriggered: root.shareCopiedAt = 0
     }
 
     Process {

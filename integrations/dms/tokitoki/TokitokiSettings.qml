@@ -446,6 +446,17 @@ PluginSettings {
     }
 
     SelectionSetting {
+        settingKey: "appearance"
+        label: "Appearance"
+        description: "Neutral colors like the macOS menubar app, or follow the " + root.shellName + " theme."
+        options: [
+            { label: "Menubar", value: "menubar" },
+            { label: root.shellName + " theme", value: "shell" }
+        ]
+        defaultValue: "menubar"
+    }
+
+    SelectionSetting {
         settingKey: "openingTab"
         label: "Default tab"
         description: "The initial tab; later tab selections are remembered."

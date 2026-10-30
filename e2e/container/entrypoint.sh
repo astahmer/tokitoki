@@ -141,7 +141,7 @@ JS
   node /opt/e2e/instrument-surfaces.mjs /tmp/e2e-plugin/TokitokiWidget.qml
   ln -sfn /tmp/e2e-plugin "$CONFIG/plugins/tokitoki"
   jq --arg tab "$E2E_TAB" \
-    '.tokitoki = ((.tokitoki // {}) + {enabled: true, openingTab: $tab})' \
+    '.tokitoki = ((.tokitoki // {}) + {enabled: true, openingTab: $tab, appearance: (env.E2E_APPEARANCE // "menubar")})' \
     "$CONFIG/plugin_settings.json" > "$CONFIG/plugin_settings.json.next"
   mv "$CONFIG/plugin_settings.json.next" "$CONFIG/plugin_settings.json"
   printf '{"selectedTab":"%s"}\n' "$E2E_TAB" > "$state_file"
@@ -301,25 +301,36 @@ click_dms_control() {
   click_at "$((control_x - popout_offset_x))" "$((control_y - popout_offset_y))"
 }
 
-select_tab() {
+tab_control() {
+  if [ "$E2E_SHELL" = dms ]; then
+    dms ipc call tokitoki-surfaces tabControl "$1"
+  else
+    qs -p "$E2E_QUICKSHELL_DIR" ipc call tokitoki-surfaces tabControl "$1"
+  fi
+}
+
+# Clicks the real nav control for a tab; tabs beyond the first four open the
+# More menu first.
+nav_open() {
   tab=$1
   scroll_up 30
-  case "$tab" in
-    overview) x=60 ;;
-    quotas) x=130 ;;
-    tokens) x=193 ;;
-    reports) x=256 ;;
-    sessions) x=326 ;;
-    sources) x=397 ;;
-    mcp) x=456 ;;
-    settings) x=55 ;;
-  esac
-  if [ "$tab" = settings ]; then
-    click_at "$x" 235
-  else
-    click_at "$x" 203
-  fi
-  wait_for_tab "$tab"
+  attempt=0
+  while [ "$attempt" -lt 3 ]; do
+    target=$(tab_control "$tab")
+    kind=$(printf '%s' "$target" | jq -r .kind)
+    [ "$kind" = missing ] && { echo "e2e: no control for tab $tab" >&2; exit 1; }
+    tx=$(printf '%s' "$target" | jq -r .x)
+    ty=$(printf '%s' "$target" | jq -r .y)
+    click_at "$((tx - popout_offset_x))" "$((ty - popout_offset_y))"
+    [ "$kind" = tab ] && break
+    sleep 0.3
+    attempt=$((attempt + 1))
+  done
+}
+
+select_tab() {
+  nav_open "$1"
+  wait_for_tab "$1"
 }
 
 scroll_down() {
@@ -510,11 +521,11 @@ else
   record_interaction search
   capture sessions-search.png
 
-  click_at 220 390
+  click_at 220 330
   wait_for 20 "session detail command" grep -Fq '"--session","e2e-session-001"' "$E2E_COMMAND_LOG"
   record_interaction session-detail
   capture sessions-detail.png
-  click_at 65 326
+  click_at 65 266
   capture sessions-back.png
   record_interaction session-back
 
@@ -542,7 +553,7 @@ else
   if [ "$E2E_SHELL" = dms ]; then
     click_dms_control previous
   else
-    click_at 66 445
+    click_at 66 385
   fi
   wait_for_log_growth "$before" "session previous-page command"
   wait_for 10 "page one after page two" sh -c 'tail -n +"$1" "$2" | grep -F "\"--page\",\"1\"" | grep -vq -- --search' sh "$((before + 1))" "$E2E_COMMAND_LOG"
@@ -551,11 +562,7 @@ else
 
   select_tab settings
   capture settings-tab.png
-  if [ "$E2E_SHELL" = dms ]; then
-    click_dms_control settings
-  else
-    click_at 465 76
-  fi
+  nav_open widget-settings
   if [ "$E2E_SHELL" = quickshell ]; then
     wait_for 5 "widget settings open" status_matches '.configOpen == true'
   fi
@@ -571,7 +578,7 @@ else
   record_interaction settings-config
   select_tab settings
   if [ "$E2E_SHELL" = quickshell ]; then
-    click_at 460 560
+    click_at 460 500
   else
     click_dms_control notifications
   fi
@@ -580,8 +587,7 @@ else
   capture settings-notifications.png
   record_interaction settings-notifications
   if [ "$E2E_SHELL" = quickshell ]; then
-    scroll_up 30
-    click_at 465 76
+    nav_open widget-settings
     wait_for 5 "widget settings open" status_matches '.configOpen == true'
     capture widget-config-before.png
     click_at 470 216

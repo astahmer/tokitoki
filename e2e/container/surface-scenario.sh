@@ -18,13 +18,17 @@ surface_save() {
 }
 surface_click() {
   surface_ipc controls > "$E2E_OUT/surface-controls.json"
-  point=$(jq -ce --arg label "$1" --arg account "${2:-}" '[.[] | select(.label == $label and .enabled and ($account == "" or .account == $account)) | select(.y > 280 and .y < 850)][0] // error("control not in viewport: " + $label)' "$E2E_OUT/surface-controls.json")
+  point=$(jq -ce --arg label "$1" --arg account "${2:-}" '[.[] | select(.label == $label and .enabled and ($account == "" or .account == $account)) | select(.label == "layout" or (.y > 200 and .y < 850))][0] // error("control not in viewport: " + $label)' "$E2E_OUT/surface-controls.json")
   cx=$(printf '%s' "$point" | jq -r .x)
   cy=$(printf '%s' "$point" | jq -r .y)
   click_at "$((cx - popout_offset_x))" "$((cy - popout_offset_y))"
 }
 select_tab quotas
 surface_save baseline
+# Reorder and bar-visibility controls live behind the Layout footer toggle.
+surface_click layout
+sleep 0.3
+surface_save layout-mode
 surface_click 'Hide from bar only' 'claude-code@default'
 wait_for 10 'bar-only hide payload readback' surface_matches '.ui.barHiddenAccounts == ["claude-code@default"] and .hiddenOverride == null'
 surface_save bar-hidden

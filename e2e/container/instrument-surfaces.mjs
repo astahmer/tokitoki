@@ -16,10 +16,18 @@ patch('tooltipText: root.restoreAccountLabel(modelData)', 'Component.onCompleted
 patch('tooltipText: providerFiltered ?', 'Component.onCompleted: root.e2eSurfaceControls.push(this)\n tooltipText: providerFiltered ?');
 patch('onClicked: root.hiddenAccountsExpanded = !root.hiddenAccountsExpanded', 'Component.onCompleted: { root.e2eFold = this }\n onClicked: root.hiddenAccountsExpanded = !root.hiddenAccountsExpanded');
 patch('id: refreshButton', 'id: refreshButton\n Component.onCompleted: root.e2eRefresh = this');
+patch('id: layoutButton', 'id: layoutButton\n Component.onCompleted: root.e2eLayout = this');
+// Navigation: the four primary tabs, the More button and its menu entries.
+patch('id: navHover', 'id: navHover\n Component.onCompleted: root.e2eTabControls.push({ tab: modelData, item: this })');
+patch('id: moreHover', 'id: moreHover\n Component.onCompleted: root.e2eMore = this');
+patch('id: menuItemHover', 'id: menuItemHover\n Component.onCompleted: root.e2eTabControls.push({ tab: modelData, item: this })');
 const hook = `
  property var e2eSurfaceControls: []
  property var e2eFold: null
  property var e2eRefresh: null
+ property var e2eLayout: null
+ property var e2eMore: null
+ property var e2eTabControls: []
  function e2eBounds(item) {
    if (!item || !item.visible) return null
    var win = item.QsWindow.window
@@ -46,7 +54,22 @@ const hook = `
      if (fold) found.push({label:"expandHidden", enabled:true, x:fold.x, y:fold.y})
      var refresh = root.e2eBounds(root.e2eRefresh)
      if (refresh) found.push({label:"refresh",enabled:!root.isBusy,x:refresh.x,y:refresh.y})
+     var layout = root.e2eBounds(root.e2eLayout)
+     if (layout) found.push({label:"layout",enabled:true,x:layout.x,y:layout.y})
      return JSON.stringify(found)
+   }
+   // Where to click to reach a tab: its own control when visible, else More.
+   function tabControl(tab: string): string {
+     for (var i = 0; i < root.e2eTabControls.length; i++) {
+       try {
+         var entry = root.e2eTabControls[i]
+         if (entry.tab !== tab) continue
+         var b = root.e2eBounds(entry.item)
+         if (b && b.x !== undefined) return JSON.stringify({kind:"tab", x:b.x, y:b.y})
+       } catch(e) {}
+     }
+     var more = root.e2eBounds(root.e2eMore)
+     return JSON.stringify(more ? {kind:"more", x:more.x, y:more.y} : {kind:"missing"})
    }
    function state(): string {
      function ids(accounts) { return accounts.map(function(a) { return a.provider+"@"+a.accountKey }) }

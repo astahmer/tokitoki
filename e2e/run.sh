@@ -44,6 +44,7 @@ docker run --rm \
   -e "E2E_MODE=$mode" \
   -e "E2E_SHELL=$shell" \
   -e "E2E_QUICKSHELL_MODE=${E2E_QUICKSHELL_MODE:-standalone}" \
+  -e "E2E_APPEARANCE=${E2E_APPEARANCE:-menubar}" \
   -e "E2E_TAB=$tab" \
   -e "E2E_OUT=/out" \
   -e "E2E_PLUGIN_DIR=/plugin-src" \
