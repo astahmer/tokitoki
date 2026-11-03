@@ -9,12 +9,14 @@ import { EXTRACTION_VERSION, extractionVersionFor, scanProvider, scanProviderCor
 import { eventsFile, loadProviderCursors, saveProviderCursors } from "../src/store.ts";
 import type { QuotaObservationEvent } from "../src/types.ts";
 
+// Recent timestamps: quota history older than the retention window is pruned on sync.
+const fixtureStart = Date.now() - 60_000;
 const fixture = (): string => [
   { type: "session_meta", payload: { session_id: "fixture", model_provider: "openai", account_id: "login-a" } },
   ...[null, undefined, { last_token_usage: { input_tokens: 0, output_tokens: 0 } }, {},
     { last_token_usage: { input_tokens: 10, output_tokens: 5 } }].map((info, index) => ({
     type: "event_msg",
-    timestamp: `2026-10-24T10:00:0${index}.000Z`,
+    timestamp: new Date(fixtureStart + index * 1000).toISOString(),
     payload: {
       type: "token_count", info,
       rate_limits: {
