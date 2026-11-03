@@ -167,4 +167,82 @@ function M.value(w, now)
   return if remaining ~= nil then string.format("%d%%", math.floor(remaining + 0.5)) else "unknown"
 end
 
+-- Popout card wording, shared with the DMS and KDE popouts.
+local function capitalize(text)
+  text = tostring(text or "")
+  return string.upper(string.sub(text, 1, 1)) .. string.sub(text, 2)
+end
+M.capitalize = capitalize
+
+local function durationText(w)
+  local n = M.duration(w)
+  if not n then return "?" end
+  if n < 60 then return tostring(n) .. "m" end
+  if n < 1440 then return string.format("%gh", n / 60) end
+  if n == 43200 then return "1mo" end
+  return string.format("%gd", n / 1440)
+end
+
+function M.title(w)
+  local named = ({[300] = "Session", [1440] = "Daily", [10080] = "Weekly", [43200] = "Monthly"})[M.duration(w) or 0]
+  local text
+  if w.label == "Other Models" then text = "API"
+  elseif w.label and w.label ~= "" then text = w.label
+  elseif named then text = named
+  elseif M.duration(w) then text = durationText(w) .. " limit"
+  else text = "Limit" end
+  return (if w.model then w.model .. " · " else "") .. capitalize(text)
+end
+
+function M.tone(w, now)
+  local n = M.percent(w, now)
+  if n == nil then return "neutral" end
+  if n < 20 then return "rose" end
+  if n < 50 then return "amber" end
+  return "green"
+end
+
+function M.sourceText(w, now)
+  if M.status(w, now) ~= "current" or (M.percent(w, now) == nil and type(w.amountUsd) ~= "number") then return "" end
+  return if w.source == "provider" or w.source == "embedded" then "Reported" else "Estimated"
+end
+
+function M.valueText(w, now)
+  local status = M.status(w, now)
+  if status ~= "current" then return capitalize(status) end
+  if type(w.amountUsd) == "number" then return string.format("$%.2f", w.amountUsd) end
+  local remaining = M.percent(w, now)
+  if remaining ~= nil then return string.format("%d%% left", math.floor(remaining + 0.5)) end
+  if (tonumber(w.tokens) or 0) > 0 then return M.compact(w.tokens) .. " tokens" end
+  return "Usage unknown"
+end
+
+function M.resetText(w, now)
+  if M.status(w, now) ~= "current" then return "Awaiting fresh observation" end
+  local left = M.countdown(w, now)
+  return if left ~= "" then "Resets in " .. left else ""
+end
+
+function M.issue(a)
+  local reason = tostring(a.refreshError or "")
+  if reason == "" then return nil end
+  local lower = string.lower(reason)
+  local login = false
+  for _, pattern in ipairs({"log ?in", "sign ?in", "auth", "401", "403", "credential", "expired"}) do
+    if string.find(lower, pattern) then login = true end
+  end
+  return {title = if login then "Login required" else "Refresh failed", reason = reason}
+end
+
+function M.plan(a)
+  return capitalize(a.planLabel or a.plan or "")
+end
+
+function M.banked(a, now)
+  local n = math.floor(tonumber(a.bankedResets) or 0)
+  if n <= 0 then return "" end
+  local left = if a.bankedExpiresAt then M.countdown({resetsAt = a.bankedExpiresAt}, now) else ""
+  return tostring(n) .. " banked reset" .. (if n == 1 then "" else "s") .. (if left ~= "" then " · expires in " .. left else "")
+end
+
 return M

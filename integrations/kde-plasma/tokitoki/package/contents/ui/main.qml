@@ -175,121 +175,318 @@ PlasmoidItem {
         }
         MouseArea { anchors.fill: parent; onClicked: root.expanded = !root.expanded }
     }
-    fullRepresentation: ColumnLayout {
+    // Popout palette: the neutral macOS-menubar look by default, or Plasma's colors.
+    readonly property bool followPlasmaTheme: Plasmoid.configuration.appearance === "plasma"
+    readonly property var ui: followPlasmaTheme ? ({
+        window: Kirigami.Theme.backgroundColor,
+        card: Qt.tint(Kirigami.Theme.backgroundColor, Qt.rgba(Kirigami.Theme.textColor.r, Kirigami.Theme.textColor.g, Kirigami.Theme.textColor.b, 0.05)),
+        cardBorder: Qt.rgba(Kirigami.Theme.textColor.r, Kirigami.Theme.textColor.g, Kirigami.Theme.textColor.b, 0.12),
+        control: Qt.rgba(Kirigami.Theme.textColor.r, Kirigami.Theme.textColor.g, Kirigami.Theme.textColor.b, 0.08),
+        selected: Qt.rgba(Kirigami.Theme.highlightColor.r, Kirigami.Theme.highlightColor.g, Kirigami.Theme.highlightColor.b, 0.3),
+        text: Kirigami.Theme.textColor,
+        secondary: Kirigami.Theme.disabledTextColor,
+        separator: Qt.rgba(Kirigami.Theme.textColor.r, Kirigami.Theme.textColor.g, Kirigami.Theme.textColor.b, 0.12),
+        track: Qt.rgba(Kirigami.Theme.textColor.r, Kirigami.Theme.textColor.g, Kirigami.Theme.textColor.b, 0.15),
+        green: Kirigami.Theme.positiveTextColor,
+        amber: Kirigami.Theme.neutralTextColor,
+        rose: Kirigami.Theme.negativeTextColor,
+        neutral: Kirigami.Theme.highlightColor,
+        mint: Kirigami.Theme.positiveTextColor,
+        orange: Kirigami.Theme.neutralTextColor,
+        badge: Qt.rgba(Kirigami.Theme.textColor.r, Kirigami.Theme.textColor.g, Kirigami.Theme.textColor.b, 0.1)
+    }) : ({
+        window: "#1e1e1e", card: "#2a2a2a", cardBorder: "#333333", control: "#383838", selected: "#3e3e3e",
+        text: "#ececec", secondary: "#8e8e8e", separator: "#333333", track: "#3a3a3a",
+        green: "#29c778", amber: "#ff9e0a", rose: "#f04259", neutral: "#549ef5", mint: "#63d9d0", orange: "#ff9f0a",
+        badge: "#3a3a3a"
+    })
+    property bool layoutMode: false
+    property var collapsed: ({})
+    readonly property string dashboardUrl: /:7788\/?$/.test(String(Plasmoid.configuration.endpoint)) ? String(Plasmoid.configuration.endpoint) : "http://127.0.0.1:7788/"
+
+    component PaletteButton: Rectangle {
+        id: button
+        property string text
+        property string iconName
+        property bool highlighted: false
+        signal clicked()
+        implicitWidth: buttonRow.implicitWidth + 20
+        implicitHeight: 28
+        radius: 7
+        color: highlighted ? root.ui.selected : buttonArea.containsMouse ? Qt.lighter(root.ui.control, 1.15) : root.ui.control
+        border.width: 1
+        border.color: root.ui.cardBorder
+        opacity: enabled ? 1 : 0.5
+        Accessible.role: Accessible.Button
+        Accessible.name: text
+        RowLayout {
+            id: buttonRow
+            anchors.centerIn: parent
+            spacing: 6
+            Kirigami.Icon { source: button.iconName; implicitWidth: 14; implicitHeight: 14; color: root.ui.text; isMask: true; visible: button.iconName.length > 0 }
+            PC.Label { text: button.text; color: root.ui.text; font.pixelSize: 12 }
+        }
+        MouseArea { id: buttonArea; anchors.fill: parent; hoverEnabled: true; enabled: button.enabled; cursorShape: Qt.PointingHandCursor; onClicked: button.clicked() }
+    }
+
+    component IconButton: PC.ToolButton {
+        display: PC.AbstractButton.IconOnly
+        icon.color: root.ui.text
+        implicitWidth: 26
+        implicitHeight: 26
+        Accessible.name: text
+        PC.ToolTip.text: text
+        PC.ToolTip.visible: hovered
+    }
+
+    function toggleCollapsed(id) {
+        var next = Object.assign({}, collapsed)
+        next[id] = !next[id]
+        collapsed = next
+    }
+
+    fullRepresentation: Rectangle {
         Layout.minimumWidth: 340
         Layout.minimumHeight: 280
         Layout.preferredWidth: 480
         Layout.preferredHeight: 650
-        spacing: 12
-        RowLayout {
-            Layout.fillWidth: true
-            Kirigami.Heading { text: "Tokitoki"; level: 2; Layout.fillWidth: true }
-            PC.ToolButton { icon.name: "view-refresh"; text: "Refresh"; display: PC.AbstractButton.IconOnly; enabled: !root.refreshing; onClicked: root.refresh() }
-            PC.ToolButton { icon.name: "configure"; text: "Settings"; display: PC.AbstractButton.IconOnly; onClicked: root.Plasmoid.internalAction("configure").trigger() }
-        }
-        PC.Label { Layout.fillWidth: true; text: root.errorText; visible: text.length > 0; wrapMode: Text.Wrap; color: Kirigami.Theme.negativeTextColor }
-        PC.Label { text: (root.payload.window ? root.payload.window.label : "Usage") + " · $" + Number(root.stats.costUsd || 0).toFixed(2) + " · " + Model.compact(root.stats.tokens) + " tokens" }
-        PC.ScrollView {
-            Layout.fillWidth: true
-            Layout.fillHeight: true
-            contentWidth: availableWidth
-            ColumnLayout {
-                width: parent.width
-                spacing: 12
-                Repeater {
-                    model: root.accounts
-                    delegate: Kirigami.AbstractCard {
-                        required property var modelData
-                        Layout.fillWidth: true
-                        contentItem: ColumnLayout {
-                            spacing: 8
-                            RowLayout {
-                                Layout.fillWidth: true
-                                PC.Label { text: modelData.vendorName + " · " + modelData.name; font.bold: true; Layout.fillWidth: true; elide: Text.ElideRight }
-                                PC.ToolButton {
-                                    text: "Move account up"; icon.name: "go-up"; display: PC.AbstractButton.IconOnly
-                                    Accessible.name: text
-                                    enabled: !root.orderSaving && root.accounts.findIndex(function(a) { return a.id === modelData.id }) > 0
-                                    onClicked: root.moveAccount(modelData.id, -1)
-                                }
-                                PC.ToolButton {
-                                    text: "Move account down"; icon.name: "go-down"; display: PC.AbstractButton.IconOnly
-                                    Accessible.name: text
-                                    enabled: !root.orderSaving && root.accounts.findIndex(function(a) { return a.id === modelData.id }) < root.accounts.length - 1
-                                    onClicked: root.moveAccount(modelData.id, 1)
-                                }
-                            }
-                            RowLayout {
-                                PC.Button { text: "Hide everywhere"; enabled: !root.orderSaving; onClicked: root.setVisibility(modelData.id, {hidden: true}) }
-                                PC.Button {
-                                    readonly property bool barHidden: ((root.payload.uiPreview || {}).barHiddenAccounts || []).indexOf(modelData.id) >= 0
-                                    text: barHidden ? "Show on bar" : "Hide from bar"; enabled: !root.orderSaving
-                                    onClicked: root.setVisibility(modelData.id, {barHidden: !barHidden})
-                                }
-                            }
-                            Repeater {
-                                model: Model.windows(modelData, false, root.now)
-                                delegate: ColumnLayout {
-                                    required property var modelData
+        color: root.ui.window
+        radius: 10
+
+        ColumnLayout {
+            anchors.fill: parent
+            anchors.margins: 12
+            spacing: 10
+
+            RowLayout {
+                Layout.fillWidth: true
+                PC.Label {
+                    text: (root.payload.window ? root.payload.window.label : "Usage") + " · $" + Number(root.stats.costUsd || 0).toFixed(2) + " · " + Model.compact(root.stats.tokens) + " tokens"
+                    color: root.ui.secondary
+                    font.pixelSize: 12
+                    Layout.fillWidth: true
+                    elide: Text.ElideRight
+                }
+            }
+            PC.Label { Layout.fillWidth: true; text: root.errorText; visible: text.length > 0; wrapMode: Text.Wrap; color: root.ui.rose }
+
+            PC.ScrollView {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                contentWidth: availableWidth
+                ColumnLayout {
+                    width: parent.width
+                    spacing: 10
+                    Repeater {
+                        model: root.accounts
+                        delegate: Rectangle {
+                            id: card
+                            required property var modelData
+                            required property int index
+                            readonly property bool folded: root.collapsed[modelData.id] === true
+                            readonly property bool barHidden: ((root.payload.uiPreview || {}).barHiddenAccounts || []).indexOf(modelData.id) >= 0
+                            readonly property var issue: Model.issue(modelData)
+                            Layout.fillWidth: true
+                            implicitHeight: cardColumn.implicitHeight + 24
+                            radius: 10
+                            color: root.ui.card
+                            border.width: 1
+                            border.color: root.ui.cardBorder
+
+                            ColumnLayout {
+                                id: cardColumn
+                                anchors.left: parent.left
+                                anchors.right: parent.right
+                                anchors.top: parent.top
+                                anchors.margins: 12
+                                spacing: 10
+
+                                RowLayout {
                                     Layout.fillWidth: true
-                                    RowLayout {
-                                        Layout.fillWidth: true
-                                        PC.Label { text: Model.label(modelData); Layout.fillWidth: true }
-                                        PC.Label { text: Model.value(modelData, root.now); font.bold: true }
-                                        PC.Label { text: Model.countdown(modelData, root.now); opacity: 0.7 }
+                                    spacing: 8
+                                    IconButton {
+                                        text: card.folded ? "Expand account" : "Collapse account"
+                                        icon.name: card.folded ? "arrow-right" : "arrow-down"
+                                        implicitWidth: 20; implicitHeight: 20
+                                        onClicked: root.toggleCollapsed(card.modelData.id)
                                     }
-                                    PC.ProgressBar {
-                                        Layout.fillWidth: true
-                                        from: 0; to: 100
-                                        value: Model.remaining(modelData, root.now) || 0
-                                        visible: Model.remaining(modelData, root.now) !== null && modelData.amountUsd === undefined
+                                    Kirigami.Icon {
+                                        source: Model.logo(card.modelData) ? Qt.resolvedUrl("../images/" + Model.logo(card.modelData) + ".svg") : "view-statistics"
+                                        implicitWidth: 20; implicitHeight: 20
                                     }
-                                    PC.Label { text: "Observed · " + (modelData.observedAt || "unknown"); opacity: 0.65; font.pixelSize: 11 }
+                                    ColumnLayout {
+                                        Layout.fillWidth: true
+                                        spacing: 0
+                                        PC.Label { text: card.modelData.name; color: root.ui.text; font.bold: true; font.pixelSize: 14; elide: Text.ElideRight; Layout.fillWidth: true }
+                                        PC.Label {
+                                            text: card.modelData.vendorName + (card.modelData.name !== card.modelData.accountKey && card.modelData.name !== card.modelData.vendorName ? " · " + card.modelData.accountKey : "")
+                                            color: root.ui.secondary; font.pixelSize: 11; elide: Text.ElideRight; Layout.fillWidth: true
+                                        }
+                                    }
+                                    IconButton {
+                                        text: "Move account up"; icon.name: "go-up"; visible: root.layoutMode
+                                        enabled: !root.orderSaving && card.index > 0
+                                        onClicked: root.moveAccount(card.modelData.id, -1)
+                                    }
+                                    IconButton {
+                                        text: "Move account down"; icon.name: "go-down"; visible: root.layoutMode
+                                        enabled: !root.orderSaving && card.index < root.accounts.length - 1
+                                        onClicked: root.moveAccount(card.modelData.id, 1)
+                                    }
+                                    IconButton {
+                                        text: card.barHidden ? "Show on bar" : "Hide from bar"
+                                        icon.name: card.barHidden ? "view-hidden" : "view-visible"
+                                        visible: root.layoutMode; enabled: !root.orderSaving
+                                        onClicked: root.setVisibility(card.modelData.id, {barHidden: !card.barHidden})
+                                    }
+                                    IconButton {
+                                        text: "Hide everywhere"; icon.name: "edit-delete-remove"
+                                        visible: root.layoutMode; enabled: !root.orderSaving
+                                        onClicked: root.setVisibility(card.modelData.id, {hidden: true})
+                                    }
+                                    Rectangle {
+                                        visible: Model.plan(card.modelData).length > 0
+                                        implicitWidth: planLabel.implicitWidth + 14; implicitHeight: 20; radius: 6
+                                        color: root.ui.badge
+                                        PC.Label { id: planLabel; anchors.centerIn: parent; text: Model.plan(card.modelData); color: root.ui.text; font.pixelSize: 11 }
+                                    }
                                 }
-                            }
-                            PC.Label { text: "No provider quota"; visible: !(modelData.windows || []).length; opacity: 0.7 }
-                            PC.Label { text: "Local usage / budget pace"; font.bold: true; visible: (modelData.budgetWindows || []).length > 0 }
-                            Repeater {
-                                model: modelData.budgetWindows || []
-                                delegate: PC.Label {
-                                    required property var modelData
-                                    text: modelData.label + " · $" + Number(modelData.costUsd || 0).toFixed(2) + " · " + Model.compact(modelData.tokens) + " tokens"
-                                    opacity: 0.7
+
+                                RowLayout {
+                                    visible: card.issue !== null && !card.folded
+                                    Layout.fillWidth: true
+                                    spacing: 6
+                                    Kirigami.Icon { source: "dialog-warning"; implicitWidth: 14; implicitHeight: 14; color: root.ui.orange; isMask: true }
+                                    PC.Label { text: card.issue ? card.issue.title : ""; color: root.ui.orange; font.pixelSize: 12; font.bold: true }
+                                    PC.Label { text: card.issue ? card.issue.reason : ""; color: root.ui.secondary; font.pixelSize: 11; elide: Text.ElideRight; Layout.fillWidth: true }
+                                }
+
+                                Repeater {
+                                    model: card.folded ? [] : Model.windows(card.modelData, false, root.now)
+                                    delegate: ColumnLayout {
+                                        id: windowRow
+                                        required property var modelData
+                                        readonly property var remaining: Model.remaining(modelData, root.now)
+                                        Layout.fillWidth: true
+                                        spacing: 5
+                                        RowLayout {
+                                            Layout.fillWidth: true
+                                            spacing: 6
+                                            PC.Label { text: Model.title(modelData); color: root.ui.secondary; font.pixelSize: 13; Layout.fillWidth: true; elide: Text.ElideRight }
+                                            PC.Label { text: Model.sourceText(modelData, root.now); color: root.ui.secondary; font.pixelSize: 12; visible: text.length > 0 }
+                                            PC.Label { text: Model.valueText(modelData, root.now); color: root.ui[Model.tone(modelData, root.now)]; font.pixelSize: 13; font.bold: true }
+                                        }
+                                        Rectangle {
+                                            visible: windowRow.remaining !== null
+                                            Layout.fillWidth: true
+                                            implicitHeight: 6; radius: 3
+                                            color: root.ui.track
+                                            Rectangle {
+                                                width: parent.width * (windowRow.remaining || 0) / 100
+                                                height: parent.height; radius: 3
+                                                color: root.ui[Model.tone(windowRow.modelData, root.now)]
+                                            }
+                                        }
+                                        PC.Label { text: Model.resetText(modelData, root.now); color: root.ui.secondary; font.pixelSize: 11; visible: text.length > 0 }
+                                    }
+                                }
+                                PC.Label { text: "No provider quota"; visible: !card.folded && !(card.modelData.windows || []).length; color: root.ui.secondary; font.pixelSize: 12 }
+
+                                RowLayout {
+                                    visible: !card.folded && Model.banked(card.modelData, root.now).length > 0
+                                    spacing: 6
+                                    Kirigami.Icon { source: "view-refresh"; implicitWidth: 14; implicitHeight: 14; color: root.ui.mint; isMask: true }
+                                    PC.Label { text: Model.banked(card.modelData, root.now); color: root.ui.mint; font.pixelSize: 12 }
+                                }
+
+                                ColumnLayout {
+                                    visible: !card.folded && (card.modelData.budgetWindows || []).length > 0
+                                    Layout.fillWidth: true
+                                    spacing: 3
+                                    Rectangle { Layout.fillWidth: true; implicitHeight: 1; color: root.ui.separator }
+                                    PC.Label { text: "Local usage / budget pace"; color: root.ui.secondary; font.pixelSize: 12; font.bold: true }
+                                    Repeater {
+                                        model: card.modelData.budgetWindows || []
+                                        delegate: RowLayout {
+                                            required property var modelData
+                                            Layout.fillWidth: true
+                                            PC.Label { text: Model.capitalize(modelData.label || modelData.kind || "Usage"); color: root.ui.secondary; font.pixelSize: 12; Layout.fillWidth: true }
+                                            PC.Label { text: "$" + Number(modelData.costUsd || 0).toFixed(2) + " · " + Model.compact(modelData.tokens) + " tokens"; color: root.ui.text; font.pixelSize: 12 }
+                                        }
+                                    }
                                 }
                             }
                         }
                     }
-                }
-                PC.Button { text: "Hidden quotas (" + root.hiddenAccounts.length + ")"; visible: root.hiddenAccounts.length > 0; onClicked: root.showHidden = !root.showHidden }
-                Repeater {
-                    model: root.showHidden ? root.hiddenAccounts : []
-                    delegate: RowLayout {
-                        required property var modelData
-                        PC.Label { text: modelData.name; Layout.fillWidth: true }
-                        PC.Button { text: ((root.payload.uiPreview || {}).menubarHidden || []).indexOf(modelData.harness) >= 0 ? "Restore all " + modelData.harness + " accounts" : "Restore"; enabled: !root.orderSaving; onClicked: root.setVisibility(modelData.id, {hidden: false}) }
+
+                    PC.Label { text: "No selected accounts. Check the service and widget settings."; visible: root.accounts.length === 0; wrapMode: Text.Wrap; Layout.fillWidth: true; color: root.ui.secondary }
+
+                    Rectangle {
+                        visible: root.payload.t3codeActivity !== undefined && Number((root.payload.t3codeActivity || {}).requests || 0) > 0
+                        Layout.fillWidth: true
+                        implicitHeight: t3Column.implicitHeight + 24
+                        radius: 10
+                        color: root.ui.card
+                        border.width: 1
+                        border.color: root.ui.cardBorder
+                        ColumnLayout {
+                            id: t3Column
+                            anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 12
+                            spacing: 3
+                            PC.Label { text: "Via T3 Code"; color: root.ui.text; font.bold: true }
+                            PC.Label { text: Number((root.payload.t3codeActivity || {}).requests || 0) + " requests · $" + Number((root.payload.t3codeActivity || {}).costUsd || 0).toFixed(2) + " observed / estimated"; color: root.ui.text; font.pixelSize: 12 }
+                            PC.Label { text: "Activity only · excluded from usage totals"; color: root.ui.secondary; font.pixelSize: 11 }
+                        }
+                    }
+
+                    ColumnLayout {
+                        visible: root.layoutMode
+                        Layout.fillWidth: true
+                        spacing: 6
+                        PaletteButton {
+                            text: "Hidden quotas (" + root.hiddenAccounts.length + ")"
+                            iconName: root.showHidden ? "arrow-down" : "arrow-right"
+                            visible: root.hiddenAccounts.length > 0
+                            onClicked: root.showHidden = !root.showHidden
+                        }
+                        Repeater {
+                            model: root.showHidden ? root.hiddenAccounts : []
+                            delegate: RowLayout {
+                                required property var modelData
+                                Layout.fillWidth: true
+                                PC.Label { text: modelData.name; color: root.ui.text; Layout.fillWidth: true; elide: Text.ElideRight }
+                                PaletteButton {
+                                    text: ((root.payload.uiPreview || {}).menubarHidden || []).indexOf(modelData.harness) >= 0 ? "Restore all " + modelData.harness + " accounts" : "Restore"
+                                    enabled: !root.orderSaving
+                                    onClicked: root.setVisibility(modelData.id, {hidden: false})
+                                }
+                            }
+                        }
+                        PC.Label { text: "Bar order"; color: root.ui.secondary; font.bold: true; visible: root.barAccounts.length > 0 }
+                        Repeater {
+                            model: root.barAccounts
+                            delegate: RowLayout {
+                                required property var modelData
+                                required property int index
+                                Layout.fillWidth: true
+                                PC.Label { text: modelData.name; color: root.ui.text; Layout.fillWidth: true; elide: Text.ElideRight }
+                                IconButton { text: "Move bar account left"; icon.name: "go-previous"; enabled: !root.orderSaving && index > 0; onClicked: root.moveAccount(modelData.id, -1, true) }
+                                IconButton { text: "Move bar account right"; icon.name: "go-next"; enabled: !root.orderSaving && index < root.barAccounts.length - 1; onClicked: root.moveAccount(modelData.id, 1, true) }
+                            }
+                        }
                     }
                 }
-                PC.Label { text: "Bar order"; font.bold: true; visible: root.barAccounts.length > 0 }
-                Repeater {
-                    model: root.barAccounts
-                    delegate: RowLayout {
-                        required property var modelData
-                        required property int index
-                        PC.Label { text: modelData.name; Layout.fillWidth: true }
-                        PC.ToolButton { text: "Move bar account left"; icon.name: "go-previous"; enabled: !root.orderSaving && index > 0; onClicked: root.moveAccount(modelData.id, -1, true) }
-                        PC.ToolButton { text: "Move bar account right"; icon.name: "go-next"; enabled: !root.orderSaving && index < root.barAccounts.length - 1; onClicked: root.moveAccount(modelData.id, 1, true) }
-                    }
-                }
-                PC.Label { text: "No selected accounts. Check the service and widget settings."; visible: root.accounts.length === 0; wrapMode: Text.Wrap; Layout.fillWidth: true }
-                Kirigami.AbstractCard {
-                    visible: root.payload.t3codeActivity !== undefined && Number((root.payload.t3codeActivity || {}).requests || 0) > 0
-                    Layout.fillWidth: true
-                    contentItem: ColumnLayout {
-                        PC.Label { text: "Via T3 Code"; font.bold: true }
-                        PC.Label { text: Number((root.payload.t3codeActivity || {}).requests || 0) + " requests · $" + Number((root.payload.t3codeActivity || {}).costUsd || 0).toFixed(2) + " observed / estimated" }
-                        PC.Label { text: "Activity only · excluded from usage totals"; opacity: 0.7 }
-                    }
-                }
+            }
+
+            Rectangle { Layout.fillWidth: true; implicitHeight: 1; color: root.ui.separator }
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 6
+                PaletteButton { text: root.refreshing ? "Refreshing…" : "Refresh"; iconName: "view-refresh"; enabled: !root.refreshing; onClicked: root.refresh() }
+                Item { Layout.fillWidth: true }
+                PaletteButton { text: "Layout"; iconName: "view-grid"; highlighted: root.layoutMode; onClicked: root.layoutMode = !root.layoutMode }
+                PaletteButton { text: "Settings"; iconName: "configure"; onClicked: root.Plasmoid.internalAction("configure").trigger() }
+                PaletteButton { text: "Open"; iconName: "internet-web-browser"; onClicked: Qt.openUrlExternally(root.dashboardUrl) }
             }
         }
     }

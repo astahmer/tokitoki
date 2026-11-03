@@ -26,7 +26,7 @@ wlrctl pointer click left
 wait_for sh -c '"$NOCTALIA_BIN" msg status | jq -e '\''.panelOpen and (.activePanelId | endswith(":details"))'\'' >/dev/null'
 capture noctalia-details
 grim -g '0,0 580x44' /out/noctalia-readme-bar.png
-grim -g '540,48 520x720' /out/noctalia-readme-menu.png
+grim -g '8,48 520x720' /out/noctalia-readme-menu.png
 wlrctl pointer move -10000 -10000
 wlrctl pointer move 700 450
 sleep 0.3
@@ -74,6 +74,12 @@ mv /tmp/next.json /tmp/native-payload.json
 "$NOCTALIA_BIN" msg plugin tokitoki/usage:usage all e2e-refresh test
 sleep 0.5
 state recovered
+sed -i 's/display_mode = "total"/display_mode = "total"\nappearance = "shell"/' "$HOME/.config/noctalia/config.toml"
+"$NOCTALIA_BIN" msg config-reload
+sleep 1
+"$NOCTALIA_BIN" msg panel-open tokitoki/usage:details
+capture noctalia-details-theme
+"$NOCTALIA_BIN" msg panel-close tokitoki/usage:details
 pkill -x .noctalia-wrapp || pkill -f "bin/.noctalia-wrapped"
 sleep 0.5
 "$PLASMA_BIN" -a /tmp/native-plasma -c org.kde.desktopcontainment -l floating -f planar -s 520x780 >/out/plasma.log 2>&1 &
@@ -81,6 +87,11 @@ wait_for test -f /out/plasma-states.jsonl
 sleep 1
 capture_plasma plasma-details
 grim -g '218,270 464x640' /out/plasma-readme-menu.png
+node /repo/e2e/native/control.mjs '{"appearance":"plasma"}'
+sleep 1
+capture_plasma plasma-details-theme
+node /repo/e2e/native/control.mjs '{"appearance":"menubar"}'
+sleep 1
 node /repo/e2e/native/control.mjs '{"mode":"shortest","accounts":"codex@work,cursor@personal"}'
 sleep 1
 capture_plasma plasma-selected
@@ -111,7 +122,7 @@ mv /tmp/next.json /tmp/native-payload.json
 node /repo/e2e/native/control.mjs '{"refresh":true,"mode":"total"}'
 sleep 1
 capture_plasma plasma-totals
-node /repo/e2e/assert.mjs /out/noctalia-details.png --size 1600x1000 --region "540,48 520x720"
+node /repo/e2e/assert.mjs /out/noctalia-details.png --size 1600x1000 --region "8,48 520x720"
 node /repo/e2e/assert.mjs /out/noctalia-short-screen.png --size 960x540 --region "220,8 520x524"
 for file in /out/plasma-*-widget.png; do node /repo/e2e/assert.mjs "$file"; done
 node /repo/e2e/native/check.mjs

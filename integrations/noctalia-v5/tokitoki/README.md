@@ -25,10 +25,13 @@ start = ["tokitoki"] # append to the existing list
 display_mode = "shortest"
 accounts = []
 hide_identities = false
+appearance = "menubar"
 executable = "tokitoki"
 ```
 
 Run `noctalia msg config-reload`. Left click opens the quota panel, right click opens plugin settings, middle click refreshes. Noctalia binds middle click to settings by default; to use manual refresh, add `middle = "none"` under `[widget.tokitoki.actions]`.
+
+The panel follows the macOS menubar layout: one card per account with its plan, colored remaining-capacity bars, reset countdowns, banked resets and refresh problems. **Layout** in the footer reveals ordering, bar visibility, hidden quotas and bar order; **Refresh & scan** runs a full refresh; **Open** launches the `tokitoki web` dashboard. `appearance = "shell"` switches from the menubar palette (default) to Noctalia theme colors.
 
 Settings offer `shortest` (default), `quotas`, `total` and `icon`. Shortest selects the shortest known current window **within each account**. The hover and panel always retain every quota window. Two profiles for the same vendor get uppercase initials such as `EV:` and `WO:`. Percentages show remaining capacity. Timers show only the time left.
 

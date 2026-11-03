@@ -39,4 +39,26 @@ describe("native quota adapters", () => {
     expect(rows[0].name).toBe("OpenAI");
     expect(model.accounts({ accounts }, "codex@work", false, { previewHidden: ["openai"] })).toHaveLength(0);
   });
+  test("popout cards word windows like the menubar and color by remaining capacity", () => {
+    expect(model.title(window(300, 20))).toBe("Session");
+    expect(model.title(window(10080, 20, { label: "weekly" }))).toBe("Weekly");
+    expect(model.title(window(43200, 8, { label: "Other Models" }))).toBe("API");
+    expect(model.title(window(120, 8, { model: "Spark" }))).toBe("Spark · 2h limit");
+    expect(model.valueText(window(300, 16), now)).toBe("84% left");
+    expect(model.sourceText(window(300, 16), now)).toBe("Reported");
+    expect([85, 60, 10].map(used => model.tone(window(300, used), now))).toEqual(["rose", "amber", "green"]);
+    expect(model.tone(window(300, 0, { status: "stale" }), now)).toBe("neutral");
+    expect(model.valueText(window(300, 0, { status: "stale" }), now)).toBe("Stale");
+    expect(model.sourceText(window(300, 0, { status: "stale" }), now)).toBe("");
+    expect(model.resetText(window(300, 16), now)).toBe("Resets in 1d 0h");
+    expect(model.resetText(window(300, 0, { status: "expired" }), now)).toBe("Awaiting fresh observation");
+  });
+  test("account extras surface login issues, plan and banked resets", () => {
+    expect(model.issue({ refreshError: "HTTP 401 unauthorized" }).title).toBe("Login required");
+    expect(model.issue({ refreshError: "timeout" }).title).toBe("Refresh failed");
+    expect(model.issue({})).toBeNull();
+    expect(model.plan({ plan: "plus" })).toBe("Plus");
+    expect(model.banked({ bankedResets: 3, bankedExpiresAt: "2026-10-26T12:00:00Z" }, now)).toBe("3 banked resets · expires in 2d 0h");
+    expect(model.banked({ bankedResets: 0 }, now)).toBe("");
+  });
 });

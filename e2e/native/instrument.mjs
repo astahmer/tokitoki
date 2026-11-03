@@ -39,6 +39,7 @@ qml = qml.replace('id: root', `id: root
                 if (c.mode !== undefined) Plasmoid.configuration.displayMode = c.mode
                 if (c.accounts !== undefined) Plasmoid.configuration.accounts = c.accounts
                 if (c.privacy !== undefined) Plasmoid.configuration.hideIdentities = c.privacy
+                if (c.appearance !== undefined) Plasmoid.configuration.appearance = c.appearance
                 if (c.expanded !== undefined) root.expanded = c.expanded
                 if (c.refresh) root.refresh()
                 if (c.configure) root.Plasmoid.internalAction("configure").trigger()

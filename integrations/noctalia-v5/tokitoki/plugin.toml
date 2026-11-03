@@ -1,6 +1,6 @@
 id = "tokitoki/usage"
 name = "Tokitoki Usage"
-version = "0.2.0"
+version = "0.3.0"
 plugin_api = 32
 author = "Tokitoki"
 description = "Provider quotas by account, usage totals and separate budget pace"
@@ -26,6 +26,16 @@ options = [
   { value = "quotas", label_key = "quotas" },
   { value = "total", label_key = "total" },
   { value = "icon", label_key = "icon" },
+]
+
+[[setting]]
+key = "appearance"
+type = "select"
+label_key = "appearance"
+default = "menubar"
+options = [
+  { value = "menubar", label_key = "appearance_menubar" },
+  { value = "shell", label_key = "appearance_shell" },
 ]
 
 [[setting]]

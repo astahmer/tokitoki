@@ -16,9 +16,12 @@ function remaining(w, now) {
 function duration(w) {
     return Number(w.windowMinutes) > 0 ? Number(w.windowMinutes) : null
 }
-function label(w) {
+function durationText(w) {
     var n = duration(w)
-    var time = !n ? "?" : n < 60 ? n + "m" : n < 1440 ? n / 60 + "h" : n === 43200 ? "1mo" : n / 1440 + "d"
+    return !n ? "?" : n < 60 ? n + "m" : n < 1440 ? n / 60 + "h" : n === 43200 ? "1mo" : n / 1440 + "d"
+}
+function label(w) {
+    var time = durationText(w)
     var bucket = w.model || (w.label === "Other Models" ? "API" : w.label === "On-Demand" ? "OD" : "")
     return (bucket ? bucket + " " : "") + time
 }
@@ -53,9 +56,11 @@ function accounts(doc, selected, hide, ui, surface) {
     hide = hide || ui.privacyHideIdentities
     var ids = selected.split(",").map(function(v) { return v.trim() }).filter(Boolean)
     var saved = surface === "cards" || surface === "all" ? (doc.accountOrder || []) : (ui.barAccountOrder || doc.accountOrder || [])
+    // Qt's Array.sort is not stable: unsaved accounts keep source order explicitly.
+    var source = (doc.accounts || []).map(function(a) { return a.id })
     var ordered = (doc.accounts || []).slice().sort(function(a, b) {
         var left = saved.indexOf(a.id), right = saved.indexOf(b.id)
-        return (left < 0 ? saved.length : left) - (right < 0 ? saved.length : right)
+        return (left < 0 ? saved.length : left) - (right < 0 ? saved.length : right) || source.indexOf(a.id) - source.indexOf(b.id)
     })
     return ordered.filter(function(a) {
         var hidden = surface !== "all" && (globallyHidden(a, ui) || (surface !== "cards" && ((ui.previewHidden || []).indexOf(a.vendor) >= 0 || (ui.barHiddenAccounts || []).indexOf(a.id) >= 0)))
@@ -103,4 +108,51 @@ function tooltip(accounts, now) {
             return "◷ " + label(w) + " " + value(w, now) + (countdown(w, now) ? " · " + countdown(w, now) : "")
         }).join("\n")
     }).join("\n────────────\n")
+}
+function capitalize(text) {
+    text = String(text || "")
+    return text.charAt(0).toUpperCase() + text.slice(1)
+}
+// Popout card wording, shared with the DMS and Noctalia popouts.
+function title(w) {
+    var n = duration(w)
+    var named = ({300: "Session", 1440: "Daily", 10080: "Weekly", 43200: "Monthly"})[n]
+    var text = w.label === "Other Models" ? "API" : w.label ? String(w.label) : named || (n ? durationText(w) + " limit" : "Limit")
+    return (w.model ? w.model + " · " : "") + capitalize(text)
+}
+function tone(w, now) {
+    var n = remaining(w, now)
+    return n === null ? "neutral" : n < 20 ? "rose" : n < 50 ? "amber" : "green"
+}
+function sourceText(w, now) {
+    if (status(w, now) !== "current" || (remaining(w, now) === null && typeof w.amountUsd !== "number")) return ""
+    return w.source === "provider" || w.source === "embedded" ? "Reported" : "Estimated"
+}
+function valueText(w, now) {
+    var state = status(w, now)
+    if (state !== "current") return capitalize(state)
+    if (typeof w.amountUsd === "number") return "$" + w.amountUsd.toFixed(2)
+    var n = remaining(w, now)
+    if (n !== null) return Math.round(n) + "% left"
+    return Number(w.tokens || 0) > 0 ? compact(w.tokens) + " tokens" : "Usage unknown"
+}
+function resetText(w, now) {
+    if (status(w, now) !== "current") return "Awaiting fresh observation"
+    var left = countdown(w, now)
+    return left ? "Resets in " + left : ""
+}
+function issue(a) {
+    var reason = String(a.refreshError || "")
+    if (!reason) return null
+    var login = /log ?in|sign ?in|auth|401|403|unauthori|credential|expired/i.test(reason)
+    return {title: login ? "Login required" : "Refresh failed", reason: reason}
+}
+function plan(a) {
+    return capitalize(a.planLabel || a.plan || "")
+}
+function banked(a, now) {
+    var n = Math.floor(Number(a.bankedResets || 0))
+    if (n <= 0) return ""
+    var left = a.bankedExpiresAt ? countdown({resetsAt: a.bankedExpiresAt}, now) : ""
+    return n + " banked reset" + (n === 1 ? "" : "s") + (left ? " · expires in " + left : "")
 }

@@ -12,6 +12,8 @@ Start `tokitoki serve` (read-only loopback API, port 6736), then add **Tokitoki 
 
 The compact panel view supports shortest window per account (default), all windows, today's usage totals, and icon only. Click to expand the complete quota view. A desktop placement shows the complete view directly. The tooltip retains all quota windows regardless of compact mode.
 
+The expanded view follows the macOS menubar layout: one card per account with its plan, colored remaining-capacity bars, reset countdowns, banked resets and refresh problems. **Layout** in the footer reveals ordering, bar visibility, hidden quotas and bar order; **Open** launches the `tokitoki web` dashboard. Settings → **Appearance** switches between the menubar palette (default) and the Plasma theme colors.
+
 Use the settings' account IDs field to select profiles, for example `codex@work,cursor@personal`; empty means all. IDs come from `tokitoki limits --json` (`accounts[].id`). Multiple profiles for a vendor get uppercase initials in the bar. Shared Tokitoki account visibility and identity privacy settings are respected in addition to local settings.
 
 Percentages mean remaining capacity. Expired, stale and unknown observations never show fabricated remaining capacity. Unknown durations show `?`, monthly windows use `1mo`, and countdowns omit a “reset” prefix. Dollar amounts take precedence for on-demand usage. Budgets and T3 Code activity appear separately from provider quotas and usage totals.

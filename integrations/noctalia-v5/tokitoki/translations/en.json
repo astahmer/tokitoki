@@ -4,6 +4,9 @@
   "quotas": "All quota windows",
   "total": "Usage totals",
   "icon": "Icon only",
+  "appearance": "Panel appearance",
+  "appearance_menubar": "Menubar",
+  "appearance_shell": "Noctalia theme",
   "accounts": "Account IDs (provider@accountKey; empty shows all)",
   "hide_identities": "Hide account identities",
   "executable": "Tokitoki executable"

@@ -61,6 +61,7 @@ end
 local function refresh(scan)
   if refreshing then return end
   refreshing = true
+  noctalia.state.set("refreshing", true)
   lastRefresh = noctalia.nowMs()
   local args = {noctalia.getConfig("executable"), "widget-payload"}
   if firstRead then table.insert(args, "--cached") elseif not scan then table.insert(args, "--skip-scan") end
@@ -69,6 +70,7 @@ local function refresh(scan)
   table.insert(args, "--json")
   local accepted = noctalia.runAsync(args, function(result)
     refreshing = false
+    noctalia.state.set("refreshing", false)
     if result.exitCode ~= 0 then
       lastError = failureText(result)
     else
@@ -83,6 +85,7 @@ local function refresh(scan)
   end)
   if not accepted then
     refreshing, lastError = false, "Could not start Tokitoki"
+    noctalia.state.set("refreshing", false)
     noctalia.state.set("error", lastError)
     render()
   end
@@ -97,6 +100,14 @@ end
 function onClick() noctalia.togglePanel("tokitoki/usage:details") end
 function onRightClick() noctalia.openSettings() end
 function onMiddleClick() refresh(true) end
+
+-- The panel's Refresh button publishes a timestamp; each new one requests a scan.
+local handledRefreshRequest = nil
+noctalia.state.watch("refresh_request", function(value)
+  if value == nil or value == handledRefreshRequest then return end
+  handledRefreshRequest = value
+  refresh(true)
+end)
 
 noctalia.state.watch("payload", function(value)
   payload = value or {}

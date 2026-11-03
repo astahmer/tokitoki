@@ -7,6 +7,7 @@ Kirigami.FormLayout {
     property string cfg_displayMode
     property alias cfg_accounts: accounts.text
     property alias cfg_hideIdentities: privacy.checked
+    property string cfg_appearance
     QQC2.TextField { id: endpoint; Kirigami.FormData.label: "Tokitoki service:"; placeholderText: "http://127.0.0.1:6736"; Layout.preferredWidth: 330 }
     QQC2.Label { text: "Start tokitoki serve, or use port 7788 for tokitoki web." }
     QQC2.ComboBox {
@@ -19,4 +20,11 @@ Kirigami.FormLayout {
     QQC2.TextField { id: accounts; Kirigami.FormData.label: "Account IDs:"; placeholderText: "codex@work,cursor@personal"; Layout.preferredWidth: 330 }
     QQC2.Label { text: "Comma-separated provider@accountKey IDs; empty shows all accounts."; wrapMode: Text.Wrap; Layout.maximumWidth: 420 }
     QQC2.CheckBox { id: privacy; text: "Hide account identities" }
+    QQC2.ComboBox {
+        Kirigami.FormData.label: "Appearance:"
+        model: ["Menubar", "Plasma theme"]
+        property var values: ["menubar", "plasma"]
+        currentIndex: Math.max(0, values.indexOf(cfg_appearance))
+        onActivated: cfg_appearance = values[currentIndex]
+    }
 }
