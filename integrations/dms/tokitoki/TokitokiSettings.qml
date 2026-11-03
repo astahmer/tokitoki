@@ -9,6 +9,13 @@ PluginSettings {
     pluginId: "tokitoki"
 
     property string shellName: "DMS"
+    // Set by the popout so the embedded view follows its palette; the DMS
+    // settings app leaves it null and keeps the shell theme.
+    property var ui: null
+    readonly property color textColor: root.ui ? root.ui.text : Theme.surfaceText
+    readonly property color secondaryColor: root.ui ? root.ui.secondary : Theme.surfaceVariantText
+    readonly property color errorColor: root.ui ? root.ui.rose : Theme.error
+    readonly property color warningColor: root.ui ? root.ui.amber : Theme.warning
     property var accounts: []
     property var providerRegistry: ({})
     // pluginService is attached after creation and plugin data can change
@@ -380,7 +387,7 @@ PluginSettings {
     StyledText {
         width: parent.width
         text: "Tokitoki widget settings"
-        color: Theme.surfaceText
+        color: root.textColor
         font.pixelSize: Theme.fontSizeLarge
         font.weight: Font.Bold
     }
@@ -388,7 +395,7 @@ PluginSettings {
     StyledText {
         width: parent.width
         text: "These settings affect the " + root.shellName + " widget only. Tokitoki data and provider configuration remain in Tokitoki's own config."
-        color: Theme.surfaceVariantText
+        color: root.secondaryColor
         font.pixelSize: Theme.fontSizeSmall + 1
         wrapMode: Text.WordWrap
     }
@@ -397,7 +404,7 @@ PluginSettings {
         visible: root.loadError.length > 0
         width: parent.width
         text: root.loadError
-        color: Theme.error
+        color: root.errorColor
         font.pixelSize: Theme.fontSizeSmall + 1
         wrapMode: Text.WordWrap
     }
@@ -405,7 +412,7 @@ PluginSettings {
     StyledText {
         width: parent.width
         text: "Refresh"
-        color: Theme.surfaceText
+        color: root.textColor
         font.pixelSize: Theme.fontSizeLarge
         font.weight: Font.DemiBold
     }
@@ -440,7 +447,7 @@ PluginSettings {
     StyledText {
         width: parent.width
         text: "Widget behavior"
-        color: Theme.surfaceText
+        color: root.textColor
         font.pixelSize: Theme.fontSizeLarge
         font.weight: Font.DemiBold
     }
@@ -503,7 +510,7 @@ PluginSettings {
     StyledText {
         width: parent.width
         text: "Bar quota windows"
-        color: Theme.surfaceText
+        color: root.textColor
         font.pixelSize: Theme.fontSizeLarge
         font.weight: Font.DemiBold
     }
@@ -511,7 +518,7 @@ PluginSettings {
     StyledText {
         width: parent.width
         text: "Choose the windows shown in the bar for each provider. Quota cards and hover details still show all windows."
-        color: Theme.surfaceVariantText
+        color: root.secondaryColor
         font.pixelSize: Theme.fontSizeSmall + 1
         wrapMode: Text.WordWrap
     }
@@ -528,7 +535,7 @@ PluginSettings {
                 StyledText {
                     width: parent.width
                     text: parent.modelData.label
-                    color: Theme.surfaceText
+                    color: root.textColor
                     font.weight: Font.DemiBold
                 }
                 StyledText {
@@ -536,7 +543,7 @@ PluginSettings {
                     visible: barWindowGroup.modelData.reasons.length > 0
                     text: (barWindowGroup.modelData.shownAccounts > 0 ? "Some accounts are" : "Not")
                         + " shown in the bar: " + barWindowGroup.modelData.reasons.join("; ") + "."
-                    color: Theme.warning
+                    color: root.warningColor
                     font.pixelSize: Theme.fontSizeSmall
                     wrapMode: Text.WordWrap
                 }
@@ -579,7 +586,7 @@ PluginSettings {
     StyledText {
         width: parent.width
         text: "Usage cards"
-        color: Theme.surfaceText
+        color: root.textColor
         font.pixelSize: Theme.fontSizeLarge
         font.weight: Font.DemiBold
     }
@@ -587,7 +594,7 @@ PluginSettings {
     StyledText {
         width: parent.width
         text: "Turn an account off to drop its card and its widget marks. The eye button on a card hides it here too."
-        color: Theme.surfaceVariantText
+        color: root.secondaryColor
         font.pixelSize: Theme.fontSizeSmall + 1
         wrapMode: Text.WordWrap
     }
@@ -625,7 +632,7 @@ PluginSettings {
         visible: root.visibilityError.length > 0
         width: parent.width
         text: root.visibilityError
-        color: Theme.error
+        color: root.errorColor
         font.pixelSize: Theme.fontSizeSmall + 1
         wrapMode: Text.WordWrap
     }
@@ -633,7 +640,7 @@ PluginSettings {
     StyledText {
         width: parent.width
         text: "Privacy"
-        color: Theme.surfaceText
+        color: root.textColor
         font.pixelSize: Theme.fontSizeLarge
         font.weight: Font.DemiBold
     }
@@ -655,7 +662,7 @@ PluginSettings {
     StyledText {
         width: parent.width
         text: "Advanced"
-        color: Theme.surfaceText
+        color: root.textColor
         font.pixelSize: Theme.fontSizeLarge
         font.weight: Font.DemiBold
     }

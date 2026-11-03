@@ -3,6 +3,7 @@ import QtQuick.Layouts
 import Quickshell
 import Quickshell.Io
 import "."
+import "TokitokiPalette.js" as Palette
 import qs.Common
 import qs.Modules.Plugins
 import qs.DCommon.Widgets
@@ -80,7 +81,9 @@ PluginComponent {
         chipText: Theme.primary,
         cardIcon: Theme.primary,
         highlight: Theme.withAlpha(Theme.primaryContainer, 0.72),
-        highlightBorder: Theme.primary
+        highlightBorder: Theme.primary,
+        accent: Theme.primary,
+        onAccent: Theme.primaryText
     }) : ({
         window: "#1e1e1e",
         card: "#2a2a2a",
@@ -107,7 +110,9 @@ PluginComponent {
         chipText: "#ffffff",
         cardIcon: "#a1a1a1",
         highlight: "#2c3138",
-        highlightBorder: "#3d4a5c"
+        highlightBorder: "#3d4a5c",
+        accent: "#549ef5",
+        onAccent: "#ffffff"
     })
     property bool layoutMode: false
     property bool moreMenuOpen: false
@@ -244,6 +249,7 @@ PluginComponent {
         spacing: Theme.spacingM
 
         TokitokiDonutChart {
+            ui: root.ui
             width: 116
             height: 116
             slices: pie.slices
@@ -275,7 +281,7 @@ PluginComponent {
                     StyledText {
                         text: modelData.name
                         width: Math.max(0, parent.width - sliceValue.width - 7 - parent.spacing * 2)
-                        color: Theme.surfaceText
+                        color: root.ui.text
                         font.pixelSize: Theme.fontSizeMedium
                         elide: Text.ElideRight
                     }
@@ -285,7 +291,7 @@ PluginComponent {
                         text: root.selectedMetric === "cost"
                             ? root.formatMoney(modelData.value)
                             : root.compactNumber(modelData.value)
-                        color: Theme.surfaceVariantText
+                        color: root.ui.secondary
                         font.pixelSize: Theme.fontSizeMedium
                         isMonospace: true
                     }
@@ -336,7 +342,7 @@ PluginComponent {
             Rectangle {
                 width: 1
                 height: 18
-                color: Theme.primary
+                color: root.ui.separator
                 anchors.verticalCenter: parent.verticalCenter
             }
             Row {
@@ -604,16 +610,16 @@ PluginComponent {
         return rows.slice(0, 6)
     }
 
+    // Fixed categorical hues, checked for colorblind separation on the dark
+    // card surface. Shell themes often collapse primary/secondary/error/tertiary
+    // into one hue, so chart series never borrow theme colors.
+    readonly property var seriesColors: [
+        "#3987e5", "#d95926", "#199e70", "#c98500",
+        "#d55181", "#008300", "#9085e9", "#e66767"
+    ]
+
     function paletteColor(name, index) {
-        var colors = [
-            Theme.warning,
-            Theme.success,
-            Theme.primary,
-            Theme.secondary,
-            Theme.error,
-            Theme.tertiary,
-            Theme.info
-        ]
+        var colors = root.seriesColors
         if (index !== undefined && index >= 0)
             return colors[index % colors.length]
 
@@ -765,10 +771,10 @@ PluginComponent {
         if (!report || !report.total)
             return []
         var values = [
-            { name: "Input", value: safeNumber(report.total.inputTokens), color: Theme.info },
-            { name: "Output", value: safeNumber(report.total.outputTokens), color: Theme.warning },
-            { name: "Cache read", value: safeNumber(report.total.cacheReadTokens), color: Theme.success },
-            { name: "Cache write", value: safeNumber(report.total.cacheWriteTokens), color: Theme.secondary }
+            { name: "Input", value: safeNumber(report.total.inputTokens), color: root.seriesColors[0] },
+            { name: "Output", value: safeNumber(report.total.outputTokens), color: root.seriesColors[1] },
+            { name: "Cache read", value: safeNumber(report.total.cacheReadTokens), color: root.seriesColors[2] },
+            { name: "Cache write", value: safeNumber(report.total.cacheWriteTokens), color: root.seriesColors[3] }
         ]
         return values.filter(function(item) {
             return item.value > 0
@@ -1140,6 +1146,11 @@ PluginComponent {
     function incidentColor(incident) {
         return incident && (incident.indicator === "major" || incident.indicator === "critical")
             ? Theme.error : Theme.warning
+    }
+
+    function popoutIncidentColor(incident) {
+        return incident && (incident.indicator === "major" || incident.indicator === "critical")
+            ? root.ui.rose : root.ui.amber
     }
 
 
@@ -1574,7 +1585,7 @@ PluginComponent {
 
     function limitColor(windowData) {
         if (!hasUsedPercent(windowData))
-            return Theme.primary
+            return root.ui.blue
         var remaining = remainingPercent(windowData)
         if (remaining < 20)
             return root.ui.rose
@@ -2344,7 +2355,7 @@ PluginComponent {
                         buttonSize: 32
                         iconName: root.configOpen ? "arrow_back" : "more_vert"
                         iconSize: 18
-                        iconColor: Theme.surfaceText
+                        iconColor: root.ui.text
                         tooltipText: root.configOpen ? "Back to usage" : "Tokitoki settings"
                         onClicked: root.configOpen = !root.configOpen
                     }
@@ -2353,7 +2364,7 @@ PluginComponent {
                         buttonSize: 32
                         iconName: "close"
                         iconSize: 18
-                        iconColor: Theme.surfaceText
+                        iconColor: root.ui.text
                         tooltipText: "Close Tokitoki"
                         onClicked: {
                             if (popout.closePopout)
@@ -2375,7 +2386,30 @@ PluginComponent {
                     anchors.fill: parent
                     radius: Theme.cornerRadius
                     color: root.ui.window
-                    visible: !root.configOpen
+                    visible: root.followShellTheme && !root.configOpen
+                }
+
+                // DMS paints its popout surface from the shell theme and offers no
+                // override, so the menubar palette covers the whole surface itself:
+                // the content padding ring, the header, and the settings view.
+                Rectangle {
+                    readonly property real inset: PopoutMetrics.contentPadding
+                    readonly property vector4d corners: popout.parentPopout && popout.parentPopout.surfaceCornerRadii
+                        ? popout.parentPopout.surfaceCornerRadii
+                        : Qt.vector4d(Theme.windowRadius, Theme.windowRadius, Theme.windowRadius, Theme.windowRadius)
+                    anchors.fill: parent
+                    anchors.leftMargin: -inset
+                    anchors.rightMargin: -inset
+                    anchors.bottomMargin: -inset
+                    anchors.topMargin: -(inset + popout.headerHeight + popout.detailsHeight)
+                    topLeftRadius: corners.x
+                    topRightRadius: corners.y
+                    bottomRightRadius: corners.z
+                    bottomLeftRadius: corners.w
+                    color: root.ui.window
+                    border.width: 1
+                    border.color: root.ui.cardBorder
+                    visible: !root.followShellTheme
                 }
 
                 Rectangle {
@@ -2599,9 +2633,9 @@ PluginComponent {
                             implicitHeight: errorColumn.height + Theme.spacingM * 2
                             height: visible ? implicitHeight : 0
                             radius: Theme.cornerRadius
-                            color: Theme.withAlpha(Theme.error, 0.12)
+                            color: Palette.alpha(root.ui.rose, 0.12)
                             border.width: 1
-                            border.color: Theme.withAlpha(Theme.error, 0.45)
+                            border.color: Palette.alpha(root.ui.rose, 0.45)
 
                             Column {
                                 id: errorColumn
@@ -2619,14 +2653,14 @@ PluginComponent {
                                     DIcon {
                                         name: "warning"
                                         size: Theme.iconSizeSmall
-                                        color: Theme.error
+                                        color: root.ui.rose
                                         anchors.verticalCenter: parent.verticalCenter
                                     }
 
                                     StyledText {
                                         text: root.errorText
                                         width: Math.max(0, parent.width - retryButton.width - Theme.iconSizeSmall - parent.spacing * 2)
-                                        color: Theme.error
+                                        color: root.ui.rose
                                         font.pixelSize: Theme.fontSizeMedium
                                         font.weight: Font.DemiBold
                                         wrapMode: Text.WordWrap
@@ -2658,14 +2692,14 @@ PluginComponent {
                                     height: 7
                                     radius: 3.5
                                     color: root.isBusy || root.lastError.length > 0
-                                        ? Theme.warning
-                                        : (root.hasPayload ? Theme.success : Theme.error)
+                                        ? root.ui.amber
+                                        : (root.hasPayload ? root.ui.green : root.ui.rose)
                                     anchors.verticalCenter: parent.verticalCenter
                                 }
 
                                 StyledText {
                                     text: root.freshnessText()
-                                    color: Theme.surfaceVariantText
+                                    color: root.ui.secondary
                                     font.pixelSize: Theme.fontSizeSmall + 1
                                     anchors.verticalCenter: parent.verticalCenter
                                 }
@@ -2676,7 +2710,7 @@ PluginComponent {
                                 anchors.verticalCenter: parent.verticalCenter
                                 name: "sync"
                                 size: Theme.iconSizeSmall
-                                color: Theme.warning
+                                color: root.ui.amber
                                 visible: root.isBusy
                             }
                         }
@@ -2685,9 +2719,9 @@ PluginComponent {
                             width: parent.width
                             height: 36
                             radius: Theme.cornerRadius
-                            color: Theme.withAlpha(Theme.surfaceContainerHigh, 0.62)
+                            color: root.ui.card
                             border.width: 1
-                            border.color: Theme.outlineLight
+                            border.color: root.ui.cardBorder
 
                             Row {
                                 anchors.fill: parent
@@ -2698,7 +2732,7 @@ PluginComponent {
                                 DIcon {
                                     name: "search"
                                     size: Theme.iconSizeSmall
-                                    color: Theme.surfaceVariantText
+                                    color: root.ui.secondary
                                     anchors.verticalCenter: parent.verticalCenter
                                 }
 
@@ -2709,9 +2743,9 @@ PluginComponent {
                                     width: Math.max(0, parent.width - (clearSearch.visible ? clearSearch.width + parent.spacing : 0) - Theme.iconSizeSmall - parent.spacing)
                                     height: parent.height
                                     text: root.searchText
-                                    color: Theme.surfaceText
-                                    selectionColor: Theme.primary
-                                    selectedTextColor: Theme.primaryText
+                                    color: root.ui.text
+                                    selectionColor: root.ui.accent
+                                    selectedTextColor: root.ui.onAccent
                                     font.family: Theme.fontFamily
                                     font.pixelSize: Theme.fontSizeMedium
                                     verticalAlignment: TextInput.AlignVCenter
@@ -2725,7 +2759,7 @@ PluginComponent {
                                     Text {
                                         anchors.verticalCenter: parent.verticalCenter
                                         text: root.tabIs("sessions") ? "Search conversations…" : "Search harness, account, repo…"
-                                        color: Theme.surfaceVariantText
+                                        color: root.ui.secondary
                                         font.family: searchInput.font.family
                                         font.pixelSize: Theme.fontSizeMedium
                                         visible: searchInput.text.length === 0
@@ -2743,7 +2777,7 @@ PluginComponent {
                                     id: clearSearch
                                     name: "close"
                                     size: Theme.iconSizeSmall
-                                    color: Theme.surfaceVariantText
+                                    color: root.ui.secondary
                                     visible: root.searchText.length > 0
                                     anchors.verticalCenter: parent.verticalCenter
 
@@ -2927,7 +2961,7 @@ PluginComponent {
                                                 width: incident ? incidentRow.implicitWidth + Theme.spacingS * 2 : 0
                                                 height: incident ? 20 : 0
                                                 radius: 10
-                                                color: Theme.withAlpha(root.incidentColor(incident), 0.16)
+                                                color: Palette.alpha(root.popoutIncidentColor(incident), 0.16)
                                                 visible: incident !== null
                                                 Layout.alignment: Qt.AlignVCenter
 
@@ -2939,13 +2973,13 @@ PluginComponent {
                                                     DIcon {
                                                         name: "warning"
                                                         size: 13
-                                                        color: root.incidentColor(incidentBadge.incident)
+                                                        color: root.popoutIncidentColor(incidentBadge.incident)
                                                         anchors.verticalCenter: parent.verticalCenter
                                                     }
 
                                                     StyledText {
                                                         text: incidentBadge.incident ? String(incidentBadge.incident.indicator).toUpperCase() : ""
-                                                        color: root.incidentColor(incidentBadge.incident)
+                                                        color: root.popoutIncidentColor(incidentBadge.incident)
                                                         font.pixelSize: Theme.fontSizeSmall - 1
                                                         font.weight: Font.DemiBold
                                                         anchors.verticalCenter: parent.verticalCenter
@@ -3405,6 +3439,7 @@ PluginComponent {
                             visible: root.tabIs("sessions")
                             contentComponent: Component {
                                 TokitokiSessionsView {
+                                    ui: root.ui
                                     width: parent ? parent.width : 0
                                     command: root.command
                                     query: root.searchText
@@ -3429,7 +3464,7 @@ PluginComponent {
                                     StyledText {
                                         width: parent.width
                                         text: "Display settings live in " + root.settingsLocation + ". Tokitoki data, budgets, and provider configuration remain in Tokitoki's own config."
-                                        color: Theme.surfaceText
+                                        color: root.ui.text
                                         font.pixelSize: Theme.fontSizeMedium
                                         wrapMode: Text.WordWrap
                                     }
@@ -3437,14 +3472,14 @@ PluginComponent {
                                     StyledText {
                                         width: parent.width
                                         text: "Executable override"
-                                        color: Theme.surfaceVariantText
+                                        color: root.ui.secondary
                                         font.pixelSize: Theme.fontSizeSmall + 1
                                     }
 
                                     StyledText {
                                         width: parent.width
                                         text: root.command
-                                        color: Theme.primary
+                                        color: root.ui.accent
                                         font.pixelSize: Theme.fontSizeMedium
                                         isMonospace: true
                                         wrapMode: Text.Wrap
@@ -3453,7 +3488,7 @@ PluginComponent {
                                     StyledText {
                                         width: parent.width
                                         text: "Leave empty to use the default `tokitoki`; set a full path in the widget settings for development."
-                                        color: Theme.surfaceVariantText
+                                        color: root.ui.secondary
                                         font.pixelSize: Theme.fontSizeSmall + 1
                                         wrapMode: Text.WordWrap
                                     }
@@ -3469,6 +3504,7 @@ PluginComponent {
                             visible: root.tabIs("settings") && root.cardSurvives("notifications")
                             contentComponent: Component {
                                 TokitokiNotifications {
+                                    ui: root.ui
                                     width: parent ? parent.width : 0
                                     command: root.command
                                     shellName: root.shellName
@@ -3511,13 +3547,13 @@ PluginComponent {
                                                         width: 7
                                                         height: 7
                                                         radius: 3.5
-                                                        color: Theme.info
+                                                        color: root.ui.blue
                                                         anchors.verticalCenter: parent.verticalCenter
                                                     }
 
                                                     StyledText {
                                                         text: "Activity today"
-                                                        color: Theme.surfaceVariantText
+                                                        color: root.ui.secondary
                                                         font.pixelSize: Theme.fontSizeSmall + 1
                                                         font.weight: Font.DemiBold
                                                     }
@@ -3525,7 +3561,7 @@ PluginComponent {
 
                                                 StyledText {
                                                     text: root.formatMoney(root.metricTotal("today", "cost"))
-                                                    color: Theme.surfaceText
+                                                    color: root.ui.text
                                                     font.pixelSize: Theme.fontSizeXLarge + 8
                                                     font.weight: Font.Bold
                                                     isMonospace: true
@@ -3535,7 +3571,7 @@ PluginComponent {
                                                     text: root.reportTotal("today")
                                                         ? root.compactNumber(root.reportTotal("today").requests) + " requests"
                                                         : "loading…"
-                                                    color: Theme.surfaceVariantText
+                                                    color: root.ui.secondary
                                                     font.pixelSize: Theme.fontSizeMedium
                                                 }
                                             }
@@ -3552,7 +3588,7 @@ PluginComponent {
                                                     text: "This week"
                                                     Layout.fillWidth: true
                                                     elide: Text.ElideRight
-                                                    color: Theme.surfaceVariantText
+                                                    color: root.ui.secondary
                                                     font.pixelSize: Theme.fontSizeSmall + 1
                                                 }
                                                 StyledText {
@@ -3560,7 +3596,7 @@ PluginComponent {
                                                     text: root.reportTotal("week")
                                                         ? root.formatMoney(root.reportTotal("week").costUsd)
                                                         : "—"
-                                                    color: Theme.surfaceText
+                                                    color: root.ui.text
                                                     font.pixelSize: Theme.fontSizeMedium
                                                     font.weight: Font.DemiBold
                                                     isMonospace: true
@@ -3574,7 +3610,7 @@ PluginComponent {
                                                     text: "Month to date"
                                                     Layout.fillWidth: true
                                                     elide: Text.ElideRight
-                                                    color: Theme.surfaceVariantText
+                                                    color: root.ui.secondary
                                                     font.pixelSize: Theme.fontSizeSmall + 1
                                                 }
                                                 StyledText {
@@ -3582,7 +3618,7 @@ PluginComponent {
                                                     text: root.payload.spendHealth
                                                         ? root.formatMoney(root.payload.spendHealth.monthToDate)
                                                         : "—"
-                                                    color: Theme.surfaceText
+                                                    color: root.ui.text
                                                     font.pixelSize: Theme.fontSizeMedium
                                                     font.weight: Font.DemiBold
                                                     isMonospace: true
@@ -3596,7 +3632,7 @@ PluginComponent {
                                                     text: "Burn · projected"
                                                     Layout.fillWidth: true
                                                     elide: Text.ElideRight
-                                                    color: Theme.surfaceVariantText
+                                                    color: root.ui.secondary
                                                     font.pixelSize: Theme.fontSizeSmall + 1
                                                 }
                                                 StyledText {
@@ -3605,7 +3641,7 @@ PluginComponent {
                                                         ? root.formatMoney(root.payload.spendHealth.perDay) +
                                                             " → " + root.formatMoney(root.payload.spendHealth.projected)
                                                         : "—"
-                                                    color: Theme.surfaceText
+                                                    color: root.ui.text
                                                     font.pixelSize: Theme.fontSizeMedium
                                                     font.weight: Font.DemiBold
                                                     isMonospace: true
@@ -3622,7 +3658,7 @@ PluginComponent {
                             visible: root.tabIs("quotas") && root.hasPayload && root.filteredLimits().length === 0
                             text: root.searchIsActive() ? "No matching quota accounts."
                                 : "No visible quota accounts. Scan sources or manage account visibility in the settings menu."
-                            color: Theme.surfaceVariantText
+                            color: root.ui.secondary
                             font.pixelSize: Theme.fontSizeMedium
                             wrapMode: Text.WordWrap
                         }
@@ -3641,11 +3677,11 @@ PluginComponent {
                                         width: parent.width
                                         height: 28
                                         radius: Theme.cornerRadius
-                                        color: Theme.withAlpha(Theme.surfaceText, 0.06)
+                                        color: root.ui.chipIdle
                                         StyledText {
                                             anchors.centerIn: parent
                                             text: root.hiddenAccountsExpanded ? "Collapse hidden accounts" : "Show hidden accounts"
-                                            color: Theme.surfaceText
+                                            color: root.ui.text
                                             font.pixelSize: Theme.fontSizeSmall
                                         }
                                         MouseArea {
@@ -3662,7 +3698,7 @@ PluginComponent {
                                                 Layout.fillWidth: true
                                                 text: root.accountPrimaryLabel(modelData)
                                                 elide: Text.ElideRight
-                                                color: Theme.surfaceVariantText
+                                                color: root.ui.secondary
                                                 font.pixelSize: Theme.fontSizeSmall
                                             }
                                             DActionButton {
@@ -3768,6 +3804,7 @@ PluginComponent {
                                             spacing: Theme.spacingM
 
                                             TokitokiDonutChart {
+                                                ui: root.ui
                                                 width: 116
                                                 height: 116
                                                 slices: root.tokenMixSlices
@@ -3798,7 +3835,7 @@ PluginComponent {
                                                         StyledText {
                                                             text: modelData.name
                                                             width: Math.max(0, parent.width - value.width - 7 - parent.spacing * 2)
-                                                            color: Theme.surfaceText
+                                                            color: root.ui.text
                                                             font.pixelSize: Theme.fontSizeMedium
                                                             elide: Text.ElideRight
                                                         }
@@ -3806,7 +3843,7 @@ PluginComponent {
                                                         StyledText {
                                                             id: value
                                                             text: root.compactNumber(modelData.value)
-                                                            color: Theme.surfaceVariantText
+                                                            color: root.ui.secondary
                                                             font.pixelSize: Theme.fontSizeMedium
                                                             isMonospace: true
                                                         }
@@ -3834,7 +3871,7 @@ PluginComponent {
                                         width: parent.width
                                         text: root.trackingReport ? root.compactNumber(root.trackingReport.totalTokens) + " tokens · " +
                                             root.compactNumber(root.trackingReport.requests) + " requests" : ""
-                                        color: Theme.surfaceText
+                                        color: root.ui.text
                                         font.pixelSize: Theme.fontSizeMedium
                                         wrapMode: Text.WordWrap
                                     }
@@ -3842,14 +3879,14 @@ PluginComponent {
                                         width: parent.width
                                         text: root.trackingReport ? "Pricing coverage: " + root.trackingPercent(root.trackingReport.pricingCoveragePercent) +
                                             " · Cached input: " + root.trackingPercent(root.trackingReport.cachedInputPercent) : ""
-                                        color: Theme.surfaceText
+                                        color: root.ui.text
                                         font.pixelSize: Theme.fontSizeSmall + 1
                                         wrapMode: Text.WordWrap
                                     }
                                     StyledText {
                                         width: parent.width
                                         text: root.trackingSources(root.trackingReport)
-                                        color: Theme.surfaceVariantText
+                                        color: root.ui.secondary
                                         font.pixelSize: Theme.fontSizeSmall + 1
                                         wrapMode: Text.WordWrap
                                     }
@@ -3857,7 +3894,7 @@ PluginComponent {
                                         width: parent.width
                                         text: root.trackingTokenSummary(root.trackingReport)
                                         visible: text.length > 0
-                                        color: Theme.surfaceText
+                                        color: root.ui.text
                                         font.pixelSize: Theme.fontSizeSmall + 1
                                         wrapMode: Text.WordWrap
                                     }
@@ -3865,20 +3902,20 @@ PluginComponent {
                                         width: parent.width
                                         text: "Estimated from visible text (characters ÷ 4); hidden context is not counted."
                                         visible: Boolean(root.trackingReport && root.trackingReport.estimatedTokens > 0)
-                                        color: Theme.surfaceVariantText
+                                        color: root.ui.secondary
                                         font.pixelSize: Theme.fontSizeSmall
                                         wrapMode: Text.WordWrap
                                     }
                                     StyledText {
                                         width: parent.width
                                         text: root.trackingReport ? "Known usage value: " + root.formatMoney(root.trackingReport.costUsd) : ""
-                                        color: Theme.surfaceText
+                                        color: root.ui.text
                                         font.pixelSize: Theme.fontSizeMedium
                                     }
                                     StyledText {
                                         width: parent.width
                                         text: "Harness costs and API-rate estimates, not a subscription bill. Unpriced usage is excluded."
-                                        color: Theme.surfaceVariantText
+                                        color: root.ui.secondary
                                         font.pixelSize: Theme.fontSizeSmall
                                         wrapMode: Text.WordWrap
                                     }
@@ -3886,7 +3923,7 @@ PluginComponent {
                                         width: parent.width
                                         text: root.trackingMissingPrices(root.trackingReport)
                                         visible: text.length > 0
-                                        color: Theme.warning
+                                        color: root.ui.amber
                                         font.pixelSize: Theme.fontSizeSmall + 1
                                         wrapMode: Text.WrapAnywhere
                                     }
@@ -3948,10 +3985,12 @@ PluginComponent {
                                     }
 
                                     TokitokiHistoryChart {
+                                        ui: root.ui
                                         width: parent.width
                                         history: root.payload.history
                                         extendedHistory: root.payload.historyYear
                                         period: root.historyPeriod
+                                        seriesColors: root.seriesColors
                                     }
                                 }
                             }
@@ -3974,31 +4013,31 @@ PluginComponent {
                                             Layout.fillWidth: true
                                             StyledText {
                                                 text: root.compactNumber(root.tokenPulseTotal() ? root.tokenPulseTotal().tokens : 0)
-                                                color: Theme.surfaceText
+                                                color: root.ui.text
                                                 font.pixelSize: Theme.fontSizeXLarge
                                                 font.weight: Font.DemiBold
                                             }
                                             StyledText {
                                                 text: "Tokens · " + root.periodLabel(root.selectedPeriod)
-                                                color: Theme.surfaceVariantText
+                                                color: root.ui.secondary
                                                 font.pixelSize: Theme.fontSizeSmall + 1
                                             }
                                         }
                                         Column {
                                             StyledText {
                                                 text: root.compactNumber(root.tokenPulseTotal() ? root.tokenPulseTotal().requests : 0) + " requests"
-                                                color: Theme.surfaceVariantText
+                                                color: root.ui.secondary
                                                 font.pixelSize: Theme.fontSizeSmall + 1
                                             }
                                             StyledText {
                                                 text: root.compactNumber(root.tokenPulseTotal() ? root.tokenPulseTotal().sessions : 0) + " sessions"
                                                 visible: root.tokenPulseTotal() !== null && root.tokenPulseTotal().sessions !== null
-                                                color: Theme.surfaceVariantText
+                                                color: root.ui.secondary
                                                 font.pixelSize: Theme.fontSizeSmall + 1
                                             }
                                             StyledText {
                                                 text: root.formatMoney(root.tokenPulseTotal() ? root.tokenPulseTotal().costUsd : 0)
-                                                color: Theme.surfaceText
+                                                color: root.ui.text
                                                 font.pixelSize: Theme.fontSizeMedium
                                                 isMonospace: true
                                             }
@@ -4007,12 +4046,13 @@ PluginComponent {
                                     ReportControls { }
                                     TokitokiSparkline {
                                         width: parent.width
+                                        lineColor: root.ui.accent
                                         history: root.payload.history
                                     }
                                     StyledText {
                                         width: parent.width
                                         text: "Daily tokens · last 30 days"
-                                        color: Theme.surfaceVariantText
+                                        color: root.ui.secondary
                                         font.pixelSize: Theme.fontSizeSmall + 1
                                     }
                                 }
@@ -4066,9 +4106,11 @@ PluginComponent {
                                 root.payload.repoHistory.days.length > 0 && root.cardSurvives("repoHistory")
                             contentComponent: Component {
                                 TokitokiHistoryChart {
+                                    ui: root.ui
                                     width: parent ? parent.width : 0
                                     history: root.privateRepoHistory()
                                     period: "month"
+                                    seriesColors: root.seriesColors
                                 }
                             }
                         }
@@ -4081,6 +4123,7 @@ PluginComponent {
                             visible: root.tabIs("reports") && root.hasActivityGrid && root.cardSurvives("activity")
                             contentComponent: Component {
                                 TokitokiActivityGrid {
+                                    ui: root.ui
                                     width: parent ? parent.width : 0
                                     payload: root.payload.activityGrid
                                 }
@@ -4109,7 +4152,7 @@ PluginComponent {
                                                 root.compactNumber(root.totalTokens(root.t3codeReport.total)) + " tokens · " +
                                                 root.formatMoney(root.t3codeReport.total.costUsd) + " estimated"
                                             : ""
-                                        color: Theme.surfaceText
+                                        color: root.ui.text
                                         font.pixelSize: Theme.fontSizeMedium
                                         wrapMode: Text.WordWrap
                                     }
@@ -4118,14 +4161,14 @@ PluginComponent {
                                         width: parent.width
                                         text: root.trackingTokenSummary(root.t3codeReport ? root.t3codeReport.total : null)
                                         visible: text.length > 0
-                                        color: Theme.surfaceVariantText
+                                        color: root.ui.secondary
                                         font.pixelSize: Theme.fontSizeSmall + 1
                                         wrapMode: Text.WordWrap
                                     }
                                     StyledText {
                                         width: parent.width
                                         text: "Observed application activity. Excluded from totals; may already be included in harnesses. Costs are estimated."
-                                        color: Theme.surfaceVariantText
+                                        color: root.ui.secondary
                                         font.pixelSize: Theme.fontSizeSmall + 1
                                         wrapMode: Text.WordWrap
                                     }
@@ -4133,6 +4176,7 @@ PluginComponent {
                                     Repeater {
                                         model: root.t3codeReport ? root.t3codeReport.rows : []
                                         delegate: TokitokiListRow {
+                                            ui: root.ui
                                             alternate: index % 2 === 1
                                             rowHeight: t3codeModelDetails.implicitHeight + verticalPadding * 2
                                             Column {
@@ -4142,7 +4186,7 @@ PluginComponent {
                                                 StyledText {
                                                     width: parent.width
                                                     text: modelData.bucket
-                                                    color: Theme.surfaceText
+                                                    color: root.ui.text
                                                     font.pixelSize: Theme.fontSizeMedium
                                                     elide: Text.ElideRight
                                                 }
@@ -4152,7 +4196,7 @@ PluginComponent {
                                                         root.compactNumber(modelData.requests) + " req · " +
                                                         root.compactNumber(root.totalTokens(modelData)) + " tok · " +
                                                         root.formatMoney(modelData.costUsd) + " est."
-                                                    color: Theme.surfaceVariantText
+                                                    color: root.ui.secondary
                                                     font.pixelSize: Theme.fontSizeSmall + 1
                                                     isMonospace: true
                                                     wrapMode: Text.WordWrap
@@ -4181,6 +4225,7 @@ PluginComponent {
                                         model: root.rowsForPeriod("today").slice(0, 7)
 
                                         delegate: TokitokiListRow {
+                                            ui: root.ui
                                             alternate: index % 2 === 1
 
                                             RowLayout {
@@ -4199,7 +4244,7 @@ PluginComponent {
                                                 StyledText {
                                                     text: root.providerName(modelData.bucket)
                                                     Layout.fillWidth: true
-                                                    color: Theme.surfaceText
+                                                    color: root.ui.text
                                                     font.pixelSize: Theme.fontSizeMedium
                                                     elide: Text.ElideRight
                                                     Layout.alignment: Qt.AlignVCenter
@@ -4208,7 +4253,7 @@ PluginComponent {
                                                 StyledText {
                                                     id: requests
                                                     text: root.compactNumber(modelData.requests) + " req"
-                                                    color: Theme.surfaceVariantText
+                                                    color: root.ui.secondary
                                                     font.pixelSize: Theme.fontSizeSmall + 1
                                                     isMonospace: true
                                                     Layout.alignment: Qt.AlignVCenter
@@ -4218,7 +4263,7 @@ PluginComponent {
                                                     id: cost
                                                     text: root.formatMoney(modelData.costUsd)
                                                     color: root.safeNumber(modelData.costUsd) > 0
-                                                        ? Theme.surfaceText : Theme.surfaceVariantText
+                                                        ? root.ui.text : root.ui.secondary
                                                     font.pixelSize: Theme.fontSizeMedium
                                                     isMonospace: true
                                                     Layout.alignment: Qt.AlignVCenter
@@ -4248,6 +4293,7 @@ PluginComponent {
                                         model: root.rowsFromReport(root.payload.reposMonth).slice(0, 6)
 
                                         delegate: TokitokiListRow {
+                                            ui: root.ui
                                             alternate: index % 2 === 1
 
                                             RowLayout {
@@ -4259,7 +4305,7 @@ PluginComponent {
                                                         ? "Private repository"
                                                         : String(modelData.bucket || "").split("/").pop()
                                                     Layout.fillWidth: true
-                                                    color: Theme.surfaceText
+                                                    color: root.ui.text
                                                     font.pixelSize: Theme.fontSizeMedium
                                                     elide: Text.ElideRight
                                                     Layout.alignment: Qt.AlignVCenter
@@ -4271,7 +4317,7 @@ PluginComponent {
                                                         ? root.formatMoney(modelData.costUsd) + " · " +
                                                             root.compactNumber(root.totalTokens(modelData))
                                                         : root.compactNumber(root.totalTokens(modelData)) + " tokens"
-                                                    color: Theme.surfaceVariantText
+                                                    color: root.ui.secondary
                                                     font.pixelSize: Theme.fontSizeSmall + 1
                                                     isMonospace: true
                                                     Layout.alignment: Qt.AlignVCenter
@@ -4304,6 +4350,7 @@ PluginComponent {
                                             : []
 
                                         delegate: TokitokiListRow {
+                                            ui: root.ui
                                             alternate: index % 2 === 1
 
                                             RowLayout {
@@ -4313,7 +4360,7 @@ PluginComponent {
                                                 StyledText {
                                                     text: modelData.tool
                                                     Layout.fillWidth: true
-                                                    color: Theme.surfaceText
+                                                    color: root.ui.text
                                                     font.pixelSize: Theme.fontSizeMedium
                                                     elide: Text.ElideRight
                                                     Layout.alignment: Qt.AlignVCenter
@@ -4324,7 +4371,7 @@ PluginComponent {
                                                     text: root.safeNumber(modelData.costUsd) >= 0.01
                                                         ? root.formatMoney(modelData.costUsd)
                                                         : root.compactNumber(modelData.tokens)
-                                                    color: Theme.surfaceVariantText
+                                                    color: root.ui.secondary
                                                     font.pixelSize: Theme.fontSizeSmall + 1
                                                     isMonospace: true
                                                     Layout.alignment: Qt.AlignVCenter
@@ -4353,6 +4400,7 @@ PluginComponent {
                                         model: root.payload.budgets || []
 
                                         delegate: TokitokiListRow {
+                                            ui: root.ui
                                             alternate: index % 2 === 1
 
                                             RowLayout {
@@ -4369,7 +4417,7 @@ PluginComponent {
                                                 StyledText {
                                                     text: modelData.label
                                                     Layout.fillWidth: true
-                                                    color: Theme.surfaceText
+                                                    color: root.ui.text
                                                     font.pixelSize: Theme.fontSizeMedium
                                                     elide: Text.ElideRight
                                                     Layout.alignment: Qt.AlignVCenter
@@ -4407,7 +4455,7 @@ PluginComponent {
                                         width: parent.width
                                         visible: root.lastError.length > 0
                                         text: root.lastError
-                                        color: Theme.warning
+                                        color: root.ui.amber
                                         wrapMode: Text.Wrap
                                         font.pixelSize: Theme.fontSizeSmall + 1
                                     }
@@ -4422,13 +4470,13 @@ PluginComponent {
                                             StyledText {
                                                 width: parent.width
                                                 text: root.providerShortName(parent.modelData) + " · " + root.displayLabel(parent.incident.indicator)
-                                                color: root.incidentColor(parent.incident)
+                                                color: root.popoutIncidentColor(parent.incident)
                                                 font.weight: Font.DemiBold
                                             }
                                             StyledText {
                                                 width: parent.width
                                                 text: parent.incident.description || "See the provider status page"
-                                                color: Theme.surfaceText
+                                                color: root.ui.text
                                                 wrapMode: Text.Wrap
                                                 font.pixelSize: Theme.fontSizeSmall + 1
                                             }
@@ -4464,6 +4512,7 @@ PluginComponent {
                                         model: root.payload.anomalies ? root.payload.anomalies.anomalies.slice(0, 4) : []
 
                                         delegate: TokitokiListRow {
+                                            ui: root.ui
                                             alternate: index % 2 === 1
                                             rowHeight: 32
 
@@ -4474,7 +4523,7 @@ PluginComponent {
                                                 DIcon {
                                                     name: "warning"
                                                     size: Theme.iconSizeSmall
-                                                    color: Theme.warning
+                                                    color: root.ui.amber
                                                     Layout.alignment: Qt.AlignVCenter
                                                 }
 
@@ -4482,7 +4531,7 @@ PluginComponent {
                                                     text: modelData.day + " · " + root.compactNumber(modelData.value) + " " +
                                                         root.displayLabel(modelData.metric)
                                                     Layout.fillWidth: true
-                                                    color: Theme.surfaceText
+                                                    color: root.ui.text
                                                     font.pixelSize: Theme.fontSizeMedium
                                                     elide: Text.ElideRight
                                                     Layout.alignment: Qt.AlignVCenter
@@ -4492,7 +4541,7 @@ PluginComponent {
                                                     id: ratio
                                                     text: root.safeNumber(modelData.ratio).toFixed(1) + "× baseline"
                                                     width: Math.min(implicitWidth, parent.width * 0.42)
-                                                    color: Theme.warning
+                                                    color: root.ui.amber
                                                     font.pixelSize: Theme.fontSizeSmall - 1
                                                     isMonospace: true
                                                     horizontalAlignment: Text.AlignRight
@@ -4522,7 +4571,7 @@ PluginComponent {
                                         width: parent.width
                                         text: root.payload.statuslinePreview
                                             ? String(root.payload.statuslinePreview.preview || "") : ""
-                                        color: Theme.surfaceText
+                                        color: root.ui.text
                                         font.pixelSize: Theme.fontSizeMedium
                                         isMonospace: true
                                         elide: Text.ElideRight
@@ -4532,7 +4581,7 @@ PluginComponent {
                                         width: parent.width
                                         text: root.payload.statuslinePreview
                                             ? String(root.payload.statuslinePreview.command || "") : ""
-                                        color: Theme.surfaceVariantText
+                                        color: root.ui.secondary
                                         font.pixelSize: Theme.fontSizeSmall + 1
                                         isMonospace: true
                                     }
@@ -4557,6 +4606,7 @@ PluginComponent {
                                         model: root.payload.blocks ? root.payload.blocks.rows.slice(0, 6) : []
 
                                         delegate: TokitokiListRow {
+                                            ui: root.ui
                                             alternate: index % 2 === 1
                                             rowHeight: 44
 
@@ -4568,7 +4618,7 @@ PluginComponent {
                                                     width: 7
                                                     height: 7
                                                     radius: 3.5
-                                                    color: modelData.isActive ? Theme.success : Theme.surfaceVariantText
+                                                    color: modelData.isActive ? root.ui.green : root.ui.secondary
                                                     Layout.alignment: Qt.AlignVCenter
                                                 }
 
@@ -4583,7 +4633,7 @@ PluginComponent {
                                                         : String(modelData.accountKey || "default") +
                                                             (modelData.isActive ? " · active" : "")
                                                     width: parent.width
-                                                    color: Theme.surfaceText
+                                                    color: root.ui.text
                                                     font.pixelSize: Theme.fontSizeMedium
                                                     elide: Text.ElideRight
                                                 }
@@ -4591,7 +4641,7 @@ PluginComponent {
                                                     StyledText {
                                                         text: root.relativeAge(modelData.startIso) + " · " +
                                                             root.compactNumber(modelData.requests) + " requests"
-                                                        color: Theme.surfaceVariantText
+                                                        color: root.ui.secondary
                                                         font.pixelSize: Theme.fontSizeSmall + 1
                                                     }
                                                 }
@@ -4600,7 +4650,7 @@ PluginComponent {
                                                     id: blockValue
                                                     text: modelData.isActive
                                                         ? "active" : root.compactNumber(modelData.tokens)
-                                                    color: modelData.isActive ? Theme.success : Theme.surfaceVariantText
+                                                    color: modelData.isActive ? root.ui.green : root.ui.secondary
                                                     font.pixelSize: Theme.fontSizeSmall + 1
                                                     isMonospace: true
                                                     Layout.alignment: Qt.AlignVCenter
@@ -4629,6 +4679,7 @@ PluginComponent {
                                         model: root.otherActiveMachines(root.payload.presence)
 
                                         delegate: TokitokiListRow {
+                                            ui: root.ui
                                             alternate: index % 2 === 1
 
                                             Row {
@@ -4639,20 +4690,20 @@ PluginComponent {
                                                     width: 7
                                                     height: 7
                                                     radius: 3.5
-                                                    color: Theme.success
+                                                    color: root.ui.green
                                                     anchors.verticalCenter: parent.verticalCenter
                                                 }
 
                                                 StyledText {
                                                     text: modelData.host || modelData.machineId
-                                                    color: Theme.surfaceText
+                                                    color: root.ui.text
                                                     font.pixelSize: Theme.fontSizeMedium
                                                     anchors.verticalCenter: parent.verticalCenter
                                                 }
 
                                                 StyledText {
                                                     text: "Active · " + root.relativeAge(new Date(root.safeNumber(modelData.ts)).toISOString())
-                                                    color: Theme.success
+                                                    color: root.ui.green
                                                     font.pixelSize: Theme.fontSizeSmall + 1
                                                     anchors.verticalCenter: parent.verticalCenter
                                                 }
@@ -4682,6 +4733,7 @@ PluginComponent {
                                             : []
 
                                         delegate: TokitokiListRow {
+                                            ui: root.ui
                                             alternate: index % 2 === 1
                                             rowHeight: 48
 
@@ -4698,7 +4750,7 @@ PluginComponent {
                                                         ? "Private session"
                                                         : modelData.title || "(no title)"
                                                     Layout.fillWidth: true
-                                                    color: Theme.surfaceText
+                                                    color: root.ui.text
                                                     font.pixelSize: Theme.fontSizeMedium
                                                     font.weight: Font.Medium
                                                     elide: Text.ElideRight
@@ -4708,7 +4760,7 @@ PluginComponent {
                                                         id: sessionValue
                                                         text: root.compactNumber(modelData.totalTokens) + " · " +
                                                             root.compactNumber(modelData.requests) + " req"
-                                                        color: Theme.surfaceVariantText
+                                                        color: root.ui.secondary
                                                         font.pixelSize: Theme.fontSizeSmall + 1
                                                         isMonospace: true
                                                     }
@@ -4718,7 +4770,7 @@ PluginComponent {
                                                     width: parent.width
                                                     text: (modelData.provider || "provider") + " · " +
                                                         root.relativeAge(modelData.lastRequestAt)
-                                                    color: Theme.surfaceVariantText
+                                                    color: root.ui.secondary
                                                     font.pixelSize: Theme.fontSizeSmall - 2
                                                     elide: Text.ElideRight
                                                 }
@@ -4756,6 +4808,7 @@ PluginComponent {
                             if (item) {
                                 item.shellName = root.shellName
                                 item.pluginService = root.pluginService
+                                item.ui = Qt.binding(() => root.followShellTheme ? null : root.ui)
                             }
                         }
                     }
@@ -4839,9 +4892,9 @@ PluginComponent {
 
     function stateColor(state) {
         switch (state) {
-        case "exceeded": return Theme.error
-        case "warn": return Theme.warning
-        default: return Theme.success
+        case "exceeded": return root.ui.rose
+        case "warn": return root.ui.amber
+        default: return root.ui.green
         }
     }
 

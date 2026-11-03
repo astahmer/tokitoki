@@ -27,6 +27,7 @@ const makeWidget = () => {
     selectedProviders: "",
     Theme: { warning: "orange", success: "green", primary: "pink" },
     ui: { green: "green", amber: "orange", rose: "red", blue: "blue", mint: "mint", orange: "orange" },
+    seriesColors: ["blue", "orange", "aqua", "yellow", "magenta", "green", "violet", "red"],
     statusProcess: { running: false },
     pendingRefresh: false,
     pendingScan: false,

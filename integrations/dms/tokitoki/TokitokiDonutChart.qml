@@ -4,6 +4,8 @@ import qs.DCommon.Widgets
 
 Item {
     id: root
+    // Popout palette (menubar or shell theme), always passed by the parent.
+    property var ui
 
     property var slices: []
     property string centerLabel: ""
@@ -67,7 +69,7 @@ Item {
                     context.arc(centerX, centerY, inner, to, from, true)
                     context.closePath()
                     context.fillRule = Qt.OddEvenFill
-                    context.fillStyle = String(slice.color || Theme.primary)
+                    context.fillStyle = String(slice.color || root.ui.accent)
                     context.fill()
                 }
                 start = end
@@ -86,7 +88,7 @@ Item {
         StyledText {
             width: root.width * 0.62
             text: root.centerLabel
-            color: Theme.surfaceText
+            color: root.ui.text
             font.pixelSize: Theme.fontSizeMedium
             font.weight: Font.DemiBold
             horizontalAlignment: Text.AlignHCenter
@@ -97,7 +99,7 @@ Item {
         StyledText {
             width: root.width * 0.75
             text: root.centerUnit
-            color: Theme.surfaceVariantText
+            color: root.ui.secondary
             font.pixelSize: Theme.fontSizeSmall + 1
             horizontalAlignment: Text.AlignHCenter
             elide: Text.ElideRight

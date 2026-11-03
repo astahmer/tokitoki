@@ -7,6 +7,8 @@ import qs.DCommon.Widgets
 
 Item {
     id: root
+    // Popout palette (menubar or shell theme), always passed by the parent.
+    property var ui
 
     property string command: "tokitoki"
     property string shellName: "DMS"
@@ -61,9 +63,9 @@ Item {
 
         height: 30
         radius: height / 2
-        color: selected ? Theme.primaryContainer : Theme.withAlpha(Theme.surfaceText, 0.06)
+        color: selected ? root.ui.chip : root.ui.chipIdle
         border.width: 1
-        border.color: selected ? Theme.primary : Theme.outlineLight
+        border.color: selected ? root.ui.chip : root.ui.cardBorder
         opacity: enabled ? 1 : 0.5
 
         StyledText {
@@ -71,7 +73,7 @@ Item {
             anchors.leftMargin: Theme.spacingXXS
             anchors.rightMargin: Theme.spacingXXS
             text: chip.label
-            color: chip.selected ? Theme.primary : Theme.surfaceText
+            color: chip.selected ? root.ui.chipText : root.ui.text
             font.pixelSize: Theme.fontSizeSmall + 1
             font.weight: chip.selected ? Font.DemiBold : Font.Normal
             horizontalAlignment: Text.AlignHCenter
@@ -271,7 +273,7 @@ Item {
         StyledText {
             width: parent.width
             text: "Preferences are stored in Tokitoki config and shared with the menubar app. The " + root.shellName + " widget does not send desktop notifications."
-            color: Theme.surfaceVariantText
+            color: root.ui.secondary
             font.pixelSize: Theme.fontSizeSmall + 1
             wrapMode: Text.WordWrap
         }
@@ -300,7 +302,7 @@ Item {
             StyledText {
                 width: parent.width
                 text: "Critical quota threshold · percent remaining"
-                color: Theme.surfaceText
+                color: root.ui.text
                 font.pixelSize: Theme.fontSizeSmall + 1
                 wrapMode: Text.WordWrap
             }
@@ -332,7 +334,7 @@ Item {
             StyledText {
                 width: parent.width
                 text: "Spend guard"
-                color: Theme.surfaceText
+                color: root.ui.text
                 font.pixelSize: Theme.fontSizeMedium
                 font.weight: Font.DemiBold
             }
@@ -351,7 +353,7 @@ Item {
                 text: root.hasMonthlyCap
                     ? "A monthly spend cap is configured for the burn guard."
                     : "Add a monthly spend cap to use burn-rate warnings."
-                color: Theme.surfaceVariantText
+                color: root.ui.secondary
                 font.pixelSize: Theme.fontSizeSmall
                 wrapMode: Text.WordWrap
             }
@@ -359,7 +361,7 @@ Item {
             StyledText {
                 width: parent.width
                 text: "Warn at"
-                color: Theme.surfaceText
+                color: root.ui.text
                 font.pixelSize: Theme.fontSizeSmall + 1
             }
 
@@ -390,7 +392,7 @@ Item {
             StyledText {
                 width: parent.width
                 text: "Alert categories"
-                color: Theme.surfaceText
+                color: root.ui.text
                 font.pixelSize: Theme.fontSizeMedium
                 font.weight: Font.DemiBold
             }
@@ -418,7 +420,7 @@ Item {
             width: parent.width
             visible: root.writeStatus().length > 0
             text: root.writeStatus()
-            color: root.failedPaths.length > 0 ? Theme.error : Theme.surfaceVariantText
+            color: root.failedPaths.length > 0 ? root.ui.rose : root.ui.secondary
             font.pixelSize: Theme.fontSizeSmall
             wrapMode: Text.WordWrap
         }

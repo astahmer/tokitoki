@@ -3,12 +3,15 @@ import Quickshell
 import Quickshell.Io
 import qs.Common
 import qs.DCommon.Widgets
+import "TokitokiPalette.js" as Palette
 
 // Sessions tab: read-only browser over `tokitoki sessions --cached --json`.
 // List mode is a keyword search + pagination; selecting a row swaps to the
 // conversation body and the request timeline of that session.
 Item {
     id: root
+    // Popout palette (menubar or shell theme), always passed by the parent.
+    property var ui
 
     property string command: "tokitoki"
     property string query: ""
@@ -58,9 +61,9 @@ Item {
         width: chipRow.implicitWidth + Theme.spacingM
         height: 26
         radius: Theme.cornerRadius / 2
-        color: Theme.withAlpha(Theme.surfaceText, hoverArea.containsMouse && chip.actionEnabled ? 0.10 : 0.05)
+        color: hoverArea.containsMouse && chip.actionEnabled ? root.ui.controlHover : root.ui.control
         border.width: 1
-        border.color: Theme.outlineLight
+        border.color: root.ui.cardBorder
         opacity: chip.actionEnabled ? 1 : 0.45
 
         Row {
@@ -72,14 +75,14 @@ Item {
             DIcon {
                 name: chip.iconName
                 size: Theme.iconSizeSmall
-                color: Theme.surfaceText
+                color: root.ui.text
                 visible: chip.iconName.length > 0
                 anchors.verticalCenter: parent.verticalCenter
             }
 
             StyledText {
                 text: chip.label
-                color: Theme.surfaceText
+                color: root.ui.text
                 font.pixelSize: Theme.fontSizeSmall + 1
                 anchors.verticalCenter: parent.verticalCenter
             }
@@ -605,7 +608,7 @@ Item {
             visible: text.length > 0
             text: root.statusText()
             color: root.status.indexOf("failed") >= 0 || root.status.indexOf("Could not") === 0
-                ? Theme.error : Theme.surfaceVariantText
+                ? root.ui.rose : root.ui.secondary
             font.pixelSize: Theme.fontSizeSmall + 1
             wrapMode: Text.WordWrap
             elide: Text.ElideNone
@@ -650,6 +653,7 @@ Item {
                     clip: true
 
                     TokitokiListRow {
+                        ui: root.ui
                         anchors.fill: parent
                         alternate: index % 2 === 1
                         rowHeight: 72
@@ -670,7 +674,7 @@ Item {
                                     anchors.verticalCenter: parent.verticalCenter
                                     width: Math.max(40, parent.width - statsText.implicitWidth - Theme.spacingS)
                                     text: root.sessionTitle(modelData)
-                                    color: Theme.surfaceText
+                                    color: root.ui.text
                                     font.pixelSize: Theme.fontSizeMedium
                                     font.weight: Font.DemiBold
                                     wrapMode: Text.NoWrap
@@ -684,7 +688,7 @@ Item {
                                     anchors.right: parent.right
                                     anchors.verticalCenter: parent.verticalCenter
                                     text: root.sessionStats(modelData)
-                                    color: Theme.surfaceVariantText
+                                    color: root.ui.secondary
                                     font.pixelSize: Theme.fontSizeSmall
                                     isMonospace: true
                                     wrapMode: Text.NoWrap
@@ -696,7 +700,7 @@ Item {
                                 height: 16
                                 text: root.plainSnippet(modelData)
                                 textFormat: Text.PlainText
-                                color: Theme.surfaceVariantText
+                                color: root.ui.secondary
                                 font.pixelSize: Theme.fontSizeSmall
                                 wrapMode: Text.NoWrap
                                 elide: Text.ElideRight
@@ -708,7 +712,7 @@ Item {
                                 height: 14
                                 text: root.sessionMeta(modelData)
                                 textFormat: Text.PlainText
-                                color: Theme.withAlpha(Theme.surfaceVariantText, 0.75)
+                                color: root.ui.tertiary
                                 font.pixelSize: Theme.fontSizeSmall - 2
                                 wrapMode: Text.NoWrap
                                 elide: Text.ElideRight
@@ -745,7 +749,7 @@ Item {
 
             StyledText {
                 text: "Page " + root.page
-                color: Theme.surfaceVariantText
+                color: root.ui.secondary
                 font.pixelSize: Theme.fontSizeSmall
                 anchors.verticalCenter: parent.verticalCenter
             }
@@ -784,7 +788,7 @@ Item {
                     anchors.verticalCenter: parent.verticalCenter
                     text: (root.detail ? String(root.detail.provider) : "") + " · " +
                         (root.privacyHideNames ? "Private session" : (root.detail ? String(root.detail.sessionId) : ""))
-                    color: Theme.surfaceVariantText
+                    color: root.ui.secondary
                     font.pixelSize: Theme.fontSizeSmall
                     isMonospace: true
                     elide: Text.ElideMiddle
@@ -796,7 +800,7 @@ Item {
                 visible: root.detail !== null && root.detail.cacheDuration !== null &&
                     typeof root.detail.cacheDuration === "object"
                 text: root.detail === null ? "" : root.cacheDurationText(root.detail.cacheDuration)
-                color: Theme.surfaceVariantText
+                color: root.ui.secondary
                 font.pixelSize: Theme.fontSizeSmall
                 wrapMode: Text.WordWrap
                 elide: Text.ElideNone
@@ -807,7 +811,7 @@ Item {
                 visible: root.conversationBody().length > 0
                 text: root.conversationBody()
                 textFormat: Text.PlainText
-                color: Theme.surfaceText
+                color: root.ui.text
                 font.pixelSize: Theme.fontSizeSmall + 1
                 wrapMode: Text.WordWrap
                 elide: Text.ElideNone
@@ -818,7 +822,7 @@ Item {
                 visible: root.events.length > 0
                 text: "Request timeline · " +
                     root.compactNumber(root.detail ? root.detail.eventsTotal : 0) + " requests"
-                color: Theme.surfaceText
+                color: root.ui.text
                 font.pixelSize: Theme.fontSizeMedium
                 font.weight: Font.DemiBold
                 elide: Text.ElideRight
@@ -839,7 +843,7 @@ Item {
                             root.compactNumber(root.eventTokens(root.events[root.hoveredEvent])) + " tok · " +
                             root.formatMoney(root.events[root.hoveredEvent].costUsd)
                         : ""
-                    color: Theme.surfaceVariantText
+                    color: root.ui.secondary
                     font.pixelSize: Theme.fontSizeSmall
                     isMonospace: true
                     elide: Text.ElideRight
@@ -874,8 +878,8 @@ Item {
                             anchors.bottom: parent.bottom
                             radius: 1
                             color: root.hoveredEvent === index
-                                ? Theme.primary
-                                : Theme.withAlpha(Theme.primary, 0.72)
+                                ? root.ui.accent
+                                : Palette.alpha(root.ui.accent, 0.72)
 
                             MouseArea {
                                 anchors.fill: parent
@@ -900,6 +904,7 @@ Item {
                     model: root.events
 
                     delegate: TokitokiListRow {
+                        ui: root.ui
                         alternate: index % 2 === 1
                         rowHeight: 22
                         showSurface: false
@@ -913,7 +918,7 @@ Item {
                                 anchors.verticalCenter: parent.verticalCenter
                                 text: root.eventTime(modelData.ts) + " · " +
                                     String(modelData.model || "(no model)")
-                                color: Theme.surfaceText
+                                color: root.ui.text
                                 font.pixelSize: Theme.fontSizeSmall
                                 elide: Text.ElideRight
                             }
@@ -925,7 +930,7 @@ Item {
                                 anchors.verticalCenter: parent.verticalCenter
                                 text: root.eventTokenLabel(modelData) + " · " +
                                     root.formatMoney(modelData.costUsd)
-                                color: Theme.surfaceVariantText
+                                color: root.ui.secondary
                                 font.pixelSize: Theme.fontSizeSmall
                                 isMonospace: true
                             }
@@ -949,7 +954,7 @@ Item {
                 StyledText {
                     text: "Showing " + root.events.length + " of " +
                         root.compactNumber(root.detail ? root.detail.eventsTotal : 0)
-                    color: Theme.surfaceVariantText
+                    color: root.ui.secondary
                     font.pixelSize: Theme.fontSizeSmall
                     anchors.verticalCenter: parent.verticalCenter
                 }
@@ -962,7 +967,7 @@ Item {
                 text: root.privacyHideNames && root.detail && root.detail.conversation
                     ? "Conversation hidden by privacy setting."
                     : "No indexed conversation or request rows for this session."
-                color: Theme.surfaceVariantText
+                color: root.ui.secondary
                 font.pixelSize: Theme.fontSizeSmall
                 wrapMode: Text.WordWrap
                 elide: Text.ElideNone

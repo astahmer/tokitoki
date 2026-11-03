@@ -4,11 +4,14 @@ import qs.DCommon.Widgets
 
 Item {
     id: root
+    // Popout palette (menubar or shell theme), always passed by the parent.
+    property var ui
 
     property var history: null
     property var extendedHistory: null
     property string period: "month"
     property var columns: []
+    property var seriesColors: []
 
     implicitHeight: Math.max(154, chartColumn.implicitHeight)
 
@@ -25,15 +28,7 @@ Item {
     }
 
     function paletteColor(name, index) {
-        var colors = [
-            Theme.warning,
-            Theme.success,
-            Theme.primary,
-            Theme.secondary,
-            Theme.error,
-            Theme.tertiary,
-            Theme.info
-        ]
+        var colors = root.seriesColors
         if (index !== undefined && index >= 0)
             return colors[index % colors.length]
 
@@ -217,7 +212,7 @@ Item {
             StyledText {
                 id: firstLabel
                 text: root.columns.length > 0 ? root.columns[0].day : ""
-                color: Theme.surfaceVariantText
+                color: root.ui.secondary
                 font.pixelSize: Theme.fontSizeMedium
                 isMonospace: true
             }
@@ -232,7 +227,7 @@ Item {
                 text: root.columns.length > 0
                     ? root.columns[root.columns.length - 1].endDay
                     : ""
-                color: Theme.surfaceVariantText
+                color: root.ui.secondary
                 font.pixelSize: Theme.fontSizeMedium
                 isMonospace: true
                 horizontalAlignment: Text.AlignRight
@@ -260,7 +255,7 @@ Item {
                     StyledText {
                         text: root.displayLabel(modelData.bucket)
                         width: Math.min(100, implicitWidth)
-                        color: Theme.surfaceVariantText
+                        color: root.ui.secondary
                         font.pixelSize: Theme.fontSizeMedium
                         elide: Text.ElideRight
                     }

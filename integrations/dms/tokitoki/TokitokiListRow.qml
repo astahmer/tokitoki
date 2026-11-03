@@ -1,8 +1,11 @@
 import QtQuick
 import qs.Common
+import "TokitokiPalette.js" as Palette
 
 Rectangle {
     id: root
+    // Popout palette (menubar or shell theme), always passed by the parent.
+    property var ui
 
     property bool alternate: false
     property bool showSurface: true
@@ -15,10 +18,10 @@ Rectangle {
     implicitHeight: rowHeight
     radius: Theme.cornerRadius / 2
     color: showSurface
-        ? Theme.withAlpha(Theme.surfaceText, alternate ? 0.045 : 0.018)
+        ? Palette.alpha(root.ui.text, alternate ? 0.045 : 0.018)
         : "transparent"
     border.width: showSurface ? 1 : 0
-    border.color: Theme.withAlpha(Theme.outlineLight, alternate ? 0.18 : 0.10)
+    border.color: Palette.alpha(root.ui.cardBorder, alternate ? 0.18 : 0.10)
     clip: true
 
     Item {

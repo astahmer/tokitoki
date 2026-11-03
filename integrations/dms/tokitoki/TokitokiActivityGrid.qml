@@ -1,9 +1,12 @@
 import QtQuick
 import qs.Common
 import qs.DCommon.Widgets
+import "TokitokiPalette.js" as Palette
 
 Item {
     id: root
+    // Popout palette (menubar or shell theme), always passed by the parent.
+    property var ui
 
     property var payload: null
     property var columns: []
@@ -94,10 +97,10 @@ Item {
 
     function cellColor(cell) {
         if (!cell.present)
-            return Theme.withAlpha(Theme.surfaceText, 0.035)
+            return Palette.alpha(root.ui.text, 0.035)
         if (root.maximum <= 0)
-            return Theme.withAlpha(Theme.primary, 0.16)
-        return Theme.withAlpha(Theme.primary, 0.16 + Math.min(0.76, cell.value / root.maximum * 0.76))
+            return Palette.alpha(root.ui.accent, 0.16)
+        return Palette.alpha(root.ui.accent, 0.16 + Math.min(0.76, cell.value / root.maximum * 0.76))
     }
 
     onPayloadChanged: rebuild()
@@ -155,7 +158,7 @@ Item {
             StyledText {
                 id: lessLabel
                 text: "Less"
-                color: Theme.surfaceVariantText
+                color: root.ui.secondary
                 font.pixelSize: Theme.fontSizeMedium
             }
 
@@ -166,7 +169,7 @@ Item {
                     width: 7
                     height: 7
                     radius: 1.5
-                    color: Theme.withAlpha(Theme.primary, 0.16 + index * 0.19)
+                    color: Palette.alpha(root.ui.accent, 0.16 + index * 0.19)
                     anchors.verticalCenter: parent.verticalCenter
                 }
             }
@@ -174,7 +177,7 @@ Item {
             StyledText {
                 id: moreLabel
                 text: "More"
-                color: Theme.surfaceVariantText
+                color: root.ui.secondary
                 font.pixelSize: Theme.fontSizeMedium
             }
 
@@ -185,7 +188,7 @@ Item {
                 text: root.payload && root.payload.metric
                     ? "Last year · " + root.displayLabel(root.payload.metric)
                     : ""
-                color: Theme.surfaceVariantText
+                color: root.ui.secondary
                 font.pixelSize: Theme.fontSizeMedium
                 horizontalAlignment: Text.AlignRight
                 elide: Text.ElideRight
