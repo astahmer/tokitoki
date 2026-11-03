@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { DIMENSION_NAMES, EventCache, dimensionLabel, parseDimension } from "../src/cache.ts";
+import { setTableForTests } from "../src/pricing.ts";
 import { readEventsFile } from "../src/store.ts";
 import type { UsageEvent } from "../src/types.ts";
 
@@ -605,5 +606,35 @@ describe("vendor dimension", () => {
     expect(dimensionLabel("provider")).toBe("harness");
     expect(DIMENSION_NAMES).toContain("harness");
     expect(DIMENSION_NAMES).not.toContain("provider");
+  });
+});
+
+describe("repriceUnpriced", () => {
+  it("estimates rows once the price catalog learns their model", () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "tk-reprice-"));
+    const cache = new EventCache(path.join(dir, "cache.db"));
+    try {
+      setTableForTests({});
+      cache.insert([
+        makeEvent({ id: "late", model: "brand-new-model", inputTokens: 1_000_000, outputTokens: 1_000_000,
+          cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: undefined, costSource: "unpriced" }),
+        makeEvent({ id: "still", model: "still-unknown", costUsd: undefined, costSource: "unpriced" }),
+      ]);
+      expect(cache.repriceUnpriced()).toBe(0);
+
+      setTableForTests({ "brand-new-model": { inputPerMtok: 1, outputPerMtok: 5, cacheReadPerMtok: 0.1, cacheWritePerMtok: 1 } });
+      expect(cache.repriceUnpriced()).toBe(1);
+      const rows = cache.database.query("SELECT id, cost_usd, cost_source FROM events ORDER BY id").all();
+      expect(rows).toEqual([
+        { id: "late", cost_usd: 6, cost_source: "estimated" },
+        { id: "still", cost_usd: 0, cost_source: "unpriced" },
+      ]);
+      const rollup = cache.database.query("SELECT SUM(cost_usd) AS cost FROM daily_rollups").get() as { cost: number };
+      expect(rollup.cost).toBeCloseTo(6);
+      expect(cache.repriceUnpriced()).toBe(0);
+    } finally {
+      setTableForTests(null);
+      cache.close();
+    }
   });
 });

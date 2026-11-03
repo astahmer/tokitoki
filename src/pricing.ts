@@ -198,7 +198,6 @@ function activeTable(): PricingTable {
 }
 
 let loadedTable: PricingTable | null = null;
-let refreshStarted = false;
 
 /** Sync-load cached pricing at startup; async refresh only when stale. */
 function initFromCache(): void {
@@ -270,17 +269,21 @@ export function setTableForTests(table: PricingTable | null): void {
   loadedTable = table;
 }
 
+/** Live table first, then embedded: the fresh upstream file may drop models. */
+export function knownPrice(model: string): ModelPrice | undefined {
+  return matchPrice(activeTable(), model) ?? matchPrice(EMBEDDED, model);
+}
+
 export function priceForModel(model: string): ModelPrice | undefined {
-  const price = matchPrice(activeTable(), model);
-  if (price !== undefined) return price;
-  // Fallback to embedded even when a live table is loaded — it may know
-  // models the fresh upstream file dropped.
-  const embedded = matchPrice(EMBEDDED, model);
-  if (embedded === undefined && !warnedUnmatched.has(model)) {
+  const price = knownPrice(model);
+  if (price === undefined && !warnedUnmatched.has(model)) {
     warnedUnmatched.add(model);
     console.error(`\x1b[2mtokitoki: no pricing data for '${model}' — cost unavailable\x1b[0m`);
+    // A model newer than the cached catalog should not wait for the weekly TTL;
+    // the attempt throttle keeps genuinely unpriced models to one fetch an hour.
+    if (process.env.NODE_ENV !== "test") void refreshPricing();
   }
-  return embedded;
+  return price;
 }
 
 export interface TokenCounts {

@@ -12,7 +12,7 @@ import { partitionBlocks, type BlockRow } from "./blocks.ts";import { resolveRep
 import { ensureSessionFts, sessionConversation } from "./sessionIndex.ts";
 import { describeSessionEvent, estimateCacheDuration, type CacheDurationEstimate } from "./session-insights.ts";
 import { EXTRACTION_VERSION } from "./scan.ts";
-import { estimateCost } from "./pricing.ts";
+import { estimateCost, knownPrice } from "./pricing.ts";
 import { modelProvider, vendorFor } from "./model-provider.ts";
 import { QuotaAccountMetaSchema, type QuotaAccountMeta, type QuotaScope } from "./quota-windows.ts";
 
@@ -260,6 +260,7 @@ export class EventCache {
     if (!cols.some((c) => c.name === "description")) {
       this.db.exec("ALTER TABLE events ADD COLUMN description TEXT");
     }
+    this.db.exec("CREATE INDEX IF NOT EXISTS idx_events_unpriced ON events(model) WHERE cost_source = 'unpriced'");
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS meta (
         key TEXT PRIMARY KEY,
@@ -1054,6 +1055,7 @@ export class EventCache {
       this.rebuild(extraFiles);
       this.markExtractionVersion(EXTRACTION_VERSION);
       this.setMetaValue("projection_version", PROJECTION_VERSION);
+      this.repriceUnpriced();
       return;
     }
 
@@ -1080,9 +1082,11 @@ export class EventCache {
     }
     if (needsFullRebuild) {
       this.rebuild(extraFiles);
+      this.repriceUnpriced();
       return;
     }
     if (tails.length === 0) {
+      this.repriceUnpriced();
       this.checkRollups();
       return;
     }
@@ -1099,7 +1103,40 @@ export class EventCache {
       offsetsChanged = true;
     }
     if (offsetsChanged) this.saveLogOffsets(offsets);
+    this.repriceUnpriced();
     this.checkRollups();
+  }
+
+  /**
+   * Rows logged before a model reached the price catalog stay "unpriced" in
+   * the append log. Estimate them once the catalog knows the model, so a
+   * pricing refresh fixes history without a rescan.
+   */
+  repriceUnpriced(): number {
+    const models = this.db.query("SELECT DISTINCT model FROM events WHERE cost_source = 'unpriced'")
+      .all() as Array<{ model: string }>;
+    const priceable = models.map(row => row.model).filter(model => knownPrice(model) !== undefined);
+    if (priceable.length === 0) return 0;
+    const rows = this.db.query<StoredAccounting & { id: string }, [string]>(`SELECT id, cost_usd, cost_source,
+      token_source, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens
+      FROM events WHERE cost_source = 'unpriced' AND model = ?`);
+    const update = this.db.prepare("UPDATE events SET cost_usd = ?, cost_source = 'estimated' WHERE id = ?");
+    return sqliteRetry(() => this.db.transaction(() => {
+      let repriced = 0;
+      for (const model of priceable) {
+        for (const row of rows.all(model)) {
+          const cost = estimateCost(model, {
+            inputTokens: row.input_tokens, outputTokens: row.output_tokens,
+            cacheReadTokens: row.cache_read_tokens, cacheWriteTokens: row.cache_write_tokens,
+          });
+          if (cost === undefined) continue;
+          update.run(cost, row.id);
+          repriced++;
+        }
+      }
+      if (repriced > 0) this.rebuildRollups();
+      return repriced;
+    }).immediate()) as number;
   }
 
   count(): number {
