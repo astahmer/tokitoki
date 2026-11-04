@@ -17,6 +17,7 @@ QtObject {
     readonly property int iconSizeSmall: 18
     readonly property int iconSizeLarge: 32
     readonly property int cornerRadius: 12
+    readonly property int windowRadius: 12
     readonly property color primary: "#ff8fa6"
     readonly property color primaryText: "#301019"
     readonly property color primaryContainer: "#512631"

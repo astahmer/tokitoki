@@ -130,9 +130,9 @@ Scope {
                     anchors.fill: parent
                 }
                 Loader {
-                    x: 8
-                    y: 8
-                    width: parent.width - 16
+                    x: PopoutMetrics.contentPadding
+                    y: PopoutMetrics.contentPadding
+                    width: parent.width - PopoutMetrics.contentPadding * 2
                     sourceComponent: root.widget ? root.widget.popoutContent : null
                     onLoaded: item.closePopout = root.closeDashboard
                 }
