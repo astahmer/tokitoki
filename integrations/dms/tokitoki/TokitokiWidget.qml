@@ -2358,34 +2358,6 @@ PluginComponent {
             id: popout
 
             width: parent.width
-            headerText: root.configOpen ? "Tokitoki Settings" : ""
-
-            headerActions: Component {
-                Row {
-                    spacing: Theme.spacingXXS
-
-                    DActionButton {
-                        buttonSize: 32
-                        iconName: root.configOpen ? "arrow_back" : "more_vert"
-                        iconSize: 18
-                        iconColor: root.ui.text
-                        tooltipText: root.configOpen ? "Back to usage" : "Tokitoki settings"
-                        onClicked: root.configOpen = !root.configOpen
-                    }
-
-                    DActionButton {
-                        buttonSize: 32
-                        iconName: "close"
-                        iconSize: 18
-                        iconColor: root.ui.text
-                        tooltipText: "Close Tokitoki"
-                        onClicked: {
-                            if (popout.closePopout)
-                                popout.closePopout()
-                        }
-                    }
-                }
-            }
 
             Item {
                 id: body
@@ -4814,10 +4786,76 @@ PluginComponent {
                     }
                 }
 
+                // The settings header lives in the body: the DMS popout header sits
+                // under the menubar backdrop and keeps the shell theme colors.
+                Item {
+                    id: settingsHeader
+
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.top: parent.top
+                    height: 44
+                    visible: root.configOpen
+
+                    DActionButton {
+                        id: settingsBackButton
+
+                        anchors.left: parent.left
+                        anchors.leftMargin: Theme.spacingXS
+                        anchors.verticalCenter: parent.verticalCenter
+                        buttonSize: 32
+                        iconName: "arrow_back"
+                        iconSize: 18
+                        iconColor: root.ui.text
+                        tooltipText: "Back to usage"
+                        onClicked: root.configOpen = false
+                    }
+
+                    StyledText {
+                        anchors.left: settingsBackButton.right
+                        anchors.leftMargin: Theme.spacingXS
+                        anchors.right: settingsCloseButton.left
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: "Tokitoki Settings"
+                        color: root.ui.text
+                        font.pixelSize: Theme.fontSizeLarge
+                        font.weight: Font.DemiBold
+                        elide: Text.ElideRight
+                    }
+
+                    DActionButton {
+                        id: settingsCloseButton
+
+                        anchors.right: parent.right
+                        anchors.rightMargin: Theme.spacingXS
+                        anchors.verticalCenter: parent.verticalCenter
+                        buttonSize: 32
+                        iconName: "close"
+                        iconSize: 18
+                        iconColor: root.ui.text
+                        tooltipText: "Close Tokitoki"
+                        onClicked: {
+                            if (popout.closePopout)
+                                popout.closePopout()
+                        }
+                    }
+
+                    Rectangle {
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.bottom: parent.bottom
+                        height: 1
+                        color: root.ui.separator
+                    }
+                }
+
                 DFlickable {
                     id: settingsViewport
 
-                    anchors.fill: parent
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.top: settingsHeader.bottom
+                    anchors.bottom: parent.bottom
                     visible: root.configOpen
                     clip: true
                     contentWidth: width

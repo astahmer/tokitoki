@@ -22,6 +22,7 @@ patch('id: navHover', 'id: navHover\n Component.onCompleted: root.e2eTabControls
 patch('id: moreHover', 'id: moreHover\n Component.onCompleted: root.e2eMore = this');
 patch('id: menuItemHover', 'id: menuItemHover\n Component.onCompleted: root.e2eTabControls.push({ tab: modelData, item: this })');
 // Charts: hover targets for the pointer, read back through chartState.
+patch('id: settingsBackButton', 'id: settingsBackButton\n Component.onCompleted: root.e2eSettingsBack = this');
 patch('id: viewport\n', 'id: viewport\n Component.onCompleted: root.e2eViewport = this\n');
 patch('id: pieDonut', 'id: pieDonut\n Component.onCompleted: root.e2eCharts.push({ name: "pie", item: this })');
 patch('id: tokenMixDonut', 'id: tokenMixDonut\n Component.onCompleted: root.e2eCharts.push({ name: "tokenMix", item: this })');
@@ -37,6 +38,7 @@ const hook = `
  property var e2eMore: null
  property var e2eTabControls: []
  property var e2eViewport: null
+ property var e2eSettingsBack: null
  property var e2eCharts: []
  function e2eChart(name) {
    for (var i = 0; i < root.e2eCharts.length; i++) {
@@ -102,6 +104,11 @@ const hook = `
      var x = win.anchors.left ? win.margins.left : win.screen.width - win.width - win.margins.right
      var y = win.anchors.top ? win.margins.top : win.screen.height - win.height - win.margins.bottom
      return JSON.stringify({kind:"chart", x: Math.round(x + p.x), y: Math.round(y + p.y)})
+   }
+   // The settings back button, and whether the settings view is open.
+   function settingsBack(): string {
+     var b = root.e2eBounds(root.e2eSettingsBack)
+     return JSON.stringify(b ? {kind:"back", open: root.configOpen, x:b.x, y:b.y} : {kind:"missing", open: root.configOpen})
    }
    function chartState(name: string): string {
      var item = root.e2eChart(name)

@@ -82,8 +82,7 @@ const source = fs.readFileSync(file, "utf8")
   .replace("readonly property bool tooltipOpen: root.openTooltipProvider === String(groupData.provider)", "readonly property bool tooltipOpen: root.openTooltipProvider === String(groupData.provider)\n                    onTooltipOpenChanged: if (tooltipOpen) root.e2eHoverGroup = providerGroup")
   .replace("id: clearSearch", "id: clearSearch\n                                    Component.onCompleted: root.e2eClearSearch = clearSearch")
   .replace("TokitokiSessionsView {", "TokitokiSessionsView {\n                                    Component.onCompleted: root.e2eSessionsView = this")
-  .replace("TokitokiNotifications {", "TokitokiNotifications {\n                                    Component.onCompleted: root.e2eNotifications = this")
-  .replace('tooltipText: root.configOpen ?', 'Component.onCompleted: root.e2eSettingsButton = this\n                        tooltipText: root.configOpen ?');
+  .replace("TokitokiNotifications {", "TokitokiNotifications {\n                                    Component.onCompleted: root.e2eNotifications = this");
 const directory = file.slice(0, file.lastIndexOf("/"));
 const sessionsFile = directory + "/TokitokiSessionsView.qml";
 fs.writeFileSync(sessionsFile, fs.readFileSync(sessionsFile, "utf8")
@@ -99,7 +98,6 @@ const hook = `
     property var e2eHoverGroup: null
     property var e2eSessionsView: null
     property var e2eNotifications: null
-    property var e2eSettingsButton: null
     IpcHandler {
         target: "tokitoki-e2e"
         function advanceBarClock(): string {
@@ -113,8 +111,7 @@ const hook = `
             var controls = { clearSearch: root.e2eClearSearch,
                 previous: root.e2eSessionsView ? root.e2eSessionsView.e2ePrevious : null,
                 next: root.e2eSessionsView ? root.e2eSessionsView.e2eNext : null,
-                notifications: root.e2eNotifications ? root.e2eNotifications.e2eToggle : null,
-                settings: root.e2eSettingsButton };
+                notifications: root.e2eNotifications ? root.e2eNotifications.e2eToggle : null };
             var item = controls[name];
             if (!item || !item.visible)
                 return "{}";
@@ -311,6 +308,22 @@ surfaces_ipc() {
 
 tab_control() {
   surfaces_ipc tabControl "$1"
+}
+
+settings_back_visible() {
+  surfaces_ipc settingsBack | jq -e '.open == true and .kind == "back"'
+}
+
+settings_closed() {
+  surfaces_ipc settingsBack | jq -e '.open == false'
+}
+
+# Leaves the widget settings through the back button its header draws.
+settings_back() {
+  back=$(surfaces_ipc settingsBack)
+  [ "$(printf '%s' "$back" | jq -r .kind)" = back ] || { echo "e2e: settings back button is not visible" >&2; exit 1; }
+  click_at "$(( $(printf '%s' "$back" | jq -r .x) - popout_offset_x ))" "$(( $(printf '%s' "$back" | jq -r .y) - popout_offset_y ))"
+  wait_for 5 "widget settings closed" settings_closed
 }
 
 chart_hovered() {
@@ -592,18 +605,9 @@ else
   select_tab settings
   capture settings-tab.png
   nav_open widget-settings
-  if [ "$E2E_SHELL" = quickshell ]; then
-    wait_for 5 "widget settings open" status_matches '.configOpen == true'
-  fi
+  wait_for 5 "widget settings open" settings_back_visible
   capture settings-config.png
-  if [ "$E2E_SHELL" = dms ]; then
-    click_dms_control settings
-  else
-    click_at 465 76
-  fi
-  if [ "$E2E_SHELL" = quickshell ]; then
-    wait_for 5 "widget settings closed" status_matches '.configOpen == false'
-  fi
+  settings_back
   record_interaction settings-config
   select_tab settings
   if [ "$E2E_SHELL" = quickshell ]; then
@@ -623,8 +627,7 @@ else
     wait_for 5 "widget auto refresh setting write" jq -e '.autoRefreshEnabled == false' "$QS_CONFIG_FILE"
     record_interaction widget-config-write
     cp "$QS_CONFIG_FILE" "$E2E_OUT/config-before-restart.json"
-    click_at 465 76
-    wait_for 5 "widget settings closed" status_matches '.configOpen == false'
+    settings_back
     select_tab tokens
     wait_for 5 "saved selected tab" jq -e '.selectedTab == "tokens"' "$QS_STATE_FILE"
     cp "$QS_STATE_FILE" "$E2E_OUT/state-before-restart.json"
