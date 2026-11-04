@@ -7,7 +7,8 @@ const out = path.resolve(process.argv[2] ?? "");
 if (!process.argv[2]) throw new Error("usage: node e2e/check-run.mjs <output-directory>");
 
 const tabs = ["overview", "quotas", "tokens", "reports", "sessions", "sources", "mcp", "settings"];
-const interactions = ["tracking-quality", "search", "session-detail", "session-back", "next-page", "previous-page", "settings-config", "settings-notifications"];
+const interactions = ["tracking-quality", "search", "session-detail", "session-back", "next-page", "previous-page", "settings-config", "settings-notifications",
+  "hover-tokenMix", "hover-sparkline", "hover-repo", "hover-grid", "hover-history", "hover-pie"];
 const index = JSON.parse(fs.readFileSync(path.join(out, "index.json"), "utf8"));
 assert.ok(["dms", "quickshell"].includes(index.shell), "the run must identify its shell");
 assert.equal(index.mode, "all", "expected the autonomous all-tabs scenario");

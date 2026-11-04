@@ -11,6 +11,8 @@ Item {
     property var payload: null
     property var columns: []
     property real maximum: 0
+    property var formatValue: function(value) { return String(value) }
+    property var hoveredCell: null
 
     implicitHeight: 118
 
@@ -77,6 +79,7 @@ Item {
                 var value = metricValue(dayCell)
                 maxValue = Math.max(maxValue, value)
                 week.push({
+                    day: dateKey(date),
                     present: present,
                     value: value
                 })
@@ -85,6 +88,22 @@ Item {
         }
         root.columns = nextColumns
         root.maximum = maxValue
+    }
+
+    // Grid position under the pointer; each gap belongs to the cell before it
+    // so the readout does not flicker while the pointer crosses the grid.
+    function cellAt(pointer) {
+        var column = Math.floor(pointer.x / (pointer.cell + pointer.columnSpacing))
+        var row = Math.floor(pointer.y / (pointer.cell + pointer.rowSpacing))
+        if (column < 0 || row < 0 || column >= pointer.columns || row >= pointer.rows)
+            return null
+        return { column: column, row: row }
+    }
+
+    function cellText(cell) {
+        var metric = root.payload && root.payload.metric ? root.payload.metric : "tokens"
+        var value = metric === "cost" ? "$" + cell.value.toFixed(2) : root.formatValue(cell.value) + " " + metric
+        return cell.day + " · " + value
     }
 
     function cellSize(layout) {
@@ -145,6 +164,8 @@ Item {
                             height: width
                             radius: 1.5
                             color: root.cellColor(modelData)
+                            border.width: root.hoveredCell && root.hoveredCell.day === modelData.day ? 1 : 0
+                            border.color: root.ui.text
                         }
                     }
                 }
@@ -185,14 +206,32 @@ Item {
                 id: periodLabel
                 width: Math.max(0, parent.width - lessLabel.width - moreLabel.width - 5 * 7 -
                     parent.spacing * 7)
-                text: root.payload && root.payload.metric
-                    ? "Last year · " + root.displayLabel(root.payload.metric)
-                    : ""
-                color: root.ui.secondary
+                text: root.hoveredCell ? root.cellText(root.hoveredCell)
+                    : root.payload && root.payload.metric
+                        ? "Last year · " + root.displayLabel(root.payload.metric)
+                        : ""
+                color: root.hoveredCell ? root.ui.text : root.ui.secondary
                 font.pixelSize: Theme.fontSizeMedium
                 horizontalAlignment: Text.AlignRight
                 elide: Text.ElideRight
             }
         }
+    }
+
+    // A sibling overlay: inside the Row or Column it would join their layout.
+    MouseArea {
+        x: grid.x
+        y: grid.y
+        width: grid.width
+        height: grid.height
+        hoverEnabled: true
+        onPositionChanged: mouse => {
+            var position = root.cellAt({ x: mouse.x, y: mouse.y, cell: grid.cell,
+                columnSpacing: grid.spacing, rowSpacing: grid.rowSpacing,
+                columns: root.columns.length, rows: 7 })
+            var cell = position ? root.columns[position.column][position.row] : null
+            root.hoveredCell = cell && cell.present ? cell : null
+        }
+        onExited: root.hoveredCell = null
     }
 }

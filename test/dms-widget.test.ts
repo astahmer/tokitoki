@@ -8,6 +8,8 @@ const dayClock = readFileSync(new URL("../integrations/dms/tokitoki/TokitokiDayC
 const activityGrid = readFileSync(new URL("../integrations/dms/tokitoki/TokitokiActivityGrid.qml", import.meta.url), "utf8");
 const notifications = readFileSync(new URL("../integrations/dms/tokitoki/TokitokiNotifications.qml", import.meta.url), "utf8");
 const settings = readFileSync(new URL("../integrations/dms/tokitoki/TokitokiSettings.qml", import.meta.url), "utf8");
+const donutChart = readFileSync(new URL("../integrations/dms/tokitoki/TokitokiDonutChart.qml", import.meta.url), "utf8");
+const historyChart = readFileSync(new URL("../integrations/dms/tokitoki/TokitokiHistoryChart.qml", import.meta.url), "utf8");
 const functions = (source: string) => [...source.matchAll(/^    function [\s\S]*?^    }/gm)].map((match) => match[0]).join("\n");
 const makeWidget = () => {
   const context = createContext({
@@ -772,4 +774,51 @@ it("precomputed move arrows agree with the order each move would produce", () =>
     expect(Boolean(entry.barUp)).toBe(ui.shiftedAccountOrder(account, -1, "bar") !== null);
     expect(Boolean(entry.barDown)).toBe(ui.shiftedAccountOrder(account, 1, "bar") !== null);
   }
+});
+
+describe("chart hover hit-testing", () => {
+  it("donut picks the slice under the pointer clockwise from 12 o'clock", () => {
+    const context = createContext({ Math });
+    runInContext(functions(donutChart), context);
+    const slices = [{ name: "Input", value: 3 }, { name: "Output", value: 1 }];
+    const at = (x: number, y: number) => context.sliceAt({ x, y, width: 100, height: 100, slices, innerRadiusRatio: 0.6 })?.name ?? null;
+    expect(at(90, 50)).toBe("Input");
+    expect(at(50, 90)).toBe("Input");
+    expect(at(12, 60)).toBe("Input");
+    expect(at(30, 10)).toBe("Output");
+    expect(at(50, 50)).toBeNull();
+    expect(at(0, 0)).toBeNull();
+  });
+
+  it("history bars map the pointer onto columns including their spacing", () => {
+    const context = createContext({ Math });
+    runInContext(functions(historyChart), context);
+    const at = (x: number) => context.columnAt({ x, width: 298, count: 30, spacing: 2 });
+    expect(at(0)).toBe(0);
+    expect(at(9.9)).toBe(0);
+    expect(at(10)).toBe(1);
+    expect(at(297)).toBe(29);
+    expect(at(-1)).toBe(-1);
+    expect(context.columnAt({ x: 5, width: 100, count: 0, spacing: 2 })).toBe(-1);
+    expect(context.columnLabel({ day: "2026-10-27", endDay: "2026-11-02" })).toBe("2026-10-27 → 2026-11-02");
+    expect(context.columnLabel({ day: "2026-11-03", endDay: "2026-11-03" })).toBe("2026-11-03");
+  });
+
+  it("activity grid assigns each gap to the cell before it", () => {
+    const context = createContext({ Math });
+    runInContext(functions(activityGrid), context);
+    const at = (x: number, y: number) => context.cellAt({ x, y, cell: 6, columnSpacing: 2, rowSpacing: 2, columns: 53, rows: 7 });
+    expect(at(3, 3)).toEqual({ column: 0, row: 0 });
+    expect(at(9, 11)).toEqual({ column: 1, row: 1 });
+    expect(at(7, 3)).toEqual({ column: 0, row: 0 });
+    expect(at(-1, 3)).toBeNull();
+    expect(at(3, 60)).toBeNull();
+  });
+
+  it("sparkline samples end today", () => {
+    const context = createContext({ Date, Math, history: null });
+    runInContext(functions(sparkline), context);
+    expect(context.sampleDay("2026-11-03", 29, 30)).toBe("2026-11-03");
+    expect(context.sampleDay("2026-11-03", 0, 30)).toBe("2026-10-05");
+  });
 });

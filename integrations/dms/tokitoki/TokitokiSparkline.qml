@@ -1,11 +1,15 @@
 import QtQuick
 import qs.Common
+import qs.DCommon.Widgets
 
 Canvas {
     id: root
 
     property var history: null
     property color lineColor: Theme.primary
+    property color textColor: Theme.surfaceText
+    property var formatValue: function(value) { return String(value) }
+    property int hoveredIndex: -1
     readonly property var samples: buildSamples(dayClock.todayKey)
 
     implicitHeight: 48
@@ -21,17 +25,26 @@ Canvas {
                 return sum + (isFinite(value) ? Math.max(0, value) : 0)
             }, 0)
         }
+        var values = []
+        for (var index = 0; index < 30; index++)
+            values.push(totals[sampleDay(todayKey, index, 30)] || 0)
+        return values
+    }
+
+    // Day key for a sample: the last sample is today, each earlier one a day before.
+    function sampleDay(todayKey, index, count) {
         var match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(todayKey || ""))
         var today = match ? new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3])) : new Date()
-        var values = []
-        for (var offset = 29; offset >= 0; offset--) {
-            var date = new Date(today.getFullYear(), today.getMonth(), today.getDate() - offset)
-            var key = date.getFullYear() + "-" +
-                String(date.getMonth() + 1).padStart(2, "0") + "-" +
-                String(date.getDate()).padStart(2, "0")
-            values.push(totals[key] || 0)
-        }
-        return values
+        var date = new Date(today.getFullYear(), today.getMonth(), today.getDate() - (count - 1 - index))
+        return date.getFullYear() + "-" +
+            String(date.getMonth() + 1).padStart(2, "0") + "-" +
+            String(date.getDate()).padStart(2, "0")
+    }
+
+    function sampleAt(x, count) {
+        if (count <= 0 || width <= 4)
+            return -1
+        return Math.max(0, Math.min(count - 1, Math.round((x - 2) / (width - 4) * Math.max(1, count - 1))))
     }
 
     TokitokiDayClock {
@@ -40,6 +53,7 @@ Canvas {
 
     onSamplesChanged: requestPaint()
     onLineColorChanged: requestPaint()
+    onHoveredIndexChanged: requestPaint()
     onWidthChanged: requestPaint()
     onHeightChanged: requestPaint()
 
@@ -68,5 +82,37 @@ Canvas {
         ctx.closePath()
         ctx.fillStyle = Theme.withAlpha(lineColor, 0.12)
         ctx.fill()
+        if (hoveredIndex >= 0 && hoveredIndex < samples.length) {
+            var pointX = 2 + hoveredIndex * chartWidth / Math.max(1, samples.length - 1)
+            var pointY = 2 + chartHeight * (1 - samples[hoveredIndex] / maximum)
+            ctx.beginPath()
+            ctx.moveTo(pointX, 2)
+            ctx.lineTo(pointX, height - 2)
+            ctx.strokeStyle = Theme.withAlpha(lineColor, 0.4)
+            ctx.lineWidth = 1
+            ctx.stroke()
+            ctx.beginPath()
+            ctx.arc(pointX, pointY, 3.5, 0, Math.PI * 2)
+            ctx.fillStyle = lineColor
+            ctx.fill()
+        }
+    }
+
+    MouseArea {
+        anchors.fill: parent
+        hoverEnabled: true
+        onPositionChanged: mouse => root.hoveredIndex = root.sampleAt(mouse.x, root.samples.length)
+        onExited: root.hoveredIndex = -1
+    }
+
+    StyledText {
+        anchors.top: parent.top
+        anchors.right: parent.right
+        visible: root.hoveredIndex >= 0
+        text: visible ? root.sampleDay(dayClock.todayKey, root.hoveredIndex, root.samples.length) + " · " +
+            root.formatValue(root.samples[root.hoveredIndex]) + " tokens" : ""
+        color: root.textColor
+        font.pixelSize: Theme.fontSizeSmall
+        font.weight: Font.DemiBold
     }
 }

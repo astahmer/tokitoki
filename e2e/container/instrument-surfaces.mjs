@@ -21,6 +21,14 @@ patch('id: layoutButton', 'id: layoutButton\n Component.onCompleted: root.e2eLay
 patch('id: navHover', 'id: navHover\n Component.onCompleted: root.e2eTabControls.push({ tab: modelData, item: this })');
 patch('id: moreHover', 'id: moreHover\n Component.onCompleted: root.e2eMore = this');
 patch('id: menuItemHover', 'id: menuItemHover\n Component.onCompleted: root.e2eTabControls.push({ tab: modelData, item: this })');
+// Charts: hover targets for the pointer, read back through chartState.
+patch('id: viewport\n', 'id: viewport\n Component.onCompleted: root.e2eViewport = this\n');
+patch('id: pieDonut', 'id: pieDonut\n Component.onCompleted: root.e2eCharts.push({ name: "pie", item: this })');
+patch('id: tokenMixDonut', 'id: tokenMixDonut\n Component.onCompleted: root.e2eCharts.push({ name: "tokenMix", item: this })');
+patch('extendedHistory: root.payload.historyYear', 'extendedHistory: root.payload.historyYear\n Component.onCompleted: root.e2eCharts.push({ name: "history", item: this })');
+patch('history: root.privateRepoHistory()', 'history: root.privateRepoHistory()\n Component.onCompleted: root.e2eCharts.push({ name: "repo", item: this })');
+patch('payload: root.payload.activityGrid', 'payload: root.payload.activityGrid\n Component.onCompleted: root.e2eCharts.push({ name: "grid", item: this })');
+patch('TokitokiSparkline {', 'TokitokiSparkline {\n Component.onCompleted: root.e2eCharts.push({ name: "sparkline", item: this })');
 const hook = `
  property var e2eSurfaceControls: []
  property var e2eFold: null
@@ -28,6 +36,17 @@ const hook = `
  property var e2eLayout: null
  property var e2eMore: null
  property var e2eTabControls: []
+ property var e2eViewport: null
+ property var e2eCharts: []
+ function e2eChart(name) {
+   for (var i = 0; i < root.e2eCharts.length; i++) {
+     var entry = root.e2eCharts[i]
+     try {
+       if (entry.name === name && entry.item && entry.item.visible && entry.item.width > 0) return entry.item
+     } catch(e) {}
+   }
+   return null
+ }
  function e2eBounds(item) {
    if (!item || !item.visible) return null
    var win = item.QsWindow.window
@@ -70,6 +89,25 @@ const hook = `
      }
      var more = root.e2eBounds(root.e2eMore)
      return JSON.stringify(more ? {kind:"more", x:more.x, y:more.y} : {kind:"missing"})
+   }
+   // Scrolls the chart to the top of the viewport, then returns the screen
+   // position of a point given as fractions of the chart's size.
+   function chartPoint(name: string, fx: string, fy: string): string {
+     var item = root.e2eChart(name)
+     if (!item || !root.e2eViewport) return JSON.stringify({kind:"missing"})
+     var top = item.mapToItem(root.e2eViewport.contentItem, 0, 0).y
+     root.e2eViewport.contentY = Math.max(0, Math.min(top - 40, root.e2eViewport.contentHeight - root.e2eViewport.height))
+     var win = item.QsWindow.window
+     var p = win.mapFromItem(item, item.width * Number(fx), item.height * Number(fy))
+     var x = win.anchors.left ? win.margins.left : win.screen.width - win.width - win.margins.right
+     var y = win.anchors.top ? win.margins.top : win.screen.height - win.height - win.margins.bottom
+     return JSON.stringify({kind:"chart", x: Math.round(x + p.x), y: Math.round(y + p.y)})
+   }
+   function chartState(name: string): string {
+     var item = root.e2eChart(name)
+     if (!item) return JSON.stringify({kind:"missing"})
+     return JSON.stringify({kind:"chart", slice: item.highlightName, column: item.hoveredColumn,
+       cell: item.hoveredCell ? item.hoveredCell.day : undefined, sample: item.hoveredIndex})
    }
    function state(): string {
      function ids(accounts) { return accounts.map(function(a) { return a.provider+"@"+a.accountKey }) }

@@ -301,12 +301,34 @@ click_dms_control() {
   click_at "$((control_x - popout_offset_x))" "$((control_y - popout_offset_y))"
 }
 
-tab_control() {
+surfaces_ipc() {
   if [ "$E2E_SHELL" = dms ]; then
-    dms ipc call tokitoki-surfaces tabControl "$1"
+    dms ipc call tokitoki-surfaces "$@"
   else
-    qs -p "$E2E_QUICKSHELL_DIR" ipc call tokitoki-surfaces tabControl "$1"
+    qs -p "$E2E_QUICKSHELL_DIR" ipc call tokitoki-surfaces "$@"
   fi
+}
+
+tab_control() {
+  surfaces_ipc tabControl "$1"
+}
+
+chart_hovered() {
+  surfaces_ipc chartState "$1" | jq -e "$2"
+}
+
+# Hovers a chart point (fractions of its size) and captures the readout once
+# the chart reports the hovered element through its own state.
+hover_chart() {
+  chart=$1
+  surfaces_ipc chartPoint "$chart" "$2" "$3" >/dev/null
+  sleep 0.4
+  target=$(surfaces_ipc chartPoint "$chart" "$2" "$3")
+  [ "$(printf '%s' "$target" | jq -r .kind)" = chart ] || { echo "e2e: no visible chart '$chart'" >&2; exit 1; }
+  move_pointer_to "$(($(printf '%s' "$target" | jq -r .x) - popout_offset_x))" "$(($(printf '%s' "$target" | jq -r .y) - popout_offset_y))"
+  wait_for 5 "$chart hover readout" chart_hovered "$chart" "$4"
+  capture "$5"
+  record_interaction "hover-$chart"
 }
 
 # Clicks the real nav control for a tab; tabs beyond the first four open the
@@ -499,6 +521,8 @@ else
   capture tokens-lower.png
   scroll_down 4
   capture tokens-models.png
+  hover_chart tokenMix 0.85 0.5 '.slice != ""' hover-token-mix.png
+  hover_chart sparkline 0.7 0.5 '.sample >= 0' hover-sparkline.png
   scroll_up 30
   click_at 250 157
   wtype -s 200 tracking
@@ -513,6 +537,11 @@ else
   select_tab reports
   scroll_down 5
   capture reports-lower.png
+  hover_chart repo 0.8 0.4 '.column >= 0' hover-repo.png
+  hover_chart grid 0.9 0.2 '.cell != null' hover-grid.png
+  select_tab tokens
+  hover_chart history 0.85 0.4 '.column >= 0' hover-history.png
+  hover_chart pie 0.85 0.5 '.slice != ""' hover-pie.png
 
   select_tab sessions
   click_at 250 157

@@ -249,12 +249,14 @@ PluginComponent {
         spacing: Theme.spacingM
 
         TokitokiDonutChart {
+            id: pieDonut
             ui: root.ui
             width: 116
             height: 116
             slices: pie.slices
             centerLabel: pie.centerLabel
             centerUnit: pie.centerUnit
+            formatValue: value => root.selectedMetric === "cost" ? root.formatMoney(value) : root.compactNumber(value)
         }
 
         Column {
@@ -269,6 +271,17 @@ PluginComponent {
                 delegate: Row {
                     width: parent.width
                     spacing: Theme.spacingXXS
+                    opacity: pieDonut.highlightName === "" || pieDonut.highlightName === modelData.name ? 1 : 0.45
+
+                    // A handler, not an Item: it takes no slot in the Row layout.
+                    HoverHandler {
+                        onHoveredChanged: {
+                            if (hovered)
+                                pieDonut.highlightName = modelData.name
+                            else if (pieDonut.highlightName === modelData.name)
+                                pieDonut.highlightName = ""
+                        }
+                    }
 
                     Rectangle {
                         width: 7
@@ -3804,9 +3817,11 @@ PluginComponent {
                                             spacing: Theme.spacingM
 
                                             TokitokiDonutChart {
+                                                id: tokenMixDonut
                                                 ui: root.ui
                                                 width: 116
                                                 height: 116
+                                                formatValue: value => root.compactNumber(value)
                                                 slices: root.tokenMixSlices
                                                 centerLabel: root.compactNumber(root.tokenMixTotal())
                                                 centerUnit: "Tokens"
@@ -3823,6 +3838,17 @@ PluginComponent {
                                                     delegate: Row {
                                                         width: parent.width
                                                         spacing: Theme.spacingXXS
+                                                        opacity: tokenMixDonut.highlightName === "" || tokenMixDonut.highlightName === modelData.name ? 1 : 0.45
+
+                                                        // A handler, not an Item: it takes no slot in the Row layout.
+                                                        HoverHandler {
+                                                            onHoveredChanged: {
+                                                                if (hovered)
+                                                                    tokenMixDonut.highlightName = modelData.name
+                                                                else if (tokenMixDonut.highlightName === modelData.name)
+                                                                    tokenMixDonut.highlightName = ""
+                                                            }
+                                                        }
 
                                                         Rectangle {
                                                             width: 7
@@ -3991,6 +4017,7 @@ PluginComponent {
                                         extendedHistory: root.payload.historyYear
                                         period: root.historyPeriod
                                         seriesColors: root.seriesColors
+                                        formatValue: value => root.compactNumber(value)
                                     }
                                 }
                             }
@@ -4047,6 +4074,8 @@ PluginComponent {
                                     TokitokiSparkline {
                                         width: parent.width
                                         lineColor: root.ui.accent
+                                        textColor: root.ui.text
+                                        formatValue: value => root.compactNumber(value)
                                         history: root.payload.history
                                     }
                                     StyledText {
@@ -4111,6 +4140,7 @@ PluginComponent {
                                     history: root.privateRepoHistory()
                                     period: "month"
                                     seriesColors: root.seriesColors
+                                    formatValue: value => root.compactNumber(value)
                                 }
                             }
                         }
@@ -4126,6 +4156,7 @@ PluginComponent {
                                     ui: root.ui
                                     width: parent ? parent.width : 0
                                     payload: root.payload.activityGrid
+                                    formatValue: value => root.compactNumber(value)
                                 }
                             }
                         }

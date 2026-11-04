@@ -12,6 +12,10 @@ Item {
     property string period: "month"
     property var columns: []
     property var seriesColors: []
+    property var formatValue: function(value) { return String(value) }
+    property string unit: "tokens"
+    property int hoveredColumn: -1
+    readonly property var hoveredData: root.hoveredColumn >= 0 ? root.columns[root.hoveredColumn] || null : null
 
     implicitHeight: Math.max(154, chartColumn.implicitHeight)
 
@@ -140,9 +144,23 @@ Item {
             return {
                 day: column.day,
                 endDay: column.endDay,
+                values: column.values,
+                total: column.values.reduce(function(sum, value) { return sum + value }, 0),
                 segments: segments
             }
         })
+    }
+
+    // Column under the pointer; slots include the spacing that follows each bar.
+    function columnAt(pointer) {
+        if (pointer.count <= 0 || pointer.width <= 0 || pointer.x < 0 || pointer.x >= pointer.width)
+            return -1
+        var slot = (pointer.width + pointer.spacing) / pointer.count
+        return Math.min(pointer.count - 1, Math.floor(pointer.x / slot))
+    }
+
+    function columnLabel(column) {
+        return column.endDay && column.endDay !== column.day ? column.day + " → " + column.endDay : column.day
     }
 
     function rebuild() {
@@ -179,6 +197,7 @@ Item {
                     model: root.columns.length
 
                     delegate: Item {
+                        opacity: root.hoveredColumn < 0 || root.hoveredColumn === index ? 1 : 0.35
                         width: root.columns.length > 0
                             ? (bars.width - Math.max(0, root.columns.length - 1) * bars.spacing) / root.columns.length
                             : 0
@@ -204,6 +223,14 @@ Item {
                     }
                 }
             }
+
+            MouseArea {
+                anchors.fill: parent
+                hoverEnabled: true
+                onPositionChanged: mouse => root.hoveredColumn = root.columnAt({
+                    x: mouse.x, width: width, count: root.columns.length, spacing: bars.spacing })
+                onExited: root.hoveredColumn = -1
+            }
         }
 
         Row {
@@ -211,8 +238,9 @@ Item {
 
             StyledText {
                 id: firstLabel
-                text: root.columns.length > 0 ? root.columns[0].day : ""
-                color: root.ui.secondary
+                text: root.hoveredData ? root.columnLabel(root.hoveredData)
+                    : root.columns.length > 0 ? root.columns[0].day : ""
+                color: root.hoveredData ? root.ui.text : root.ui.secondary
                 font.pixelSize: Theme.fontSizeMedium
                 isMonospace: true
             }
@@ -224,10 +252,10 @@ Item {
 
             StyledText {
                 id: lastLabel
-                text: root.columns.length > 0
-                    ? root.columns[root.columns.length - 1].endDay
-                    : ""
-                color: root.ui.secondary
+                text: root.hoveredData ? root.formatValue(root.hoveredData.total) + " " + root.unit
+                    : root.columns.length > 0 ? root.columns[root.columns.length - 1].endDay : ""
+                color: root.hoveredData ? root.ui.text : root.ui.secondary
+                font.weight: root.hoveredData ? Font.DemiBold : Font.Normal
                 font.pixelSize: Theme.fontSizeMedium
                 isMonospace: true
                 horizontalAlignment: Text.AlignRight
@@ -253,8 +281,9 @@ Item {
                     }
 
                     StyledText {
-                        text: root.displayLabel(modelData.bucket)
-                        width: Math.min(100, implicitWidth)
+                        text: root.displayLabel(modelData.bucket) + (root.hoveredData
+                            ? " " + root.formatValue(root.hoveredData.values[index] || 0) : "")
+                        width: Math.min(root.hoveredData ? 160 : 100, implicitWidth)
                         color: root.ui.secondary
                         font.pixelSize: Theme.fontSizeMedium
                         elide: Text.ElideRight
