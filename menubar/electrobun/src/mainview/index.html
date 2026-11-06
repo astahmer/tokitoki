@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>tokitoki</title>
+    <link rel="stylesheet" href="index.css" />
+    <script>
+      window.addEventListener("error", (event) => {
+        const report = document.createElement("pre");
+        report.className = "error";
+        report.textContent = event.message;
+        document.body.prepend(report);
+      });
+    </script>
+  </head>
+  <body>
+    <header class="tabs" id="tabs"></header>
+    <div class="page-head" id="page-head">
+      <div class="freshness" id="freshness"><span class="dot"></span><span>Waiting for a snapshot</span></div>
+      <label class="search-field">
+        <span class="search-icon" id="search-icon"></span>
+        <input id="search" type="search" placeholder="Search harness, account, repo…" />
+      </label>
+    </div>
+    <main id="content">
+      <p class="muted">Loading usage…</p>
+    </main>
+    <footer class="footer" id="footer"></footer>
+    <script type="module" src="index.js"></script>
+  </body>
+</html>

@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { codexHomes } from "./codex-homes.ts";
+import { homeJoin } from "./home.ts";
 import type { TokitokiConfig } from "./config.ts";
 
 import { z } from "zod";
@@ -108,8 +109,8 @@ export const claudeOauthAccount = (explicitPath?: string): ClaudeOauthAccount | 
   const candidates = explicitPath !== undefined
     ? [explicitPath]
     : [
-      hasConfigDir ? `${configDir}/.claude.json` : `${process.env.HOME ?? "~"}/.claude.json`,
-      ...(hasConfigDir ? [`${configDir}/../.claude.json`] : []),
+      hasConfigDir ? path.join(configDir, ".claude.json") : homeJoin("/.claude.json"),
+      ...(hasConfigDir ? [path.join(configDir, "..", ".claude.json")] : []),
     ];
   for (const file of candidates) {
     try {
@@ -140,9 +141,11 @@ function codexEmail(): string | null {
 }
 
 function cursorEmail(): string | null {
-  const dir = process.env.CURSOR_DIR ?? `${process.env.HOME ?? "~"}/.cursor`;
+  const dir = process.env.CURSOR_DIR !== undefined && process.env.CURSOR_DIR.length > 0
+    ? process.env.CURSOR_DIR
+    : homeJoin("/.cursor");
   try {
-    const parsed = JSON.parse(fs.readFileSync(`${dir}/cli-config.json`, "utf8")) as {
+    const parsed = JSON.parse(fs.readFileSync(path.join(dir, "cli-config.json"), "utf8")) as {
       authInfo?: { email?: unknown };
     };
     const email = parsed.authInfo?.email;

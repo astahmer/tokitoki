@@ -1,0 +1,29 @@
+name: tokitoki-windows
+
+services:
+  windows:
+    image: dockurr/windows:6.06
+    container_name: tokitoki-win
+    environment:
+      VERSION: "core11"
+      RAM_SIZE: "4G"
+      CPU_CORES: "2"
+      DISK_SIZE: "32G"
+      DISK_FMT: "qcow2"
+      USERNAME: ${TOKITOKI_WIN_USER:-vincent}
+      PASSWORD: ${TOKITOKI_WIN_PASSWORD:-admin}
+    devices:
+      - /dev/kvm
+      - /dev/net/tun
+    cap_add:
+      - NET_ADMIN
+    ports:
+      - "8006:8006"
+      - "3389:3389/tcp"
+      - "3389:3389/udp"
+    volumes:
+      - ${TOKITOKI_WIN_DIR}/storage:/storage
+      - ${TOKITOKI_WIN_DIR}/shared:/shared
+      - ${TOKITOKI_WIN_OEM}:/oem
+    restart: unless-stopped
+    stop_grace_period: 2m

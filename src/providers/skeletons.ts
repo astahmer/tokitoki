@@ -42,7 +42,9 @@ function makeSkeleton(spec: SkeletonSpec): Provider {
     const hasOverride = override !== undefined && override.length > 0;
     if (!hasOverride && spec.dirBase.length === 0) return [];
     const base = hasOverride ? override! : homePath("", spec.dirBase);
-    return [spec.subPath !== undefined ? base + spec.subPath : base];
+    if (spec.subPath === undefined) return [base];
+    const relative = spec.subPath.replace(/^[/\\]+/, "");
+    return [path.join(base, relative)];
   };
   return {
     id: spec.id,

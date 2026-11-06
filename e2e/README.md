@@ -159,3 +159,25 @@ The test shim is only available inside this disposable container. It reads no
 personal accounts, changes no live desktop configuration, and sends no desktop
 notifications. To repeat, remove the previous test container and use a fresh
 output directory so stale probes cannot satisfy readiness checks.
+
+## Windows
+
+`e2e/windows/run.sh` is the whole setup. It boots a dockur Windows VM, copies
+this machine's provider stores into the guest profile, installs the tokitoki
+executable, and scans those stores into an empty data directory.
+
+```sh
+./e2e/windows/run.sh
+```
+
+The disk and the staged profile live outside the repo, under
+`$XDG_DATA_HOME/tokitoki/e2e-windows` (or `~/vms/tokitoki-windows` when that
+disk already exists). They contain real sessions and credentials, so they are
+not committed. Removing the container keeps the disk. Removing that directory
+installs Windows again. `TOKITOKI_WIN_RESTAGE=1` recopies the stores.
+
+`oem/install.bat` runs on first logon: it copies the profile, turns off SMB
+directory caching, and registers the guest agent for later logons. Output is
+written under `e2e/out/windows/`. The desktop is at http://127.0.0.1:8006/
+(`vincent` / `admin`, unless `TOKITOKI_WIN_USER` and `TOKITOKI_WIN_PASSWORD`
+are set).

@@ -1,4 +1,5 @@
 import type { QuotaObservationEvent, UsageEvent } from "../types.ts";
+import { homeJoin } from "../home.ts";
 
 /**
  * Persisted per-file scanner state so incremental scans keep context
@@ -106,9 +107,11 @@ export interface SessionDoc {
  */
 export type ExtractSessionDocs = (file: string) => SessionDoc[];
 
-/** Read an env-overridable path with a default under $HOME. */
+/** Read an env-overridable path with a default under the user home. */
 export function homePath(envVar: string, suffix: string): string {
-  const override = process.env[envVar];
-  if (override !== undefined && override.length > 0) return override;
-  return `${process.env.HOME ?? "~"}${suffix}`;
+  if (envVar.length > 0) {
+    const override = process.env[envVar];
+    if (override !== undefined && override.length > 0) return override;
+  }
+  return homeJoin(suffix);
 }

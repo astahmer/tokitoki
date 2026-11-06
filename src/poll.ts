@@ -18,6 +18,7 @@ import { fetchOpenRouterCredits } from "./quota/openrouter-credits.ts";
 import { storeAccountMeta, type QuotaPollContext } from "./quota/shared.ts";
 import { pollZaiQuotas, zaiApiKey, type ZaiRegion } from "./quota/zai.ts";
 import type { AccountBalance, AccountExtraUsage } from "./quota-windows.ts";
+import { homeJoin, userHome } from "./home.ts";
 import { dataDir } from "./store.ts";
 
 /** Opt-in provider quota polling. Codex account reads use the native harness;
@@ -168,7 +169,9 @@ export interface PollOptions {
 
 /** Read pi's auth store (~/.pi/agent/auth.json) → {provider: raw api key}. */
 export function piCredentials(
-  path: string = `${process.env.PI_DIR ?? `${process.env.HOME ?? "~"}/.pi`}/agent/auth.json`,
+  path: string = process.env.PI_DIR !== undefined && process.env.PI_DIR.length > 0
+    ? path.join(process.env.PI_DIR, "agent", "auth.json")
+    : homeJoin("/.pi/agent/auth.json"),
 ): Record<string, string> {
   try {
     const parsed = JSON.parse(fs.readFileSync(path, "utf8")) as Record<string, { type?: string; key?: string }>;
@@ -264,7 +267,7 @@ type ClaudeCredentials = z.infer<typeof ClaudeCredentialsFileSchema>["claudeAiOa
 
 export function loadClaudeCredentials(opts: PollOptions): ClaudeCredentials | null {
   const explicit = opts.claudeCredentialsPath !== undefined;
-  const path = opts.claudeCredentialsPath ?? `${process.env.HOME ?? "~"}/.claude/.credentials.json`;
+  const path = opts.claudeCredentialsPath ?? homeJoin("/.claude/.credentials.json");
   let raw: string | undefined;
   try {
     raw = fs.readFileSync(path, "utf8");
@@ -315,7 +318,7 @@ function persistClaudeCredentials(
   };
 
   const explicit = opts.claudeCredentialsPath !== undefined;
-  const path = opts.claudeCredentialsPath ?? `${process.env.HOME ?? "~"}/.claude/.credentials.json`;
+  const path = opts.claudeCredentialsPath ?? homeJoin("/.claude/.credentials.json");
   try {
     const parsed = JSON.parse(fs.readFileSync(path, "utf8")) as Record<string, unknown>;
     const tmp = `${path}.tmp-${process.pid}`;
@@ -622,7 +625,7 @@ async function pollClaudeQuotas(opts: PollOptions, fetcher: typeof fetch): Promi
 
 /** github.com oauth_token from ~/.config/github-copilot/apps.json (newer) or hosts.json. */
 export function copilotToken(path?: string): string | null {
-  const base = `${process.env.HOME ?? "~"}/.config/github-copilot`;
+  const base = homeJoin("/.config/github-copilot");
   const candidates = path !== undefined ? [path] : [`${base}/apps.json`, `${base}/hosts.json`];
   for (const file of candidates) {
     try {
@@ -680,7 +683,7 @@ interface CommandCodeAuth {
 }
 
 function commandcodeAuthPath(opts: PollOptions): string {
-  return opts.commandcodeAuthPath ?? `${process.env.HOME ?? "~"}/.commandcode/auth.json`;
+  return opts.commandcodeAuthPath ?? homeJoin("/.commandcode/auth.json");
 }
 
 function loadCommandCodeKey(opts: PollOptions): string | null {
@@ -898,7 +901,7 @@ async function pollCopilotQuotas(opts: PollOptions, fetcher: typeof fetch, now: 
 
 /** cursor-agent CLI's login file — present when the user ran `cursor-agent login`. */
 function cursorCliAuthToken(opts: PollOptions): string | null {
-  const authPath = opts.cursorAuthPath ?? `${process.env.HOME ?? "~"}/.cursor/cli-auth.json`;
+  const authPath = opts.cursorAuthPath ?? homeJoin("/.cursor/cli-auth.json");
   try {
     const parsed = JSON.parse(fs.readFileSync(authPath, "utf8")) as { accessToken?: string; api_key?: string };
     const t = parsed.accessToken ?? parsed.api_key;
@@ -1067,7 +1070,9 @@ export function redactCredential(secret: string): string {
 
 /** Read ~/.local/share/opencode/auth.json → {accountKey: redacted key}. */
 export function opencodeCredentials(
-  path: string = `${process.env.OPENCODE_HOME ?? `${process.env.HOME ?? "~"}/.local/share/opencode`}/auth.json`,
+  path: string = process.env.OPENCODE_HOME !== undefined && process.env.OPENCODE_HOME.length > 0
+    ? path.join(process.env.OPENCODE_HOME, "auth.json")
+    : homeJoin("/.local/share/opencode/auth.json"),
 ): Record<string, string> {
   try {
     const parsed = JSON.parse(fs.readFileSync(path, "utf8")) as Record<string, { type?: string; key?: string }>;
@@ -1336,7 +1341,8 @@ async function pollQuotasLocked(opts: PollOptions = {}): Promise<PollResult> {
     const homes = opts.authPath !== undefined ? [path.dirname(opts.authPath)]
       : opts.codexHomes ?? codexHomes({ env: opts.env });
     const seen = new Set<string>();
-    for (const home of [...new Set(homes.map(home => path.resolve(home.replace(/^~(?=\/|$)/, opts.env?.HOME ?? process.env.HOME ?? "~"))))]) {
+    const homeRoot = userHome();
+    for (const home of [...new Set(homes.map(home => path.resolve(home.replace(/^~(?=[/\\]|$)/, () => homeRoot))))]) {
       const identity = nativeCodexIdentity(home, opts.authPath);
       if (identity?.accountId !== undefined) clearNativeHomeBindings(cache, home, identity.accountId);
       const errorAccountId = identity?.accountId ?? cachedNativeHomeId(cache, home, now);

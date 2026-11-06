@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 import { Database } from "bun:sqlite";
@@ -41,13 +42,13 @@ export const CURSOR_NO_USAGE_NOTE =
 
 /** Cursor IDE's VS Code-style data dir (state.vscdb lives under here) — also used by poll.ts's quota fetch. */
 export function cursorIdeDir(): string {
-  if (process.platform === "darwin") return `${process.env.HOME ?? "~"}/Library/Application Support/Cursor`;
+  if (process.platform === "darwin") return path.join(os.homedir(), "Library", "Application Support", "Cursor");
   if (process.platform === "win32") {
     const appData = process.env.APPDATA;
     if (appData !== undefined && appData.length > 0) return path.join(appData, "Cursor");
-    return `${process.env.HOME ?? "~"}/AppData/Roaming/Cursor`;
+    return path.join(os.homedir(), "AppData", "Roaming", "Cursor");
   }
-  return `${process.env.HOME ?? "~"}/.config/Cursor`;
+  return path.join(os.homedir(), ".config", "Cursor");
 }
 
 export function cursorRoots(): string[] {

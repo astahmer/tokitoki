@@ -1463,7 +1463,7 @@ function renderSessionDrill(
   let runningTokens = cache.sessionTokensBefore(matches[0]!, sessionId, eventsOffset);
   const detailRows = events.map((e, i) => {
     runningTokens += e.inputTokens + e.outputTokens + e.cacheReadTokens + e.cacheWriteTokens;
-    return { n: i + 1, ...e, runningTokens };
+    return { n: eventsOffset + i + 1, ...e, runningTokens };
   });
   if (json) {
     return JSON.stringify({

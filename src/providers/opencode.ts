@@ -7,6 +7,7 @@ import type { UsageEvent } from "../types.ts";
 import { eventId } from "../machine.ts";
 import { resolveUsageCost } from "../pricing.ts";
 import { providerConfig } from "../config.ts";
+import { homeJoin } from "../home.ts";
 import type { DbScanContext, Provider, SessionDoc } from "./types.ts";
 
 /**
@@ -38,8 +39,8 @@ export const opencodeProvider: Provider = {
     const configured = providerConfig(this.id)?.paths;
     if (configured !== undefined && configured.length > 0) return configured;
     const xdg = process.env.XDG_DATA_HOME;
-    const base = xdg !== undefined && xdg.length > 0 ? xdg : `${process.env.HOME ?? "~"}/.local/share`;
-    return [`${base}/opencode`];
+    const base = xdg !== undefined && xdg.length > 0 ? xdg : homeJoin("/.local/share");
+    return [path.join(base, "opencode")];
   },
 
   listFiles(root: string): string[] {
@@ -65,33 +66,40 @@ export const opencodeProvider: Provider = {
     if (db === null) return [];
     try {
       const tables = db
-        .query<{ name: string }, []>("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('message','session')")
+        .query<{ name: string }, []>(
+          "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('message','session','session_message','session_v2')",
+        )
         .all();
-      if (tables.length < 2) return []; // not a (recognized) opencode store
+      const tableNames = new Set(tables.map((row) => row.name));
+      const legacyStore = tableNames.has("message") && tableNames.has("session");
+      const currentStore = tableNames.has("session_message") && tableNames.has("session_v2");
+      if (!legacyStore && !currentStore) return [];
 
       // Incremental cursor: high-water mark on message.time_updated (ms).
       // Streaming updates bump time_updated on an existing row; re-emitting
       // its stable event id is harmless (dedupe downstream).
       const watermark = typeof ctx.state.watermark === "number" ? ctx.state.watermark : 0;
-      const rows = db
-        .prepare(
-          `SELECT m.id, m.session_id, m.time_created, m.time_updated, m.data, s.directory
+      const sql = legacyStore
+        ? `SELECT m.id, m.session_id, m.time_created, m.time_updated, m.data, s.directory, NULL AS message_type
            FROM message m JOIN session s ON s.id = m.session_id
-           WHERE m.time_updated > ? ORDER BY m.time_updated ASC LIMIT 50000`,
-        )
-        .all(watermark) as Array<{
+           WHERE m.time_updated > ? ORDER BY m.time_updated ASC LIMIT 50000`
+        : `SELECT m.id, m.session_id, m.time_created, m.time_updated, m.data, s.directory, m.type AS message_type
+           FROM session_message m JOIN session_v2 s ON s.id = m.session_id
+           WHERE m.time_updated > ? ORDER BY m.time_updated ASC LIMIT 50000`;
+      const rows = db.prepare(sql).all(watermark) as Array<{
         id: string;
         session_id: string;
         time_created: number;
         time_updated: number;
         data: string;
         directory: string | null;
+        message_type: string | null;
       }>;
 
       const events: UsageEvent[] = [];
       for (const row of rows) {
         if (row.time_updated > watermark) ctx.state.watermark = row.time_updated;
-        const parsed = parseMessageData(row.data);
+        const parsed = parseMessageData(row.data, row.message_type);
         if (parsed === null) continue;
         const { role, inputTokens, outputTokens, cacheRead, cacheWrite, costUsd, costSource, model, account, completed } = parsed;
         if (role !== "assistant") continue;
@@ -232,15 +240,28 @@ interface ParsedMessage {
   completed: boolean;
 }
 
-/** Parse one message.data JSON blob; null when unusable. */
-function parseMessageData(raw: string): ParsedMessage | null {
+/** Parse one message.data JSON blob; null when unusable. `messageType` is the session_message.type column. */
+function parseMessageData(raw: string, messageType: string | null = null): ParsedMessage | null {
   let data: Record<string, unknown>;
   try {
     data = JSON.parse(raw) as Record<string, unknown>;
   } catch {
     return null;
   }
-  const role = typeof data.role === "string" ? data.role : "unknown";
+  const role = typeof data.role === "string" ? data.role : messageType ?? "unknown";
+  if (role !== "assistant") {
+    return {
+      role,
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      costSource: "unpriced",
+      model: "unknown",
+      account: "default",
+      completed: false,
+    };
+  }
   const tokens = (data.tokens ?? {}) as Record<string, unknown>;
   const cache = (tokens.cache ?? {}) as Record<string, unknown>;
   const toNum = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) && v > 0 ? v : 0);
@@ -250,9 +271,8 @@ function parseMessageData(raw: string): ParsedMessage | null {
   const outputTokens = toNum(tokens.output) + toNum(tokens.reasoning);
   const cacheRead = toNum(cache.read);
   const cacheWrite = toNum(cache.write);
-  const model = typeof data.modelID === "string" && data.modelID.length > 0 ? data.modelID : "unknown";
-  const account =
-    typeof data.providerID === "string" && data.providerID.length > 0 ? data.providerID : "default";
+  const model = modelName(data);
+  const account = accountName(data);
   const cost = resolveUsageCost({
     model,
     tokens: { inputTokens, outputTokens, cacheReadTokens: cacheRead, cacheWriteTokens: cacheWrite },
@@ -261,4 +281,25 @@ function parseMessageData(raw: string): ParsedMessage | null {
   const time = (data.time ?? {}) as Record<string, unknown>;
   const completed = typeof time.completed === "number" && Number.isFinite(time.completed);
   return { role, inputTokens, outputTokens, cacheRead, cacheWrite, ...cost, model, account, completed };
+}
+
+function modelName(data: Record<string, unknown>): string {
+  if (typeof data.modelID === "string" && data.modelID.length > 0) return data.modelID;
+  const model = data.model;
+  if (model !== null && typeof model === "object") {
+    const record = model as Record<string, unknown>;
+    if (typeof record.id === "string" && record.id.length > 0) return record.id;
+    if (typeof record.modelID === "string" && record.modelID.length > 0) return record.modelID;
+  }
+  return "unknown";
+}
+
+function accountName(data: Record<string, unknown>): string {
+  if (typeof data.providerID === "string" && data.providerID.length > 0) return data.providerID;
+  const model = data.model;
+  if (model !== null && typeof model === "object") {
+    const record = model as Record<string, unknown>;
+    if (typeof record.providerID === "string" && record.providerID.length > 0) return record.providerID;
+  }
+  return "default";
 }

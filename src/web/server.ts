@@ -4,6 +4,8 @@ import { readAccountUiPreferences } from "../uiToggles.ts";
 import { handleAccountOrderRequest } from "../account-order-api.ts";
 import path from "node:path";
 
+import { homeJoin } from "../home.ts";
+
 import { apiAnomalies, apiBreakdown, apiBudgets, apiExport, apiGrid, apiNotificationHistory, apiSessionDetail, apiSessionSearch, apiSessions, apiSources, apiSummary, apiTracking, apiTable, apiTimeseries, apiWidgetStatus, type WindowParams } from "./api.ts";
 import { atprotoConfig, buildSharePayload, describePayload, publishShare, readShareState, writeShareState } from "../share.ts";
 import { readLimitsDocument } from "../limits-document.ts";
@@ -28,7 +30,7 @@ const MIME: Record<string, string> = {
 function defaultStaticRoot(): string {
   // Running from source: prefer the repo's own build so web edits show up
   // immediately; the stable copy is only a fallback for old installs.
-  const dataHome = process.env.XDG_DATA_HOME ?? path.join(process.env.HOME ?? "~", ".local", "share");
+  const dataHome = process.env.XDG_DATA_HOME ?? homeJoin("/.local/share");
   const stable = path.join(dataHome, "tokitoki", "web");
   // Source layout: src/web/server.ts → <repo>/dist/web. Packaged layout:
   // dist/cli.js → sibling dist/web. Repo build wins so edits show up live;

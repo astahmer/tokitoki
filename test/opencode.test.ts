@@ -113,6 +113,50 @@ describe("opencode provider", () => {
     expect(new Date(e.ts).getTime()).toBe(1_500);
   });
 
+  it("reads assistant tokens from the session_message store", () => {
+    const dbPath = path.join(rootDir, "opencode-v2.db");
+    const db = new Database(dbPath);
+    db.exec(`
+      CREATE TABLE session_v2 (
+        id text PRIMARY KEY,
+        directory text NOT NULL
+      );
+      CREATE TABLE session_message (
+        id text PRIMARY KEY,
+        session_id text NOT NULL,
+        type text NOT NULL,
+        time_created integer NOT NULL,
+        time_updated integer NOT NULL,
+        data text NOT NULL
+      );
+    `);
+    db.prepare("INSERT INTO session_v2 (id, directory) VALUES ('ses_v2', '/home/me/proj')").run();
+    db.prepare(
+      "INSERT INTO session_message (id, session_id, type, time_created, time_updated, data) VALUES ('msg_v2', 'ses_v2', 'assistant', 1500, 1600, ?)",
+    ).run(
+      JSON.stringify({
+        time: { created: 1500, completed: 1600 },
+        model: { id: "deepseek-v4.1-flash", providerID: "opencode-go" },
+        cost: 0.002,
+        tokens: { input: 20, output: 30, reasoning: 5, cache: { read: 40, write: 2 } },
+      }),
+    );
+    db.prepare(
+      "INSERT INTO session_message (id, session_id, type, time_created, time_updated, data) VALUES ('msg_user', 'ses_v2', 'user', 1400, 1450, ?)",
+    ).run(JSON.stringify({ time: { created: 1400 }, text: "hello" }));
+    db.close();
+
+    const events = scanDb(dbPath, { state: {}, freshFile: true, machineId: MACHINE });
+    expect(events).toHaveLength(1);
+    const event = events[0]!;
+    expect(event.id).toBe("opencode:opencode-go:ses_v2:msg_v2");
+    expect(event.model).toBe("deepseek-v4.1-flash");
+    expect(event.accountKey).toBe("opencode-go");
+    expect(event.inputTokens).toBe(20);
+    expect(event.outputTokens).toBe(35);
+    expect(event.projectDir).toBe("/home/me/proj");
+  });
+
   it("is incremental via the watermark cursor", () => {
     const dbPath = path.join(rootDir, "opencode-inc.db");
     createOpencodeStore(dbPath);

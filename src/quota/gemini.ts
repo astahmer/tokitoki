@@ -36,7 +36,7 @@ const GeminiCredsSchema = z.object({
 export type GeminiCreds = z.infer<typeof GeminiCredsSchema>;
 
 export const geminiCredsPath = (input: { env: PollEnv; override?: string }): string =>
-  input.override ?? path.join(homeDir(input.env), ".gemini", "oauth_creds.json");
+  input.override ?? path.join(homeDir(), ".gemini", "oauth_creds.json");
 
 export const loadGeminiCreds = (filePath: string): GeminiCreds | undefined => {
   try {

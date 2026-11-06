@@ -5,6 +5,7 @@ import { z } from "zod";
 import { accountEmailFor, nativeCodexIdentities } from "./accounts.ts";
 import { EventCache, type QuotaSnapshotRow } from "./cache.ts";
 import { loadConfig, type TokitokiConfig } from "./config.ts";
+import { homeJoin } from "./home.ts";
 import {
   appendBalanceOnlyAccounts,
   collapseHarnessVariants,
@@ -221,7 +222,7 @@ export const buildAccountLimits = (input: { cache: EventCache; config: TokitokiC
 
   if (config.experimental?.zeroStateCards !== false) {
     const known = new Set(withOrigin.map((limit) => `${limit.provider}@${limit.accountKey}`));
-    const commandcodeRoot = `${process.env.HOME ?? "~"}/.commandcode`;
+    const commandcodeRoot = homeJoin("/.commandcode");
     if (!known.has("commandcode@default") && fs.existsSync(commandcodeRoot)) {
       withOrigin.push({ provider: "commandcode", accountKey: "default", origin: "scan", windows: [] });
     }

@@ -1,0 +1,10 @@
+{
+  "name": "tokitoki-electrobun",
+  "version": "0.4.0",
+  "private": true,
+  "description": "Electrobun menubar for tokitoki. Same popover as the Swift app and the DMS widget.",
+  "scripts": {
+    "dev": "bunx electrobun dev --watch",
+    "build": "bunx electrobun build --env=canary"
+  }
+}

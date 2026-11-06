@@ -15,3 +15,8 @@ dist/
 
 /result
 /e2e/out
+menubar/electrobun/.hutch
+menubar/electrobun/node_modules
+menubar/electrobun/dist
+menubar/electrobun/build
+menubar/electrobun/hutch.lock

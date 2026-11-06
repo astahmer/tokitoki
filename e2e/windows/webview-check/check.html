@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>tokitoki webview check</title>
+</head>
+<body style="margin:0;background:#10241c;color:#f4f7f5;font-family:Segoe UI,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh">
+  <div style="text-align:center">
+    <div id="mark" style="font-size:72px;font-weight:700;letter-spacing:0.04em">WAITING</div>
+    <div id="detail" style="margin-top:18px;font-size:18px;opacity:0.85"></div>
+  </div>
+  <script>
+    var mark = document.getElementById("mark");
+    var detail = document.getElementById("detail");
+    detail.textContent = navigator.userAgent;
+    if (window.chrome && window.chrome.webview) {
+      mark.textContent = "WEBVIEW2 OK";
+      mark.style.color = "#3DDC97";
+    } else {
+      mark.textContent = "NOT WEBVIEW2";
+      mark.style.color = "#ff5a5a";
+    }
+  </script>
+</body>
+</html>

@@ -1,6 +1,6 @@
-import os from "node:os";
-
 import { z } from "zod";
+
+import os from "node:os";
 
 import type { EventCache } from "../cache.ts";
 import type { PolledWindow } from "../poll.ts";
@@ -22,7 +22,7 @@ export interface JsonResponse {
   error?: string;
 }
 
-export const homeDir = (env: PollEnv): string => env.HOME ?? os.homedir();
+export const homeDir = (): string => os.homedir();
 
 export const envValue = (input: { env: PollEnv; names: string[] }): string | undefined =>
   input.names.map((name) => input.env[name]?.trim()).find((value) => value !== undefined && value.length > 0);

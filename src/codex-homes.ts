@@ -12,8 +12,10 @@ export interface CodexHomesOptions {
 export function codexHomes(options: CodexHomesOptions = {}): string[] {
   const config = options.config ?? loadConfig();
   const env = options.env ?? process.env;
-  const home = env.HOME ?? os.homedir();
-  const expand = (value: string): string => path.resolve(value === "~" ? home : value.startsWith("~/") ? path.join(home, value.slice(2)) : value);
+  const home = os.homedir();
+  const expand = (value: string): string => path.resolve(
+    value === "~" ? home : value.startsWith("~/") || value.startsWith("~\\") ? path.join(home, value.slice(2)) : value,
+  );
   const homes = [env.CODEX_HOME || path.join(home, ".codex"), ...(config.poll?.codexHomes ?? [])];
   for (const root of config.providers?.codex?.paths ?? []) {
     const resolved = expand(root);

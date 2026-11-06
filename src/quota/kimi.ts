@@ -131,7 +131,7 @@ export type KimiCredential =
 const kimiHomes = (input: { ctx: QuotaPollContext; kimiHome?: string }): string[] => {
   if (input.kimiHome !== undefined) return [input.kimiHome];
   const override = envValue({ env: input.ctx.env, names: ["KIMI_CODE_HOME"] });
-  const home = homeDir(input.ctx.env);
+  const home = homeDir();
   return override !== undefined ? [override] : [path.join(home, ".kimi-code"), path.join(home, ".kimi")];
 };
 
