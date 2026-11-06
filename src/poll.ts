@@ -169,12 +169,12 @@ export interface PollOptions {
 
 /** Read pi's auth store (~/.pi/agent/auth.json) → {provider: raw api key}. */
 export function piCredentials(
-  path: string = process.env.PI_DIR !== undefined && process.env.PI_DIR.length > 0
+  credentialsPath: string = process.env.PI_DIR !== undefined && process.env.PI_DIR.length > 0
     ? path.join(process.env.PI_DIR, "agent", "auth.json")
     : homeJoin("/.pi/agent/auth.json"),
 ): Record<string, string> {
   try {
-    const parsed = JSON.parse(fs.readFileSync(path, "utf8")) as Record<string, { type?: string; key?: string }>;
+    const parsed = JSON.parse(fs.readFileSync(credentialsPath, "utf8")) as Record<string, { type?: string; key?: string }>;
     const out: Record<string, string> = {};
     for (const [provider, entry] of Object.entries(parsed)) {
       if (entry !== null && typeof entry === "object" && typeof entry.key === "string") {
@@ -1070,12 +1070,12 @@ export function redactCredential(secret: string): string {
 
 /** Read ~/.local/share/opencode/auth.json → {accountKey: redacted key}. */
 export function opencodeCredentials(
-  path: string = process.env.OPENCODE_HOME !== undefined && process.env.OPENCODE_HOME.length > 0
+  credentialsPath: string = process.env.OPENCODE_HOME !== undefined && process.env.OPENCODE_HOME.length > 0
     ? path.join(process.env.OPENCODE_HOME, "auth.json")
     : homeJoin("/.local/share/opencode/auth.json"),
 ): Record<string, string> {
   try {
-    const parsed = JSON.parse(fs.readFileSync(path, "utf8")) as Record<string, { type?: string; key?: string }>;
+    const parsed = JSON.parse(fs.readFileSync(credentialsPath, "utf8")) as Record<string, { type?: string; key?: string }>;
     const out: Record<string, string> = {};
     for (const [accountKey, entry] of Object.entries(parsed)) {
       if (entry !== null && typeof entry === "object" && typeof entry.key === "string") {

@@ -128,6 +128,10 @@ describe("pidfile liveness", () => {
     try {
       // identity probe returns our own command line (contains 'bun')
       const own = await isMenubarRunning(process.pid, { identity: () => "tokitoki-menubar helper" });
+      const tray = await isMenubarRunning(process.pid, {
+        identity: () => "bun --cwd=/src/menubar/electrobun run dev",
+      });
+      expect(tray).toBe(true);
       expect(own).toBe(true);
       const foreign = await isMenubarRunning(process.pid, { identity: () => "/usr/sbin/cron" });
       expect(foreign).toBe(false);

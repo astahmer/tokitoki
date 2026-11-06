@@ -3,8 +3,8 @@
 > Local-first usage analytics for coding agents.
 
 Tokitoki scans local harness stores, normalizes usage into one deduplicated
-event log, and gives you the same picture in a CLI, web dashboard, native
-macOS menu bar, shell widgets, and MCP. It is designed for people who use
+event log, and gives you the same picture in a CLI, web dashboard, macOS
+menu bar, Windows tray, Linux shell widgets, and MCP. It is designed for people who use
 multiple agents, accounts, machines, or all three.
 
 <p align="center">
@@ -33,7 +33,7 @@ multiple agents, accounts, machines, or all three.
 - **Honest cost and quota views**: native provider costs when available,
   pricing-based estimates where needed, and clearly labelled plan gauges.
 - **Multiple surfaces**: composable CLI reports, a local browser dashboard, a
-  macOS menu-bar app, host-neutral shell widgets, and an MCP server for agents.
+  macOS menu bar, a Windows tray, host-neutral shell widgets, and an MCP server for agents.
 - **Multi-machine deduplication**: sync append-only event files without
   counting the same session twice.
 - **Explicit sharing**: usage stays local unless you configure sync or opt in
@@ -82,7 +82,8 @@ bun src/cli.ts sources
 
 - Each machine: local scanner writes normalized JSONL append-log
   (`~/.local/share/tokitoki/events.jsonl`) + sqlite cache
-- Sync layer: pluggable — Syncthing dir first (zero infra), restic/R2 as backup
+- Sync layer: pluggable — a shared folder (Syncthing), a private git repo, or
+  an ATProto scaffold. See [Sync](#sync-cross-machine).
 - Aggregation: merge all synced logs, dedupe on identity key, aggregate in
   sqlite; totals are pure functions of the merged log
 - Store format: append-only, conflict-friendly (Syncthing-safe: last-writer
@@ -119,6 +120,104 @@ the dependency install hook. The `bin/tokitoki.js` source shim is available as
 development.
 
 ## Installation
+
+Tokitoki never asks for an API key. It reads the harness logins already on
+this machine (Claude, Codex, Cursor, and the others in
+[Supported harnesses](#supported-harnesses)). Sign in to those tools first;
+an empty panel means nothing has been scanned yet.
+
+The CLI runs on macOS, Linux, and Windows. The always-on panel is different
+on each system: the Swift menu bar on macOS, a shell widget on Linux, and
+the Electrobun tray on Windows.
+
+### Command line
+
+[Bun](https://bun.sh) is the runtime. From a checkout:
+
+```sh
+git clone https://github.com/astahmer/tokitoki.git
+cd tokitoki
+bun install
+bun src/cli.ts scan
+bun src/cli.ts report --last week --by provider
+```
+
+On Windows the same checkout can be compiled into one executable (Git and
+Bun are the only prerequisites; Visual Studio is not required):
+
+```powershell
+winget install Git.Git
+irm bun.sh/install.ps1 | iex
+git clone https://github.com/astahmer/tokitoki.git
+cd tokitoki
+bun install
+New-Item -ItemType Directory -Force "$env:LOCALAPPDATA\tokitoki" | Out-Null
+bun build --compile src/cli.ts --target=bun-windows-x64 --outfile "$env:LOCALAPPDATA\tokitoki\tokitoki.exe"
+& "$env:LOCALAPPDATA\tokitoki\tokitoki.exe" scan
+```
+
+Put that directory on `PATH` if you want to type `tokitoki`. History stays
+under `~/.local/share/tokitoki` on every system.
+
+### macOS panel
+
+Nix (below) or the Bun checkout both provide the CLI. The menu bar is the
+Swift app:
+
+```sh
+cd menubar/tokitoki-menubar
+swift build -c release
+mkdir -p ~/bin
+cp .build/release/tokitoki-menubar ~/bin/
+tokitoki menubar
+```
+
+### Linux panel
+
+Home Manager starts Dank Material Shell or the standalone Quickshell bar with
+the graphical session. The recipes are in
+[Shell integrations](#shell-integrations). Without Nix, install Bun, scan
+once, then follow the widget notes in
+[`integrations/README.md`](integrations/README.md). The Electrobun tray also
+runs from this checkout:
+
+```sh
+cd menubar/electrobun
+bun install
+bun run dev
+```
+
+### Windows panel
+
+There is no installer and no downloadable tray binary. After the CLI compile
+above, start the tray from the same checkout:
+
+```powershell
+cd menubar\electrobun
+bun install
+bun run dev
+```
+
+Leave that checkout where it is. The login command below records its path.
+
+### Start when you sign in
+
+`tokitoki menubar --login` registers the panel for the next sign-in.
+`tokitoki menubar --no-login` removes it. Run it from the checkout so the
+tray path can be found. On Windows, run the compiled `tokitoki.exe` the same
+way if that is the `tokitoki` on your `PATH`.
+
+| System | What gets written | What it launches |
+| --- | --- | --- |
+| macOS | `~/Library/LaunchAgents/dev.tokitoki.menubar.plist` | `~/bin/tokitoki-menubar` |
+| Linux | `~/.config/autostart/tokitoki.desktop` | `tokitoki-quickshell` when Nix installed it, otherwise the Electrobun checkout |
+| Windows | Startup folder `tokitoki.cmd` | `bun run dev` in `menubar\electrobun` |
+
+On macOS the agent is loaded immediately and kept alive by launchd. On Linux
+and Windows the entry runs the next time you sign in. A Nix configuration
+that already sets `programs.tokitoki.quickshell.enable` or
+`programs.tokitoki.dms.enable` starts that bar with the session; skip
+`--login` there so you do not get a second copy.
 
 ### Nix
 
@@ -236,7 +335,10 @@ capacity.
 
 <p align="center"><sub>Native host captures with sample data. Click an image for full size. <a href="e2e/README.md">Screenshot and interaction tests</a> · <a href="docs/screenshots/README.md">Capture notes</a></sub></p>
 
-## Publishing
+## Publishing (maintainers)
+
+npm and Homebrew packages are not published. The commands below are how a
+maintainer would build a tarball from this repo:
 
 ```sh
 pnpm pack            # runs prepack: tests + typecheck + build (SPA + bundled CLI)
@@ -526,7 +628,6 @@ a month-to-date usage gauge instead of a cost cell — most useful with
 keys, gateways): caps are user-configured estimates, and the gauge is only as
 honest as the cap you set.
 
-- Tests + runner are Bun-native (`bun test`, imports from `bun:test`); sqlite is `bun:sqlite`
 ## Web dashboard
 
 ```sh
@@ -570,10 +671,12 @@ src/web/api.ts ◀── same aggregation as the CLI (EventCache) ── /api/* 
 
 - [Publishing the ATProto lexicon](docs/atproto-lexicon.md) — NSID choice,
   schema doc, hosting/announcement, versioning rules, adapter flip checklist
-- [Packaging](docs/packaging.md) — source-first run model (compiled-binary flow removed 2026-08-25),
-  historical cross-compile/release notes, nix packaging recipe
+- [Packaging](docs/packaging.md) — Nix package and historical notes. The
+  Windows CLI compile in [Installation](#installation) is the current
+  single-file build; there is still no release download.
 - [Menu-bar app](menubar/tokitoki-menubar/) — native SwiftUI MenuBarExtra
-  (macOS 13+), `swift build`, refreshes every 5 min from the compiled CLI
+  (macOS 13+), `swift build`. Linux and Windows use the Electrobun tray in
+  `menubar/electrobun`.
 
 ## Limits JSON (`tokitoki limits --json`)
 
@@ -705,11 +808,14 @@ your client:
 
 ## Menu-bar app
 
-Start/stop the native app from the CLI (macOS Swift app today; Electrobun
-port tracked in plans/linux-menubar.md):
+`tokitoki menubar` starts the panel for this system: the Swift app on macOS,
+Quickshell or Electrobun on Linux, Electrobun on Windows. Install steps and
+sign-in startup are in [Installation](#installation).
 
 ```sh
 tokitoki menubar            # start (idempotent; launchctl-aware on macOS)
+tokitoki menubar --login    # start again every time you sign in
+tokitoki menubar --no-login # remove that login item
 bun run menubar             # rebuild Swift + restart the launchd app from this checkout
 bun run menubar:restart     # explicit alias for the same source-first flow
 tokitoki menubar --status   # pid + running state
@@ -958,7 +1064,7 @@ and a real adapter replaces them.
 
 - Codex provider is best effort (format observed on codex 0.146.x); unknown
   line shapes are skipped
-- Cost for models missing from the pricing table estimates to $0
+- Models missing from the pricing table stay unpriced; they are not counted as $0
 - `report` rebuilds the sqlite cache lazily when log/event counts diverge;
   very large logs may want a faster merge strategy later
 
@@ -971,7 +1077,8 @@ are deliberately incremental:
 - a more visual request timeline in session details
 - keyboard-first and narrow-viewport polish for the dashboard
 - additional harness adapters and deeper indexed-session support
-- a Linux-native menubar target alongside the existing macOS app
+- pack the Electrobun tray so Linux and Windows do not need a checkout to
+  show the panel
 
 ## Prior art
 

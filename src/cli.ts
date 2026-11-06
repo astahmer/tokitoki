@@ -1,9 +1,11 @@
 #!/usr/bin/env bun
 import { parseArgs, type FlagValue, type ParsedInvocation } from "./args.ts";
+import { spawn } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { localMachineId } from "./machine.ts";
-import { appendEvents, eventsFile, loadCursors, saveProviderCursors, type Cursors } from "./store.ts";
+import { appendEvents, dataDir, eventsFile, loadCursors, saveProviderCursors, type Cursors } from "./store.ts";
 import { PROVIDERS, getProvider } from "./providers/index.ts";
 import { extractionVersionFor, scanProviderCore, type ScanResult } from "./scan.ts";
 import type { QuotaObservationEvent, UsageEvent } from "./types.ts";
@@ -38,9 +40,19 @@ import {
   installRebuiltMenubarBinary,
   resolveMenubarBin,
   startMenubar,
+  startViaLaunchCtlIfConfigured,
+  stopLaunchAgent,
   stopMenubar,
+  menubarPidFile,
   menubarStatus,
 } from "./menubar-launch.ts";
+import {
+  electrobunDirectory,
+  installSessionStart,
+  panelLaunch,
+  removeSessionStart,
+  sessionStartLayout,
+} from "./session-start.ts";
 import { runMcpStdio } from "./mcp-server.ts";
 import { detectAnomalies, ANOMALY_METRICS, anomalyFooter } from "./anomalies.ts";
 import { processBudgetAlerts, seedBudgetsConfig } from "./budgets.ts";
@@ -364,13 +376,15 @@ Rows always show every configured scope×pattern; state is ok | warn (≥80%)
     example: "tokitoki mcp",
   },
   menubar: {
-    usage: "tokitoki menubar [--stop | --status | --foreground | --rebuild]",
-    flags: `  starts the native menu-bar app for this OS (macOS Swift app today,
-  Electrobun on Linux later). Idempotent: no-op when already running.
+    usage: "tokitoki menubar [--stop | --status | --foreground | --rebuild | --login | --no-login]",
+    flags: `  starts the panel for this OS (macOS Swift app, Linux Quickshell or
+  Electrobun, Windows Electrobun tray). Idempotent: no-op when already running.
   --status                  pid + running state
   --stop                    stop a running instance (launchctl-aware)
   --foreground              run attached instead of detached
-  --rebuild                 rebuild, install the launchd binary, and restart it`,
+  --rebuild                 rebuild, install the launchd binary, and restart it
+  --login                   start the panel every time you sign in
+  --no-login                remove that login item`,
     example: "tokitoki menubar",
   },
 };
@@ -534,7 +548,7 @@ const KNOWN_FLAGS: Record<string, string[]> = {
   blocks: ["last", "since", "until", "from", "to", "account", "json"],
   statusline: [],
   mcp: [],
-  menubar: ["stop", "status", "foreground", "rebuild"],
+  menubar: ["stop", "status", "foreground", "rebuild", "login", "no-login"],
   poll: ["json", "enable", "disable", "provider"],
   config: ["set", "json"],
   share: ["enable", "disable", "status", "publish", "scope", "include-repos"],
@@ -1997,11 +2011,74 @@ async function runStatusline(_parsed: ParsedInvocation): Promise<void> {
   }
 }
 
+function currentPanelLaunch(): ReturnType<typeof panelLaunch> {
+  const platform = process.platform;
+  if (platform !== "darwin" && platform !== "linux" && platform !== "win32") return null;
+  const menubar = resolveMenubarBin();
+  const quickshell = Bun.which("tokitoki-quickshell") ?? undefined;
+  const bunBinary = Bun.which("bun") ?? undefined;
+  const electrobun = electrobunDirectory(process.cwd(), (candidate) => fs.existsSync(candidate)) ?? undefined;
+  return panelLaunch({
+    platform,
+    menubarBinary: menubar?.path,
+    quickshellBinary: quickshell,
+    bunBinary,
+    electrobunDirectory: electrobun,
+  });
+}
+
+async function configureSessionStart(enable: boolean): Promise<void> {
+  const platform = process.platform;
+  if (platform !== "darwin" && platform !== "linux" && platform !== "win32") {
+    throw new UserError(`login start is not supported on ${platform}`, "tokitoki menubar --login");
+  }
+  const launch = currentPanelLaunch();
+  if (launch === null) {
+    const hint =
+      platform === "darwin"
+        ? "build the menu bar first: cd menubar/tokitoki-menubar && swift build -c release && cp .build/release/tokitoki-menubar ~/bin/"
+        : "install the panel first (Nix: programs.tokitoki.quickshell.enable, or cd menubar/electrobun && bun install)";
+    throw new UserError("no panel to start at login", hint);
+  }
+  const userId = typeof process.getuid === "function" ? process.getuid() : undefined;
+  const layout = sessionStartLayout({
+    platform,
+    home: os.homedir(),
+    launch,
+    configHome: process.env.XDG_CONFIG_HOME,
+    appData: process.env.APPDATA,
+    dataDirectory: dataDir(),
+    userId,
+  });
+  if (!enable) {
+    if (platform === "darwin") await stopLaunchAgent();
+    removeSessionStart(layout);
+    console.log("login start removed");
+    return;
+  }
+  const written = installSessionStart(layout);
+  if (platform === "darwin") {
+    await stopLaunchAgent();
+    const loaded = await startViaLaunchCtlIfConfigured();
+    if (loaded === "failed" || loaded === "no-plist") {
+      throw new UserError("could not load the login item", "tokitoki menubar --login");
+    }
+  }
+  console.log(`starts when you sign in:\n${written.join("\n")}`);
+}
+
 async function runMenubar(parsed: ParsedInvocation): Promise<void> {
   const stop = flagBool(parsed, "stop");
   const status = flagBool(parsed, "status");
   const rebuild = flagBool(parsed, "rebuild");
   const foreground = flagBool(parsed, "foreground");
+  const login = flagBool(parsed, "login");
+  const noLogin = flagBool(parsed, "no-login");
+  if (login && noLogin) throw new UserError("pass either --login or --no-login", "tokitoki menubar --help");
+  if (login || noLogin) {
+    await configureSessionStart(login);
+    return;
+  }
 
   if (status) {
     const s = await menubarStatus();
@@ -2015,6 +2092,42 @@ async function runMenubar(parsed: ParsedInvocation): Promise<void> {
   }
 
   let bin = resolveMenubarBin();
+  if (bin === null && (process.platform === "linux" || process.platform === "win32") && !rebuild) {
+    const launch = currentPanelLaunch();
+    if (launch === null) {
+      throw new UserError(
+        "no panel to start",
+        "install the panel first (Nix: programs.tokitoki.quickshell.enable, or cd menubar/electrobun && bun install)",
+      );
+    }
+    const executable = launch.command[0];
+    if (executable === undefined) throw new UserError("no panel to start", "tokitoki menubar");
+    if (foreground) {
+      console.log(`${launch.command.join(" ")} (foreground, ctrl-c to quit)`);
+      const proc = Bun.spawn(launch.command, {
+        cwd: launch.workingDirectory,
+        stdio: ["ignore", "inherit", "inherit"],
+      });
+      await proc.exited;
+      return;
+    }
+    const live = await menubarStatus();
+    if (live.status === "running") {
+      console.log(`menubar already running (pid ${live.pid})`);
+      return;
+    }
+    const child = spawn(executable, launch.command.slice(1), {
+      cwd: launch.workingDirectory,
+      detached: true,
+      stdio: "ignore",
+    });
+    child.unref();
+    if (child.pid === undefined) throw new UserError("could not start the panel", "tokitoki menubar");
+    fs.mkdirSync(path.dirname(menubarPidFile()), { recursive: true });
+    fs.writeFileSync(menubarPidFile(), String(child.pid));
+    console.log(`menubar started (pid ${child.pid}, detached)`);
+    return;
+  }
   if (bin === null && rebuild) throw new UserError("menubar app not found and --rebuild requested", "tokitoki menubar");
   if (bin === null) {
     if (rebuild) throw new UserError("cannot rebuild: app not found", "tokitoki menubar");

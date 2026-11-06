@@ -116,7 +116,8 @@ function commandForPid(pid: number): string | null {
 }
 
 /**
- * True when `pid` belongs to a live tokitoki-menubar process. Two checks:
+ * True when `pid` belongs to a live panel process (Swift menu bar, Electrobun
+ * tray, or Quickshell launcher). Two checks:
  * signal-0 liveness, then identity via `ps -p <pid> -o command=` (argv[0]
  * match) so a recycled pid isn't mistaken for our app. When identity can't
  * be determined (ps missing/failed), liveness wins — no false negatives.
@@ -129,7 +130,11 @@ export async function isMenubarRunning(pid: number, opts: PidIdentityOpts = {}):
   }
   const comm = (opts.identity ?? commandForPid)(pid);
   if (comm === null || comm.length === 0) return true;
-  return comm.includes(MENUBAR_BIN_NAME);
+  return (
+    comm.includes(MENUBAR_BIN_NAME) ||
+    comm.includes("electrobun") ||
+    comm.includes("tokitoki-quickshell")
+  );
 }
 
 async function readLivePid(opts: PidIdentityOpts & { pidFile?: string } = {}): Promise<number | null> {
